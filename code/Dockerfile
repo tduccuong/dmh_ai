@@ -1,7 +1,15 @@
 FROM nginx:alpine
 RUN apk add --no-cache python3 && \
     wget -qO /usr/share/nginx/html/marked.min.js \
-      https://cdn.jsdelivr.net/npm/marked/marked.min.js
+      https://cdn.jsdelivr.net/npm/marked/marked.min.js && \
+    wget -qO /usr/share/nginx/html/pdf.min.js \
+      https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.min.mjs && \
+    wget -qO /usr/share/nginx/html/pdf.worker.min.js \
+      https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.worker.min.mjs && \
+    wget -qO /usr/share/nginx/html/mammoth.min.js \
+      https://cdn.jsdelivr.net/npm/mammoth@1.8.0/mammoth.browser.min.js && \
+    wget -qO /usr/share/nginx/html/xlsx.min.js \
+      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 RUN mkdir -p /data /app
 COPY backend/server.py /app/server.py
 COPY index.html /usr/share/nginx/html/

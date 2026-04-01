@@ -3,7 +3,7 @@ import base64, json, mimetypes, os, re, shutil, sqlite3, time, urllib.request, u
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 
-DB = '/data/chat.db'
+DB = '/data/db/chat.db'
 ASSETS_DIR = '/data/user_assets'
 LOG_FILE = '/data/system_logs/system.log'
 
@@ -17,6 +17,7 @@ def log(msg):
 IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'}
 
 def init_db():
+    os.makedirs(os.path.dirname(DB), exist_ok=True)
     os.makedirs(ASSETS_DIR, exist_ok=True)
     with sqlite3.connect(DB) as c:
         c.execute('''CREATE TABLE IF NOT EXISTS sessions (

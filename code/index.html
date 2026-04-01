@@ -6,6 +6,13 @@
     <title>DMH-AI</title>
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%231a1a2e'/><text x='50%25' y='50%25' dominant-baseline='central' text-anchor='middle' font-family='system-ui,sans-serif' font-weight='800' font-size='10' fill='%23e8a230'>DMH</text></svg>">
     <script src="/marked.min.js"></script>
+    <script src="/mammoth.min.js"></script>
+    <script src="/xlsx.min.js"></script>
+    <script type="module">
+        import * as pdfjsLib from '/pdf.min.js';
+        pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.js';
+        window.pdfjsLib = pdfjsLib;
+    </script>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #1c1208; color: #eee; height: 100vh; display: flex; }
@@ -616,17 +623,128 @@ const UIManager = {
         container.scrollTop = container.scrollHeight;
     },
 
+    resizeImage: function(file) {
+        var MAX_PX = 1920;
+        return new Promise(function(resolve) {
+            var url = URL.createObjectURL(file);
+            var img = new Image();
+            img.onload = function() {
+                URL.revokeObjectURL(url);
+                var w = img.naturalWidth, h = img.naturalHeight;
+                if (w <= MAX_PX && h <= MAX_PX) { resolve(file); return; }
+                var scale = MAX_PX / Math.max(w, h);
+                var canvas = document.createElement('canvas');
+                canvas.width = Math.round(w * scale);
+                canvas.height = Math.round(h * scale);
+                canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+                canvas.toBlob(function(blob) {
+                    resolve(new File([blob], file.name, { type: 'image/jpeg' }));
+                }, 'image/jpeg', 0.85);
+            };
+            img.src = url;
+        });
+    },
+
+    extractPdfText: async function(file) {
+        if (!window.pdfjsLib) throw new Error('PDF.js not loaded');
+        var arrayBuffer = await file.arrayBuffer();
+        var pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+        var text = '';
+        for (var p = 1; p <= pdf.numPages; p++) {
+            var page = await pdf.getPage(p);
+            var content = await page.getTextContent();
+            text += content.items.map(function(item) { return item.str; }).join(' ') + '\n';
+        }
+        return text.trim();
+    },
+
+    isPdf: async function(file) {
+        var slice = await file.slice(0, 4).arrayBuffer();
+        var bytes = new Uint8Array(slice);
+        return bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46; // %PDF
+    },
+
+    detectOfficeFormat: async function(file) {
+        // Check ZIP magic bytes first (PK header)
+        var slice = await file.slice(0, 4).arrayBuffer();
+        var bytes = new Uint8Array(slice);
+        if (!(bytes[0] === 0x50 && bytes[1] === 0x4B && bytes[2] === 0x03 && bytes[3] === 0x04)) return null;
+        // Peek inside the ZIP directory to distinguish docx vs xlsx
+        var buf = await file.arrayBuffer();
+        var wb = XLSX.read(new Uint8Array(buf), { type: 'array', bookSheets: true });
+        // If XLSX can parse it as a workbook it's a spreadsheet
+        if (wb && wb.SheetNames && wb.SheetNames.length > 0) return 'xlsx';
+        return null;
+    },
+
+    detectDocxOrXlsx: async function(file) {
+        var name = file.name.toLowerCase();
+        if (name.endsWith('.docx') || file.type.includes('wordprocessingml')) return 'docx';
+        if (name.endsWith('.xlsx') || file.type.includes('spreadsheetml')) return 'xlsx';
+        // No extension hint — peek inside the ZIP
+        var slice = await file.slice(0, 4).arrayBuffer();
+        var bytes = new Uint8Array(slice);
+        if (!(bytes[0] === 0x50 && bytes[1] === 0x4B && bytes[2] === 0x03 && bytes[3] === 0x04)) return null;
+        // Read ZIP central directory entries to find telltale paths
+        var buf = await file.arrayBuffer();
+        var zip = new Uint8Array(buf);
+        var text = new TextDecoder('utf-8', { fatal: false }).decode(zip);
+        if (text.includes('word/document.xml')) return 'docx';
+        if (text.includes('xl/workbook.xml')) return 'xlsx';
+        return null;
+    },
+
+    extractDocxText: async function(file) {
+        var buf = await file.arrayBuffer();
+        var result = await mammoth.extractRawText({ arrayBuffer: buf });
+        return result.value.trim();
+    },
+
+    extractXlsxText: async function(file) {
+        var buf = await file.arrayBuffer();
+        var wb = XLSX.read(new Uint8Array(buf), { type: 'array' });
+        return wb.SheetNames.map(function(name) {
+            var csv = XLSX.utils.sheet_to_csv(wb.Sheets[name]);
+            return '--- Sheet: ' + name + ' ---\n' + csv;
+        }).join('\n\n').trim();
+    },
+
     handleFileSelect: async function(files) {
         const self = this;
         const sessionId = this.currentSession ? this.currentSession.id : 'default';
         for (var i = 0; i < files.length; i++) {
             var file = files[i];
-            var formData = new FormData();
-            formData.append('file', file);
-            formData.append('sessionId', sessionId);
             try {
+                var IMAGE_EXTS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'];
+                var nameLower = file.name.toLowerCase();
+                var isImage = IMAGE_EXTS.some(function(ext) { return nameLower.endsWith(ext); });
+                var isText = file.type.startsWith('text/');
+                var isPdf = await self.isPdf(file);
+                var officeFormat = (!isImage && !isText && !isPdf) ? await self.detectDocxOrXlsx(file) : null;
+
+                if (!isImage && !isText && !isPdf && !officeFormat) {
+                    self.setStatus('Unsupported file: ' + file.name + '. Supported: PDF, DOCX, XLSX, plain text, ' + IMAGE_EXTS.join('/') + '.');
+                    setTimeout(function() { self.setStatus(''); }, 4000);
+                    continue;
+                }
+
+                var extractedText = null;
+                if (isPdf) extractedText = await self.extractPdfText(file);
+                else if (officeFormat === 'docx') extractedText = await self.extractDocxText(file);
+                else if (officeFormat === 'xlsx') extractedText = await self.extractXlsxText(file);
+
+                var uploadFile = file;
+                if (extractedText !== null) {
+                    uploadFile = new File([extractedText], file.name + '.txt', { type: 'text/plain' });
+                } else if (isImage) {
+                    uploadFile = await self.resizeImage(file);
+                }
+                var formData = new FormData();
+                formData.append('file', uploadFile);
+                formData.append('sessionId', sessionId);
                 var res = await fetch('/assets', { method: 'POST', body: formData });
                 var data = await res.json();
+                data.name = file.name;
                 self.attachedFiles.push(data);
                 self.renderAttachments();
             } catch (e) {

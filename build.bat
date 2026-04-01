@@ -20,6 +20,9 @@ echo Assembling deployment package...
 copy /Y "%SCRIPT_DIR%code\searxng-settings.yml" "%DIST_DIR%\searxng-settings.yml"
 copy /Y "%SCRIPT_DIR%code\docker-compose.yml"   "%DIST_DIR%\docker-compose.yml"
 copy /Y "%SCRIPT_DIR%code\run.bat"              "%DIST_DIR%\run.bat"
+if not exist "%DIST_DIR%\db" mkdir "%DIST_DIR%\db"
+if not exist "%DIST_DIR%\user_assets" mkdir "%DIST_DIR%\user_assets"
+if not exist "%DIST_DIR%\system_logs" mkdir "%DIST_DIR%\system_logs"
 
 echo.
 echo Done. Deployable artifact: dist\

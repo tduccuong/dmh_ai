@@ -4,7 +4,7 @@ services:
     network_mode: host
     restart: unless-stopped
     volumes:
-      - dmh-ai-data:/data
+      - ./db:/data/db
       - ./user_assets:/data/user_assets
       - ./system_logs:/data/system_logs
     depends_on:
@@ -19,6 +19,3 @@ services:
       - GRANIAN_PORT=8888
     volumes:
       - ./searxng-settings.yml:/etc/searxng/settings.yml
-
-volumes:
-  dmh-ai-data:
