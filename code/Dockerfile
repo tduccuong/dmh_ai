@@ -1,5 +1,5 @@
 FROM nginx:alpine
-RUN apk add --no-cache python3 && \
+RUN apk add --no-cache python3 su-exec && \
     wget -qO /usr/share/nginx/html/marked.min.js \
       https://cdn.jsdelivr.net/npm/marked/marked.min.js && \
     wget -qO /usr/share/nginx/html/pdf.min.js \
@@ -10,7 +10,8 @@ RUN apk add --no-cache python3 && \
       https://cdn.jsdelivr.net/npm/mammoth@1.8.0/mammoth.browser.min.js && \
     wget -qO /usr/share/nginx/html/xlsx.min.js \
       https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
-RUN mkdir -p /data /app
+RUN adduser -D -u 1000 appuser && \
+    mkdir -p /data /app && chown appuser:appuser /data /app
 COPY backend/server.py /app/server.py
 COPY index.html /usr/share/nginx/html/
 COPY nginx.conf /etc/nginx/conf.d/default.conf
