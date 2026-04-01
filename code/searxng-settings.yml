@@ -1,0 +1,7 @@
+use_default_settings: true
+server:
+  secret_key: dmh-ai-searxng
+search:
+  formats:
+    - html
+    - json

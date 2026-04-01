@@ -1,0 +1,24 @@
+services:
+  dmh-ai:
+    image: dmh-ai
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - dmh-ai-data:/data
+      - ./user_assets:/data/user_assets
+      - ./system_logs:/data/system_logs
+    depends_on:
+      - searxng
+
+  searxng:
+    image: searxng/searxng
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      - GRANIAN_HOST=127.0.0.1
+      - GRANIAN_PORT=8888
+    volumes:
+      - ./searxng-settings.yml:/etc/searxng/settings.yml
+
+volumes:
+  dmh-ai-data:
