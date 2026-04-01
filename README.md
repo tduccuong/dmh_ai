@@ -52,7 +52,8 @@ DMH-AI works with any Ollama model. Recommended models by use case:
 **Text and documents (fast, low memory):**
 | Model | Size | Notes |
 |---|---|---|
-| `phi4-mini:3.8b` | ~2.5 GB | Best small general-purpose model |
+| `gemma3n:e2b` | ~5.6 GB | Best small multi-lang general-purpose model |
+| `phi4-mini:3.8b` | ~2.5 GB | Good small general-purpose model |
 | `granite4:3b` | ~2.1 GB | Strong reasoning and fast |
 
 **Images and vision:**
