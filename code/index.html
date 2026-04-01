@@ -147,6 +147,11 @@ const AppConfig = {
     saveSearxng: function(url) {
         if (url) localStorage.setItem('searxng-url', url);
         else localStorage.removeItem('searxng-url');
+    },
+    get ollamaEndpoint() { return localStorage.getItem('ollama-endpoint') || 'http://localhost:11434'; },
+    saveOllamaEndpoint: function(url) {
+        if (url) localStorage.setItem('ollama-endpoint', url);
+        else localStorage.removeItem('ollama-endpoint');
     }
 };
 
@@ -465,9 +470,18 @@ const UIManager = {
     },
     
     initializeApp: async function() {
+        const savedEndpoint = AppConfig.ollamaEndpoint;
+        OllamaAPI.setEndpoint(savedEndpoint);
+        document.getElementById('endpoint-input').value = savedEndpoint;
+
         try {
             const models = await OllamaAPI.fetchModels();
             this.populateModelSelects(models);
+        } catch (e) {
+            this.showError('Cannot connect to Ollama. Please ensure Ollama is running on ' + savedEndpoint);
+        }
+
+        try {
             const sessions = await SessionStore.getSessions();
             if (sessions.length === 0) {
                 const model = document.getElementById('header-model-select').value;
@@ -486,7 +500,7 @@ const UIManager = {
             await this.renderSessions();
             this.renderChat();
         } catch (e) {
-            this.showError('Cannot connect to Ollama. Please ensure Ollama is running on localhost:11434');
+            console.error('Failed to load sessions:', e);
         }
     },
     
@@ -572,7 +586,7 @@ const UIManager = {
                 div.innerHTML = marked.parse(msg.content || '');
             } else {
                 var fileNames = [];
-                var displayText = (msg.content || '').replace(/\n\n\[File: ([^\]]+)\]\n```[\s\S]*?```/g, function(_, name) {
+                var displayText = (msg.content || '').replace(/\n\n\[File: ([^\]]+)\](?:\n```[\s\S]*?```)?/g, function(_, name) {
                     fileNames.push(name);
                     return '';
                 });
@@ -653,6 +667,7 @@ const UIManager = {
         const url = document.getElementById('endpoint-input').value.trim();
         if (!url) return;
         OllamaAPI.setEndpoint(url);
+        AppConfig.saveOllamaEndpoint(url);
         const btn = document.getElementById('endpoint-update-btn');
         btn.disabled = true;
         btn.textContent = 'Updating...';
@@ -869,6 +884,11 @@ const UIManager = {
             },
             function() {
                 sessionAtSend.messages.push({ role: 'assistant', content: assistantContent });
+                var userMsg = sessionAtSend.messages[sessionAtSend.messages.length - 2];
+                if (userMsg && userMsg.role === 'user') {
+                    userMsg.content = userMsg.content.replace(/(\[File: [^\]]+\])\n```[\s\S]*?```/g, '$1');
+                    delete userMsg.images;
+                }
                 SessionStore.updateSession(sessionAtSend);
                 self.isStreaming = false;
                 document.getElementById('send-btn').disabled = false;

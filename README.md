@@ -104,6 +104,23 @@ User data persists in:
 - `dist/system_logs/system.log` — web search and system trace log
 - Docker named volume `dmh-ai-data` — SQLite chat database
 
+## Using Ollama Cloud Models (if local inference is too slow)
+
+If your machine is too slow for local models, you can use Ollama's cloud-hosted models through the same local Ollama endpoint — no changes to DMH-AI required.
+
+1. Register a free account at [ollama.com](https://ollama.com)
+2. Log in via the CLI:
+   ```bash
+   ollama login
+   ```
+3. Pull a cloud model:
+   ```bash
+   ollama pull qwen3.5:cloud
+   ```
+4. Select the model in DMH-AI and start chatting — inference runs in the cloud, results stream through your local Ollama instance as normal.
+
+Cloud models are identified by the `:cloud` tag. They require an internet connection and an Ollama account but place no load on your local hardware.
+
 ## Web Search
 
 DMH-AI automatically detects when a question contains patterns like "web", "internet", "search", "find", etc and silently queries a bundled SearXNG search engine before answering. The model synthesizes the live results with its own knowledge.
