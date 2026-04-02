@@ -274,10 +274,28 @@ const SessionStore = {
 const OllamaAPI = {
     endpoint: 'http://localhost:11434',
     contextWindowCache: {},
+    capabilityCache: {},
     get BASE_URL() { return this.endpoint + '/api'; },
     setEndpoint: function(url) {
         this.endpoint = url.replace(/\/+$/, '');
         this.contextWindowCache = {};
+        this.capabilityCache = {};
+    },
+    hasVision: async function(model) {
+        if (model in this.capabilityCache) return this.capabilityCache[model];
+        try {
+            const res = await fetch(this.BASE_URL + '/show', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: model })
+            });
+            const data = await res.json();
+            const result = (data.capabilities || []).includes('vision');
+            this.capabilityCache[model] = result;
+            return result;
+        } catch (e) {
+            return false;
+        }
     },
     formatSize: function(bytes) {
         if (!bytes) return '';
@@ -340,7 +358,12 @@ const OllamaAPI = {
             signal: controller.signal
         })
         .then(async function(response) {
-            if (!response.ok) throw new Error('Chat request failed');
+            if (!response.ok) {
+                const errText = await response.text().catch(() => '');
+                let msg = 'Chat request failed (' + response.status + ')';
+                try { const e = JSON.parse(errText); if (e.error) msg += ': ' + e.error; } catch(_) { if (errText) msg += ': ' + errText.slice(0, 200); }
+                throw new Error(msg);
+            }
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
             let buffer = '';
@@ -375,8 +398,8 @@ const OllamaAPI = {
 // images stored as {base64, mime} objects → plain base64 strings
 function prepareForAPI(messages) {
     return messages.map(function(msg) {
-        if (!msg.images || msg.images.length === 0) return msg;
-        return Object.assign({}, msg, { images: msg.images.map(function(img) { return img.base64; }) });
+        if (msg.role !== 'user') return msg;
+        return { role: 'user', content: msg.content };
     });
 }
 
@@ -586,41 +609,117 @@ const UIManager = {
         const container = document.getElementById('chat-container');
         container.innerHTML = '';
         if (!this.currentSession) return;
+        var sessionId = this.currentSession.id;
         this.currentSession.messages.forEach(function(msg) {
             const div = document.createElement('div');
             div.className = 'message ' + msg.role;
             if (msg.role === 'assistant') {
                 div.innerHTML = marked.parse(msg.content || '');
             } else {
-                var fileNames = [];
-                var displayText = (msg.content || '').replace(/\n\n\[File: ([^\]]+)\](?:\n```[\s\S]*?```)?/g, function(_, name) {
-                    fileNames.push(name);
-                    return '';
-                });
-                div.textContent = displayText;
-                if (fileNames.length > 0) {
-                    var filesDiv = document.createElement('div');
-                    filesDiv.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;margin-top:6px;';
-                    fileNames.forEach(function(name) {
-                        var chip = document.createElement('span');
-                        chip.style.cssText = 'background:#1c1208;border:1px solid #3d2808;border-radius:4px;padding:2px 8px;font-size:12px;color:#e8c090;';
-                        chip.textContent = '📄 ' + name;
-                        filesDiv.appendChild(chip);
+                div.textContent = msg.content || '';
+                // Images: new format {thumbnail, mime, fileId, name}
+                if (msg.images && msg.images.length > 0) {
+                    msg.images.forEach(function(img) {
+                        var wrap = document.createElement('div');
+                        wrap.style.cssText = 'margin-top:10px;';
+                        var el = document.createElement('img');
+                        var src = img.thumbnail
+                            ? 'data:image/jpeg;base64,' + img.thumbnail
+                            : 'data:' + img.mime + ';base64,' + img.base64;
+                        el.src = src;
+                        el.style.cssText = 'max-width:100px;border-radius:4px;display:block;';
+                        wrap.appendChild(el);
+                        if (img.fileId) {
+                            var dl = document.createElement('button');
+                            dl.style.cssText = 'display:inline-block;margin-top:5px;padding:3px 10px;background:#b5621e;color:#fff;font-size:11px;font-weight:600;border-radius:4px;border:none;cursor:pointer;';
+                            dl.textContent = '⬇ Download';
+                            (function(sid, fid, fname) {
+                                dl.onclick = function() {
+                                    fetch('/assets/' + sid + '/' + fid)
+                                        .then(function(r) { return r.blob(); })
+                                        .then(function(blob) {
+                                            var url = URL.createObjectURL(blob);
+                                            var a = document.createElement('a');
+                                            a.href = url; a.download = fname;
+                                            a.style.display = 'none';
+                                            document.body.appendChild(a);
+                                            a.click();
+                                            document.body.removeChild(a);
+                                            setTimeout(function() { URL.revokeObjectURL(url); }, 10000);
+                                        });
+                                };
+                            })(sessionId, img.fileId, img.name || img.fileId);
+                            wrap.appendChild(dl);
+                        }
+                        div.appendChild(wrap);
                     });
-                    div.appendChild(filesDiv);
                 }
-            }
-            if (msg.images && msg.images.length > 0) {
-                msg.images.forEach(function(img) {
-                    const el = document.createElement('img');
-                    el.src = 'data:' + img.mime + ';base64,' + img.base64;
-                    el.style.cssText = 'max-width:300px;margin-top:8px;border-radius:6px;display:block;';
-                    div.appendChild(el);
-                });
+                // Files: new format {name, fileId, snippet}
+                if (msg.files && msg.files.length > 0) {
+                    msg.files.forEach(function(f) {
+                        var wrap = document.createElement('div');
+                        wrap.style.cssText = 'margin-top:8px;border:1px solid #3d2808;border-radius:6px;overflow:hidden;max-width:420px;';
+                        var header = document.createElement('div');
+                        header.style.cssText = 'background:#3d2808;padding:4px 10px;font-size:12px;color:#e8c090;display:flex;justify-content:space-between;align-items:center;';
+                        var nameSpan = document.createElement('span');
+                        nameSpan.textContent = '📄 ' + f.name;
+                        header.appendChild(nameSpan);
+                        if (f.fileId) {
+                            var dl = document.createElement('button');
+                            dl.style.cssText = 'padding:2px 8px;background:#b5621e;color:#fff;font-size:11px;font-weight:600;border-radius:4px;border:none;cursor:pointer;white-space:nowrap;';
+                            dl.textContent = '⬇ Download';
+                            (function(sid, fid, fname) {
+                                dl.onclick = function() {
+                                    fetch('/assets/' + sid + '/' + fid)
+                                        .then(function(r) { return r.blob(); })
+                                        .then(function(blob) {
+                                            var url = URL.createObjectURL(blob);
+                                            var a = document.createElement('a');
+                                            a.href = url; a.download = fname;
+                                            a.click();
+                                            URL.revokeObjectURL(url);
+                                        });
+                                };
+                            })(sessionId, f.fileId, f.name || f.fileId);
+                            header.appendChild(dl);
+                        }
+                        wrap.appendChild(header);
+                        if (f.snippet) {
+                            var pre = document.createElement('pre');
+                            pre.style.cssText = 'margin:0;padding:8px 10px;font-size:11px;color:#b0956a;overflow:hidden;white-space:pre-wrap;word-break:break-all;';
+                            pre.textContent = f.snippet;
+                            wrap.appendChild(pre);
+                        }
+                        div.appendChild(wrap);
+                    });
+                }
             }
             container.appendChild(div);
         });
         container.scrollTop = container.scrollHeight;
+    },
+
+    fileToBase64: function(file) {
+        return new Promise(function(resolve) {
+            var reader = new FileReader();
+            reader.onload = function(e) { resolve(e.target.result.split(',')[1]); };
+            reader.readAsDataURL(file);
+        });
+    },
+
+    generateThumbnail: function(base64, mime) {
+        return new Promise(function(resolve) {
+            var img = new Image();
+            img.onload = function() {
+                var scale = Math.min(1, 100 / img.naturalWidth);
+                var canvas = document.createElement('canvas');
+                canvas.width = Math.round(img.naturalWidth * scale);
+                canvas.height = Math.round(img.naturalHeight * scale);
+                canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+                resolve(canvas.toDataURL('image/jpeg', 0.8).split(',')[1]);
+            };
+            img.src = 'data:' + mime + ';base64,' + base64;
+        });
     },
 
     resizeImage: function(file) {
@@ -736,16 +835,32 @@ const UIManager = {
                 var uploadFile = file;
                 if (extractedText !== null) {
                     uploadFile = new File([extractedText], file.name + '.txt', { type: 'text/plain' });
-                } else if (isImage) {
-                    uploadFile = await self.resizeImage(file);
                 }
+                // Images: upload original (verbatim) for download, resize separately for LLM
                 var formData = new FormData();
                 formData.append('file', uploadFile);
                 formData.append('sessionId', sessionId);
                 var res = await fetch('/assets', { method: 'POST', body: formData });
                 var data = await res.json();
-                data.name = file.name;
-                self.attachedFiles.push(data);
+
+                if (isImage) {
+                    var resizedFile = await self.resizeImage(file);
+                    var resizedBase64 = await self.fileToBase64(resizedFile);
+                    var thumbnail = await self.generateThumbnail(resizedBase64, 'image/jpeg');
+                    self.attachedFiles.push({
+                        id: data.id, name: file.name, type: 'image', mime: data.mime,
+                        thumbnailBase64: thumbnail,
+                        fullBase64: resizedBase64
+                    });
+                } else {
+                    var lines = (data.content || '').split('\n');
+                    var snippet = lines.slice(0, 5).join('\n') + (lines.length > 5 ? '\n…' : '');
+                    self.attachedFiles.push({
+                        id: data.id, name: file.name, type: 'text',
+                        snippet: snippet,
+                        fullContent: data.content
+                    });
+                }
                 self.renderAttachments();
             } catch (e) {
                 console.error('Upload failed:', e);
@@ -928,18 +1043,34 @@ const UIManager = {
             await ContextManager.compact(this.currentSession);
         }
 
-        var fullContent = content;
-        var images = [];
+        var contentForAPI = content;
+        var imagesForAPI = [];
+        var imagesForStorage = [];
+        var filesForStorage = [];
         this.attachedFiles.forEach(function(f) {
             if (f.type === 'text') {
-                fullContent += '\n\n[File: ' + f.name + ']\n```\n' + f.content + '\n```';
+                contentForAPI += '\n\n[File: ' + f.name + ']\n```\n' + f.fullContent + '\n```';
+                filesForStorage.push({ name: f.name, fileId: f.id, snippet: f.snippet });
             } else if (f.type === 'image') {
-                images.push({ base64: f.base64, mime: f.mime });
+                imagesForAPI.push(f.fullBase64);
+                imagesForStorage.push({ thumbnail: f.thumbnailBase64, mime: f.mime, fileId: f.id, name: f.name });
             }
         });
-        var userMsg = { role: 'user', content: fullContent };
-        if (images.length > 0) userMsg.images = images;
-        this.currentSession.messages.push(userMsg);
+
+        // Check vision capability before touching any state
+        if (imagesForAPI.length > 0 && !(await OllamaAPI.hasVision(this.currentSession.model))) {
+            this.setStatus('⚠ ' + this.currentSession.model + ' does not support images. Switch to a vision-capable model and send again.');
+            setTimeout(function() { self.setStatus(''); }, 6000);
+            return;
+        }
+
+        var userMsgForStorage = { role: 'user', content: content };
+        if (imagesForStorage.length > 0) userMsgForStorage.images = imagesForStorage;
+        if (filesForStorage.length > 0) userMsgForStorage.files = filesForStorage;
+        var userMsgForAPI = { role: 'user', content: contentForAPI };
+        if (imagesForAPI.length > 0) userMsgForAPI.images = imagesForAPI;
+
+        this.currentSession.messages.push(userMsgForStorage);
         this.attachedFiles = [];
         this.renderAttachments();
         await SessionStore.updateSession(this.currentSession);
@@ -956,6 +1087,7 @@ const UIManager = {
         document.getElementById('send-btn').disabled = true;
 
         let apiMessages = prepareForAPI(ContextManager.buildContextMessages(this.currentSession));
+        apiMessages[apiMessages.length - 1] = userMsgForAPI;
         const searchTriggerPattern = /\b(search|find)\b.{0,40}\b(web|internet|online)\b|\b(web|internet|online)\b.{0,40}\b(search|find)\b/i;
         const needsWebSearch = searchTriggerPattern.test(content);
         const cleanedContent = needsWebSearch ? content.replace(searchTriggerPattern, '').replace(/^[\s,;.]+|[\s,;.]+$/g, '').trim() : content;
@@ -1004,8 +1136,7 @@ const UIManager = {
                 sessionAtSend.messages.push({ role: 'assistant', content: assistantContent });
                 var userMsg = sessionAtSend.messages[sessionAtSend.messages.length - 2];
                 if (userMsg && userMsg.role === 'user') {
-                    userMsg.content = userMsg.content.replace(/(\[File: [^\]]+\])\n```[\s\S]*?```/g, '$1');
-                    delete userMsg.images;
+                    userMsg._sentToLLM = true;
                 }
                 SessionStore.updateSession(sessionAtSend);
                 self.isStreaming = false;

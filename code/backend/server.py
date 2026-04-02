@@ -106,6 +106,25 @@ class H(BaseHTTPRequestHandler):
                 log(f'[SEARCH] ERROR: {e}')
                 self.send_json(500, {'error': str(e)})
             return
+        m = re.match(r'^/assets/([^/]+)/([^/]+)$', p)
+        if m:
+            session_id, file_id = m.group(1), m.group(2)
+            session_dir = os.path.join(ASSETS_DIR, re.sub(r'[^\w\-]', '_', session_id))
+            file_path = os.path.realpath(os.path.join(session_dir, file_id))
+            if file_path.startswith(os.path.realpath(ASSETS_DIR)) and os.path.isfile(file_path):
+                mime = mimetypes.guess_type(file_path)[0] or 'application/octet-stream'
+                display_name = re.sub(r'^\d+_', '', file_id)
+                with open(file_path, 'rb') as f:
+                    data = f.read()
+                self.send_response(200)
+                self.send_header('Content-Type', mime)
+                self.send_header('Content-Length', len(data))
+                self.send_header('Content-Disposition', 'attachment; filename="' + display_name + '"')
+                self.end_headers()
+                self.wfile.write(data)
+            else:
+                self.send_json(404, {'error': 'Not found'})
+            return
         with sqlite3.connect(DB) as c:
             if p == '/sessions':
                 rows = c.execute(
