@@ -14,6 +14,7 @@ RUN adduser -D -u 1000 appuser && \
     mkdir -p /data /app && chown appuser:appuser /data /app
 COPY backend/server.py /app/server.py
 COPY index.html /usr/share/nginx/html/
+COPY logo.png /usr/share/nginx/html/logo.png
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY start.sh /start.sh
 RUN chmod +x /start.sh

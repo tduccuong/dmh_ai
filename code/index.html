@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DMH-AI</title>
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%231a1a2e'/><text x='50%25' y='50%25' dominant-baseline='central' text-anchor='middle' font-family='system-ui,sans-serif' font-weight='800' font-size='10' fill='%23e8a230'>DMH</text></svg>">
+    <link rel="icon" type="image/png" href="/logo.png">
     <script src="/marked.min.js"></script>
     <script src="/mammoth.min.js"></script>
     <script src="/xlsx.min.js"></script>
@@ -15,16 +15,16 @@
     </script>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #1c1208; color: #eee; height: 100vh; display: flex; }
-        .sidebar { width: 280px; background: #281a08; padding: 20px; display: flex; flex-direction: column; border-right: 1px solid #3d2808; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #141018; color: #eee; height: 100vh; display: flex; }
+        .sidebar { width: 280px; background: #1c1628; padding: 20px; display: flex; flex-direction: column; border-right: 1px solid #281e38; }
         .main { flex: 1; display: flex; flex-direction: column; }
-        .header { padding: 20px; background: #3d2808; border-bottom: 1px solid #1c1208; }
-        .model-select { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #1c1208; background: #1c1208; color: #eee; font-size: 14px; }
+        .header { padding: 20px; background: #281e38; border-bottom: 1px solid #141018; }
+        .model-select { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #141018; background: #141018; color: #eee; font-size: 14px; }
         .sessions-list { flex: 1; overflow-y: auto; margin-top: 20px; }
         .session-item { padding: 8px 10px; margin-bottom: 2px; border-radius: 6px; cursor: pointer; background: transparent; transition: background 0.15s; display: flex; align-items: center; gap: 6px; border-left: 3px solid transparent; }
         .session-item:hover { background: rgba(255,255,255,0.05); }
-        .session-item.active { background: rgba(181,98,30,0.18); border-left-color: #b5621e; }
-        .session-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: #b0956a; }
+        .session-item.active { background: rgba(200,120,48,0.18); border-left-color: #c87830; }
+        .session-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: #9888a8; }
         .session-item:hover .session-name { color: #ddd; }
         .session-item.active .session-name { color: #fff; font-weight: 500; }
         .session-actions { display: flex; gap: 2px; flex-shrink: 0; opacity: 0; transition: opacity 0.15s; }
@@ -34,68 +34,79 @@
         .session-btn-edit:hover { background: rgba(147,197,253,0.2); }
         .session-btn-delete { color: #fca5a5; }
         .session-btn-delete:hover { background: rgba(252,165,165,0.2); }
-        .new-session-btn { padding: 12px; background: #b5621e; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; margin-top: 10px; }
+        .new-session-btn { padding: 12px; background: #c87830; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; margin-top: 10px; }
         .chat-container { flex: 1; overflow-y: auto; padding: 20px; }
         .message { margin-bottom: 15px; max-width: 80%; }
-        .message.user { margin-left: auto; background: #3d2808; padding: 12px 16px; border-radius: 12px 12px 0 12px; }
-        .message.assistant { margin-right: auto; background: #281a08; padding: 12px 16px; border-radius: 12px 12px 12px 0; }
-        .input-area { padding: 20px; background: #3d2808; display: flex; gap: 10px; }
-        .message-input { flex: 1; padding: 12px 16px; border-radius: 8px; border: 1px solid #1c1208; background: #1c1208; color: #eee; font-size: 14px; font-family: inherit; resize: none; }
-        .send-btn { padding: 12px 24px; background: #b5621e; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; }
+        .message.user { margin-left: auto; background: #281e38; padding: 12px 16px; border-radius: 12px 12px 0 12px; }
+        .message.assistant { margin-right: auto; background: #1c1628; padding: 12px 16px; border-radius: 12px 12px 12px 0; }
+        .input-area { padding: 20px; background: #281e38; display: flex; gap: 10px; }
+        .message-input { flex: 1; padding: 12px 16px; border-radius: 8px; border: 1px solid #141018; background: #141018; color: #eee; font-size: 14px; font-family: inherit; resize: none; }
+        .send-btn { padding: 12px 24px; background: #c87830; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; }
         .send-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-        .status-bar { padding: 6px 20px; background: #3d2808; color: #d4956a; font-size: 13px; display: none; align-items: center; gap: 8px; }
+        .status-bar { padding: 6px 20px; background: #281e38; color: #b098b8; font-size: 13px; display: none; align-items: center; gap: 8px; }
         .status-bar.visible { display: flex; }
-        .spinner { width: 14px; height: 14px; border: 2px solid #d4956a; border-top-color: #b5621e; border-radius: 50%; flex-shrink: 0;
+        .spinner { width: 14px; height: 14px; border: 2px solid #b098b8; border-top-color: #c87830; border-radius: 50%; flex-shrink: 0;
             animation: spin 0.8s linear infinite; }
         @keyframes spin { to { transform: rotate(360deg); } }
         .error-banner { background: #c0392b; color: white; padding: 15px 20px; text-align: center; display: none; }
         .error-banner button { background: white; color: #c0392b; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; margin-left: 15px; font-weight: 600; }
-        .endpoint-section { padding-top: 14px; margin-top: 14px; border-top: 1px solid #3d2808; }
-        .endpoint-label { font-size: 11px; color: #7a5a30; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; display: block; }
-        .endpoint-input { width: 100%; padding: 8px 10px; border-radius: 6px; border: 1px solid #3d2808; background: #1c1208; color: #eee; font-size: 12px; }
-        .endpoint-update-btn { width: 100%; margin-top: 6px; padding: 8px; background: #3d2808; color: #eee; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; }
-        .endpoint-update-btn:hover { background: #8a4a18; }
+        .endpoint-section { padding-top: 14px; margin-top: 14px; border-top: 1px solid #382850; }
+        .endpoint-label { font-size: 11px; color: #b098b8; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; display: block; }
+        .endpoint-input { width: 100%; padding: 8px 10px; border-radius: 6px; border: 1px solid #483868; background: #1c1828; color: #eee; font-size: 12px; }
+        .endpoint-update-btn { width: 100%; margin-top: 6px; padding: 8px; background: #281e38; color: #eee; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; }
+        .endpoint-update-btn:hover { background: #a86020; }
         .clear-btn { padding: 10px 16px; background: #e94560; color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 600; white-space: nowrap; }
         .clear-btn:hover { background: #c0392b; }
-        .attach-btn { padding: 0 14px; background: #1c1208; color: #d4956a; border: 1px solid #3d2808; border-radius: 8px; cursor: pointer; font-size: 20px; line-height: 1; flex-shrink: 0; }
-        .attach-btn:hover { background: #3d2808; color: #eee; }
-        .attachments-bar { display: none; flex-wrap: wrap; gap: 6px; padding: 8px 20px; background: #3d2808; border-top: 1px solid #1c1208; }
+        .attach-btn { padding: 0 14px; background: #141018; color: #b098b8; border: 1px solid #281e38; border-radius: 8px; cursor: pointer; font-size: 20px; line-height: 1; flex-shrink: 0; }
+        .attach-btn:hover { background: #281e38; color: #eee; }
+        .attachments-bar { display: none; flex-wrap: wrap; gap: 6px; padding: 8px 20px; background: #281e38; border-top: 1px solid #141018; }
         .attachments-bar.visible { display: flex; }
-        .attachment-chip { display: flex; align-items: center; gap: 5px; background: #1c1208; border: 1px solid #3d2808; border-radius: 5px; padding: 4px 8px; font-size: 12px; color: #e8c090; max-width: 200px; }
+        .attachment-chip { display: flex; align-items: center; gap: 5px; background: #141018; border: 1px solid #281e38; border-radius: 5px; padding: 4px 8px; font-size: 12px; color: #d8c0a0; max-width: 200px; }
         .attachment-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .attachment-chip button { background: none; border: none; color: #d4956a; cursor: pointer; font-size: 14px; line-height: 1; padding: 0; flex-shrink: 0; }
+        .attachment-chip button { background: none; border: none; color: #b098b8; cursor: pointer; font-size: 14px; line-height: 1; padding: 0; flex-shrink: 0; }
         .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.65); display: none; align-items: center; justify-content: center; z-index: 1000; }
         .modal-overlay.visible { display: flex; }
-        .modal { background: #281a08; border: 1px solid #5a3a10; border-radius: 10px; padding: 28px 24px 20px; width: 360px; max-width: 90vw; box-shadow: 0 16px 48px rgba(0,0,0,0.6); }
+        .modal { background: #1c1628; border: 1px solid #382850; border-radius: 10px; padding: 28px 24px 20px; width: 360px; max-width: 90vw; box-shadow: 0 16px 48px rgba(0,0,0,0.6); }
         .modal-title { font-size: 15px; font-weight: 600; color: #eee; margin-bottom: 10px; }
-        .modal-message { font-size: 14px; color: #c0956a; line-height: 1.5; margin-bottom: 20px; }
-        .modal-input { width: 100%; padding: 10px 12px; border-radius: 6px; border: 1px solid #5a3a10; background: #1c1208; color: #eee; font-size: 14px; margin-bottom: 20px; outline: none; box-sizing: border-box; }
-        .modal-input:focus { border-color: #b5621e; }
+        .modal-message { font-size: 14px; color: #a898b8; line-height: 1.5; margin-bottom: 20px; }
+        .modal-input { width: 100%; padding: 10px 12px; border-radius: 6px; border: 1px solid #382850; background: #141018; color: #eee; font-size: 14px; margin-bottom: 20px; outline: none; box-sizing: border-box; }
+        .modal-input:focus { border-color: #c87830; }
         .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
         .modal-btn { padding: 8px 20px; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500; }
-        .modal-btn-cancel { background: #3d2808; color: #ccc; }
-        .modal-btn-cancel:hover { background: #4e3210; }
-        .modal-btn-ok { background: #b5621e; color: white; }
-        .modal-btn-ok:hover { background: #8a4a18; }
+        .modal-btn-cancel { background: #281e38; color: #ccc; }
+        .modal-btn-cancel:hover { background: #342848; }
+        .modal-btn-ok { background: #c87830; color: white; }
+        .modal-btn-ok:hover { background: #a86020; }
         .modal-btn-danger { background: #e94560; color: white; }
         .modal-btn-danger:hover { background: #c0392b; }
         .message.assistant p { margin-bottom: 8px; }
         .message.assistant p:last-child, .message.assistant ul:last-child, .message.assistant ol:last-child { margin-bottom: 0; }
         .message.assistant h1, .message.assistant h2, .message.assistant h3,
-        .message.assistant h4, .message.assistant h5, .message.assistant h6 { color: #d4956a; margin: 14px 0 6px; font-weight: 600; }
+        .message.assistant h4, .message.assistant h5, .message.assistant h6 { color: #b098b8; margin: 14px 0 6px; font-weight: 600; }
         .message.assistant h1 { font-size: 1.3em; } .message.assistant h2 { font-size: 1.15em; } .message.assistant h3 { font-size: 1em; }
         .message.assistant ul, .message.assistant ol { padding-left: 20px; margin-bottom: 8px; }
         .message.assistant li { margin-bottom: 3px; }
-        .message.assistant pre { background: #1c1208; border-radius: 6px; padding: 12px; overflow-x: auto; margin: 8px 0; border: 1px solid #3d2808; }
-        .message.assistant pre code { background: none; padding: 0; color: #e8c090; font-size: 13px; }
-        .message.assistant :not(pre) > code { background: #1c1208; padding: 2px 6px; border-radius: 3px; color: #e8c090; font-size: 13px; font-family: 'Courier New', monospace; }
-        .message.assistant blockquote { border-left: 3px solid #b5621e; margin: 8px 0; padding: 4px 0 4px 12px; color: #d4956a; }
-        .message.assistant hr { border: none; border-top: 1px solid #3d2808; margin: 12px 0; }
+        .message.assistant pre { background: #141018; border-radius: 6px; padding: 12px; overflow-x: auto; margin: 8px 0; border: 1px solid #281e38; }
+        .message.assistant pre code { background: none; padding: 0; color: #d8c0a0; font-size: 13px; }
+        .message.assistant :not(pre) > code { background: #141018; padding: 2px 6px; border-radius: 3px; color: #d8c0a0; font-size: 13px; font-family: 'Courier New', monospace; }
+        .message.assistant blockquote { border-left: 3px solid #c87830; margin: 8px 0; padding: 4px 0 4px 12px; color: #b098b8; }
+        .message.assistant hr { border: none; border-top: 1px solid #281e38; margin: 12px 0; }
         .message.assistant table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 13px; }
-        .message.assistant th, .message.assistant td { border: 1px solid #3d2808; padding: 6px 10px; text-align: left; }
-        .message.assistant th { background: #3d2808; color: #d4956a; }
-        .message.assistant a { color: #d4956a; }
-        .message.assistant strong { color: #e8c090; }
+        .message.assistant th, .message.assistant td { border: 1px solid #281e38; padding: 6px 10px; text-align: left; }
+        .message.assistant th { background: #281e38; color: #b098b8; }
+        .message.assistant a { color: #b098b8; }
+        .message.assistant strong { color: #d8c0a0; }
+        .sidebar { flex-shrink: 0; transition: width 0.2s, padding 0.2s; overflow: hidden; }
+        .sidebar.collapsed { width: 0; padding: 0; border-right: none; }
+        .sidebar-toggle { background: none; border: none; color: #b098b8; font-size: 22px; cursor: pointer; padding: 0; width: 28px; height: 28px; line-height: 28px; text-align: center; flex-shrink: 0; }
+        .sidebar-toggle:hover { color: #eee; }
+        .sidebar-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 49; }
+        .sidebar-overlay.visible { display: block; }
+        @media (max-width: 768px) {
+            .sidebar { position: fixed; left: 0; top: 0; bottom: 0; z-index: 50; }
+            .sidebar.collapsed { left: -280px; }
+            .message { max-width: 95%; }
+        }
     </style>
 </head>
 <body>
@@ -103,19 +114,25 @@
         <span id="error-message">Cannot connect to Ollama</span>
         <button onclick="location.reload()">Retry</button>
     </div>
-    <div class="sidebar">
-        <h2 style="color: #e8a230; margin-bottom: 15px; letter-spacing: 0.04em;">DMH-AI</h2>
+    <div class="sidebar-overlay" id="sidebar-overlay"></div>
+    <div class="sidebar" id="sidebar">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:15px;">
+            <img src="/logo.png" style="height:32px;width:32px;border-radius:6px;object-fit:contain;flex-shrink:0;">
+            <h2 style="color:#e09040;letter-spacing:0.04em;white-space:nowrap;">DMH-AI</h2>
+        </div>
         <button class="new-session-btn" id="new-session-btn">+ New Session</button>
         <div class="sessions-list" id="sessions-list"></div>
         <div class="endpoint-section">
             <span class="endpoint-label">Ollama Endpoint</span>
-            <input class="endpoint-input" id="endpoint-input" type="text" value="http://localhost:11434">
+            <input class="endpoint-input" id="endpoint-input" type="text" value="" placeholder="http://localhost:11434">
             <button class="endpoint-update-btn" id="endpoint-update-btn">Update</button>
         </div>
     </div>
     <div class="main">
         <div class="header" style="display:flex;gap:10px;align-items:center;">
-            <select class="model-select" id="header-model-select"></select>
+            <img id="header-logo" src="/logo.png" style="display:none;height:28px;width:28px;border-radius:4px;object-fit:contain;flex-shrink:0;">
+            <button class="sidebar-toggle" id="sidebar-toggle" style="height:28px;width:28px;line-height:28px;font-size:22px;">☰</button>
+            <select class="model-select" id="header-model-select" style="flex:1;"></select>
             <button class="clear-btn" id="clear-session-btn">Clear</button>
         </div>
         <div class="chat-container" id="chat-container"></div>
@@ -155,7 +172,7 @@ const AppConfig = {
         if (url) localStorage.setItem('searxng-url', url);
         else localStorage.removeItem('searxng-url');
     },
-    get ollamaEndpoint() { return localStorage.getItem('ollama-endpoint') || 'http://localhost:11434'; },
+    get ollamaEndpoint() { return localStorage.getItem('ollama-endpoint') || ''; },
     saveOllamaEndpoint: function(url) {
         if (url) localStorage.setItem('ollama-endpoint', url);
         else localStorage.removeItem('ollama-endpoint');
@@ -272,10 +289,10 @@ const SessionStore = {
 };
 
 const OllamaAPI = {
-    endpoint: 'http://localhost:11434',
+    endpoint: '',
     contextWindowCache: {},
     capabilityCache: {},
-    get BASE_URL() { return this.endpoint + '/api'; },
+    get BASE_URL() { return this.endpoint ? this.endpoint + '/api' : '/api'; },
     setEndpoint: function(url) {
         this.endpoint = url.replace(/\/+$/, '');
         this.contextWindowCache = {};
@@ -465,6 +482,17 @@ const UIManager = {
     init: function() {
         const self = this;
         Modal.init();
+        var sidebar = document.getElementById('sidebar');
+        var overlay = document.getElementById('sidebar-overlay');
+        var toggle = document.getElementById('sidebar-toggle');
+        var headerLogo = document.getElementById('header-logo');
+        var isMobile = function() { return window.innerWidth <= 768; };
+        function closeSidebar() { sidebar.classList.add('collapsed'); overlay.classList.remove('visible'); headerLogo.style.display = ''; }
+        function openSidebar() { sidebar.classList.remove('collapsed'); if (isMobile()) overlay.classList.add('visible'); headerLogo.style.display = 'none'; }
+        toggle.addEventListener('click', function() { sidebar.classList.contains('collapsed') ? openSidebar() : closeSidebar(); });
+        overlay.addEventListener('click', closeSidebar);
+        document.getElementById('message-input').addEventListener('focus', function() { if (isMobile()) closeSidebar(); });
+        if (window.innerWidth <= 768) closeSidebar();
         document.getElementById('new-session-btn').addEventListener('click', function() { self.createNewSession(); });
         document.getElementById('endpoint-update-btn').addEventListener('click', function() { self.updateEndpoint(); });
         document.getElementById('endpoint-input').addEventListener('keydown', function(e) { if (e.key === 'Enter') self.updateEndpoint(); });
@@ -508,7 +536,7 @@ const UIManager = {
             const models = await OllamaAPI.fetchModels();
             this.populateModelSelects(models);
         } catch (e) {
-            this.showError('Cannot connect to Ollama. Please ensure Ollama is running on ' + savedEndpoint);
+            this.showError('Cannot connect to Ollama. Please ensure Ollama is running on localhost:11434');
         }
 
         try {
@@ -631,7 +659,7 @@ const UIManager = {
                         wrap.appendChild(el);
                         if (img.fileId) {
                             var dl = document.createElement('button');
-                            dl.style.cssText = 'display:inline-block;margin-top:5px;padding:3px 10px;background:#b5621e;color:#fff;font-size:11px;font-weight:600;border-radius:4px;border:none;cursor:pointer;';
+                            dl.style.cssText = 'display:inline-block;margin-top:5px;padding:3px 10px;background:#c87830;color:#fff;font-size:11px;font-weight:600;border-radius:4px;border:none;cursor:pointer;';
                             dl.textContent = '⬇ Download';
                             (function(sid, fid, fname) {
                                 dl.onclick = function() {
@@ -658,15 +686,15 @@ const UIManager = {
                 if (msg.files && msg.files.length > 0) {
                     msg.files.forEach(function(f) {
                         var wrap = document.createElement('div');
-                        wrap.style.cssText = 'margin-top:8px;border:1px solid #3d2808;border-radius:6px;overflow:hidden;max-width:420px;';
+                        wrap.style.cssText = 'margin-top:8px;border:1px solid #281e38;border-radius:6px;overflow:hidden;max-width:420px;';
                         var header = document.createElement('div');
-                        header.style.cssText = 'background:#3d2808;padding:4px 10px;font-size:12px;color:#e8c090;display:flex;justify-content:space-between;align-items:center;';
+                        header.style.cssText = 'background:#281e38;padding:4px 10px;font-size:12px;color:#d8c0a0;display:flex;justify-content:space-between;align-items:center;';
                         var nameSpan = document.createElement('span');
                         nameSpan.textContent = '📄 ' + f.name;
                         header.appendChild(nameSpan);
                         if (f.fileId) {
                             var dl = document.createElement('button');
-                            dl.style.cssText = 'padding:2px 8px;background:#b5621e;color:#fff;font-size:11px;font-weight:600;border-radius:4px;border:none;cursor:pointer;white-space:nowrap;';
+                            dl.style.cssText = 'padding:2px 8px;background:#c87830;color:#fff;font-size:11px;font-weight:600;border-radius:4px;border:none;cursor:pointer;white-space:nowrap;';
                             dl.textContent = '⬇ Download';
                             (function(sid, fid, fname) {
                                 dl.onclick = function() {
@@ -686,7 +714,7 @@ const UIManager = {
                         wrap.appendChild(header);
                         if (f.snippet) {
                             var pre = document.createElement('pre');
-                            pre.style.cssText = 'margin:0;padding:8px 10px;font-size:11px;color:#b0956a;overflow:hidden;white-space:pre-wrap;word-break:break-all;';
+                            pre.style.cssText = 'margin:0;padding:8px 10px;font-size:11px;color:#9888a8;overflow:hidden;white-space:pre-wrap;word-break:break-all;';
                             pre.textContent = f.snippet;
                             wrap.appendChild(pre);
                         }
@@ -1113,7 +1141,7 @@ const UIManager = {
                     syslog('[INJECT] synthesized results injected into context');
                 } else {
                     syslog('[SEARCH] fallback: search returned no results');
-                    assistantDiv.innerHTML = '<em style="color:#c0724a;">⚠ Web search unavailable — answering from model training data, which may be outdated.</em><br><br>';
+                    assistantDiv.innerHTML = '<em style="color:#d0a050;">⚠ Web search unavailable — answering from model training data, which may be outdated.</em><br><br>';
                 }
             }
         }
