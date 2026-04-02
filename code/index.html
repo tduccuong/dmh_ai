@@ -99,8 +99,15 @@
         .message.assistant strong { color: #d8c0a0; }
         .sidebar { flex-shrink: 0; transition: width 0.2s, padding 0.2s; overflow: hidden; }
         .sidebar.collapsed { width: 0; padding: 0; border-right: none; }
-        .sidebar-toggle { background: none; border: none; color: #b098b8; font-size: 22px; cursor: pointer; padding: 0; width: 28px; height: 28px; line-height: 28px; text-align: center; flex-shrink: 0; }
+        .sidebar-toggle { padding: 0 10px; background: #141018; color: #b098b8; border: 1px solid #281e38; border-radius: 8px; cursor: pointer; font-size: 20px; line-height: 1; flex-shrink: 0; }
         .sidebar-toggle:hover { color: #eee; }
+        .lang-wrap { position: relative; flex-shrink: 0; display: flex; align-items: stretch; }
+        .lang-flag { padding: 0 10px; background: #141018; color: #b098b8; border: 1px solid #281e38; border-radius: 8px; cursor: pointer; font-size: 22px; flex-shrink: 0; display: flex; align-items: center; }
+        .lang-dropdown { display: none; position: absolute; top: 100%; left: 0; background: #1c1628; border: 1px solid #382850; border-radius: 6px; margin-top: 4px; z-index: 200; min-width: 150px; box-shadow: 0 8px 24px rgba(0,0,0,0.5); }
+        .lang-dropdown.open { display: block; }
+        .lang-option { display: block; width: 100%; padding: 8px 12px; background: none; border: none; color: #b098b8; font-size: 13px; cursor: pointer; text-align: left; white-space: nowrap; }
+        .lang-option:hover { background: #281e38; color: #eee; }
+        .lang-option.active { color: #e09040; }
         .sidebar-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 49; }
         .sidebar-overlay.visible { display: block; }
         @media (max-width: 768px) {
@@ -130,15 +137,19 @@
         <button class="new-session-btn" id="new-session-btn">+ New Session</button>
         <div class="sessions-list" id="sessions-list"></div>
         <div class="endpoint-section">
-            <span class="endpoint-label">Ollama Endpoint</span>
+            <span class="endpoint-label" id="endpoint-label">Ollama Endpoint</span>
             <input class="endpoint-input" id="endpoint-input" type="text" value="" placeholder="http://localhost:11434">
             <button class="endpoint-update-btn" id="endpoint-update-btn">Update</button>
         </div>
     </div>
     <div class="main">
-        <div class="header" style="display:flex;gap:10px;align-items:center;">
-            <img id="header-logo" src="/logo.png" style="display:none;height:28px;width:28px;border-radius:4px;object-fit:contain;flex-shrink:0;">
-            <button class="sidebar-toggle" id="sidebar-toggle" style="height:28px;width:28px;line-height:28px;font-size:22px;">☰</button>
+        <div class="header" style="display:flex;gap:6px;align-items:stretch;">
+            <img id="header-logo" src="/logo.png" style="display:none;height:36px;width:36px;border-radius:4px;object-fit:contain;flex-shrink:0;align-self:center;">
+            <button class="sidebar-toggle" id="sidebar-toggle">☰</button>
+            <div class="lang-wrap" id="lang-wrap">
+                <button class="lang-flag" id="lang-flag"></button>
+                <div class="lang-dropdown" id="lang-dropdown"></div>
+            </div>
             <select class="model-select" id="header-model-select" style="flex:1;"></select>
             <button class="clear-btn" id="clear-session-btn">Clear</button>
         </div>
@@ -169,6 +180,133 @@
 <script>
 marked.use({ gfm: true, breaks: true });
 
+const I18n = {
+    _lang: localStorage.getItem('lang') || 'en',
+    _strings: {
+        en: {
+            retry: 'Retry', clear: 'Clear', send: 'Send', cancel: 'Cancel', ok: 'OK',
+            update: 'Update', rename: 'Rename', delete_: 'Delete', download: '⬇ Download',
+            newSession: '+ New Session', defaultSession: 'Default Session',
+            typePlaceholder: 'Type a message...', attachFile: 'Attach file',
+            ollamaEndpoint: 'Ollama Endpoint',
+            cannotConnect: 'Cannot connect to Ollama',
+            cannotConnectFull: 'Cannot connect to Ollama. Please ensure Ollama is running on localhost:11434',
+            cannotConnectTo: 'Cannot connect to ',
+            renameSession: 'Rename session', newSessionName: 'New session name',
+            deleteSession: 'Delete session',
+            deleteConfirm1: 'Delete "', deleteConfirm2: '"? This cannot be undone.',
+            clearSession: 'Clear session',
+            clearConfirm1: 'Clear all history in "', clearConfirm2: '"? This cannot be undone.',
+            confirm: 'Confirm', updating: 'Updating...',
+            unsupported1: 'Unsupported file: ', unsupported2: '. Supported: PDF, DOCX, XLSX, plain text, ',
+            noVision1: '⚠ ', noVision2: ' does not support images. Switch to a vision-capable model and send again.',
+            genKeywords: 'Generating search keywords...',
+            searchingWeb: 'Searching the web...',
+            synthesizing: 'Synthesizing results...',
+            waiting1: 'Waiting for ', waiting2: ' in thread "', waiting3: '" to answer...',
+            searchUnavail: '⚠ Web search unavailable — answering from model training data, which may be outdated.',
+        },
+        vi: {
+            retry: 'Thử lại', clear: 'Xóa', send: 'Gửi', cancel: 'Hủy', ok: 'OK',
+            update: 'Cập nhật', rename: 'Đổi tên', delete_: 'Xóa', download: '⬇ Tải về',
+            newSession: '+ Phiên mới', defaultSession: 'Phiên mặc định',
+            typePlaceholder: 'Nhập tin nhắn...', attachFile: 'Đính kèm tệp',
+            ollamaEndpoint: 'Điểm cuối Ollama',
+            cannotConnect: 'Không thể kết nối Ollama',
+            cannotConnectFull: 'Không thể kết nối Ollama. Hãy đảm bảo Ollama đang chạy trên localhost:11434',
+            cannotConnectTo: 'Không thể kết nối ',
+            renameSession: 'Đổi tên phiên', newSessionName: 'Tên phiên mới',
+            deleteSession: 'Xóa phiên',
+            deleteConfirm1: 'Xóa "', deleteConfirm2: '"? Không thể hoàn tác.',
+            clearSession: 'Xóa phiên',
+            clearConfirm1: 'Xóa toàn bộ lịch sử trong "', clearConfirm2: '"? Không thể hoàn tác.',
+            confirm: 'Xác nhận', updating: 'Đang cập nhật...',
+            unsupported1: 'Tệp không hỗ trợ: ', unsupported2: '. Hỗ trợ: PDF, DOCX, XLSX, văn bản, ',
+            noVision1: '⚠ ', noVision2: ' không hỗ trợ hình ảnh. Hãy chọn mô hình hỗ trợ hình ảnh và gửi lại.',
+            genKeywords: 'Đang tạo từ khóa tìm kiếm...',
+            searchingWeb: 'Đang tìm kiếm trên web...',
+            synthesizing: 'Đang tổng hợp kết quả...',
+            waiting1: 'Đang chờ ', waiting2: ' trong phiên "', waiting3: '" trả lời...',
+            searchUnavail: '⚠ Tìm kiếm web không khả dụng — trả lời từ dữ liệu huấn luyện, có thể đã lỗi thời.',
+        },
+        de: {
+            retry: 'Wiederholen', clear: 'Löschen', send: 'Senden', cancel: 'Abbrechen', ok: 'OK',
+            update: 'Aktualisieren', rename: 'Umbenennen', delete_: 'Löschen', download: '⬇ Herunterladen',
+            newSession: '+ Neue Sitzung', defaultSession: 'Standardsitzung',
+            typePlaceholder: 'Nachricht eingeben...', attachFile: 'Datei anhängen',
+            ollamaEndpoint: 'Ollama-Endpunkt',
+            cannotConnect: 'Verbindung zu Ollama fehlgeschlagen',
+            cannotConnectFull: 'Verbindung zu Ollama fehlgeschlagen. Stellen Sie sicher, dass Ollama auf localhost:11434 läuft',
+            cannotConnectTo: 'Verbindung fehlgeschlagen: ',
+            renameSession: 'Sitzung umbenennen', newSessionName: 'Neuer Sitzungsname',
+            deleteSession: 'Sitzung löschen',
+            deleteConfirm1: '"', deleteConfirm2: '" löschen? Dies kann nicht rückgängig gemacht werden.',
+            clearSession: 'Sitzung leeren',
+            clearConfirm1: 'Gesamten Verlauf in "', clearConfirm2: '" löschen? Dies kann nicht rückgängig gemacht werden.',
+            confirm: 'Bestätigen', updating: 'Aktualisierung...',
+            unsupported1: 'Nicht unterstützte Datei: ', unsupported2: '. Unterstützt: PDF, DOCX, XLSX, Text, ',
+            noVision1: '⚠ ', noVision2: ' unterstützt keine Bilder. Wählen Sie ein bildtaugliches Modell und senden Sie erneut.',
+            genKeywords: 'Suchbegriffe werden generiert...',
+            searchingWeb: 'Websuche läuft...',
+            synthesizing: 'Ergebnisse werden zusammengefasst...',
+            waiting1: 'Warte auf ', waiting2: ' in Sitzung "', waiting3: '"...',
+            searchUnavail: '⚠ Websuche nicht verfügbar — Antwort basiert auf Trainingsdaten, möglicherweise veraltet.',
+        },
+        es: {
+            retry: 'Reintentar', clear: 'Limpiar', send: 'Enviar', cancel: 'Cancelar', ok: 'OK',
+            update: 'Actualizar', rename: 'Renombrar', delete_: 'Eliminar', download: '⬇ Descargar',
+            newSession: '+ Nueva sesión', defaultSession: 'Sesión predeterminada',
+            typePlaceholder: 'Escribe un mensaje...', attachFile: 'Adjuntar archivo',
+            ollamaEndpoint: 'Punto de acceso Ollama',
+            cannotConnect: 'No se puede conectar a Ollama',
+            cannotConnectFull: 'No se puede conectar a Ollama. Asegúrese de que Ollama esté ejecutándose en localhost:11434',
+            cannotConnectTo: 'No se puede conectar a ',
+            renameSession: 'Renombrar sesión', newSessionName: 'Nombre de nueva sesión',
+            deleteSession: 'Eliminar sesión',
+            deleteConfirm1: '¿Eliminar "', deleteConfirm2: '"? Esto no se puede deshacer.',
+            clearSession: 'Limpiar sesión',
+            clearConfirm1: '¿Borrar todo el historial en "', clearConfirm2: '"? Esto no se puede deshacer.',
+            confirm: 'Confirmar', updating: 'Actualizando...',
+            unsupported1: 'Archivo no compatible: ', unsupported2: '. Compatible: PDF, DOCX, XLSX, texto, ',
+            noVision1: '⚠ ', noVision2: ' no admite imágenes. Seleccione un modelo con visión y envíe de nuevo.',
+            genKeywords: 'Generando palabras clave...',
+            searchingWeb: 'Buscando en la web...',
+            synthesizing: 'Sintetizando resultados...',
+            waiting1: 'Esperando a ', waiting2: ' en hilo "', waiting3: '" para responder...',
+            searchUnavail: '⚠ Búsqueda web no disponible — respondiendo con datos de entrenamiento, pueden estar desactualizados.',
+        },
+        fr: {
+            retry: 'Réessayer', clear: 'Effacer', send: 'Envoyer', cancel: 'Annuler', ok: 'OK',
+            update: 'Mettre à jour', rename: 'Renommer', delete_: 'Supprimer', download: '⬇ Télécharger',
+            newSession: '+ Nouvelle session', defaultSession: 'Session par défaut',
+            typePlaceholder: 'Tapez un message...', attachFile: 'Joindre un fichier',
+            ollamaEndpoint: 'Point d\'accès Ollama',
+            cannotConnect: 'Connexion à Ollama impossible',
+            cannotConnectFull: 'Connexion à Ollama impossible. Assurez-vous qu\'Ollama fonctionne sur localhost:11434',
+            cannotConnectTo: 'Connexion impossible à ',
+            renameSession: 'Renommer la session', newSessionName: 'Nom de la nouvelle session',
+            deleteSession: 'Supprimer la session',
+            deleteConfirm1: 'Supprimer "', deleteConfirm2: '" ? Cette action est irréversible.',
+            clearSession: 'Effacer la session',
+            clearConfirm1: 'Effacer tout l\'historique de "', clearConfirm2: '" ? Cette action est irréversible.',
+            confirm: 'Confirmer', updating: 'Mise à jour...',
+            unsupported1: 'Fichier non pris en charge : ', unsupported2: '. Pris en charge : PDF, DOCX, XLSX, texte, ',
+            noVision1: '⚠ ', noVision2: ' ne prend pas en charge les images. Sélectionnez un modèle compatible et réessayez.',
+            genKeywords: 'Génération des mots-clés...',
+            searchingWeb: 'Recherche sur le web...',
+            synthesizing: 'Synthèse des résultats...',
+            waiting1: 'En attente de ', waiting2: ' dans le fil "', waiting3: '"...',
+            searchUnavail: '⚠ Recherche web indisponible — réponse basée sur les données d\'entraînement, potentiellement obsolètes.',
+        }
+    },
+    t: function(key) { return (this._strings[this._lang] || this._strings.en)[key] || this._strings.en[key] || key; },
+    setLang: function(lang) { this._lang = lang; localStorage.setItem('lang', lang); },
+    get lang() { return this._lang; },
+    flags: { en: '🇬🇧', vi: '🇻🇳', de: '🇩🇪', es: '🇪🇸', fr: '🇫🇷' },
+    names: { en: 'English', vi: 'Tiếng Việt', de: 'Deutsch', es: 'Español', fr: 'Français' }
+};
+function t(key) { return I18n.t(key); }
+
 function syslog(msg) {
     fetch('/log', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({msg}) }).catch(()=>{});
 }
@@ -194,7 +332,7 @@ const Modal = {
         document.getElementById('modal-message').textContent = message;
         const input = document.getElementById('modal-input');
         const okBtn = document.getElementById('modal-ok');
-        okBtn.textContent = okLabel || 'OK';
+        okBtn.textContent = okLabel || t('ok');
         okBtn.className = 'modal-btn ' + (danger ? 'modal-btn-danger' : 'modal-btn-ok');
         if (inputDefault !== null) {
             input.style.display = 'block';
@@ -214,7 +352,7 @@ const Modal = {
     },
 
     confirm: function(title, message, okLabel) {
-        return this._open(title, message, null, okLabel || 'Confirm', true);
+        return this._open(title, message, null, okLabel || t('confirm'), true);
     },
 
     prompt: function(title, defaultValue) {
@@ -500,6 +638,44 @@ const UIManager = {
         overlay.addEventListener('click', closeSidebar);
         document.getElementById('message-input').addEventListener('focus', function() { if (isMobile()) closeSidebar(); });
         if (window.innerWidth <= 768) closeSidebar();
+
+        // Language switcher
+        var langFlag = document.getElementById('lang-flag');
+        var langDropdown = document.getElementById('lang-dropdown');
+        Object.keys(I18n.names).forEach(function(code) {
+            var btn = document.createElement('button');
+            btn.className = 'lang-option';
+            btn.dataset.lang = code;
+            btn.textContent = I18n.flags[code] + '  ' + I18n.names[code];
+            btn.addEventListener('click', function() {
+                I18n.setLang(code);
+                applyLanguage();
+                langDropdown.classList.remove('open');
+            });
+            langDropdown.appendChild(btn);
+        });
+        langFlag.addEventListener('click', function(e) {
+            e.stopPropagation();
+            langDropdown.classList.toggle('open');
+        });
+        document.addEventListener('click', function() { langDropdown.classList.remove('open'); });
+        function applyLanguage() {
+            langFlag.textContent = I18n.flags[I18n.lang];
+            langDropdown.querySelectorAll('.lang-option').forEach(function(el) {
+                el.classList.toggle('active', el.dataset.lang === I18n.lang);
+            });
+            document.getElementById('new-session-btn').textContent = t('newSession');
+            document.getElementById('endpoint-label').textContent = t('ollamaEndpoint');
+            document.getElementById('endpoint-update-btn').textContent = t('update');
+            document.getElementById('clear-session-btn').textContent = t('clear');
+            document.getElementById('message-input').placeholder = t('typePlaceholder');
+            document.getElementById('send-btn').textContent = t('send');
+            document.getElementById('attach-btn').title = t('attachFile');
+            document.getElementById('error-message').textContent = t('cannotConnect');
+            document.querySelector('#error-banner button').textContent = t('retry');
+            document.getElementById('modal-cancel').textContent = t('cancel');
+        }
+        applyLanguage();
         if (window.visualViewport) {
             window.visualViewport.addEventListener('resize', function() {
                 document.documentElement.style.height = window.visualViewport.height + 'px';
@@ -550,14 +726,14 @@ const UIManager = {
             const models = await OllamaAPI.fetchModels();
             this.populateModelSelects(models);
         } catch (e) {
-            this.showError('Cannot connect to Ollama. Please ensure Ollama is running on localhost:11434');
+            this.showError(t('cannotConnectFull'));
         }
 
         try {
             const sessions = await SessionStore.getSessions();
             if (sessions.length === 0) {
                 const model = document.getElementById('header-model-select').value;
-                const defaultSession = await SessionStore.createSession('Default Session', model);
+                const defaultSession = await SessionStore.createSession(t('defaultSession'), model);
                 await SessionStore.setCurrentSessionId(defaultSession.id);
                 this.currentSession = defaultSession;
             } else {
@@ -607,11 +783,11 @@ const UIManager = {
 
             const editBtn = document.createElement('button');
             editBtn.className = 'session-btn session-btn-edit';
-            editBtn.title = 'Rename';
+            editBtn.title = t('rename');
             editBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>';
             editBtn.addEventListener('click', async function(e) {
                 e.stopPropagation();
-                const newName = await Modal.prompt('Rename session', s.name);
+                const newName = await Modal.prompt(t('renameSession'), s.name);
                 if (!newName || !newName.trim() || newName === s.name) return;
                 s.name = newName;
                 await SessionStore.updateSession(s);
@@ -621,11 +797,11 @@ const UIManager = {
 
             const delBtn = document.createElement('button');
             delBtn.className = 'session-btn session-btn-delete';
-            delBtn.title = 'Delete';
+            delBtn.title = t('delete_');
             delBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>';
             delBtn.addEventListener('click', async function(e) {
                 e.stopPropagation();
-                const ok = await Modal.confirm('Delete session', 'Delete "' + s.name + '"? This cannot be undone.', 'Delete');
+                const ok = await Modal.confirm(t('deleteSession'), t('deleteConfirm1') + s.name + t('deleteConfirm2'), t('delete_'));
                 if (!ok) return;
                 await SessionStore.deleteSession(s.id);
                 if (self.currentSession.id === s.id) {
@@ -864,7 +1040,7 @@ const UIManager = {
                 var officeFormat = (!isImage && !isText && !isPdf) ? await self.detectDocxOrXlsx(file) : null;
 
                 if (!isImage && !isText && !isPdf && !officeFormat) {
-                    self.setStatus('Unsupported file: ' + file.name + '. Supported: PDF, DOCX, XLSX, plain text, ' + IMAGE_EXTS.join('/') + '.');
+                    self.setStatus(t('unsupported1') + file.name + t('unsupported2') + IMAGE_EXTS.join('/') + '.');
                     setTimeout(function() { self.setStatus(''); }, 4000);
                     continue;
                 }
@@ -945,7 +1121,7 @@ const UIManager = {
         AppConfig.saveOllamaEndpoint(url);
         const btn = document.getElementById('endpoint-update-btn');
         btn.disabled = true;
-        btn.textContent = 'Updating...';
+        btn.textContent = t('updating');
         try {
             const models = await OllamaAPI.fetchModels();
             const currentModel = this.currentSession ? this.currentSession.model : null;
@@ -957,16 +1133,16 @@ const UIManager = {
                 this.switchModel(models[0].name);
             }
         } catch (e) {
-            this.showError('Cannot connect to ' + url);
+            this.showError(t('cannotConnectTo') + url);
         } finally {
             btn.disabled = false;
-            btn.textContent = 'Update';
+            btn.textContent = t('update');
         }
     },
 
     clearSession: async function() {
         if (!this.currentSession) return;
-        const ok = await Modal.confirm('Clear session', 'Clear all history in "' + this.currentSession.name + '"? This cannot be undone.', 'Clear');
+        const ok = await Modal.confirm(t('clearSession'), t('clearConfirm1') + this.currentSession.name + t('clearConfirm2'), t('clear'));
         if (!ok) return;
         this.currentSession.messages = [];
         this.currentSession.context = { summary: null, summaryUpToIndex: -1 };
@@ -977,7 +1153,7 @@ const UIManager = {
     },
 
     createNewSession: async function() {
-        const name = await Modal.prompt('New session name', 'New Session');
+        const name = await Modal.prompt(t('newSessionName'), t('defaultSession'));
         if (!name || !name.trim()) return;
         const currentModel = document.getElementById('header-model-select').value;
         const session = await SessionStore.createSession(name, currentModel);
@@ -1118,7 +1294,7 @@ const UIManager = {
 
         // Check vision capability before touching any state
         if (imagesForAPI.length > 0 && !(await OllamaAPI.hasVision(this.currentSession.model))) {
-            this.setStatus('⚠ ' + this.currentSession.model + ' does not support images. Switch to a vision-capable model and send again.');
+            this.setStatus(t('noVision1') + this.currentSession.model + t('noVision2'));
             setTimeout(function() { self.setStatus(''); }, 6000);
             return;
         }
@@ -1151,15 +1327,15 @@ const UIManager = {
         const cleanedContent = content;
         syslog('[SEND] user="' + content.slice(0, 120) + '" needsWebSearch=' + needsWebSearch + ' cleanedQuery="' + cleanedContent + '"');
         if (AppConfig.searxngUrl && needsWebSearch) {
-            this.setStatus('Generating search keywords...');
+            this.setStatus(t('genKeywords'));
             const keywords = await this.getSearchKeywords(cleanedContent);
             syslog('[KEYWORDS] result="' + keywords + '"');
             if (keywords) {
-                this.setStatus('Searching the web...');
+                this.setStatus(t('searchingWeb'));
                 const results = await this.searchWeb(keywords);
                 syslog('[SEARCH] got results: ' + (results ? results.slice(0, 200) : 'null'));
                 if (results) {
-                    this.setStatus('Synthesizing results...');
+                    this.setStatus(t('synthesizing'));
                     const today = new Date().toDateString();
                     const synthesis = await this.synthesizeResults(cleanedContent, keywords, results, today);
                     syslog('[SYNTHESIS] ' + synthesis);
@@ -1171,11 +1347,11 @@ const UIManager = {
                     syslog('[INJECT] synthesized results injected into context');
                 } else {
                     syslog('[SEARCH] fallback: search returned no results');
-                    assistantDiv.innerHTML = '<em style="color:#d0a050;">⚠ Web search unavailable — answering from model training data, which may be outdated.</em><br><br>';
+                    assistantDiv.innerHTML = '<em style="color:#d0a050;">' + t('searchUnavail') + '</em><br><br>';
                 }
             }
         }
-        this.setStatus('Waiting for ' + this.currentSession.model + ' to answer...');
+        this.setStatus(t('waiting1') + this.currentSession.model + t('waiting2') + this.currentSession.name + t('waiting3'));
 
         let assistantContent = '';
         const searchWarning = assistantDiv.innerHTML;
