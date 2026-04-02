@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, interactive-widget=resizes-content">
     <title>DMH-AI</title>
     <link rel="icon" type="image/png" href="/logo.png">
     <script src="/marked.min.js"></script>
@@ -15,9 +15,10 @@
     </script>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #141018; color: #eee; height: 100vh; display: flex; }
+        html { height: 100%; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #141018; color: #eee; height: 100%; height: 100dvh; display: flex; overflow: hidden; }
         .sidebar { width: 280px; background: #1c1628; padding: 20px; display: flex; flex-direction: column; border-right: 1px solid #281e38; }
-        .main { flex: 1; display: flex; flex-direction: column; }
+        .main { flex: 1; display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
         .header { padding: 20px; background: #281e38; border-bottom: 1px solid #141018; }
         .model-select { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #141018; background: #141018; color: #eee; font-size: 14px; }
         .sessions-list { flex: 1; overflow-y: auto; margin-top: 20px; }
@@ -106,6 +107,12 @@
             .sidebar { position: fixed; left: 0; top: 0; bottom: 0; z-index: 50; }
             .sidebar.collapsed { left: -280px; }
             .message { max-width: 95%; }
+            .main { position: fixed; inset: 0; display: flex; flex-direction: column; height: 100%; height: 100dvh; }
+            .header { flex-shrink: 0; padding: 10px; }
+            .chat-container { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+            .input-area { flex-shrink: 0; padding: 10px; }
+            .status-bar { flex-shrink: 0; }
+            .attachments-bar { flex-shrink: 0; }
         }
     </style>
 </head>
@@ -493,6 +500,13 @@ const UIManager = {
         overlay.addEventListener('click', closeSidebar);
         document.getElementById('message-input').addEventListener('focus', function() { if (isMobile()) closeSidebar(); });
         if (window.innerWidth <= 768) closeSidebar();
+        if (window.visualViewport) {
+            window.visualViewport.addEventListener('resize', function() {
+                document.documentElement.style.height = window.visualViewport.height + 'px';
+                var chat = document.getElementById('chat-container');
+                chat.scrollTop = chat.scrollHeight;
+            });
+        }
         document.getElementById('new-session-btn').addEventListener('click', function() { self.createNewSession(); });
         document.getElementById('endpoint-update-btn').addEventListener('click', function() { self.updateEndpoint(); });
         document.getElementById('endpoint-input').addEventListener('keydown', function(e) { if (e.key === 'Enter') self.updateEndpoint(); });
@@ -994,6 +1008,23 @@ const UIManager = {
         document.getElementById('status-bar').classList.toggle('visible', !!text);
     },
 
+    detectWebSearch: async function(userMessage) {
+        try {
+            const res = await fetch(OllamaAPI.BASE_URL + '/generate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    model: this.currentSession.model,
+                    stream: false,
+                    options: { temperature: 0, num_predict: 4 },
+                    prompt: 'Does this message ask to search the web/internet for current information? Answer only YES or NO.\n\nMessage: ' + userMessage + '\n\nAnswer:'
+                })
+            });
+            const data = await res.json();
+            return /^yes/i.test((data.response || '').trim());
+        } catch (e) { return false; }
+    },
+
     getSearchKeywords: async function(userMessage) {
         try {
             const res = await fetch(OllamaAPI.BASE_URL + '/generate', {
@@ -1116,9 +1147,8 @@ const UIManager = {
 
         let apiMessages = prepareForAPI(ContextManager.buildContextMessages(this.currentSession));
         apiMessages[apiMessages.length - 1] = userMsgForAPI;
-        const searchTriggerPattern = /\b(search|find)\b.{0,40}\b(web|internet|online)\b|\b(web|internet|online)\b.{0,40}\b(search|find)\b/i;
-        const needsWebSearch = searchTriggerPattern.test(content);
-        const cleanedContent = needsWebSearch ? content.replace(searchTriggerPattern, '').replace(/^[\s,;.]+|[\s,;.]+$/g, '').trim() : content;
+        const needsWebSearch = await this.detectWebSearch(content);
+        const cleanedContent = content;
         syslog('[SEND] user="' + content.slice(0, 120) + '" needsWebSearch=' + needsWebSearch + ' cleanedQuery="' + cleanedContent + '"');
         if (AppConfig.searxngUrl && needsWebSearch) {
             this.setStatus('Generating search keywords...');
