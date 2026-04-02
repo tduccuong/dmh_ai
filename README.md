@@ -1,6 +1,6 @@
 # DMH-AI
 
-A lightweight, self-hosted chat UI for Ollama running on your local machine. Runs entirely in Docker — no Node.js, no Python dependencies, no cloud.
+A lightweight, self-hosted chat UI for Ollama running on your local machine. Runs entirely in Docker — no Node.js, no Python dependencies.
 
 ## Screenshots
 
@@ -9,48 +9,86 @@ A lightweight, self-hosted chat UI for Ollama running on your local machine. Run
 
 ## Features
 
-- Chat with any locally running Ollama model via a clean browser UI
+- **Built-in web search** — like Perplexity, but self-hosted and private. DMH-AI automatically detects when your question needs current information, searches the web via a bundled SearXNG instance, and synthesizes the results into a coherent, sourced answer. Works in any language.
+- Chat with any Ollama model — cloud or local — via a clean browser UI
+- File and image attachments (paste from clipboard or upload): PDF, DOCX, XLSX, text, images
 - Persistent chat sessions stored in SQLite
-- File and image attachments (paste from clipboard or upload)
-- Markdown rendering for assistant responses
 - Rolling context summarization — chat forever without hitting context limits
-- Automatic web search via a bundled SearXNG instance for current information
+- Markdown rendering for assistant responses
 - Multi-language UI: English, Vietnamese, German, Spanish, French
-- Fully offline-capable deployment artifact
+- Accessible from any device on your network
 
 ## Requirements
 
 - [Docker](https://docs.docker.com/get-docker/) with Compose plugin
-- Ollama running locally on port 11434
+- [Ollama](https://ollama.com/download) running locally on port 11434
 
-## Step 1 — Install Ollama
+### Install Ollama
 
 **Linux:**
 ```bash
 curl -fsSL https://ollama.com/install.sh | sh
 ```
 
-**Windows:** 
+**Windows:**
 Download and run the installer from [ollama.com/download](https://ollama.com/download)
 
 Verify it works:
-
-**Linux:**
 ```bash
 ollama --version
 ```
 
-**Windows:** 
-Open **Command Prompt** (press the Windows key, type `cmd`, press Enter) and run:
-```
-ollama --version
-```
+## Step 1 — Choose Your Models
 
-## Step 2 — Pull a Model
+DMH-AI works with both **cloud models** (recommended for most users) and **local models** (for privacy-first use cases). You can mix and match — switch between them freely in the UI.
 
-DMH-AI works with any Ollama model. Recommended models by use case:
+---
+
+### Option A: Cloud Models (recommended)
+
+**Best for most users.** Ollama's cloud models are fast, powerful, and free to use with generous limits on the free tier. Inference runs on Ollama's servers and streams through your local Ollama instance — no GPU required, no configuration changes in DMH-AI.
+
+**Our top recommendation:**
+
+| Model | Why |
+|---|---|
+| `mistral-large-3:675b-cloud` | Best all-rounder — fast, vision-capable (analyzes images), excellent at general-purpose chat, coding, reasoning, and multilingual support |
+| `ministral-3:14b-cloud` | Medium size, good all-rounder - extremely fast and also vision-capable |
+
+Other cloud models worth trying:
+
+| Model | Notes |
+|---|---|
+| `qwen3.5:cloud` | Strong multilingual and reasoning |
+| `gemini-3-flash-preview:cloud` | Google's flag-ship model, deep reasoning and very fast |
+
+**How to set up:**
+
+1. **Create a free Ollama account** at [ollama.com](https://ollama.com) — click **Sign Up**.
+
+2. **Connect your local Ollama to your account:**
+   ```bash
+   ollama login
+   ```
+   This opens a browser window to authenticate. Once logged in, your local Ollama instance is linked to your account.
+
+3. **Pull a cloud model:**
+   ```bash
+   ollama pull mistral-large-3:675b-cloud
+   ```
+
+That's it. The model appears in DMH-AI's dropdown immediately — select it and start chatting.
+
+Cloud models are identified by the `:cloud` tag. They require an internet connection but place zero load on your local hardware.
+
+---
+
+### Option B: Local Models (fully offline, maximum privacy)
+
+**Best if privacy is your top concern.** All data stays on your machine — nothing leaves your network. Requires enough RAM/VRAM to run the model.
 
 **Text and documents (fast, low memory):**
+
 | Model | Size | Notes |
 |---|---|---|
 | `gemma3n:e2b` | ~5.6 GB | Best small multi-lang general-purpose model |
@@ -58,28 +96,23 @@ DMH-AI works with any Ollama model. Recommended models by use case:
 | `granite4:3b` | ~2.1 GB | Strong reasoning and fast |
 
 **Images and vision:**
+
 | Model | Size | Notes |
 |---|---|---|
 | `ministral-3:3b` | ~3 GB | Supports image input, also good at general-purpose and fast |
 
-**Linux:**
+**Pull a local model:**
 ```bash
-# Pull one or more models
-ollama pull ministral-3:3b
-ollama pull phi4-mini:3.8b
+ollama pull mistral-3:3b
+```
 
-# Start Ollama (if not already running as a service)
+On Linux, start Ollama if it's not already running as a service:
+```bash
 ollama serve
 ```
+On Windows, Ollama starts automatically — no need to run `ollama serve`.
 
-**Windows** — in Command Prompt:
-```
-ollama pull ministral-3:3b
-ollama pull phi4-mini:3.8b
-```
-Ollama starts automatically on Windows — no need to run `ollama serve`.
-
-## Step 3 — Install Docker
+## Step 2 — Install Docker
 
 **Linux:**
 ```bash
@@ -88,7 +121,7 @@ curl -fsSL https://get.docker.com | sh
 
 **Windows:** Download and run **Docker Desktop** from [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop/). After installing, open Docker Desktop and wait for it to finish starting (the whale icon in the taskbar will stop animating).
 
-## Step 4 — Run DMH-AI
+## Step 3 — Run DMH-AI
 
 **Linux:**
 ```bash
@@ -100,31 +133,27 @@ curl -fsSL https://get.docker.com | sh
 build.bat && dist\run.bat
 ```
 
+Open [http://localhost:8080](http://localhost:8080) in your browser. Other devices on your network can access it at `http://<your-machine-ip>:8080`.
+
 User data persists in:
+- `dist/db/` — SQLite chat database
 - `dist/user_assets/` — uploaded files, organized by session
 - `dist/system_logs/system.log` — web search and system trace log
-- Docker named volume `dmh-ai-data` — SQLite chat database
 
-## Using Ollama Cloud Models (if local inference is too slow)
+To migrate to another machine, copy the entire `dist/` folder — all data comes with it.
 
-If your machine is too slow for local models, you can use Ollama's cloud-hosted models through the same local Ollama endpoint — no changes to DMH-AI required.
+## Web Search — Your Own Self-Hosted Perplexity
 
-1. Register a free account at [ollama.com](https://ollama.com)
-2. Log in via the CLI:
-   ```bash
-   ollama login
-   ```
-3. Pull a cloud model:
-   ```bash
-   ollama pull qwen3.5:cloud
-   ```
-4. Select the model in DMH-AI and start chatting — inference runs in the cloud, results stream through your local Ollama instance as normal.
+DMH-AI includes a built-in web search pipeline similar to what Perplexity, ChatGPT Search, and Google Gemini offer — but fully self-hosted and private.
 
-Cloud models are identified by the `:cloud` tag. They require an internet connection and an Ollama account but place no load on your local hardware.
+**How it works:**
 
-## Web Search
+1. You ask a question in any language
+2. The LLM judges whether your question needs live web data (no hardcoded keywords — it understands intent)
+3. If yes, DMH-AI extracts search keywords, queries the bundled SearXNG search engine, and retrieves the top results
+4. The LLM synthesizes the search results into a coherent, well-structured answer grounded in current information
 
-DMH-AI uses the LLM itself to detect when a question requires up-to-date information from the web. This works in any language — the model judges the user's intent, not keyword patterns. When a web search is needed, it silently queries a bundled SearXNG search engine, then synthesizes the live results with its own knowledge.
+All of this happens automatically and transparently — you just ask your question and get an up-to-date answer. No API keys, no subscriptions, no data leaving your network (search queries go through your self-hosted SearXNG instance).
 
 ## Architecture
 
