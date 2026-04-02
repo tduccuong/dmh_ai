@@ -15,6 +15,7 @@ A lightweight, self-hosted chat UI for Ollama running on your local machine. Run
 - Markdown rendering for assistant responses
 - Rolling context summarization — chat forever without hitting context limits
 - Automatic web search via a bundled SearXNG instance for current information
+- Multi-language UI: English, Vietnamese, German, Spanish, French
 - Fully offline-capable deployment artifact
 
 ## Requirements
@@ -123,7 +124,7 @@ Cloud models are identified by the `:cloud` tag. They require an internet connec
 
 ## Web Search
 
-DMH-AI automatically detects when a question contains patterns like "web", "internet", "search", "find", etc and silently queries a bundled SearXNG search engine before answering. The model synthesizes the live results with its own knowledge.
+DMH-AI uses the LLM itself to detect when a question requires up-to-date information from the web. This works in any language — the model judges the user's intent, not keyword patterns. When a web search is needed, it silently queries a bundled SearXNG search engine, then synthesizes the live results with its own knowledge.
 
 ## Architecture
 

@@ -49,8 +49,8 @@
         .spinner { width: 14px; height: 14px; border: 2px solid #b098b8; border-top-color: #c87830; border-radius: 50%; flex-shrink: 0;
             animation: spin 0.8s linear infinite; }
         @keyframes spin { to { transform: rotate(360deg); } }
-        .error-banner { background: #c0392b; color: white; padding: 15px 20px; text-align: center; display: none; }
-        .error-banner button { background: white; color: #c0392b; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; margin-left: 15px; font-weight: 600; }
+        .error-banner { width: 100%; background: #c0392b; color: white; padding: 10px 20px; text-align: center; display: none; font-size: 14px; flex-shrink: 0; }
+        .error-banner button { background: white; color: #c0392b; border: none; padding: 6px 14px; border-radius: 6px; cursor: pointer; margin-left: 15px; font-weight: 600; font-size: 13px; }
         .endpoint-section { padding-top: 14px; margin-top: 14px; border-top: 1px solid #382850; }
         .endpoint-label { font-size: 11px; color: #b098b8; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; display: block; }
         .endpoint-input { width: 100%; padding: 8px 10px; border-radius: 6px; border: 1px solid #483868; background: #1c1828; color: #eee; font-size: 12px; }
@@ -124,10 +124,6 @@
     </style>
 </head>
 <body>
-    <div class="error-banner" id="error-banner">
-        <span id="error-message">Cannot connect to Ollama</span>
-        <button onclick="location.reload()">Retry</button>
-    </div>
     <div class="sidebar-overlay" id="sidebar-overlay"></div>
     <div class="sidebar" id="sidebar">
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:15px;">
@@ -143,6 +139,10 @@
         </div>
     </div>
     <div class="main">
+        <div class="error-banner" id="error-banner">
+            <span id="error-message">Cannot connect to Ollama</span>
+            <button onclick="location.reload()">Retry</button>
+        </div>
         <div class="header" style="display:flex;gap:6px;align-items:stretch;">
             <img id="header-logo" src="/logo.png" style="display:none;height:36px;width:36px;border-radius:4px;object-fit:contain;flex-shrink:0;align-self:center;">
             <button class="sidebar-toggle" id="sidebar-toggle">☰</button>
@@ -190,7 +190,7 @@ const I18n = {
             typePlaceholder: 'Type a message...', attachFile: 'Attach file',
             ollamaEndpoint: 'Ollama Endpoint',
             cannotConnect: 'Cannot connect to Ollama',
-            cannotConnectFull: 'Cannot connect to Ollama. Please ensure Ollama is running on localhost:11434',
+            cannotConnectFull: 'Cannot connect to Ollama. Please correct Ollama URL endpoint.',
             cannotConnectTo: 'Cannot connect to ',
             renameSession: 'Rename session', newSessionName: 'New session name',
             deleteSession: 'Delete session',
@@ -213,7 +213,7 @@ const I18n = {
             typePlaceholder: 'Nhập tin nhắn...', attachFile: 'Đính kèm tệp',
             ollamaEndpoint: 'Điểm cuối Ollama',
             cannotConnect: 'Không thể kết nối Ollama',
-            cannotConnectFull: 'Không thể kết nối Ollama. Hãy đảm bảo Ollama đang chạy trên localhost:11434',
+            cannotConnectFull: 'Không thể kết nối Ollama. Vui lòng kiểm tra lại URL endpoint của Ollama.',
             cannotConnectTo: 'Không thể kết nối ',
             renameSession: 'Đổi tên phiên', newSessionName: 'Tên phiên mới',
             deleteSession: 'Xóa phiên',
@@ -236,7 +236,7 @@ const I18n = {
             typePlaceholder: 'Nachricht eingeben...', attachFile: 'Datei anhängen',
             ollamaEndpoint: 'Ollama-Endpunkt',
             cannotConnect: 'Verbindung zu Ollama fehlgeschlagen',
-            cannotConnectFull: 'Verbindung zu Ollama fehlgeschlagen. Stellen Sie sicher, dass Ollama auf localhost:11434 läuft',
+            cannotConnectFull: 'Verbindung zu Ollama fehlgeschlagen. Bitte überprüfen Sie die Ollama-URL-Endpunkt.',
             cannotConnectTo: 'Verbindung fehlgeschlagen: ',
             renameSession: 'Sitzung umbenennen', newSessionName: 'Neuer Sitzungsname',
             deleteSession: 'Sitzung löschen',
@@ -259,7 +259,7 @@ const I18n = {
             typePlaceholder: 'Escribe un mensaje...', attachFile: 'Adjuntar archivo',
             ollamaEndpoint: 'Punto de acceso Ollama',
             cannotConnect: 'No se puede conectar a Ollama',
-            cannotConnectFull: 'No se puede conectar a Ollama. Asegúrese de que Ollama esté ejecutándose en localhost:11434',
+            cannotConnectFull: 'No se puede conectar a Ollama. Verifique la URL del endpoint de Ollama.',
             cannotConnectTo: 'No se puede conectar a ',
             renameSession: 'Renombrar sesión', newSessionName: 'Nombre de nueva sesión',
             deleteSession: 'Eliminar sesión',
@@ -282,7 +282,7 @@ const I18n = {
             typePlaceholder: 'Tapez un message...', attachFile: 'Joindre un fichier',
             ollamaEndpoint: 'Point d\'accès Ollama',
             cannotConnect: 'Connexion à Ollama impossible',
-            cannotConnectFull: 'Connexion à Ollama impossible. Assurez-vous qu\'Ollama fonctionne sur localhost:11434',
+            cannotConnectFull: 'Connexion à Ollama impossible. Veuillez vérifier l\'URL du endpoint Ollama.',
             cannotConnectTo: 'Connexion impossible à ',
             renameSession: 'Renommer la session', newSessionName: 'Nom de la nouvelle session',
             deleteSession: 'Supprimer la session',
