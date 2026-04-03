@@ -17,4 +17,6 @@ mkdir -p "$SCRIPT_DIR/system_logs"
 
 echo "Starting DMH-AI..."
 docker-compose -f "$SCRIPT_DIR/docker-compose.yml" up -d
-echo "Running. Visit http://localhost:8080"
+echo "Running."
+echo "  http://localhost:8080  — standard"
+echo "  https://localhost:8443 — HTTPS (accept cert warning once; required for voice input)"

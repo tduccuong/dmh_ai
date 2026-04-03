@@ -236,9 +236,10 @@ const I18n = {
             waiting1: 'Waiting for ', waiting2: ' in thread "', waiting3: '" to answer...',
             searchUnavail: '⚠ Web search unavailable — answering from model training data, which may be outdated.',
             attaching: 'Preparing attachment...',
-            voiceListening: 'Listening... tap to stop',
+            voiceListening: 'Recording... tap to stop',
             voiceNotSupported: 'Voice input not supported in this browser',
-            voiceHttpError: 'Voice input requires HTTPS. Use the microphone button on your keyboard instead.',
+            voiceHttpError: 'Voice input requires HTTPS. Access the app on port 8443 to enable it.',
+            voiceEmpty: 'Nothing was recognized. To record in a different language, tap the flag button to switch language first. Currently listening in ',
         },
         vi: {
             retry: 'Thử lại', clear: 'Xóa', send: 'Gửi', cancel: 'Hủy', ok: 'OK',
@@ -263,9 +264,10 @@ const I18n = {
             waiting1: 'Đang chờ ', waiting2: ' trong phiên "', waiting3: '" trả lời...',
             searchUnavail: '⚠ Tìm kiếm web không khả dụng — trả lời từ dữ liệu huấn luyện, có thể đã lỗi thời.',
             attaching: 'Đang chuẩn bị tệp đính kèm...',
-            voiceListening: 'Đang nghe... nhấn để dừng',
+            voiceListening: 'Đang ghi âm... nhấn để dừng',
             voiceNotSupported: 'Trình duyệt này không hỗ trợ nhập giọng nói',
-            voiceHttpError: 'Nhập giọng nói yêu cầu HTTPS. Hãy dùng nút micro trên bàn phím thay thế.',
+            voiceHttpError: 'Nhập giọng nói yêu cầu HTTPS. Truy cập ứng dụng qua cổng 8443 để sử dụng.',
+            voiceEmpty: 'Không nhận ra giọng nói. Để ghi âm bằng ngôn ngữ khác, nhấn nút cờ để chọn ngôn ngữ trước. Hiện đang nghe bằng ',
         },
         de: {
             retry: 'Wiederholen', clear: 'Löschen', send: 'Senden', cancel: 'Abbrechen', ok: 'OK',
@@ -290,9 +292,10 @@ const I18n = {
             waiting1: 'Warte auf ', waiting2: ' in Sitzung "', waiting3: '"...',
             searchUnavail: '⚠ Websuche nicht verfügbar — Antwort basiert auf Trainingsdaten, möglicherweise veraltet.',
             attaching: 'Anhang wird vorbereitet...',
-            voiceListening: 'Zuhören... tippen zum Stoppen',
+            voiceListening: 'Aufnahme... tippen zum Stoppen',
             voiceNotSupported: 'Spracheingabe in diesem Browser nicht unterstützt',
-            voiceHttpError: 'Spracheingabe erfordert HTTPS. Nutzen Sie stattdessen die Mikrofontaste auf Ihrer Tastatur.',
+            voiceHttpError: 'Spracheingabe erfordert HTTPS. Öffnen Sie die App über Port 8443.',
+            voiceEmpty: 'Nichts erkannt. Um in einer anderen Sprache aufzunehmen, tippen Sie zuerst auf die Flagge. Aktuell wird gehört auf ',
         },
         es: {
             retry: 'Reintentar', clear: 'Limpiar', send: 'Enviar', cancel: 'Cancelar', ok: 'OK',
@@ -317,9 +320,10 @@ const I18n = {
             waiting1: 'Esperando a ', waiting2: ' en hilo "', waiting3: '" para responder...',
             searchUnavail: '⚠ Búsqueda web no disponible — respondiendo con datos de entrenamiento, pueden estar desactualizados.',
             attaching: 'Preparando archivo adjunto...',
-            voiceListening: 'Escuchando... toca para detener',
+            voiceListening: 'Grabando... toca para detener',
             voiceNotSupported: 'Entrada de voz no compatible con este navegador',
-            voiceHttpError: 'La entrada de voz requiere HTTPS. Use el botón de micrófono en su teclado.',
+            voiceHttpError: 'La entrada de voz requiere HTTPS. Acceda a la aplicación por el puerto 8443.',
+            voiceEmpty: 'No se reconoció nada. Para grabar en otro idioma, toca el botón de bandera primero. Actualmente escuchando en ',
         },
         fr: {
             retry: 'Réessayer', clear: 'Effacer', send: 'Envoyer', cancel: 'Annuler', ok: 'OK',
@@ -344,9 +348,10 @@ const I18n = {
             waiting1: 'En attente de ', waiting2: ' dans le fil "', waiting3: '"...',
             searchUnavail: '⚠ Recherche web indisponible — réponse basée sur les données d\'entraînement, potentiellement obsolètes.',
             attaching: 'Préparation de la pièce jointe...',
-            voiceListening: 'Écoute... appuyez pour arrêter',
+            voiceListening: 'Enregistrement... appuyez pour arrêter',
             voiceNotSupported: 'Saisie vocale non prise en charge par ce navigateur',
-            voiceHttpError: 'La saisie vocale nécessite HTTPS. Utilisez le bouton micro de votre clavier.',
+            voiceHttpError: 'La saisie vocale nécessite HTTPS. Accédez à l\'application via le port 8443.',
+            voiceEmpty: 'Rien reconnu. Pour enregistrer dans une autre langue, appuyez d\'abord sur le drapeau. Langue actuelle : ',
         }
     },
     t: function(key) { return (this._strings[this._lang] || this._strings.en)[key] || this._strings.en[key] || key; },
@@ -761,6 +766,7 @@ const UIManager = {
         document.getElementById('message-input').addEventListener('input', function() {
             this.style.height = 'auto';
             this.style.height = Math.min(this.scrollHeight, 100) + 'px';
+            self.updateSendBtn();
         });
         document.getElementById('message-input').addEventListener('paste', function(e) {
             var items = e.clipboardData && e.clipboardData.items;
@@ -808,6 +814,7 @@ const UIManager = {
         document.getElementById('attach-file').addEventListener('click', function() { document.getElementById('file-input').click(); });
 
         var _voiceRecognition = null;
+        var _voiceTranscript = '';
         var _langMap = { en: 'en-US', vi: 'vi-VN', de: 'de-DE', es: 'es-ES', fr: 'fr-FR' };
         function stopVoice() {
             if (_voiceRecognition) { _voiceRecognition.stop(); _voiceRecognition = null; }
@@ -819,26 +826,52 @@ const UIManager = {
             var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
             if (!SR) {
                 self.setStatus(t('voiceNotSupported'));
-                setTimeout(function() { self.setStatus(''); }, 3000);
+                setTimeout(function() { self.setStatus(''); }, 5000);
                 return;
             }
             var rec = new SR();
             _voiceRecognition = rec;
+            _voiceTranscript = '';
             rec.lang = _langMap[I18n._lang] || 'en-US';
-            rec.continuous = false;
-            rec.interimResults = true;
+            rec.continuous = true;
+            rec.interimResults = false;
             var bar = document.getElementById('voice-bar');
-            var input = document.getElementById('message-input');
-            var base = input.value;
-            document.getElementById('voice-bar-text').textContent = t('voiceListening');
+            var barText = document.getElementById('voice-bar-text');
+            barText.textContent = t('voiceListening');
             bar.classList.add('visible');
             rec.onresult = function(e) {
-                var transcript = '';
-                for (var i = 0; i < e.results.length; i++) transcript += e.results[i][0].transcript;
-                input.value = base + (base && transcript ? ' ' : '') + transcript;
-                input.dispatchEvent(new Event('input'));
+                var finals = '';
+                for (var i = 0; i < e.results.length; i++) {
+                    if (e.results[i].isFinal) finals += e.results[i][0].transcript + ' ';
+                }
+                _voiceTranscript = finals.trim();
             };
-            rec.onend = function() { _voiceRecognition = null; bar.classList.remove('visible'); };
+            rec.onend = function() {
+                _voiceRecognition = null;
+                bar.classList.remove('visible');
+                var text = _voiceTranscript.trim();
+                if (!text) {
+                    self.setStatus(t('voiceEmpty') + I18n.names[I18n._lang] + '.');
+                    setTimeout(function() { self.setStatus(''); }, 5000);
+                    return;
+                }
+                var sessionId = self.currentSession ? self.currentSession.id : 'default';
+                var blob = new Blob([text], { type: 'text/plain' });
+                var file = new File([blob], 'voice.txt', { type: 'text/plain' });
+                var formData = new FormData();
+                formData.append('file', file);
+                formData.append('sessionId', sessionId);
+                self.setStatus(t('attaching'));
+                fetch('/assets', { method: 'POST', body: formData })
+                    .then(function(r) { return r.json(); })
+                    .then(function(data) {
+                        var lines = text.split('\n');
+                        var snippet = lines.slice(0, 5).join('\n') + (lines.length > 5 ? '\n…' : '');
+                        self.attachedFiles.push({ id: data.id, name: '🎤 recorded-audio.txt', type: 'text', snippet: snippet, fullContent: text });
+                        self.renderAttachments();
+                        self.setStatus('');
+                    }).catch(function() { self.setStatus(''); });
+            };
             rec.onerror = function(e) {
                 _voiceRecognition = null;
                 bar.classList.remove('visible');
@@ -853,6 +886,7 @@ const UIManager = {
     },
     
     initializeApp: async function() {
+        this.updateSendBtn();
         const savedEndpoint = AppConfig.ollamaEndpoint;
         OllamaAPI.setEndpoint(savedEndpoint);
         document.getElementById('endpoint-input').value = savedEndpoint;
@@ -1258,6 +1292,13 @@ const UIManager = {
             chip.appendChild(btn);
             bar.appendChild(chip);
         });
+        this.updateSendBtn();
+    },
+
+    updateSendBtn: function() {
+        var hasText = document.getElementById('message-input').value.trim() !== '';
+        var hasAttachment = this.attachedFiles.length > 0;
+        document.getElementById('send-btn').disabled = !hasText && !hasAttachment;
     },
 
     updateEndpoint: async function() {
@@ -1411,7 +1452,7 @@ const UIManager = {
         if (this.isStreaming) return;
         const input = document.getElementById('message-input');
         const content = input.value.trim();
-        if (!content) return;
+        if (!content && this.attachedFiles.length === 0) return;
 
         // Backwards-compat: ensure context field exists on sessions created before this feature
         if (!this.currentSession.context) {
@@ -1522,7 +1563,7 @@ const UIManager = {
                 }
                 SessionStore.updateSession(sessionAtSend);
                 self.isStreaming = false;
-                document.getElementById('send-btn').disabled = false;
+                self.updateSendBtn();
                 self.setStatus('');
             },
             function(err) {
@@ -1531,7 +1572,7 @@ const UIManager = {
                     assistantDiv.textContent += '\n[Error: ' + err.message + ']';
                 }
                 self.isStreaming = false;
-                document.getElementById('send-btn').disabled = false;
+                self.updateSendBtn();
                 self.setStatus('');
             }
         );

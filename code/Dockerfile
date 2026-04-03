@@ -1,5 +1,10 @@
 FROM nginx:alpine
-RUN apk add --no-cache python3 su-exec && \
+RUN apk add --no-cache python3 su-exec openssl && \
+    mkdir -p /etc/nginx/ssl && \
+    openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+      -keyout /etc/nginx/ssl/key.pem \
+      -out /etc/nginx/ssl/cert.pem \
+      -subj "/CN=dmh-ai" 2>/dev/null && \
     wget -qO /usr/share/nginx/html/marked.min.js \
       https://cdn.jsdelivr.net/npm/marked/marked.min.js && \
     wget -qO /usr/share/nginx/html/pdf.min.js \
