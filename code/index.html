@@ -54,8 +54,9 @@
         .message.assistant { margin-right: auto; background: #1c1628; padding: 12px 16px; border-radius: 12px 12px 12px 0; }
         .input-area { padding: 20px; background: #281e38; display: flex; gap: 10px; }
         .message-input { flex: 1; padding: 12px 16px; border-radius: 8px; border: 1px solid #141018; background: #141018; color: #eee; font-size: 14px; font-family: inherit; resize: none; max-height: 100px; overflow-y: auto; }
-        .send-btn { padding: 12px 24px; background: #c87830; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; }
+        .send-btn { padding: 12px 24px; background: #c87830; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; display: flex; align-items: center; gap: 6px; }
         .send-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        @media (max-width: 600px) { .send-label { display: none; } }
         .status-bar { padding: 6px 20px; background: #281e38; color: #b098b8; font-size: 13px; display: none; align-items: center; gap: 8px; }
         .status-bar.visible { display: flex; }
         .spinner { width: 14px; height: 14px; border: 2px solid #b098b8; border-top-color: #c87830; border-radius: 50%; flex-shrink: 0;
@@ -193,7 +194,7 @@
             <input type="file" id="video-input" style="display:none" accept="video/*" capture="environment">
             <input type="file" id="gallery-input" style="display:none" accept="image/*">
             <textarea class="message-input" id="message-input" placeholder="Type a message..." rows="1"></textarea>
-            <button class="send-btn" id="send-btn">Send</button>
+            <button class="send-btn" id="send-btn"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg><span class="send-label" id="send-label">Send</span></button>
         </div>
     </div>
 <div class="modal-overlay" id="modal-overlay">
@@ -717,7 +718,7 @@ const UIManager = {
             document.getElementById('endpoint-update-btn').textContent = t('update');
             document.getElementById('clear-session-btn').textContent = t('clear');
             document.getElementById('message-input').placeholder = t('typePlaceholder');
-            document.getElementById('send-btn').textContent = t('send');
+            document.getElementById('send-label').textContent = t('send');
             document.getElementById('attach-btn').title = t('attachFile');
             document.getElementById('error-message').textContent = t('cannotConnect');
             document.querySelector('#error-banner button').textContent = t('retry');
