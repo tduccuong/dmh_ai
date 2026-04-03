@@ -21,6 +21,8 @@ RUN adduser -D -u 1000 appuser && \
     mkdir -p /data /app && chown appuser:appuser /data /app
 COPY backend/server.py /app/server.py
 COPY index.html /usr/share/nginx/html/
+COPY css/ /usr/share/nginx/html/css/
+COPY js/ /usr/share/nginx/html/js/
 COPY logo.png /usr/share/nginx/html/logo.png
 RUN magick /usr/share/nginx/html/logo.png -resize 180x180 /usr/share/nginx/html/apple-touch-icon.png
 COPY manifest.json /usr/share/nginx/html/manifest.json
