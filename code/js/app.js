@@ -1754,9 +1754,10 @@ const UIManager = {
         let apiMessages = prepareForAPI(ContextManager.buildContextMessages(this.currentSession));
         apiMessages[apiMessages.length - 1] = userMsgForAPI;
         const recentMsgs = (this.currentSession.messages || []).filter(function(m) { return m.role === 'user' || m.role === 'assistant'; }).slice(-4);
-        const needsWebSearch = await this.detectWebSearch(content, recentMsgs, pipelineSignal);
+        const effectiveContent = content.trim() || contentForAPI.trim();
+        const needsWebSearch = await this.detectWebSearch(effectiveContent, recentMsgs, pipelineSignal);
         if (pipelineSignal.aborted) return;
-        const cleanedContent = content;
+        const cleanedContent = effectiveContent;
         syslog('[SEND] user="' + content.slice(0, 120) + '" needsWebSearch=' + needsWebSearch + ' cleanedQuery="' + cleanedContent + '"');
         if (AppConfig.searxngUrl && needsWebSearch) {
             this.setStatus(t('genKeywords'));
@@ -1850,6 +1851,9 @@ const UIManager = {
             if (!firstUser) return;
             var userText = typeof firstUser.content === 'string' ? firstUser.content
                 : (Array.isArray(firstUser.content) ? ((firstUser.content.find(function(p) { return p.type === 'text'; }) || {}).text || '') : '');
+            if (!userText.trim() && firstUser.files && firstUser.files.length > 0) {
+                userText = firstUser.files.map(function(f) { return f.snippet || ''; }).join(' ').trim();
+            }
             if (!userText.trim()) return;
             var name = await OllamaAPI.summarize(session.model, [{
                 role: 'user',
