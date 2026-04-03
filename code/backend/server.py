@@ -173,6 +173,13 @@ class H(BaseHTTPRequestHandler):
             self.send_json(200, [{'id': r[0], 'email': r[1], 'name': r[2], 'role': r[3], 'createdAt': r[4]} for r in rows])
             return
 
+        if p == '/users/prefs':
+            with sqlite3.connect(DB) as c:
+                row = c.execute('SELECT value FROM settings WHERE key=?', (f'prefs_{user["id"]}',)).fetchone()
+            prefs = json.loads(row[0]) if row else {}
+            self.send_json(200, prefs)
+            return
+
         if p == '/search':
             qs = urllib.parse.parse_qs(urlparse(self.path).query)
             q = qs.get('q', [''])[0]
@@ -374,6 +381,20 @@ class H(BaseHTTPRequestHandler):
             with sqlite3.connect(DB) as c:
                 c.execute('UPDATE users SET password_hash=?, password_changed=1 WHERE id=?', (hash_password(new_pw), user['id']))
             self.send_json(200, {'ok': True})
+            return
+
+        if p == '/users/prefs':
+            user = self.require_auth()
+            if not user:
+                return
+            d = self.body()
+            key = f'prefs_{user["id"]}'
+            with sqlite3.connect(DB) as c:
+                row = c.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
+                prefs = json.loads(row[0]) if row else {}
+                prefs.update({k: v for k, v in d.items() if k in ('lang', 'model')})
+                c.execute('INSERT OR REPLACE INTO settings (key, value) VALUES (?,?)', (key, json.dumps(prefs)))
+            self.send_json(200, prefs)
             return
 
         m_user = re.match(r'^/users/([^/]+)$', p)

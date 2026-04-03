@@ -52,7 +52,7 @@
         @media (max-width: 600px) { .send-label { display: none; } }
         .status-bar { padding: 6px 20px; background: #281e38; color: #b098b8; font-size: 13px; display: none; align-items: center; gap: 8px; }
         .status-bar.visible { display: flex; }
-        .stop-gen-btn { margin-left: auto; padding: 2px 10px; background: #7a2020; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; flex-shrink: 0; }
+        .stop-gen-btn { margin-left: auto; padding: 0 10px; background: #7a2020; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; flex-shrink: 0; align-self: stretch; }
         .stop-gen-btn:hover { background: #b03030; }
         .voice-bar { padding: 8px 20px; background: #2a1020; color: #f08080; font-size: 13px; display: none; align-items: center; gap: 10px; cursor: pointer; user-select: none; }
         .voice-bar.visible { display: flex; }
@@ -899,6 +899,7 @@ const UIManager = {
     isStreaming: false,
     attachedFiles: [],
     _streamController: null,
+    _lastUsedModel: null,
     _pendingContent: '',
     _pendingSession: null,
     
@@ -929,6 +930,7 @@ const UIManager = {
                 I18n.setLang(code);
                 applyLanguage();
                 langDropdown.classList.remove('open');
+                UIManager.savePrefs({ lang: code });
             });
             langDropdown.appendChild(btn);
         });
@@ -1346,6 +1348,8 @@ const UIManager = {
         OllamaAPI.setEndpoint(savedEndpoint);
         document.getElementById('endpoint-input').value = savedEndpoint;
 
+        await this.loadPrefs();
+
         try {
             const models = await OllamaAPI.fetchModels();
             this.populateModelSelects(models);
@@ -1379,12 +1383,20 @@ const UIManager = {
     populateModelSelects: function(models) {
         const select = document.getElementById('header-model-select');
         select.innerHTML = '';
+        const self = this;
         models.forEach(function(model) {
             const option = document.createElement('option');
             option.value = model.name;
             option.textContent = model.name + OllamaAPI.formatSize(model.size);
             select.appendChild(option);
         });
+        const names = models.map(function(m) { return m.name; });
+        if (self._lastUsedModel && names.indexOf(self._lastUsedModel) !== -1) {
+            select.value = self._lastUsedModel;
+        } else if (models.length > 0) {
+            self._lastUsedModel = models[0].name;
+            select.value = models[0].name;
+        }
     },
     
     renderSessions: async function() {
@@ -1825,11 +1837,30 @@ const UIManager = {
         this.renderChat();
     },
 
+    savePrefs: function(partial) {
+        apiFetch('/users/prefs', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(partial) }).catch(function() {});
+    },
+
+    loadPrefs: async function() {
+        try {
+            const res = await apiFetch('/users/prefs');
+            if (!res.ok) return;
+            const prefs = await res.json();
+            if (prefs.lang && I18n._strings[prefs.lang]) {
+                I18n.setLang(prefs.lang);
+                applyLanguage();
+            }
+            if (prefs.model) this._lastUsedModel = prefs.model;
+        } catch(e) {}
+    },
+
     switchModel: function(modelName) {
         if (this.currentSession) {
             this.currentSession.model = modelName;
             SessionStore.updateSession(this.currentSession); // fire-and-forget
         }
+        this._lastUsedModel = modelName;
+        this.savePrefs({ model: modelName });
         document.getElementById('header-model-select').value = modelName;
     },
     
