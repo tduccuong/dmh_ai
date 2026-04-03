@@ -25,7 +25,8 @@ if [ "$EXPORT" = true ]; then
     docker pull searxng/searxng
     docker save searxng/searxng -o "$DIST_DIR/searxng.tar"
 else
-    echo "Skipping image export (--no-export)."
+    echo "Skipping image export (--no-export). Removing stale tars if present..."
+    rm -f "$DIST_DIR/dmh-ai.tar" "$DIST_DIR/searxng.tar"
 fi
 
 echo "Assembling deployment package..."
