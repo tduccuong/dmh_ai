@@ -1407,7 +1407,7 @@ const UIManager = {
                     model: this.currentSession.model,
                     stream: false,
                     options: { temperature: 0, num_predict: 4 },
-                    prompt: 'Does this message ask to search the web/internet for current information? Answer only YES or NO.\n\nMessage: ' + userMessage + '\n\nAnswer:'
+                    prompt: 'The message below may be in any language. Does it ask about anything that may have changed recently or requires up-to-date information — such as news, current events, live scores, prices, stocks, weather, recent releases, ongoing situations, people in the news, or anything happening today or this week? Answer only YES or NO.\n\nMessage: ' + userMessage + '\n\nAnswer:'
                 })
             });
             const data = await res.json();
