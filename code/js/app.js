@@ -21,7 +21,9 @@ const I18n = {
             unsupported1: 'Unsupported file: ', unsupported2: '. Supported: PDF, DOCX, XLSX, plain text, ',
             noVision1: '⚠ ', noVision2: ' does not support images. Switch to a vision-capable model and send again.',
             genKeywords: 'Generating search keywords...',
-            searchingWeb: 'Searching the web...',
+            searchingWeb: 'Searching the web (round 1)...',
+            analyzingGaps: 'Analyzing gaps...',
+            deepSearching: 'Deep searching (round 2)...',
             synthesizing: 'Synthesizing results...',
             waiting1: 'Waiting for ', waiting2: ' in thread "', waiting3: '" to answer...',
             searchUnavail: '⚠ Web search unavailable — answering from model training data, which may be outdated.',
@@ -53,7 +55,9 @@ const I18n = {
             unsupported1: 'Tệp không hỗ trợ: ', unsupported2: '. Hỗ trợ: PDF, DOCX, XLSX, văn bản, ',
             noVision1: '⚠ ', noVision2: ' không hỗ trợ hình ảnh. Hãy chọn mô hình hỗ trợ hình ảnh và gửi lại.',
             genKeywords: 'Đang tạo từ khóa tìm kiếm...',
-            searchingWeb: 'Đang tìm kiếm trên web...',
+            searchingWeb: 'Đang tìm kiếm web (vòng 1)...',
+            analyzingGaps: 'Đang phân tích khoảng trống...',
+            deepSearching: 'Đang tìm kiếm chuyên sâu (vòng 2)...',
             synthesizing: 'Đang tổng hợp kết quả...',
             waiting1: 'Đang chờ ', waiting2: ' trong phiên "', waiting3: '" trả lời...',
             searchUnavail: '⚠ Tìm kiếm web không khả dụng — trả lời từ dữ liệu huấn luyện, có thể đã lỗi thời.',
@@ -85,7 +89,9 @@ const I18n = {
             unsupported1: 'Nicht unterstützte Datei: ', unsupported2: '. Unterstützt: PDF, DOCX, XLSX, Text, ',
             noVision1: '⚠ ', noVision2: ' unterstützt keine Bilder. Wählen Sie ein bildtaugliches Modell und senden Sie erneut.',
             genKeywords: 'Suchbegriffe werden generiert...',
-            searchingWeb: 'Websuche läuft...',
+            searchingWeb: 'Websuche läuft (Runde 1)...',
+            analyzingGaps: 'Lücken werden analysiert...',
+            deepSearching: 'Tiefensuche läuft (Runde 2)...',
             synthesizing: 'Ergebnisse werden zusammengefasst...',
             waiting1: 'Warte auf ', waiting2: ' in Sitzung "', waiting3: '"...',
             searchUnavail: '⚠ Websuche nicht verfügbar — Antwort basiert auf Trainingsdaten, möglicherweise veraltet.',
@@ -117,7 +123,9 @@ const I18n = {
             unsupported1: 'Archivo no compatible: ', unsupported2: '. Compatible: PDF, DOCX, XLSX, texto, ',
             noVision1: '⚠ ', noVision2: ' no admite imágenes. Seleccione un modelo con visión y envíe de nuevo.',
             genKeywords: 'Generando palabras clave...',
-            searchingWeb: 'Buscando en la web...',
+            searchingWeb: 'Buscando en la web (ronda 1)...',
+            analyzingGaps: 'Analizando brechas...',
+            deepSearching: 'Búsqueda profunda (ronda 2)...',
             synthesizing: 'Sintetizando resultados...',
             waiting1: 'Esperando a ', waiting2: ' en hilo "', waiting3: '" para responder...',
             searchUnavail: '⚠ Búsqueda web no disponible — respondiendo con datos de entrenamiento, pueden estar desactualizados.',
@@ -149,7 +157,9 @@ const I18n = {
             unsupported1: 'Fichier non pris en charge : ', unsupported2: '. Pris en charge : PDF, DOCX, XLSX, texte, ',
             noVision1: '⚠ ', noVision2: ' ne prend pas en charge les images. Sélectionnez un modèle compatible et réessayez.',
             genKeywords: 'Génération des mots-clés...',
-            searchingWeb: 'Recherche sur le web...',
+            searchingWeb: 'Recherche web (tour 1)...',
+            analyzingGaps: 'Analyse des lacunes...',
+            deepSearching: 'Recherche approfondie (tour 2)...',
             synthesizing: 'Synthèse des résultats...',
             waiting1: 'En attente de ', waiting2: ' dans le fil "', waiting3: '"...',
             searchUnavail: '⚠ Recherche web indisponible — réponse basée sur les données d\'entraînement, potentiellement obsolètes.',
@@ -1594,6 +1604,13 @@ const UIManager = {
     },
 
     detectWebSearch: async function(userMessage, recentMsgs, signal) {
+        // Explicit user instruction always wins — skip LLM check.
+        // Match: any search-intent word + any web/internet/online word (covers all 5 UI languages).
+        var _hasSearchVerb = /\b(search|find|look up|google|tìm\s*ki[eế]m|tìm|such[et]?|googlen|busca[r]?|busque|cherche[rz]?|recherche[rz]?)\b/i;
+        var _hasWebMedium = /\b(web|online|internet|en\s+ligne|en\s+l[ií]nea|trên\s+(web|m[aạ]ng|internet)|im\s+(web|internet|netz)|sur\s+(le\s+)?web|sur\s+internet)\b/i;
+        if (_hasSearchVerb.test(userMessage) && _hasWebMedium.test(userMessage)) {
+            return true;
+        }
         try {
             var contextBlock = '';
             if (recentMsgs && recentMsgs.length > 0) {
@@ -1610,7 +1627,7 @@ const UIManager = {
                     stream: false,
                     think: false,
                     options: { temperature: 0, num_predict: 4 },
-                    prompt: contextBlock + 'New message: ' + userMessage + '\n\nDoes this new message require a live internet search to answer — such as current news, prices, weather, sports scores, recent events, or anything that changes over time? Answer NO if the message is a follow-up, formatting request, rephrasing, or asks to rewrite/translate/summarize/explain a previous response. Reply in English only with YES or NO.\n\nAnswer:'
+                    prompt: contextBlock + 'New message: ' + userMessage + '\n\nDoes this new message benefit from a live web search? Answer YES for: current news/events, prices, sports scores, weather, recently released software/tools, real-world experiences and community opinions ("what did people do", "how do others", "best practices people use"), tips others have shared online, or any question where up-to-date or crowd-sourced information would improve the answer. Answer NO for: follow-ups, formatting/rephrasing/translation/summarization requests, or questions fully answerable from general knowledge. Reply in English only with YES or NO.\n\nAnswer:'
                 }),
                 signal: signal
             });
@@ -1619,7 +1636,7 @@ const UIManager = {
         } catch (e) { return false; }
     },
 
-    getSearchKeywords: async function(userMessage, signal) {
+    getSearchQueries: async function(userMessage, signal) {
         try {
             const res = await fetch(OllamaAPI.BASE_URL + '/generate', {
                 method: 'POST',
@@ -1630,38 +1647,89 @@ const UIManager = {
                     think: false,
                     options: { temperature: 0 },
                     prompt:
-                        'You are a search query generator. Rules:\n' +
-                        '1. Do NOT answer the question\n' +
-                        '2. Do NOT use names, facts, or answers from your training data — they may be outdated\n' +
-                        '3. Generate neutral descriptive keywords a human would search to find the CURRENT answer online\n' +
-                        '4. Always include the year ' + new Date().getFullYear() + '\n\n' +
-                        'Does this question need current/live information (current leaders, prices, news, events, etc.)?\n' +
-                        'Question: "' + userMessage + '"\n\n' +
-                        'If YES: reply with ONLY 4-6 search keywords. No names from your training. No explanation.\n' +
-                        'If NO: reply with only the word NO.\n' +
-                        'Always reply in English only.'
+                        'You are a search query generator. Generate 2 search queries for the question below.\n' +
+                        'Query 1: broad query covering the main topic.\n' +
+                        'Query 2: a different specific angle or sub-aspect of the same question.\n' +
+                        'Rules:\n' +
+                        '- Do NOT answer the question\n' +
+                        '- Do NOT use names or facts from your training — they may be outdated\n' +
+                        '- Always include the year ' + new Date().getFullYear() + '\n' +
+                        '- Reply in English only\n' +
+                        '- Reply with exactly 2 lines, each line is one search query. No numbering, no explanation.\n\n' +
+                        'Question: "' + userMessage + '"'
                 }),
                 signal: signal
             });
             const data = await res.json();
             const reply = (data.response || '').trim();
             if (!reply || /^(no|nein|non|нет)\b/i.test(reply)) return null;
-            return reply.replace(/['"*\n]/g, ' ').trim();
+            const lines = reply.split('\n')
+                .map(function(s) { return s.replace(/^[\d\.\-\*\s]+/, '').replace(/['"*]/g, '').trim(); })
+                .filter(Boolean);
+            return lines.length ? lines.slice(0, 2) : null;
         } catch (e) { return null; }
     },
 
-    searchWeb: async function(keywords, signal) {
+    searchWebRaw: async function(keywords, signal) {
         try {
             const url = '/search?q=' + encodeURIComponent(keywords) + '&engine=' + encodeURIComponent(AppConfig.searxngUrl);
             const res = await apiFetch(url, { signal: signal });
-            if (!res.ok) return null;
+            if (!res.ok) return [];
             const data = await res.json();
-            const results = (data.results || []).filter(function(r) { return r.title || r.content; });
-            if (!results.length) return null;
-            return results.map(function(r, i) {
-                return (i + 1) + '. ' + r.title + ' (' + r.url + ')\n   ' + (r.content || '').slice(0, 800);
-            }).join('\n\n');
-        } catch (e) { return null; }
+            return (data.results || []).filter(function(r) { return r.title || r.content; });
+        } catch (e) { return []; }
+    },
+
+    formatSearchResults: function(results) {
+        return results.map(function(r, i) {
+            return (i + 1) + '. ' + r.title + ' (' + r.url + ')\n   ' + (r.content || '').slice(0, 800);
+        }).join('\n\n');
+    },
+
+    searchWebParallel: async function(queries, signal) {
+        const arrays = await Promise.all(queries.map(function(q) { return this.searchWebRaw(q, signal); }, this));
+        const seen = new Set();
+        const merged = [];
+        arrays.forEach(function(arr) {
+            arr.forEach(function(r) {
+                if (!seen.has(r.url)) { seen.add(r.url); merged.push(r); }
+            });
+        });
+        return merged;
+    },
+
+    getGapQueries: async function(question, resultsText, signal) {
+        try {
+            const res = await fetch(OllamaAPI.BASE_URL + '/generate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    model: this.currentSession.model,
+                    stream: false,
+                    think: false,
+                    options: { temperature: 0 },
+                    prompt:
+                        'You are a search query generator analyzing gaps in search results.\n\n' +
+                        'Question: "' + question + '"\n\n' +
+                        'Round 1 search results:\n' + resultsText.slice(0, 2000) + '\n\n' +
+                        'Identify specific aspects of the question that the results do NOT adequately cover.\n' +
+                        'Generate 1-2 targeted search queries to fill those gaps.\n' +
+                        'Rules:\n' +
+                        '- If results already cover the question well, reply with only: NONE\n' +
+                        '- Otherwise reply with 1-2 search queries, one per line, no numbering\n' +
+                        '- Do NOT answer the question\n' +
+                        '- Reply in English only'
+                }),
+                signal: signal
+            });
+            const data = await res.json();
+            const reply = (data.response || '').trim();
+            if (!reply || /^none\b/i.test(reply)) return [];
+            const lines = reply.split('\n')
+                .map(function(s) { return s.replace(/^[\d\.\-\*\s]+/, '').replace(/['"*]/g, '').trim(); })
+                .filter(Boolean);
+            return lines.slice(0, 2);
+        } catch (e) { return []; }
     },
 
     synthesizeResults: async function(question, keywords, results, today, signal) {
@@ -1769,27 +1837,50 @@ const UIManager = {
         syslog('[SEND] user="' + content.slice(0, 120) + '" needsWebSearch=' + needsWebSearch + ' cleanedQuery="' + cleanedContent + '"');
         if (AppConfig.searxngUrl && needsWebSearch) {
             this.setStatus(t('genKeywords'));
-            const keywords = await this.getSearchKeywords(cleanedContent, pipelineSignal);
+            const queries = await this.getSearchQueries(cleanedContent, pipelineSignal);
             if (pipelineSignal.aborted) return;
-            syslog('[KEYWORDS] result="' + keywords + '"');
-            if (keywords) {
+            syslog('[QUERIES] result="' + (queries ? queries.join(' | ') : 'null') + '"');
+            if (queries) {
+                // Round 1: search 2 orthogonal queries in parallel
                 this.setStatus(t('searchingWeb'));
-                const results = await this.searchWeb(keywords, pipelineSignal);
+                const round1Raw = await this.searchWebParallel(queries, pipelineSignal);
                 if (pipelineSignal.aborted) return;
-                syslog('[SEARCH] got results: ' + (results ? results.slice(0, 200) : 'null'));
-                if (results) {
+                syslog('[SEARCH R1] got ' + round1Raw.length + ' results');
+
+                let allRaw = round1Raw;
+                if (round1Raw.length > 0) {
+                    // Gap analysis: ask LLM what's still missing
+                    this.setStatus(t('analyzingGaps'));
+                    const r1Formatted = this.formatSearchResults(round1Raw);
+                    const gapQueries = await this.getGapQueries(cleanedContent, r1Formatted, pipelineSignal);
+                    if (pipelineSignal.aborted) return;
+                    syslog('[GAP QUERIES] result="' + gapQueries.join(' | ') + '"');
+
+                    if (gapQueries.length > 0) {
+                        // Round 2: fill gaps, deduplicate against round 1
+                        this.setStatus(t('deepSearching'));
+                        const round2Raw = await this.searchWebParallel(gapQueries, pipelineSignal);
+                        if (pipelineSignal.aborted) return;
+                        syslog('[SEARCH R2] got ' + round2Raw.length + ' results');
+                        const seenUrls = new Set(round1Raw.map(function(r) { return r.url; }));
+                        round2Raw.forEach(function(r) { if (!seenUrls.has(r.url)) allRaw.push(r); });
+                    }
+                }
+
+                const allFormatted = allRaw.length ? this.formatSearchResults(allRaw) : null;
+                if (allFormatted) {
                     this.setStatus(t('synthesizing'));
                     const today = new Date().toDateString();
-                    const synthesis = await this.synthesizeResults(cleanedContent, keywords, results, today, pipelineSignal);
+                    const synthesis = await this.synthesizeResults(cleanedContent, queries.join(' '), allFormatted, today, pipelineSignal);
                     if (pipelineSignal.aborted) return;
-                    syslog('[SYNTHESIS] ' + synthesis);
+                    syslog('[SYNTHESIS] ' + synthesis.slice(0, 200));
                     apiMessages = apiMessages.slice(0, -1).concat([{
                         role: 'user',
                         content: 'User request: ' + cleanedContent + '\n\nWeb search results (retrieved ' + today + '):\n' + synthesis + '\n\nUsing the user request and the web search results above, compile a complete and accurate answer.'
                     }]);
                     syslog('[INJECT] synthesized results injected into context');
                 } else {
-                    syslog('[SEARCH] fallback: search returned no results');
+                    syslog('[SEARCH] fallback: all rounds returned no results');
                     bodyDiv.innerHTML = '<em style="color:#d0a050;">' + t('searchUnavail') + '</em><br><br>';
                 }
             }
