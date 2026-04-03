@@ -10,8 +10,8 @@ Eine leichtgewichtige, selbst gehostete Chat-Oberfläche für Ollama auf Ihrem l
 ## Funktionen
 
 - **Integrierte Websuche** — wie Perplexity, aber selbst gehostet und privat. DMH-AI erkennt automatisch, wenn Ihre Frage aktuelle Informationen benötigt, durchsucht das Web über eine integrierte SearXNG-Instanz und fasst die Ergebnisse zu einer kohärenten, quellenbasierten Antwort zusammen. Funktioniert in jeder Sprache.
+- **Medienanhänge** — Dokumente (PDF, DOCX, XLSX), Bilder und Videos vom Gerät anhängen. Auf dem Handy direkt ein Foto aufnehmen oder ein Video aufzeichnen und in den Chat einfügen — kein Speichern in der Galerie nötig.
 - Chat mit jedem Ollama-Modell — Cloud oder lokal — über eine übersichtliche Web-Oberfläche
-- Datei- und Bildanhänge (aus Zwischenablage einfügen oder hochladen): PDF, DOCX, XLSX, Text, Bilder
 - Persistente Chat-Sitzungen in SQLite gespeichert
 - Automatische Kontextzusammenfassung — endlos chatten ohne Token-Limits
 - Markdown-Darstellung für Antworten
@@ -135,6 +135,8 @@ build.bat && dist\run.bat
 
 Öffnen Sie [http://localhost:8080](http://localhost:8080) im Browser. Andere Geräte im Netzwerk können über `http://<Ihre-IP-Adresse>:8080` zugreifen.
 
+Für **Spracheingabe** den HTTPS-Endpunkt `https://localhost:8443` (oder `https://<Ihre-IP-Adresse>:8443`) verwenden. Die Warnung zum selbstsignierten Zertifikat einmalig akzeptieren. Auf iOS den Link in der Zertifikatswarnung tippen, um das Zertifikat herunterzuladen und über Einstellungen zu installieren.
+
 Benutzerdaten werden gespeichert in:
 - `dist/db/` — SQLite-Chat-Datenbank
 - `dist/user_assets/` — Hochgeladene Dateien, nach Sitzung organisiert
@@ -159,7 +161,8 @@ Alles geschieht automatisch und transparent — Sie stellen einfach Ihre Frage u
 
 ```
 Browser
-  └── nginx :8080
+  ├── nginx :8080 (HTTP)
+  └── nginx :8443 (HTTPS, für Spracheingabe)
         ├── /          → index.html (SPA)
         ├── /api       → Ollama :11434
         ├── /sessions  → Python-Backend :3000

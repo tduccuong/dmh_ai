@@ -52,6 +52,8 @@
         @media (max-width: 600px) { .send-label { display: none; } }
         .status-bar { padding: 6px 20px; background: #281e38; color: #b098b8; font-size: 13px; display: none; align-items: center; gap: 8px; }
         .status-bar.visible { display: flex; }
+        .stop-gen-btn { margin-left: auto; padding: 2px 10px; background: #7a2020; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; flex-shrink: 0; }
+        .stop-gen-btn:hover { background: #b03030; }
         .voice-bar { padding: 8px 20px; background: #2a1020; color: #f08080; font-size: 13px; display: none; align-items: center; gap: 10px; cursor: pointer; user-select: none; }
         .voice-bar.visible { display: flex; }
         .voice-dot { width: 10px; height: 10px; background: #e05050; border-radius: 50%; flex-shrink: 0; animation: voice-pulse 1s ease-in-out infinite; }
@@ -174,6 +176,7 @@
         <div class="status-bar" id="status-bar">
             <div class="spinner"></div>
             <span id="status-text"></span>
+            <button class="stop-gen-btn" id="stop-gen-btn" style="display:none"></button>
         </div>
         <div class="voice-bar" id="voice-bar"><span class="voice-dot"></span><span id="voice-bar-text"></span></div>
         <div class="attachments-bar" id="attachments-bar"></div>
@@ -214,7 +217,7 @@ const I18n = {
     _lang: localStorage.getItem('lang') || 'en',
     _strings: {
         en: {
-            retry: 'Retry', clear: 'Clear', send: 'Send', cancel: 'Cancel', ok: 'OK',
+            retry: 'Retry', clear: 'Clear', send: 'Send', cancel: 'Cancel', ok: 'OK', stopGen: '■ Stop',
             update: 'Update', rename: 'Rename', delete_: 'Delete', download: '⬇ Download',
             newSession: '+ New Session', defaultSession: 'Default Session',
             typePlaceholder: 'Type a message...', attachFile: 'Attach file',
@@ -244,7 +247,7 @@ const I18n = {
             iosCertHint: 'To avoid the certificate warning: tap here to install the certificate, then go to Settings → General → About → Certificate Trust Settings and enable it.',
         },
         vi: {
-            retry: 'Thử lại', clear: 'Xóa', send: 'Gửi', cancel: 'Hủy', ok: 'OK',
+            retry: 'Thử lại', clear: 'Xóa', send: 'Gửi', cancel: 'Hủy', ok: 'OK', stopGen: '■ Dừng',
             update: 'Cập nhật', rename: 'Đổi tên', delete_: 'Xóa', download: '⬇ Tải về',
             newSession: '+ Phiên mới', defaultSession: 'Phiên mặc định',
             typePlaceholder: 'Nhập tin nhắn...', attachFile: 'Đính kèm tệp',
@@ -274,7 +277,7 @@ const I18n = {
             iosCertHint: 'Để bỏ cảnh báo chứng chỉ: nhấn đây để cài chứng chỉ, rồi vào Cài đặt → Cài đặt chung → Giới thiệu → Cài đặt tin cậy chứng chỉ và bật lên.',
         },
         de: {
-            retry: 'Wiederholen', clear: 'Löschen', send: 'Senden', cancel: 'Abbrechen', ok: 'OK',
+            retry: 'Wiederholen', clear: 'Löschen', send: 'Senden', cancel: 'Abbrechen', ok: 'OK', stopGen: '■ Stopp',
             update: 'Aktualisieren', rename: 'Umbenennen', delete_: 'Löschen', download: '⬇ Herunterladen',
             newSession: '+ Neue Sitzung', defaultSession: 'Standardsitzung',
             typePlaceholder: 'Nachricht eingeben...', attachFile: 'Datei anhängen',
@@ -304,7 +307,7 @@ const I18n = {
             iosCertHint: 'Um die Zertifikatwarnung zu vermeiden: hier tippen zum Installieren, dann Einstellungen → Allgemein → Info → Zertifikat-Vertrauenseinstellungen und aktivieren.',
         },
         es: {
-            retry: 'Reintentar', clear: 'Limpiar', send: 'Enviar', cancel: 'Cancelar', ok: 'OK',
+            retry: 'Reintentar', clear: 'Limpiar', send: 'Enviar', cancel: 'Cancelar', ok: 'OK', stopGen: '■ Detener',
             update: 'Actualizar', rename: 'Renombrar', delete_: 'Eliminar', download: '⬇ Descargar',
             newSession: '+ Nueva sesión', defaultSession: 'Sesión predeterminada',
             typePlaceholder: 'Escribe un mensaje...', attachFile: 'Adjuntar archivo',
@@ -334,7 +337,7 @@ const I18n = {
             iosCertHint: 'Para evitar la advertencia: toca aquí para instalar el certificado, luego ve a Ajustes → General → Información → Configuración de confianza de certificados y actívalo.',
         },
         fr: {
-            retry: 'Réessayer', clear: 'Effacer', send: 'Envoyer', cancel: 'Annuler', ok: 'OK',
+            retry: 'Réessayer', clear: 'Effacer', send: 'Envoyer', cancel: 'Annuler', ok: 'OK', stopGen: '■ Arrêter',
             update: 'Mettre à jour', rename: 'Renommer', delete_: 'Supprimer', download: '⬇ Télécharger',
             newSession: '+ Nouvelle session', defaultSession: 'Session par défaut',
             typePlaceholder: 'Tapez un message...', attachFile: 'Joindre un fichier',
@@ -576,13 +579,13 @@ const OllamaAPI = {
             return null;
         }
     },
-    streamChat: function(model, messages, onChunk, onComplete, onError) {
-        const controller = new AbortController();
+    streamChat: function(model, messages, onChunk, onComplete, onError, signal) {
+        const controller = signal ? null : new AbortController();
         fetch(this.BASE_URL + '/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ model: model, messages: messages, stream: true }),
-            signal: controller.signal
+            signal: signal || controller.signal
         })
         .then(async function(response) {
             if (!response.ok) {
@@ -617,7 +620,7 @@ const OllamaAPI = {
         .catch(function(err) {
             if (err.name !== 'AbortError' && onError) onError(err);
         });
-        return controller;
+        return controller || { signal: signal };
     }
 };
 
@@ -680,7 +683,8 @@ const ContextManager = {
     compact: async function(session) {
         var ctx = session.context || { summary: null, summaryUpToIndex: -1 };
         var keepFrom = Math.max(0, session.messages.length - this.KEEP_RECENT);
-        var toSummarize = session.messages.slice(0, keepFrom);
+        var startFrom = ctx.summaryUpToIndex + 1; // only messages since last summary
+        var toSummarize = session.messages.slice(startFrom, keepFrom);
         if (toSummarize.length === 0) return;
 
         var summarizeInput = [];
@@ -692,7 +696,7 @@ const ContextManager = {
         summarizeInput = summarizeInput.concat(toSummarize.map(function(msg) {
             return { role: msg.role, content: msg.content };
         }));
-        summarizeInput.push({ role: 'user', content: 'Please write a concise but complete summary of this conversation, preserving all key facts, topics, decisions, and any code or technical details discussed.' });
+        summarizeInput.push({ role: 'user', content: 'Write a concise but complete summary of this conversation. Preserve: key facts, decisions made, user preferences, ongoing tasks, and any code or technical details. Discard: repetitive exchanges, clarifications of already-established facts, false starts, and conversational filler. Be dense and factual.' });
 
         var summary = await OllamaAPI.summarize(session.model, summarizeInput);
         if (!summary) return; // summarization failed; leave context unchanged
@@ -706,6 +710,9 @@ const UIManager = {
     currentSession: null,
     isStreaming: false,
     attachedFiles: [],
+    _streamController: null,
+    _pendingContent: '',
+    _pendingSession: null,
     
     init: function() {
         const self = this;
@@ -753,12 +760,29 @@ const UIManager = {
             document.getElementById('clear-session-btn').textContent = t('clear');
             document.getElementById('message-input').placeholder = t('typePlaceholder');
             document.getElementById('send-label').textContent = t('send');
+            document.getElementById('stop-gen-btn').textContent = t('stopGen');
             document.getElementById('attach-btn').title = t('attachFile');
             document.getElementById('error-message').textContent = t('cannotConnect');
             document.querySelector('#error-banner button').textContent = t('retry');
             document.getElementById('modal-cancel').textContent = t('cancel');
         }
         applyLanguage();
+
+        document.getElementById('stop-gen-btn').addEventListener('click', function() {
+            if (self._streamController) { self._streamController.abort(); self._streamController = null; }
+            self.saveStreamingProgress();
+            self.isStreaming = false;
+            self.updateSendBtn();
+            self.setStatus('');
+            document.getElementById('stop-gen-btn').style.display = 'none';
+        });
+        document.addEventListener('visibilitychange', function() {
+            if (document.hidden && self.isStreaming) self.saveStreamingProgress();
+        });
+        window.addEventListener('beforeunload', function() {
+            if (self.isStreaming) self.saveStreamingProgress();
+        });
+
         if (window.visualViewport) {
             window.visualViewport.addEventListener('resize', function() {
                 document.documentElement.style.height = window.visualViewport.height + 'px';
@@ -1328,6 +1352,18 @@ const UIManager = {
         document.getElementById('send-btn').disabled = !hasText && !hasAttachment;
     },
 
+    saveStreamingProgress: function() {
+        if (!this._pendingContent || !this._pendingSession) return;
+        var last = this._pendingSession.messages[this._pendingSession.messages.length - 1];
+        if (last && last.role === 'assistant') return; // onComplete already saved it
+        this._pendingSession.messages.push({ role: 'assistant', content: this._pendingContent });
+        var prev = this._pendingSession.messages[this._pendingSession.messages.length - 2];
+        if (prev && prev.role === 'user') prev._sentToLLM = true;
+        SessionStore.updateSession(this._pendingSession);
+        this._pendingContent = '';
+        this._pendingSession = null;
+    },
+
     updateEndpoint: async function() {
         const url = document.getElementById('endpoint-input').value.trim();
         if (!url) return;
@@ -1398,7 +1434,7 @@ const UIManager = {
         document.getElementById('status-bar').classList.toggle('visible', !!text);
     },
 
-    detectWebSearch: async function(userMessage) {
+    detectWebSearch: async function(userMessage, signal) {
         try {
             const res = await fetch(OllamaAPI.BASE_URL + '/generate', {
                 method: 'POST',
@@ -1408,14 +1444,15 @@ const UIManager = {
                     stream: false,
                     options: { temperature: 0, num_predict: 4 },
                     prompt: 'The message below may be in any language. Does it ask about anything that may have changed recently or requires up-to-date information — such as news, current events, live scores, prices, stocks, weather, recent releases, ongoing situations, people in the news, or anything happening today or this week? Answer only YES or NO.\n\nMessage: ' + userMessage + '\n\nAnswer:'
-                })
+                }),
+                signal: signal
             });
             const data = await res.json();
             return /^yes/i.test((data.response || '').trim());
         } catch (e) { return false; }
     },
 
-    getSearchKeywords: async function(userMessage) {
+    getSearchKeywords: async function(userMessage, signal) {
         try {
             const res = await fetch(OllamaAPI.BASE_URL + '/generate', {
                 method: 'POST',
@@ -1434,7 +1471,8 @@ const UIManager = {
                         'Question: "' + userMessage + '"\n\n' +
                         'If YES: reply with ONLY 4-6 search keywords. No names from your training. No explanation.\n' +
                         'If NO: reply with only the word NO.'
-                })
+                }),
+                signal: signal
             });
             const data = await res.json();
             const reply = (data.response || '').trim();
@@ -1443,10 +1481,10 @@ const UIManager = {
         } catch (e) { return null; }
     },
 
-    searchWeb: async function(keywords) {
+    searchWeb: async function(keywords, signal) {
         try {
             const url = '/search?q=' + encodeURIComponent(keywords) + '&engine=' + encodeURIComponent(AppConfig.searxngUrl);
-            const res = await fetch(url);
+            const res = await fetch(url, { signal: signal });
             if (!res.ok) return null;
             const data = await res.json();
             const results = (data.results || []).filter(function(r) { return r.title || r.content; });
@@ -1457,7 +1495,7 @@ const UIManager = {
         } catch (e) { return null; }
     },
 
-    synthesizeResults: async function(question, keywords, results, today) {
+    synthesizeResults: async function(question, keywords, results, today, signal) {
         try {
             const res = await fetch(OllamaAPI.BASE_URL + '/generate', {
                 method: 'POST',
@@ -1467,7 +1505,8 @@ const UIManager = {
                     stream: false,
                     options: { temperature: 0 },
                     prompt: 'Today is ' + today + '. Extract the key facts from these web search results to answer the question. Be concise and factual. Use only what the results say.\n\nQuestion: ' + question + '\n\nSearch results:\n' + results + '\n\nKey facts from results:'
-                })
+                }),
+                signal: signal
             });
             const data = await res.json();
             return (data.response || '').trim() || results;
@@ -1534,25 +1573,36 @@ const UIManager = {
         container.scrollTop = container.scrollHeight;
 
         this.isStreaming = true;
+        this._pendingContent = '';
+        this._pendingSession = null;
+        const pipelineController = new AbortController();
+        const pipelineSignal = pipelineController.signal;
+        self._streamController = pipelineController;
         document.getElementById('send-btn').disabled = true;
+        document.getElementById('stop-gen-btn').textContent = t('stopGen');
+        document.getElementById('stop-gen-btn').style.display = '';
 
         let apiMessages = prepareForAPI(ContextManager.buildContextMessages(this.currentSession));
         apiMessages[apiMessages.length - 1] = userMsgForAPI;
-        const needsWebSearch = await this.detectWebSearch(content);
+        const needsWebSearch = await this.detectWebSearch(content, pipelineSignal);
+        if (pipelineSignal.aborted) return;
         const cleanedContent = content;
         syslog('[SEND] user="' + content.slice(0, 120) + '" needsWebSearch=' + needsWebSearch + ' cleanedQuery="' + cleanedContent + '"');
         if (AppConfig.searxngUrl && needsWebSearch) {
             this.setStatus(t('genKeywords'));
-            const keywords = await this.getSearchKeywords(cleanedContent);
+            const keywords = await this.getSearchKeywords(cleanedContent, pipelineSignal);
+            if (pipelineSignal.aborted) return;
             syslog('[KEYWORDS] result="' + keywords + '"');
             if (keywords) {
                 this.setStatus(t('searchingWeb'));
-                const results = await this.searchWeb(keywords);
+                const results = await this.searchWeb(keywords, pipelineSignal);
+                if (pipelineSignal.aborted) return;
                 syslog('[SEARCH] got results: ' + (results ? results.slice(0, 200) : 'null'));
                 if (results) {
                     this.setStatus(t('synthesizing'));
                     const today = new Date().toDateString();
-                    const synthesis = await this.synthesizeResults(cleanedContent, keywords, results, today);
+                    const synthesis = await this.synthesizeResults(cleanedContent, keywords, results, today, pipelineSignal);
+                    if (pipelineSignal.aborted) return;
                     syslog('[SYNTHESIS] ' + synthesis);
                     const last = apiMessages[apiMessages.length - 1];
                     apiMessages = apiMessages.slice(0, -1).concat([{
@@ -1571,11 +1621,13 @@ const UIManager = {
         let assistantContent = '';
         const searchWarning = assistantDiv.innerHTML;
         const sessionAtSend = this.currentSession;
+        self._pendingSession = sessionAtSend;
         OllamaAPI.streamChat(
             sessionAtSend.model,
             apiMessages,
             function(chunk) {
                 assistantContent += chunk;
+                self._pendingContent = assistantContent;
                 if (self.currentSession === sessionAtSend) {
                     assistantDiv.innerHTML = searchWarning + marked.parse(assistantContent);
                     addCopyButtons(assistantDiv);
@@ -1585,23 +1637,30 @@ const UIManager = {
             function() {
                 sessionAtSend.messages.push({ role: 'assistant', content: assistantContent });
                 var userMsg = sessionAtSend.messages[sessionAtSend.messages.length - 2];
-                if (userMsg && userMsg.role === 'user') {
-                    userMsg._sentToLLM = true;
-                }
+                if (userMsg && userMsg.role === 'user') userMsg._sentToLLM = true;
                 SessionStore.updateSession(sessionAtSend);
+                self._pendingContent = '';
+                self._pendingSession = null;
+                self._streamController = null;
                 self.isStreaming = false;
                 self.updateSendBtn();
                 self.setStatus('');
+                document.getElementById('stop-gen-btn').style.display = 'none';
             },
             function(err) {
                 console.error('Stream error:', err);
-                if (self.currentSession === sessionAtSend) {
-                    assistantDiv.textContent += '\n[Error: ' + err.message + ']';
+                if (self.currentSession === sessionAtSend && assistantContent) {
+                    assistantDiv.innerHTML = searchWarning + marked.parse(assistantContent);
+                    addCopyButtons(assistantDiv);
                 }
+                self.saveStreamingProgress();
+                self._streamController = null;
                 self.isStreaming = false;
                 self.updateSendBtn();
                 self.setStatus('');
-            }
+                document.getElementById('stop-gen-btn').style.display = 'none';
+            },
+            pipelineSignal
         );
     },
     
