@@ -419,7 +419,7 @@ const OllamaAPI = {
             const res = await fetch(this.BASE_URL + '/chat', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ model: model, messages: messages, stream: false })
+                body: JSON.stringify({ model: model, messages: messages, stream: false, think: false })
             });
             if (!res.ok) throw new Error('summarize failed');
             const data = await res.json();
@@ -434,7 +434,7 @@ const OllamaAPI = {
         fetch(this.BASE_URL + '/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model: model, messages: messages, stream: true }),
+            body: JSON.stringify({ model: model, messages: messages, stream: true, think: false }),
             signal: signal || controller.signal
         })
         .then(async function(response) {
@@ -772,6 +772,7 @@ const UIManager = {
 
         var _voiceRecognition = null;
         var _voiceTranscript = '';
+        var _voiceAccum = '';
         var _langMap = { en: 'en-US', vi: 'vi-VN', de: 'de-DE', es: 'es-ES', fr: 'fr-FR' };
         function stopVoice() {
             if (_voiceRecognition) { _voiceRecognition.stop(); _voiceRecognition = null; }
@@ -789,6 +790,7 @@ const UIManager = {
             var rec = new SR();
             _voiceRecognition = rec;
             _voiceTranscript = '';
+            _voiceAccum = '';
             rec.lang = _langMap[I18n._lang] || 'en-US';
             rec.continuous = true;
             rec.interimResults = false;
@@ -797,14 +799,19 @@ const UIManager = {
             barText.textContent = t('voiceListening');
             bar.classList.add('visible');
             rec.onresult = function(e) {
-                var finals = '';
+                var cur = '';
                 for (var i = 0; i < e.results.length; i++) {
-                    if (e.results[i].isFinal) finals += e.results[i][0].transcript + ' ';
+                    if (e.results[i].isFinal) cur += e.results[i][0].transcript + ' ';
                 }
-                _voiceTranscript = finals.trim();
+                _voiceTranscript = (_voiceAccum + cur).trim();
             };
             rec.onend = function() {
-                _voiceRecognition = null;
+                if (_voiceRecognition) {
+                    // Browser auto-stopped (silence timeout) — save and restart
+                    _voiceAccum = _voiceTranscript ? _voiceTranscript + ' ' : '';
+                    try { rec.start(); } catch(e) {}
+                    return;
+                }
                 bar.classList.remove('visible');
                 var text = _voiceTranscript.trim();
                 if (!text) {
@@ -1594,13 +1601,14 @@ const UIManager = {
                 body: JSON.stringify({
                     model: this.currentSession.model,
                     stream: false,
+                    think: false,
                     options: { temperature: 0, num_predict: 4 },
-                    prompt: contextBlock + 'New message: ' + userMessage + '\n\nDoes this new message require a live internet search to answer — such as current news, prices, weather, sports scores, recent events, or anything that changes over time? Answer NO if the message is a follow-up, formatting request, rephrasing, or asks to rewrite/translate/summarize/explain a previous response. Answer only YES or NO.\n\nAnswer:'
+                    prompt: contextBlock + 'New message: ' + userMessage + '\n\nDoes this new message require a live internet search to answer — such as current news, prices, weather, sports scores, recent events, or anything that changes over time? Answer NO if the message is a follow-up, formatting request, rephrasing, or asks to rewrite/translate/summarize/explain a previous response. Reply in English only with YES or NO.\n\nAnswer:'
                 }),
                 signal: signal
             });
             const data = await res.json();
-            return /^yes/i.test((data.response || '').trim());
+            return /^(yes|ja|oui|s[ií]|да)/i.test((data.response || '').trim());
         } catch (e) { return false; }
     },
 
@@ -1612,6 +1620,7 @@ const UIManager = {
                 body: JSON.stringify({
                     model: this.currentSession.model,
                     stream: false,
+                    think: false,
                     options: { temperature: 0 },
                     prompt:
                         'You are a search query generator. Rules:\n' +
@@ -1622,13 +1631,14 @@ const UIManager = {
                         'Does this question need current/live information (current leaders, prices, news, events, etc.)?\n' +
                         'Question: "' + userMessage + '"\n\n' +
                         'If YES: reply with ONLY 4-6 search keywords. No names from your training. No explanation.\n' +
-                        'If NO: reply with only the word NO.'
+                        'If NO: reply with only the word NO.\n' +
+                        'Always reply in English only.'
                 }),
                 signal: signal
             });
             const data = await res.json();
             const reply = (data.response || '').trim();
-            if (!reply || /^no\b/i.test(reply)) return null;
+            if (!reply || /^(no|nein|non|нет)\b/i.test(reply)) return null;
             return reply.replace(/['"*\n]/g, ' ').trim();
         } catch (e) { return null; }
     },
@@ -1655,6 +1665,7 @@ const UIManager = {
                 body: JSON.stringify({
                     model: this.currentSession.model,
                     stream: false,
+                    think: false,
                     options: { temperature: 0 },
                     prompt: 'Today is ' + today + '. Extract the key facts from these web search results to answer the question. Be concise and factual. Use only what the results say.\n\nQuestion: ' + question + '\n\nSearch results:\n' + results + '\n\nKey facts from results:'
                 }),
