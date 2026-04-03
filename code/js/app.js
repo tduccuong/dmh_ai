@@ -6,7 +6,7 @@ const I18n = {
         en: {
             retry: 'Retry', clear: 'Clear', send: 'Send', cancel: 'Cancel', ok: 'OK', stopGen: '■ Stop',
             update: 'Update', rename: 'Rename', delete_: 'Delete', download: '⬇ Download',
-            newSession: '+ New Session', defaultSession: 'Default Session',
+            newSession: '+ New Session', defaultSession: 'Default Session', newChat: 'New chat',
             typePlaceholder: 'Type a message...', attachFile: 'Attach file',
             ollamaEndpoint: 'Ollama Endpoint',
             cannotConnect: 'Cannot connect to Ollama',
@@ -38,7 +38,7 @@ const I18n = {
         vi: {
             retry: 'Thử lại', clear: 'Xóa', send: 'Gửi', cancel: 'Hủy', ok: 'OK', stopGen: '■ Dừng',
             update: 'Cập nhật', rename: 'Đổi tên', delete_: 'Xóa', download: '⬇ Tải về',
-            newSession: '+ Phiên mới', defaultSession: 'Phiên mặc định',
+            newSession: '+ Phiên mới', defaultSession: 'Phiên mặc định', newChat: 'Cuộc trò chuyện mới',
             typePlaceholder: 'Nhập tin nhắn...', attachFile: 'Đính kèm tệp',
             ollamaEndpoint: 'Điểm cuối Ollama',
             cannotConnect: 'Không thể kết nối Ollama',
@@ -70,7 +70,7 @@ const I18n = {
         de: {
             retry: 'Wiederholen', clear: 'Löschen', send: 'Senden', cancel: 'Abbrechen', ok: 'OK', stopGen: '■ Stopp',
             update: 'Aktualisieren', rename: 'Umbenennen', delete_: 'Löschen', download: '⬇ Herunterladen',
-            newSession: '+ Neue Sitzung', defaultSession: 'Standardsitzung',
+            newSession: '+ Neue Sitzung', defaultSession: 'Standardsitzung', newChat: 'Neuer Chat',
             typePlaceholder: 'Nachricht eingeben...', attachFile: 'Datei anhängen',
             ollamaEndpoint: 'Ollama-Endpunkt',
             cannotConnect: 'Verbindung zu Ollama fehlgeschlagen',
@@ -102,7 +102,7 @@ const I18n = {
         es: {
             retry: 'Reintentar', clear: 'Limpiar', send: 'Enviar', cancel: 'Cancelar', ok: 'OK', stopGen: '■ Detener',
             update: 'Actualizar', rename: 'Renombrar', delete_: 'Eliminar', download: '⬇ Descargar',
-            newSession: '+ Nueva sesión', defaultSession: 'Sesión predeterminada',
+            newSession: '+ Nueva sesión', defaultSession: 'Sesión predeterminada', newChat: 'Nueva conversación',
             typePlaceholder: 'Escribe un mensaje...', attachFile: 'Adjuntar archivo',
             ollamaEndpoint: 'Punto de acceso Ollama',
             cannotConnect: 'No se puede conectar a Ollama',
@@ -134,7 +134,7 @@ const I18n = {
         fr: {
             retry: 'Réessayer', clear: 'Effacer', send: 'Envoyer', cancel: 'Annuler', ok: 'OK', stopGen: '■ Arrêter',
             update: 'Mettre à jour', rename: 'Renommer', delete_: 'Supprimer', download: '⬇ Télécharger',
-            newSession: '+ Nouvelle session', defaultSession: 'Session par défaut',
+            newSession: '+ Nouvelle session', defaultSession: 'Session par défaut', newChat: 'Nouvelle conversation',
             typePlaceholder: 'Tapez un message...', attachFile: 'Joindre un fichier',
             ollamaEndpoint: 'Point d\'accès Ollama',
             cannotConnect: 'Connexion à Ollama impossible',
@@ -474,6 +474,16 @@ const OllamaAPI = {
     }
 };
 
+function wrapTables(el) {
+    el.querySelectorAll('table').forEach(function(table) {
+        if (table.parentElement.classList.contains('table-wrap')) return;
+        var wrap = document.createElement('div');
+        wrap.className = 'table-wrap';
+        table.parentNode.insertBefore(wrap, table);
+        wrap.appendChild(table);
+    });
+}
+
 function addCopyButtons(el) {
     el.querySelectorAll('pre').forEach(function(pre) {
         if (pre.querySelector('.code-copy-btn')) return;
@@ -599,6 +609,7 @@ const UIManager = {
         function closeSidebar() { sidebar.classList.add('collapsed'); overlay.classList.remove('visible'); headerLogo.style.display = ''; }
         function openSidebar() { sidebar.classList.remove('collapsed'); if (isMobile()) overlay.classList.add('visible'); headerLogo.style.display = 'none'; }
         toggle.addEventListener('click', function() { sidebar.classList.contains('collapsed') ? openSidebar() : closeSidebar(); });
+        document.getElementById('header-new-chat-btn').addEventListener('click', function() { self.createNewSession(); });
         overlay.addEventListener('click', closeSidebar);
         document.getElementById('message-input').addEventListener('focus', function() { if (isMobile()) closeSidebar(); });
         if (window.innerWidth <= 768) closeSidebar();
@@ -930,7 +941,7 @@ const UIManager = {
         document.getElementById('mgr-pw').value = '';
         document.getElementById('mgr-role').value = 'user';
         document.getElementById('mgr-add-btn').onclick = async function() {
-            var email = document.getElementById('mgr-email').value.trim();
+            var email = document.getElementById('mgr-email').value.trim().toLowerCase();
             if (email && !email.includes('@')) email += '@dmhai.local';
             var name = document.getElementById('mgr-name').value.trim();
             var pw = document.getElementById('mgr-pw').value;
@@ -1032,12 +1043,22 @@ const UIManager = {
                 this.currentSession = currentId ? sessions.find(function(s) { return s.id === currentId; }) : sessions[0];
                 if (!this.currentSession) this.currentSession = sessions[0];
                 await SessionStore.setCurrentSessionId(this.currentSession.id);
+                var lastActivity = parseInt(localStorage.getItem('lastActivityAt') || '0');
+                var thirtyMin = 30 * 60 * 1000;
+                if (lastActivity && Date.now() - lastActivity > thirtyMin &&
+                        this.currentSession.messages && this.currentSession.messages.length > 0) {
+                    var autoModel = document.getElementById('header-model-select').value || this.currentSession.model;
+                    var autoSession = await SessionStore.createSession(t('defaultSession'), autoModel);
+                    await SessionStore.setCurrentSessionId(autoSession.id);
+                    this.currentSession = autoSession;
+                }
             }
             if (this.currentSession && this.currentSession.model) {
                 document.getElementById('header-model-select').value = this.currentSession.model;
             }
             await this.renderSessions();
             this.renderChat();
+            document.getElementById('message-input').focus();
         } catch (e) {
             console.error('Failed to load sessions:', e);
         }
@@ -1132,7 +1153,7 @@ const UIManager = {
             div.className = 'message ' + msg.role;
             if (msg.role === 'assistant') {
                 div.innerHTML = marked.parse(msg.content || '');
-                addCopyButtons(div);
+                addCopyButtons(div); wrapTables(div);
             } else {
                 div.textContent = msg.content || '';
                 if (msg.images && msg.images.length > 0) {
@@ -1474,14 +1495,13 @@ const UIManager = {
     },
 
     createNewSession: async function() {
-        const name = await Modal.prompt(t('newSessionName'), t('defaultSession'));
-        if (!name || !name.trim()) return;
         const currentModel = document.getElementById('header-model-select').value;
-        const session = await SessionStore.createSession(name, currentModel);
+        const session = await SessionStore.createSession(t('newChat'), currentModel);
         await SessionStore.setCurrentSessionId(session.id);
         this.currentSession = session;
         await this.renderSessions();
         this.renderChat();
+        document.getElementById('message-input').focus();
     },
 
     switchSession: async function(id) {
@@ -1653,6 +1673,7 @@ const UIManager = {
         if (imagesForAPI.length > 0) userMsgForAPI.images = imagesForAPI;
 
         this.currentSession.messages.push(userMsgForStorage);
+        localStorage.setItem('lastActivityAt', Date.now().toString());
         this.attachedFiles = [];
         this.renderAttachments();
         await SessionStore.updateSession(this.currentSession);
@@ -1724,7 +1745,7 @@ const UIManager = {
                 self._pendingContent = assistantContent;
                 if (self.currentSession === sessionAtSend) {
                     assistantDiv.innerHTML = searchWarning + marked.parse(assistantContent);
-                    addCopyButtons(assistantDiv);
+                    addCopyButtons(assistantDiv); wrapTables(assistantDiv);
                     container.scrollTop = container.scrollHeight;
                 }
             },
@@ -1740,12 +1761,23 @@ const UIManager = {
                 self.updateSendBtn();
                 self.setStatus('');
                 document.getElementById('stop-gen-btn').style.display = 'none';
+                if (sessionAtSend.messages.length === 2) {
+                    var _defaultNames = [];
+                    Object.keys(I18n._strings).forEach(function(lang) {
+                        var s = I18n._strings[lang];
+                        if (s.newChat) _defaultNames.push(s.newChat.toLowerCase());
+                        if (s.defaultSession) _defaultNames.push(s.defaultSession.toLowerCase());
+                    });
+                    if (_defaultNames.indexOf(sessionAtSend.name.toLowerCase()) !== -1) {
+                        self.autoNameSession(sessionAtSend);
+                    }
+                }
             },
             function(err) {
                 console.error('Stream error:', err);
                 if (self.currentSession === sessionAtSend && assistantContent) {
                     assistantDiv.innerHTML = searchWarning + marked.parse(assistantContent);
-                    addCopyButtons(assistantDiv);
+                    addCopyButtons(assistantDiv); wrapTables(assistantDiv);
                 }
                 self.saveStreamingProgress();
                 self._streamController = null;
@@ -1756,6 +1788,26 @@ const UIManager = {
             },
             pipelineSignal
         );
+    },
+
+    autoNameSession: async function(session) {
+        try {
+            var firstUser = session.messages.find(function(m) { return m.role === 'user'; });
+            if (!firstUser) return;
+            var userText = typeof firstUser.content === 'string' ? firstUser.content
+                : (Array.isArray(firstUser.content) ? ((firstUser.content.find(function(p) { return p.type === 'text'; }) || {}).text || '') : '');
+            if (!userText.trim()) return;
+            var name = await OllamaAPI.summarize(session.model, [{
+                role: 'user',
+                content: 'Give a short title (3-5 words) for a chat conversation that starts with this message: "' + userText.slice(0, 300) + '". Reply with only the title, no quotes, no explanation.'
+            }]);
+            if (!name || !name.trim()) return;
+            name = name.trim().replace(/^["""''']+|["""''']+$/g, '').trim();
+            if (!name) return;
+            session.name = name;
+            await SessionStore.updateSession(session);
+            await this.renderSessions();
+        } catch(e) {}
     },
 
     showError: function(message) {
