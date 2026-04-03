@@ -1869,8 +1869,15 @@ const UIManager = {
         document.getElementById('status-bar').classList.toggle('visible', !!text);
     },
 
-    detectWebSearch: async function(userMessage, signal) {
+    detectWebSearch: async function(userMessage, recentMsgs, signal) {
         try {
+            var contextBlock = '';
+            if (recentMsgs && recentMsgs.length > 0) {
+                contextBlock = 'Recent conversation:\n' + recentMsgs.map(function(m) {
+                    var text = typeof m.content === 'string' ? m.content : (Array.isArray(m.content) ? m.content.filter(function(p) { return p.type === 'text'; }).map(function(p) { return p.text; }).join(' ') : '');
+                    return (m.role === 'user' ? 'User: ' : 'Assistant: ') + text.slice(0, 300);
+                }).join('\n') + '\n\n';
+            }
             const res = await fetch(OllamaAPI.BASE_URL + '/generate', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -1878,7 +1885,7 @@ const UIManager = {
                     model: this.currentSession.model,
                     stream: false,
                     options: { temperature: 0, num_predict: 4 },
-                    prompt: 'The message below may be in any language. Does it ask about anything that may have changed recently or requires up-to-date information — such as news, current events, live scores, prices, stocks, weather, recent releases, ongoing situations, people in the news, or anything happening today or this week? Answer only YES or NO.\n\nMessage: ' + userMessage + '\n\nAnswer:'
+                    prompt: contextBlock + 'New message: ' + userMessage + '\n\nDoes this new message require a live internet search to answer — such as current news, prices, weather, sports scores, recent events, or anything that changes over time? Answer NO if the message is a follow-up, formatting request, rephrasing, or asks to rewrite/translate/summarize/explain a previous response. Answer only YES or NO.\n\nAnswer:'
                 }),
                 signal: signal
             });
@@ -2019,7 +2026,8 @@ const UIManager = {
 
         let apiMessages = prepareForAPI(ContextManager.buildContextMessages(this.currentSession));
         apiMessages[apiMessages.length - 1] = userMsgForAPI;
-        const needsWebSearch = await this.detectWebSearch(content, pipelineSignal);
+        const recentMsgs = (this.currentSession.messages || []).filter(function(m) { return m.role === 'user' || m.role === 'assistant'; }).slice(-4);
+        const needsWebSearch = await this.detectWebSearch(content, recentMsgs, pipelineSignal);
         if (pipelineSignal.aborted) return;
         const cleanedContent = content;
         syslog('[SEND] user="' + content.slice(0, 120) + '" needsWebSearch=' + needsWebSearch + ' cleanedQuery="' + cleanedContent + '"');
