@@ -530,8 +530,15 @@ function buildMsgHeader(msg, session) {
 
 function prepareForAPI(messages) {
     return messages.map(function(msg) {
-        if (msg.role !== 'user') return msg;
-        return { role: 'user', content: msg.content };
+        if (msg.role === 'assistant') return { role: 'assistant', content: msg.content || '' };
+        var content = msg.content || '';
+        if (msg.files && msg.files.length > 0) {
+            content += msg.files.map(function(f) {
+                return '\n\n[File: ' + f.name + ']\n' + (f.snippet || '');
+            }).join('');
+            content = content.trim();
+        }
+        return { role: 'user', content: content };
     });
 }
 
