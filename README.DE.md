@@ -10,6 +10,7 @@ Eine leichtgewichtige, selbst gehostete Chat-Oberfläche für Ollama auf Ihrem l
 ## Funktionen
 
 - **Integrierte Websuche** — wie Perplexity, aber selbst gehostet und privat. DMH-AI erkennt automatisch, wenn Ihre Frage aktuelle Informationen benötigt, durchsucht das Web über eine integrierte SearXNG-Instanz und fasst die Ergebnisse zu einer kohärenten, quellenbasierten Antwort zusammen. Funktioniert in jeder Sprache.
+- **Benutzerverwaltung** — vollständige, wenn auch einfache Mehrbenutzerunterstützung. Jeder Nutzer hat eigene Anmeldedaten, eigene Chat-Sitzungen und eigenen Dateispeicher. Ein Admin-Konto wird beim ersten Start automatisch erstellt; Admins können weitere Nutzer direkt in der Oberfläche hinzufügen und entfernen.
 - **Medienanhänge** — Dokumente (PDF, DOCX, XLSX), Bilder und Videos vom Gerät anhängen. Auf dem Handy direkt ein Foto aufnehmen oder ein Video aufzeichnen und in den Chat einfügen — kein Speichern in der Galerie nötig.
 - Chat mit jedem Ollama-Modell — Cloud oder lokal — über eine übersichtliche Web-Oberfläche
 - Persistente Chat-Sitzungen in SQLite gespeichert
@@ -136,6 +137,18 @@ build.bat && dist\run.bat
 Öffnen Sie [http://localhost:8080](http://localhost:8080) im Browser. Andere Geräte im Netzwerk können über `http://<Ihre-IP-Adresse>:8080` zugreifen.
 
 Für **Spracheingabe** den HTTPS-Endpunkt `https://localhost:8443` (oder `https://<Ihre-IP-Adresse>:8443`) verwenden. Die Warnung zum selbstsignierten Zertifikat einmalig akzeptieren. Auf iOS den Link in der Zertifikatswarnung tippen, um das Zertifikat herunterzuladen und über Einstellungen zu installieren.
+
+### Erste Anmeldung
+
+Beim ersten Start erstellt DMH-AI automatisch ein Standard-Admin-Konto:
+
+| Benutzername | Passwort |
+|---|---|
+| `admin` | `dmhai` |
+
+Nach der Anmeldung unter dem Benutzersymbol → **Passwort ändern** ein neues Passwort festlegen. Weitere Nutzer können unter dem Benutzersymbol → **Benutzer verwalten** hinzugefügt werden.
+
+Chat-Sitzungen und hochgeladene Dateien jedes Nutzers werden vollständig getrennt gespeichert.
 
 Benutzerdaten werden gespeichert in:
 - `dist/db/` — SQLite-Chat-Datenbank

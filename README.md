@@ -10,6 +10,7 @@ A lightweight, self-hosted chat UI for Ollama running on your local machine. Run
 ## Features
 
 - **Built-in web search** — like Perplexity, but self-hosted and private. DMH-AI automatically detects when your question needs current information, searches the web via a bundled SearXNG instance, and synthesizes the results into a coherent, sourced answer. Works in any language.
+- **User management** — complete albeit simple multi-user support. Each user has their own login, their own chat sessions, and their own file storage. An admin account is created on first run; admins can add and remove users from within the UI. No external auth service required.
 - **Rich media attachments** — attach documents (PDF, DOCX, XLSX), images, and videos from your device. On mobile, take a fresh photo or record a video directly and attach it to the chat — no need to save to gallery first.
 - Chat with any Ollama model — cloud or local — via a clean browser UI
 - Persistent chat sessions stored in SQLite
@@ -136,6 +137,18 @@ build.bat && dist\run.bat
 Open [http://localhost:8080](http://localhost:8080) in your browser. Other devices on your network can access it at `http://<your-machine-ip>:8080`.
 
 For **voice input**, use the HTTPS endpoint at `https://localhost:8443` (or `https://<your-machine-ip>:8443`). Accept the self-signed certificate warning once. On iOS, tap the certificate warning link to download and install the certificate via Settings.
+
+### First login
+
+On first run, DMH-AI creates a default admin account:
+
+| Username | Password |
+|---|---|
+| `admin` | `dmhai` |
+
+Sign in, then go to the user icon → **Change password** to set a new password. To add more users, go to the user icon → **Manage users**.
+
+Each user's chat sessions and uploaded files are kept completely separate.
 
 User data persists in:
 - `dist/db/` — SQLite chat database

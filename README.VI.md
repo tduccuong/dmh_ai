@@ -10,6 +10,7 @@ Giao diện chat nhẹ, tự host cho Ollama chạy trên máy tính cá nhân. 
 ## Tính năng
 
 - **Tìm kiếm web tích hợp** — tương tự Perplexity, nhưng tự host và riêng tư. DMH-AI tự động phát hiện khi câu hỏi của bạn cần thông tin mới nhất, tìm kiếm web qua SearXNG tích hợp, và tổng hợp kết quả thành câu trả lời mạch lạc, có nguồn. Hoạt động với mọi ngôn ngữ.
+- **Quản lý người dùng** — hỗ trợ đa người dùng đầy đủ tuy đơn giản. Mỗi người dùng có đăng nhập riêng, phiên chat riêng và lưu trữ tệp riêng. Tài khoản admin được tạo tự động khi khởi chạy lần đầu; admin có thể thêm và xóa người dùng ngay trong giao diện.
 - **Đính kèm đa phương tiện** — đính kèm tài liệu (PDF, DOCX, XLSX), hình ảnh và video từ thiết bị. Trên điện thoại, chụp ảnh hoặc quay video trực tiếp và đính kèm vào chat — không cần lưu vào thư viện trước.
 - Chat với mọi mô hình Ollama — cloud hoặc local — qua giao diện web gọn gàng
 - Lưu phiên chat vào SQLite
@@ -136,6 +137,18 @@ build.bat && dist\run.bat
 Mở [http://localhost:8080](http://localhost:8080) trong trình duyệt. Các thiết bị khác trong mạng có thể truy cập tại `http://<địa-chỉ-IP-máy-bạn>:8080`.
 
 Để dùng **nhập liệu bằng giọng nói**, dùng cổng HTTPS `https://localhost:8443` (hoặc `https://<địa-chỉ-IP-máy-bạn>:8443`). Chấp nhận cảnh báo chứng chỉ tự ký một lần. Trên iOS, nhấn vào liên kết cảnh báo chứng chỉ để tải về và cài đặt qua Cài đặt.
+
+### Đăng nhập lần đầu
+
+Khi khởi chạy lần đầu, DMH-AI tạo tài khoản admin mặc định:
+
+| Tên đăng nhập | Mật khẩu |
+|---|---|
+| `admin` | `dmhai` |
+
+Đăng nhập xong, vào biểu tượng người dùng → **Đổi mật khẩu** để đặt mật khẩu mới. Để thêm người dùng khác, vào biểu tượng người dùng → **Quản lý người dùng**.
+
+Phiên chat và tệp tải lên của mỗi người dùng được lưu trữ hoàn toàn riêng biệt.
 
 Dữ liệu được lưu trong:
 - `dist/db/` — Cơ sở dữ liệu SQLite

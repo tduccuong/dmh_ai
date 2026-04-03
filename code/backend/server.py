@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import base64, json, mimetypes, os, re, shutil, sqlite3, time, urllib.request, urllib.parse
+import base64, hashlib, json, mimetypes, os, re, secrets, shutil, sqlite3, time, urllib.request, urllib.parse
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 
@@ -16,6 +16,22 @@ def log(msg):
 
 IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'}
 
+def hash_password(password):
+    salt = secrets.token_hex(16)
+    h = hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 100000).hex()
+    return f'{salt}:{h}'
+
+def verify_password(password, stored):
+    try:
+        salt, h = stored.split(':', 1)
+        return hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 100000).hex() == h
+    except Exception:
+        return False
+
+def user_asset_dir(email, session_id):
+    safe_session = re.sub(r'[^\w\-]', '_', session_id)
+    return os.path.join(ASSETS_DIR, email, safe_session)
+
 def init_db():
     os.makedirs(os.path.dirname(DB), exist_ok=True)
     os.makedirs(ASSETS_DIR, exist_ok=True)
@@ -26,6 +42,27 @@ def init_db():
             created_at INTEGER)''')
         c.execute('''CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY, value TEXT)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            email TEXT UNIQUE NOT NULL,
+            name TEXT,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'user',
+            created_at INTEGER)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS auth_tokens (
+            token TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            created_at INTEGER)''')
+        # Migration: add user_id column to sessions if missing
+        try:
+            c.execute('ALTER TABLE sessions ADD COLUMN user_id TEXT DEFAULT ""')
+        except sqlite3.OperationalError:
+            pass  # already exists
+        # Seed default admin user
+        if not c.execute('SELECT id FROM users WHERE email=?', ('admin@dmhai.local',)).fetchone():
+            uid = secrets.token_hex(8)
+            c.execute('INSERT INTO users (id,email,name,password_hash,role,created_at) VALUES (?,?,?,?,?,?)',
+                      (uid, 'admin@dmhai.local', None, hash_password('dmhai'), 'admin', int(time.time())))
 
 def parse(row):
     d = dict(zip(['id', 'name', 'model', 'messages', 'context', 'created_at'], row))
@@ -81,8 +118,53 @@ class H(BaseHTTPRequestHandler):
         n = int(self.headers.get('Content-Length', 0))
         return json.loads(self.rfile.read(n)) if n else {}
 
+    def get_auth_user(self):
+        auth = self.headers.get('Authorization', '')
+        if not auth.startswith('Bearer '):
+            return None
+        token = auth[7:].strip()
+        with sqlite3.connect(DB) as c:
+            row = c.execute(
+                'SELECT u.id, u.email, u.name, u.role FROM auth_tokens t JOIN users u ON t.user_id=u.id WHERE t.token=?',
+                (token,)
+            ).fetchone()
+        if row:
+            return {'id': row[0], 'email': row[1], 'name': row[2] or row[1].split('@')[0], 'role': row[3]}
+        return None
+
+    def require_auth(self):
+        user = self.get_auth_user()
+        if not user:
+            self.send_json(401, {'error': 'Unauthorized'})
+        return user
+
+    def current_session_key(self, user_id):
+        return f'current_session_{user_id}'
+
     def do_GET(self):
         p = urlparse(self.path).path
+
+        if p == '/auth/me':
+            user = self.get_auth_user()
+            if not user:
+                self.send_json(401, {'error': 'Unauthorized'})
+                return
+            self.send_json(200, user)
+            return
+
+        user = self.require_auth()
+        if not user:
+            return
+
+        if p == '/users':
+            if user['role'] != 'admin':
+                self.send_json(403, {'error': 'Forbidden'})
+                return
+            with sqlite3.connect(DB) as c:
+                rows = c.execute('SELECT id, email, name, role, created_at FROM users ORDER BY created_at').fetchall()
+            self.send_json(200, [{'id': r[0], 'email': r[1], 'name': r[2], 'role': r[3], 'createdAt': r[4]} for r in rows])
+            return
+
         if p == '/search':
             qs = urllib.parse.parse_qs(urlparse(self.path).query)
             q = qs.get('q', [''])[0]
@@ -106,10 +188,11 @@ class H(BaseHTTPRequestHandler):
                 log(f'[SEARCH] ERROR: {e}')
                 self.send_json(500, {'error': str(e)})
             return
+
         m = re.match(r'^/assets/([^/]+)/([^/]+)$', p)
         if m:
             session_id, file_id = m.group(1), m.group(2)
-            session_dir = os.path.join(ASSETS_DIR, re.sub(r'[^\w\-]', '_', session_id))
+            session_dir = user_asset_dir(user['email'], session_id)
             file_path = os.path.realpath(os.path.join(session_dir, file_id))
             if file_path.startswith(os.path.realpath(ASSETS_DIR)) and os.path.isfile(file_path):
                 mime = mimetypes.guess_type(file_path)[0] or 'application/octet-stream'
@@ -125,21 +208,24 @@ class H(BaseHTTPRequestHandler):
             else:
                 self.send_json(404, {'error': 'Not found'})
             return
+
         with sqlite3.connect(DB) as c:
             if p == '/sessions':
                 rows = c.execute(
-                    'SELECT id,name,model,messages,context,created_at FROM sessions ORDER BY created_at'
+                    'SELECT id,name,model,messages,context,created_at FROM sessions WHERE user_id=? ORDER BY created_at',
+                    (user['id'],)
                 ).fetchall()
                 self.send_json(200, [parse(r) for r in rows])
             elif p == '/sessions/current':
-                row = c.execute('SELECT value FROM settings WHERE key=?', ('current_session',)).fetchone()
+                key = self.current_session_key(user['id'])
+                row = c.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
                 self.send_json(200, {'id': row[0] if row else None})
             else:
                 m = re.match(r'^/sessions/([^/]+)$', p)
                 if m:
                     row = c.execute(
-                        'SELECT id,name,model,messages,context,created_at FROM sessions WHERE id=?',
-                        (m.group(1),)
+                        'SELECT id,name,model,messages,context,created_at FROM sessions WHERE id=? AND user_id=?',
+                        (m.group(1), user['id'])
                     ).fetchone()
                     self.send_json(200 if row else 404, parse(row) if row else {'error': 'Not found'})
                 else:
@@ -147,20 +233,75 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         p = urlparse(self.path).path
+
+        if p == '/auth/login':
+            d = self.body()
+            email = (d.get('email') or '').strip().lower()
+            password = d.get('password') or ''
+            with sqlite3.connect(DB) as c:
+                row = c.execute('SELECT id, email, name, role, password_hash FROM users WHERE email=?', (email,)).fetchone()
+            if not row or not verify_password(password, row[4]):
+                self.send_json(401, {'error': 'Invalid username or password'})
+                return
+            token = secrets.token_hex(32)
+            with sqlite3.connect(DB) as c:
+                c.execute('INSERT INTO auth_tokens (token, user_id, created_at) VALUES (?,?,?)',
+                          (token, row[0], int(time.time())))
+            display = row[2] or row[1].split('@')[0]
+            self.send_json(200, {'token': token, 'user': {'id': row[0], 'email': row[1], 'name': display, 'role': row[3]}})
+            return
+
+        if p == '/auth/logout':
+            auth = self.headers.get('Authorization', '')
+            if auth.startswith('Bearer '):
+                token = auth[7:].strip()
+                with sqlite3.connect(DB) as c:
+                    c.execute('DELETE FROM auth_tokens WHERE token=?', (token,))
+            self.send_json(200, {'ok': True})
+            return
+
+        user = self.require_auth()
+        if not user:
+            return
+
+        if p == '/users':
+            if user['role'] != 'admin':
+                self.send_json(403, {'error': 'Forbidden'})
+                return
+            d = self.body()
+            email = (d.get('email') or '').strip().lower()
+            name = (d.get('name') or '').strip() or None
+            password = d.get('password') or ''
+            role = d.get('role') or 'user'
+            if not email or not password:
+                self.send_json(400, {'error': 'Email and password are required'})
+                return
+            uid = secrets.token_hex(8)
+            try:
+                with sqlite3.connect(DB) as c:
+                    c.execute('INSERT INTO users (id,email,name,password_hash,role,created_at) VALUES (?,?,?,?,?,?)',
+                              (uid, email, name, hash_password(password), role, int(time.time())))
+            except sqlite3.IntegrityError:
+                self.send_json(409, {'error': 'Email already exists'})
+                return
+            self.send_json(200, {'id': uid, 'email': email, 'name': name, 'role': role})
+            return
+
         if p == '/log':
             d = self.body()
             log(d.get('msg', ''))
             self.send_json(200, {'ok': True})
             return
+
         if p == '/sessions':
             d = self.body()
             with sqlite3.connect(DB) as c:
                 c.execute(
-                    'INSERT INTO sessions (id,name,model,messages,context,created_at) VALUES (?,?,?,?,?,?)',
+                    'INSERT INTO sessions (id,name,model,messages,context,created_at,user_id) VALUES (?,?,?,?,?,?,?)',
                     (d['id'], d['name'], d.get('model', ''),
                      json.dumps(d.get('messages', [])),
                      json.dumps(d.get('context')),
-                     d['createdAt'])
+                     d['createdAt'], user['id'])
                 )
             self.send_json(200, d)
         elif p == '/assets':
@@ -175,7 +316,7 @@ class H(BaseHTTPRequestHandler):
             raw = item['data']
             session_id = parts.get('sessionId', {}).get('data', b'default').decode('utf-8', errors='replace')
             ext = os.path.splitext(filename)[1].lower()
-            session_dir = os.path.join(ASSETS_DIR, re.sub(r'[^\w\-]', '_', session_id))
+            session_dir = user_asset_dir(user['email'], session_id)
             os.makedirs(session_dir, exist_ok=True)
             safe_name = str(int(time.time() * 1000)) + '_' + re.sub(r'[^\w.\-]', '_', filename)
             with open(os.path.join(session_dir, safe_name), 'wb') as f:
@@ -198,21 +339,64 @@ class H(BaseHTTPRequestHandler):
 
     def do_PUT(self):
         p = urlparse(self.path).path
+
+        if p == '/auth/password':
+            user = self.require_auth()
+            if not user:
+                return
+            d = self.body()
+            current = d.get('current') or ''
+            new_pw = d.get('new') or ''
+            if not new_pw:
+                self.send_json(400, {'error': 'New password required'})
+                return
+            with sqlite3.connect(DB) as c:
+                row = c.execute('SELECT password_hash FROM users WHERE id=?', (user['id'],)).fetchone()
+            if not row or not verify_password(current, row[0]):
+                self.send_json(401, {'error': 'Current password is incorrect'})
+                return
+            with sqlite3.connect(DB) as c:
+                c.execute('UPDATE users SET password_hash=? WHERE id=?', (hash_password(new_pw), user['id']))
+            self.send_json(200, {'ok': True})
+            return
+
+        m_user = re.match(r'^/users/([^/]+)$', p)
+        if m_user:
+            user = self.require_auth()
+            if not user:
+                return
+            if user['role'] != 'admin':
+                self.send_json(403, {'error': 'Forbidden'})
+                return
+            d = self.body()
+            uid = m_user.group(1)
+            name = (d.get('name') or '').strip() or None
+            role = d.get('role') or 'user'
+            with sqlite3.connect(DB) as c:
+                c.execute('UPDATE users SET name=?, role=? WHERE id=?', (name, role, uid))
+                if d.get('password'):
+                    c.execute('UPDATE users SET password_hash=? WHERE id=?', (hash_password(d['password']), uid))
+            self.send_json(200, {'ok': True})
+            return
+
+        user = self.require_auth()
+        if not user:
+            return
         d = self.body()
         with sqlite3.connect(DB) as c:
             if p == '/sessions/current':
-                c.execute('INSERT OR REPLACE INTO settings (key,value) VALUES (?,?)',
-                          ('current_session', d['id']))
+                key = self.current_session_key(user['id'])
+                c.execute('INSERT OR REPLACE INTO settings (key,value) VALUES (?,?)', (key, d['id']))
                 self.send_json(200, d)
             else:
                 m = re.match(r'^/sessions/([^/]+)$', p)
                 if m:
                     c.execute(
-                        'UPDATE sessions SET name=?,model=?,messages=?,context=? WHERE id=?',
+                        'UPDATE sessions SET name=?,model=?,messages=?,context=? WHERE id=? AND user_id=?',
                         (d['name'], d.get('model', ''),
                          json.dumps(d.get('messages', [])),
                          json.dumps(d.get('context')),
-                         m.group(1))
+                         m.group(1), user['id'])
                     )
                     self.send_json(200, d)
                 else:
@@ -220,12 +404,31 @@ class H(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         p = urlparse(self.path).path
+        user = self.require_auth()
+        if not user:
+            return
+
+        m_user = re.match(r'^/users/([^/]+)$', p)
+        if m_user:
+            if user['role'] != 'admin':
+                self.send_json(403, {'error': 'Forbidden'})
+                return
+            uid = m_user.group(1)
+            if uid == user['id']:
+                self.send_json(400, {'error': 'Cannot delete your own account'})
+                return
+            with sqlite3.connect(DB) as c:
+                c.execute('DELETE FROM users WHERE id=?', (uid,))
+                c.execute('DELETE FROM auth_tokens WHERE user_id=?', (uid,))
+            self.send_json(200, {'ok': True})
+            return
+
         m = re.match(r'^/sessions/([^/]+)$', p)
         if m:
             session_id = m.group(1)
             with sqlite3.connect(DB) as c:
-                c.execute('DELETE FROM sessions WHERE id=?', (session_id,))
-            session_dir = os.path.join(ASSETS_DIR, re.sub(r'[^\w\-]', '_', session_id))
+                c.execute('DELETE FROM sessions WHERE id=? AND user_id=?', (session_id, user['id']))
+            session_dir = user_asset_dir(user['email'], session_id)
             if os.path.isdir(session_dir):
                 shutil.rmtree(session_dir, ignore_errors=True)
             self.send_json(200, {'ok': True})

@@ -68,8 +68,56 @@
         .endpoint-input { width: 100%; padding: 8px 10px; border-radius: 6px; border: 1px solid #483868; background: #1c1828; color: #eee; font-size: 12px; }
         .endpoint-update-btn { width: 100%; margin-top: 6px; padding: 8px; background: #281e38; color: #eee; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; }
         .endpoint-update-btn:hover { background: #a86020; }
-        .clear-btn { padding: 10px 16px; background: #e94560; color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 600; white-space: nowrap; }
-        .clear-btn:hover { background: #c0392b; }
+        .user-menu-wrap { position: relative; flex-shrink: 0; display: flex; align-items: stretch; }
+        .user-menu-btn { padding: 0 12px; background: #141018; color: #b098b8; border: 1px solid #281e38; border-radius: 8px; cursor: pointer; display: flex; align-items: center; }
+        .user-menu-btn:hover { background: #281e38; color: #eee; }
+        .user-dropdown { display: none; position: absolute; top: 100%; right: 0; background: #1c1628; border: 1px solid #382850; border-radius: 8px; margin-top: 4px; z-index: 200; min-width: 220px; box-shadow: 0 8px 24px rgba(0,0,0,0.6); overflow: hidden; }
+        .user-dropdown.open { display: block; }
+        .user-dropdown-identity { padding: 10px 14px; font-size: 13px; color: #b098b8; pointer-events: none; }
+        .user-dropdown-sep { height: 1px; background: #281e38; margin: 0; }
+        .user-dropdown-item { display: block; width: 100%; padding: 10px 14px; background: none; border: none; color: #b098b8; font-size: 13px; cursor: pointer; text-align: left; white-space: nowrap; }
+        .user-dropdown-item:hover { background: #281e38; color: #eee; }
+        .user-dropdown-item-danger { color: #e94560; }
+        .user-dropdown-item-danger:hover { background: #281e38; color: #ff6a80; }
+        /* Login screen */
+        .login-screen { position: fixed; inset: 0; background: #141018; display: flex; align-items: center; justify-content: center; z-index: 2000; }
+        .login-screen.hidden { display: none; }
+        .login-box { background: #1c1628; border: 1px solid #382850; border-radius: 12px; padding: 36px 32px 28px; width: 340px; max-width: 92vw; box-shadow: 0 16px 48px rgba(0,0,0,0.6); }
+        .login-logo { display: flex; align-items: center; gap: 12px; margin-bottom: 28px; }
+        .login-logo img { height: 40px; width: 40px; border-radius: 8px; object-fit: contain; }
+        .login-logo h1 { font-size: 22px; color: #e09040; letter-spacing: 0.04em; }
+        .login-field { width: 100%; padding: 11px 13px; border-radius: 7px; border: 1px solid #382850; background: #141018; color: #eee; font-size: 14px; margin-bottom: 12px; outline: none; box-sizing: border-box; }
+        .login-field:focus { border-color: #c87830; }
+        .login-user-wrap { display: flex; align-items: center; border-radius: 7px; border: 1px solid #382850; background: #141018; margin-bottom: 12px; overflow: hidden; }
+        .login-user-wrap:focus-within { border-color: #c87830; }
+        .login-user-wrap .login-field { border: none; margin-bottom: 0; flex: 1; min-width: 0; border-radius: 0; }
+        .login-domain-suffix { padding: 0 12px 0 2px; color: #786888; font-size: 14px; white-space: nowrap; flex-shrink: 0; user-select: none; }
+        .login-error { color: #e94560; font-size: 13px; min-height: 18px; margin-bottom: 10px; }
+        .login-btn { width: 100%; padding: 11px; background: #c87830; color: white; border: none; border-radius: 7px; cursor: pointer; font-size: 15px; font-weight: 600; }
+        .login-btn:hover { background: #a86020; }
+        .login-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+        /* Manage users modal */
+        .mgr-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.65); display: none; align-items: flex-start; justify-content: center; z-index: 1100; overflow-y: auto; padding: 40px 16px; }
+        .mgr-overlay.visible { display: flex; }
+        .mgr-box { background: #1c1628; border: 1px solid #382850; border-radius: 10px; padding: 24px; width: 480px; max-width: 100%; box-shadow: 0 16px 48px rgba(0,0,0,0.6); }
+        .mgr-title { font-size: 16px; font-weight: 600; color: #eee; margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between; }
+        .mgr-close { background: none; border: none; color: #b098b8; font-size: 20px; cursor: pointer; padding: 0 4px; }
+        .mgr-close:hover { color: #eee; }
+        .mgr-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 20px; }
+        .mgr-table th { text-align: left; color: #b098b8; font-weight: 500; padding: 6px 8px; border-bottom: 1px solid #281e38; }
+        .mgr-table td { padding: 8px 8px; border-bottom: 1px solid #1c1628; color: #ccc; vertical-align: middle; }
+        .mgr-table tr:hover td { background: rgba(255,255,255,0.03); }
+        .mgr-del-btn { background: none; border: none; color: #fca5a5; cursor: pointer; font-size: 13px; padding: 2px 6px; border-radius: 4px; }
+        .mgr-del-btn:hover { background: rgba(252,165,165,0.15); }
+        .mgr-add-title { font-size: 14px; font-weight: 500; color: #b098b8; margin-bottom: 10px; }
+        .mgr-row { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+        .mgr-input { flex: 1; min-width: 120px; padding: 9px 11px; border-radius: 6px; border: 1px solid #382850; background: #141018; color: #eee; font-size: 13px; outline: none; }
+        .mgr-input:focus { border-color: #c87830; }
+        .mgr-input:focus { border-color: #c87830; }
+        .mgr-select { padding: 9px 11px; border-radius: 6px; border: 1px solid #382850; background: #141018; color: #eee; font-size: 13px; outline: none; }
+        .mgr-add-btn { padding: 9px 16px; background: #c87830; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500; }
+        .mgr-add-btn:hover { background: #a86020; }
+        .mgr-error { color: #e94560; font-size: 13px; min-height: 18px; margin-bottom: 8px; }
         .attach-btn { padding: 0 14px; background: #141018; color: #b098b8; border: 1px solid #281e38; border-radius: 8px; cursor: pointer; font-size: 20px; line-height: 1; flex-shrink: 0; }
         .attach-btn:hover { background: #281e38; color: #eee; }
         .attach-menu { display: none; position: absolute; bottom: 100%; left: 0; background: #1c1628; border: 1px solid #382850; border-radius: 8px; margin-bottom: 6px; z-index: 200; min-width: 140px; box-shadow: 0 8px 24px rgba(0,0,0,0.5); overflow: hidden; }
@@ -170,7 +218,22 @@
                 <div class="lang-dropdown" id="lang-dropdown"></div>
             </div>
             <select class="model-select" id="header-model-select" style="flex:1;"></select>
-            <button class="clear-btn" id="clear-session-btn">Clear</button>
+            <div class="user-menu-wrap" id="user-menu-wrap">
+                <button class="user-menu-btn" id="user-menu-btn" title="Account">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
+                </button>
+                <div class="user-dropdown" id="user-dropdown">
+                    <div class="user-dropdown-identity" id="user-dropdown-identity"></div>
+                    <div class="user-dropdown-sep"></div>
+                    <button class="user-dropdown-item user-dropdown-item-danger" id="user-clear-btn">Clear current chat thread</button>
+                    <div class="user-dropdown-sep"></div>
+                    <button class="user-dropdown-item" id="user-change-pw-btn">Change password</button>
+                    <div class="user-dropdown-sep" id="user-manage-sep" style="display:none"></div>
+                    <button class="user-dropdown-item" id="user-manage-btn" style="display:none">Manage users</button>
+                    <div class="user-dropdown-sep"></div>
+                    <button class="user-dropdown-item" id="user-signout-btn">Sign out...</button>
+                </div>
+            </div>
         </div>
         <div class="chat-container" id="chat-container"></div>
         <div class="status-bar" id="status-bar">
@@ -199,6 +262,62 @@
             <button class="send-btn" id="send-btn"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg><span class="send-label" id="send-label">Send</span></button>
         </div>
     </div>
+<div class="login-screen" id="login-screen">
+    <div class="login-box">
+        <div class="login-logo">
+            <img src="/logo.png">
+            <h1>DMH-AI</h1>
+        </div>
+        <div class="login-user-wrap">
+            <input class="login-field" id="login-email" type="text" placeholder="Username" autocomplete="username">
+            <span class="login-domain-suffix">@dmhai.local</span>
+        </div>
+        <input class="login-field" id="login-password" type="password" placeholder="Password" autocomplete="current-password">
+        <div class="login-error" id="login-error"></div>
+        <button class="login-btn" id="login-btn">Sign in</button>
+    </div>
+</div>
+<div class="mgr-overlay" id="mgr-overlay">
+    <div class="mgr-box">
+        <div class="mgr-title">
+            <span>Manage Users</span>
+            <button class="mgr-close" id="mgr-close">✕</button>
+        </div>
+        <table class="mgr-table" id="mgr-table">
+            <thead><tr><th>Email</th><th>Name</th><th>Role</th><th></th></tr></thead>
+            <tbody id="mgr-tbody"></tbody>
+        </table>
+        <div class="mgr-add-title">Add user</div>
+        <div class="mgr-row">
+            <div style="display:flex;align-items:center;flex:1;min-width:120px;background:#141018;border:1px solid #382850;border-radius:6px;overflow:hidden;">
+                <input class="mgr-input" id="mgr-email" type="text" placeholder="Username" style="flex:1;min-width:0;border:none;background:transparent;">
+                <span style="padding:0 10px 0 2px;color:#786888;font-size:13px;white-space:nowrap;user-select:none;">@dmhai.local</span>
+            </div>
+            <input class="mgr-input" id="mgr-name" type="text" placeholder="Name (optional)">
+        </div>
+        <div class="mgr-row">
+            <input class="mgr-input" id="mgr-pw" type="password" placeholder="Password">
+            <select class="mgr-select" id="mgr-role"><option value="user">User</option><option value="admin">Admin</option></select>
+            <button class="mgr-add-btn" id="mgr-add-btn">Add</button>
+        </div>
+        <div class="mgr-error" id="mgr-error"></div>
+    </div>
+</div>
+<div class="modal-overlay" id="cpw-overlay">
+    <div class="modal">
+        <div class="modal-title">Change password</div>
+        <div class="modal-message" style="margin-bottom:12px;">
+            <input id="cpw-current" type="password" placeholder="Current password" class="modal-input" style="margin-bottom:8px;">
+            <input id="cpw-new" type="password" placeholder="New password" class="modal-input" style="margin-bottom:8px;">
+            <input id="cpw-confirm" type="password" placeholder="Confirm new password" class="modal-input" style="margin-bottom:0;">
+        </div>
+        <div id="cpw-error" style="display:none;background:#3a1020;border:1px solid #e94560;color:#ff7090;font-size:13px;padding:8px 12px;border-radius:6px;margin-bottom:12px;"></div>
+        <div class="modal-actions">
+            <button class="modal-btn modal-btn-cancel" id="cpw-cancel">Cancel</button>
+            <button class="modal-btn modal-btn-ok" id="cpw-ok">Change</button>
+        </div>
+    </div>
+</div>
 <div class="modal-overlay" id="modal-overlay">
     <div class="modal">
         <div class="modal-title" id="modal-title"></div>
@@ -375,8 +494,61 @@ const I18n = {
 };
 function t(key) { return I18n.t(key); }
 
+const Auth = {
+    _token: localStorage.getItem('auth_token'),
+    _user: (function() { try { return JSON.parse(localStorage.getItem('auth_user')); } catch(e) { return null; } })(),
+    get token() { return this._token; },
+    get user() { return this._user; },
+    get isLoggedIn() { return !!this._token && !!this._user; },
+    async login(email, password) {
+        const res = await fetch('/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: email, password: password })
+        });
+        if (!res.ok) throw new Error('Invalid username or password');
+        const data = await res.json();
+        this._token = data.token;
+        this._user = data.user;
+        localStorage.setItem('auth_token', data.token);
+        localStorage.setItem('auth_user', JSON.stringify(data.user));
+        return data.user;
+    },
+    async logout() {
+        if (this._token) {
+            fetch('/auth/logout', { method: 'POST', headers: { 'Authorization': 'Bearer ' + this._token } }).catch(function() {});
+        }
+        this._token = null;
+        this._user = null;
+        localStorage.removeItem('auth_token');
+        localStorage.removeItem('auth_user');
+    },
+    async validate() {
+        if (!this._token) return null;
+        const res = await fetch('/auth/me', { headers: { 'Authorization': 'Bearer ' + this._token } });
+        if (!res.ok) {
+            this._token = null; this._user = null;
+            localStorage.removeItem('auth_token'); localStorage.removeItem('auth_user');
+            return null;
+        }
+        const user = await res.json();
+        this._user = user;
+        localStorage.setItem('auth_user', JSON.stringify(user));
+        return user;
+    }
+};
+
+function apiFetch(url, options) {
+    options = options || {};
+    if (Auth.token) {
+        options.headers = options.headers || {};
+        options.headers['Authorization'] = 'Bearer ' + Auth.token;
+    }
+    return fetch(url, options);
+}
+
 function syslog(msg) {
-    fetch('/log', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({msg}) }).catch(()=>{});
+    apiFetch('/log', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({msg}) }).catch(function(){});
 }
 
 const AppConfig = {
@@ -453,7 +625,7 @@ const Modal = {
 const SessionStore = {
     BASE: '/sessions',
     getSessions: async function() {
-        const res = await fetch(this.BASE);
+        const res = await apiFetch(this.BASE);
         return res.json();
     },
     createSession: async function(name, model) {
@@ -465,7 +637,7 @@ const SessionStore = {
             context: { summary: null, summaryUpToIndex: -1 },
             createdAt: Date.now()
         };
-        await fetch(this.BASE, {
+        await apiFetch(this.BASE, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(session)
@@ -473,30 +645,30 @@ const SessionStore = {
         return session;
     },
     getSession: async function(id) {
-        const res = await fetch(this.BASE + '/' + id);
+        const res = await apiFetch(this.BASE + '/' + id);
         if (!res.ok) return null;
         return res.json();
     },
     updateSession: async function(session) {
-        await fetch(this.BASE + '/' + session.id, {
+        await apiFetch(this.BASE + '/' + session.id, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(session)
         });
     },
     deleteSession: async function(id) {
-        await fetch(this.BASE + '/' + id, { method: 'DELETE' });
+        await apiFetch(this.BASE + '/' + id, { method: 'DELETE' });
     },
     getCurrentSessionId: async function() {
-        const res = await fetch(this.BASE + '/current');
+        const res = await apiFetch(this.BASE + '/current');
         const data = await res.json();
         return data.id;
     },
     setCurrentSessionId: async function(id) {
-        await fetch(this.BASE + '/current', {
+        await apiFetch(this.BASE + '/current', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ id })
+            body: JSON.stringify({ id: id })
         });
     }
 };
@@ -757,7 +929,6 @@ const UIManager = {
             document.getElementById('new-session-btn').textContent = t('newSession');
             document.getElementById('endpoint-label').textContent = t('ollamaEndpoint');
             document.getElementById('endpoint-update-btn').textContent = t('update');
-            document.getElementById('clear-session-btn').textContent = t('clear');
             document.getElementById('message-input').placeholder = t('typePlaceholder');
             document.getElementById('send-label').textContent = t('send');
             document.getElementById('stop-gen-btn').textContent = t('stopGen');
@@ -818,7 +989,33 @@ const UIManager = {
             }
         });
         document.getElementById('header-model-select').addEventListener('change', function(e) { self.switchModel(e.target.value); });
-        document.getElementById('clear-session-btn').addEventListener('click', function() { self.clearSession(); });
+
+        // User menu
+        var userMenuBtn = document.getElementById('user-menu-btn');
+        var userDropdown = document.getElementById('user-dropdown');
+        userMenuBtn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            userDropdown.classList.toggle('open');
+        });
+        document.addEventListener('click', function() { userDropdown.classList.remove('open'); });
+        userDropdown.addEventListener('click', function(e) { e.stopPropagation(); });
+        document.getElementById('user-clear-btn').addEventListener('click', function() {
+            userDropdown.classList.remove('open');
+            self.clearSession();
+        });
+        document.getElementById('user-change-pw-btn').addEventListener('click', function() {
+            userDropdown.classList.remove('open');
+            self.showChangePassword();
+        });
+        document.getElementById('user-manage-btn').addEventListener('click', function() {
+            userDropdown.classList.remove('open');
+            self.showManageUsers();
+        });
+        document.getElementById('user-signout-btn').addEventListener('click', async function() {
+            userDropdown.classList.remove('open');
+            await Auth.logout();
+            self.showLoginScreen();
+        });
         var attachMenu = document.getElementById('attach-menu');
         var isMobileDevice = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
         document.getElementById('attach-btn').addEventListener('click', function(e) {
@@ -896,7 +1093,7 @@ const UIManager = {
                 formData.append('file', file);
                 formData.append('sessionId', sessionId);
                 self.setStatus(t('attaching'));
-                fetch('/assets', { method: 'POST', body: formData })
+                apiFetch('/assets', { method: 'POST', body: formData })
                     .then(function(r) { return r.json(); })
                     .then(function(data) {
                         var lines = text.split('\n');
@@ -916,9 +1113,187 @@ const UIManager = {
             };
             rec.start();
         });
+        // Login screen
+        var loginBtn = document.getElementById('login-btn');
+        var loginEmail = document.getElementById('login-email');
+        var loginPw = document.getElementById('login-password');
+        var loginErr = document.getElementById('login-error');
+        async function doLogin() {
+            loginBtn.disabled = true;
+            loginErr.textContent = '';
+            try {
+                var username = loginEmail.value.trim();
+                if (username && !username.includes('@')) username += '@dmhai.local';
+                await Auth.login(username, loginPw.value);
+                self.hideLoginScreen();
+                self.initializeApp();
+            } catch(e) {
+                loginErr.textContent = e.message || 'Login failed';
+            } finally {
+                loginBtn.disabled = false;
+            }
+        }
+        loginBtn.addEventListener('click', doLogin);
+        loginEmail.addEventListener('keydown', function(e) { if (e.key === 'Enter') { loginPw.focus(); } });
+        loginPw.addEventListener('keydown', function(e) { if (e.key === 'Enter') doLogin(); });
+
+        // Change password modal
+        function closeCpw() { document.getElementById('cpw-overlay').classList.remove('visible'); }
+        document.getElementById('cpw-cancel').addEventListener('click', closeCpw);
+        document.getElementById('cpw-overlay').addEventListener('click', function(e) { if (e.target === e.currentTarget) closeCpw(); });
+        function setCpwError(msg) {
+            var el = document.getElementById('cpw-error');
+            el.textContent = msg;
+            el.style.display = msg ? '' : 'none';
+        }
+        document.getElementById('cpw-ok').addEventListener('click', async function() {
+            var cur = document.getElementById('cpw-current').value;
+            var nw = document.getElementById('cpw-new').value;
+            var cf = document.getElementById('cpw-confirm').value;
+            setCpwError('');
+            if (!cur || !nw || !cf) { setCpwError('All fields are required'); return; }
+            if (nw !== cf) { setCpwError('New passwords do not match'); return; }
+            var btn = document.getElementById('cpw-ok');
+            btn.disabled = true;
+            try {
+                const res = await apiFetch('/auth/password', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ current: cur, new: nw })
+                });
+                if (!res.ok) {
+                    var msg = 'Current password is incorrect';
+                    try { var d = await res.json(); if (d.error) msg = d.error; } catch(_) {}
+                    setCpwError(msg);
+                } else {
+                    closeCpw();
+                }
+            } catch(e) {
+                setCpwError('Could not connect to server');
+            } finally {
+                btn.disabled = false;
+            }
+        });
+
+        // Manage users close
+        document.getElementById('mgr-close').addEventListener('click', function() {
+            document.getElementById('mgr-overlay').classList.remove('visible');
+        });
+        document.getElementById('mgr-overlay').addEventListener('click', function(e) {
+            if (e.target === e.currentTarget) document.getElementById('mgr-overlay').classList.remove('visible');
+        });
+
+        this.checkAuthAndInit();
+    },
+
+    showLoginScreen: function() {
+        document.getElementById('login-screen').classList.remove('hidden');
+        document.getElementById('login-email').value = '';
+        document.getElementById('login-password').value = '';
+        document.getElementById('login-error').textContent = '';
+        setTimeout(function() { document.getElementById('login-email').focus(); }, 50);
+    },
+
+    hideLoginScreen: function() {
+        document.getElementById('login-screen').classList.add('hidden');
+        // Show admin controls if user is admin
+        var user = Auth.user;
+        if (user) {
+            document.getElementById('user-dropdown-identity').textContent = 'Signed in as ' + (user.name || user.email);
+            var isAdmin = user.role === 'admin';
+            document.getElementById('user-manage-btn').style.display = isAdmin ? '' : 'none';
+            document.getElementById('user-manage-sep').style.display = isAdmin ? '' : 'none';
+        }
+    },
+
+    checkAuthAndInit: async function() {
+        const user = await Auth.validate();
+        if (!user) {
+            this.showLoginScreen();
+            return;
+        }
+        this.hideLoginScreen();
         this.initializeApp();
     },
-    
+
+    showChangePassword: function() {
+        var cpwOverlay = document.getElementById('cpw-overlay');
+        cpwOverlay.classList.add('visible');
+        document.getElementById('cpw-current').value = '';
+        document.getElementById('cpw-new').value = '';
+        document.getElementById('cpw-confirm').value = '';
+        setCpwError('');
+        setTimeout(function() { document.getElementById('cpw-current').focus(); }, 50);
+    },
+
+    showManageUsers: async function() {
+        var self = this;
+        var overlay = document.getElementById('mgr-overlay');
+        overlay.classList.add('visible');
+        await self.refreshUserTable();
+        document.getElementById('mgr-error').textContent = '';
+        document.getElementById('mgr-email').value = '';
+        document.getElementById('mgr-name').value = '';
+        document.getElementById('mgr-pw').value = '';
+        document.getElementById('mgr-role').value = 'user';
+        document.getElementById('mgr-add-btn').onclick = async function() {
+            var email = document.getElementById('mgr-email').value.trim();
+            if (email && !email.includes('@')) email += '@dmhai.local';
+            var name = document.getElementById('mgr-name').value.trim();
+            var pw = document.getElementById('mgr-pw').value;
+            var role = document.getElementById('mgr-role').value;
+            var errEl = document.getElementById('mgr-error');
+            errEl.textContent = '';
+            if (!email || !pw) { errEl.textContent = 'Email and password are required'; return; }
+            try {
+                const res = await apiFetch('/users', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email: email, name: name || null, password: pw, role: role })
+                });
+                const data = await res.json();
+                if (!res.ok) { errEl.textContent = data.error || 'Failed'; return; }
+                document.getElementById('mgr-email').value = '';
+                document.getElementById('mgr-name').value = '';
+                document.getElementById('mgr-pw').value = '';
+                await self.refreshUserTable();
+            } catch(e) { errEl.textContent = e.message; }
+        };
+    },
+
+    refreshUserTable: async function() {
+        var self = this;
+        try {
+            const res = await apiFetch('/users');
+            const users = await res.json();
+            var tbody = document.getElementById('mgr-tbody');
+            tbody.innerHTML = '';
+            users.forEach(function(u) {
+                var tr = document.createElement('tr');
+                var tdEmail = document.createElement('td');
+                tdEmail.textContent = u.email;
+                var tdName = document.createElement('td');
+                tdName.textContent = u.name || '—';
+                var tdRole = document.createElement('td');
+                tdRole.textContent = u.role;
+                var tdAct = document.createElement('td');
+                if (u.id !== Auth.user.id) {
+                    var del = document.createElement('button');
+                    del.className = 'mgr-del-btn';
+                    del.textContent = 'Remove';
+                    del.addEventListener('click', async function() {
+                        if (!confirm('Remove ' + u.email + '?')) return;
+                        await apiFetch('/users/' + u.id, { method: 'DELETE' });
+                        await self.refreshUserTable();
+                    });
+                    tdAct.appendChild(del);
+                }
+                tr.appendChild(tdEmail); tr.appendChild(tdName); tr.appendChild(tdRole); tr.appendChild(tdAct);
+                tbody.appendChild(tr);
+            });
+        } catch(e) { console.error('Failed to load users:', e); }
+    },
+
     initializeApp: async function() {
         this.updateSendBtn();
         var ua = navigator.userAgent;
@@ -1074,7 +1449,7 @@ const UIManager = {
                             dl.textContent = '⬇ Download';
                             (function(sid, fid, fname) {
                                 dl.onclick = function() {
-                                    fetch('/assets/' + sid + '/' + fid)
+                                    apiFetch('/assets/' + sid + '/' + fid)
                                         .then(function(r) { return r.blob(); })
                                         .then(function(blob) {
                                             var url = URL.createObjectURL(blob);
@@ -1109,7 +1484,7 @@ const UIManager = {
                             dl.textContent = '⬇ Download';
                             (function(sid, fid, fname) {
                                 dl.onclick = function() {
-                                    fetch('/assets/' + sid + '/' + fid)
+                                    apiFetch('/assets/' + sid + '/' + fid)
                                         .then(function(r) { return r.blob(); })
                                         .then(function(blob) {
                                             var url = URL.createObjectURL(blob);
@@ -1288,7 +1663,7 @@ const UIManager = {
                 var formData = new FormData();
                 formData.append('file', uploadFile);
                 formData.append('sessionId', sessionId);
-                var res = await fetch('/assets', { method: 'POST', body: formData });
+                var res = await apiFetch('/assets', { method: 'POST', body: formData });
                 var data = await res.json();
 
                 if (isImage) {
@@ -1484,7 +1859,7 @@ const UIManager = {
     searchWeb: async function(keywords, signal) {
         try {
             const url = '/search?q=' + encodeURIComponent(keywords) + '&engine=' + encodeURIComponent(AppConfig.searxngUrl);
-            const res = await fetch(url, { signal: signal });
+            const res = await apiFetch(url, { signal: signal });
             if (!res.ok) return null;
             const data = await res.json();
             const results = (data.results || []).filter(function(r) { return r.title || r.content; });
