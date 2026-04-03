@@ -17,6 +17,4 @@ mkdir -p "$SCRIPT_DIR/system_logs"
 
 echo "Starting DMH-AI..."
 docker-compose -f "$SCRIPT_DIR/docker-compose.yml" up -d
-echo "Running."
-echo "  http://localhost:8080  (HTTP)"
-echo "  https://localhost:8443 (HTTPS — use this for Android PWA install)"
+echo "Running. Visit http://localhost:8080"

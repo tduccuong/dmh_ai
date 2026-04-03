@@ -1,7 +1,6 @@
 {
   "name": "DMH-AI",
   "short_name": "DMH-AI",
-  "description": "Self-hosted AI chat with Ollama",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#141018",
@@ -10,8 +9,7 @@
     {
       "src": "/logo.png",
       "sizes": "any",
-      "type": "image/png",
-      "purpose": "any maskable"
+      "type": "image/png"
     }
   ]
 }

@@ -6,17 +6,9 @@
     <title>DMH-AI</title>
     <link rel="icon" type="image/png" href="/logo.png">
     <link rel="manifest" href="/manifest.json">
-    <meta name="mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="DMH-AI">
     <link rel="apple-touch-icon" href="/logo.png">
     <meta name="theme-color" content="#281e38">
-    <script>
-        if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.register('/sw.js');
-        }
-    </script>
     <script src="/marked.min.js"></script>
     <script src="/mammoth.min.js"></script>
     <script src="/xlsx.min.js"></script>
@@ -236,6 +228,7 @@ const I18n = {
             synthesizing: 'Synthesizing results...',
             waiting1: 'Waiting for ', waiting2: ' in thread "', waiting3: '" to answer...',
             searchUnavail: '⚠ Web search unavailable — answering from model training data, which may be outdated.',
+            attaching: 'Preparing attachment...',
         },
         vi: {
             retry: 'Thử lại', clear: 'Xóa', send: 'Gửi', cancel: 'Hủy', ok: 'OK',
@@ -259,6 +252,7 @@ const I18n = {
             synthesizing: 'Đang tổng hợp kết quả...',
             waiting1: 'Đang chờ ', waiting2: ' trong phiên "', waiting3: '" trả lời...',
             searchUnavail: '⚠ Tìm kiếm web không khả dụng — trả lời từ dữ liệu huấn luyện, có thể đã lỗi thời.',
+            attaching: 'Đang chuẩn bị tệp đính kèm...',
         },
         de: {
             retry: 'Wiederholen', clear: 'Löschen', send: 'Senden', cancel: 'Abbrechen', ok: 'OK',
@@ -282,6 +276,7 @@ const I18n = {
             synthesizing: 'Ergebnisse werden zusammengefasst...',
             waiting1: 'Warte auf ', waiting2: ' in Sitzung "', waiting3: '"...',
             searchUnavail: '⚠ Websuche nicht verfügbar — Antwort basiert auf Trainingsdaten, möglicherweise veraltet.',
+            attaching: 'Anhang wird vorbereitet...',
         },
         es: {
             retry: 'Reintentar', clear: 'Limpiar', send: 'Enviar', cancel: 'Cancelar', ok: 'OK',
@@ -305,6 +300,7 @@ const I18n = {
             synthesizing: 'Sintetizando resultados...',
             waiting1: 'Esperando a ', waiting2: ' en hilo "', waiting3: '" para responder...',
             searchUnavail: '⚠ Búsqueda web no disponible — respondiendo con datos de entrenamiento, pueden estar desactualizados.',
+            attaching: 'Preparando archivo adjunto...',
         },
         fr: {
             retry: 'Réessayer', clear: 'Effacer', send: 'Envoyer', cancel: 'Annuler', ok: 'OK',
@@ -328,6 +324,7 @@ const I18n = {
             synthesizing: 'Synthèse des résultats...',
             waiting1: 'En attente de ', waiting2: ' dans le fil "', waiting3: '"...',
             searchUnavail: '⚠ Recherche web indisponible — réponse basée sur les données d\'entraînement, potentiellement obsolètes.',
+            attaching: 'Préparation de la pièce jointe...',
         }
     },
     t: function(key) { return (this._strings[this._lang] || this._strings.en)[key] || this._strings.en[key] || key; },
@@ -1103,6 +1100,7 @@ const UIManager = {
     handleFileSelect: async function(files) {
         const self = this;
         const sessionId = this.currentSession ? this.currentSession.id : 'default';
+        self.setStatus(t('attaching'));
         for (var i = 0; i < files.length; i++) {
             var file = files[i];
             try {
@@ -1158,6 +1156,7 @@ const UIManager = {
                 console.error('Upload failed:', e);
             }
         }
+        self.setStatus('');
     },
 
     removeAttachment: function(id) {
