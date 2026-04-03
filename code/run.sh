@@ -2,9 +2,11 @@
 set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-echo "Loading images..."
-docker load -i "$SCRIPT_DIR/dmh-ai.tar"
-docker load -i "$SCRIPT_DIR/searxng.tar"
+if [ -f "$SCRIPT_DIR/dmh-ai.tar" ] && [ -f "$SCRIPT_DIR/searxng.tar" ]; then
+    echo "Loading images..."
+    docker load -i "$SCRIPT_DIR/dmh-ai.tar"
+    docker load -i "$SCRIPT_DIR/searxng.tar"
+fi
 
 echo "Stopping any existing containers..."
 docker-compose -f "$SCRIPT_DIR/docker-compose.yml" down 2>/dev/null || true
