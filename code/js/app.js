@@ -322,7 +322,7 @@ const SessionStore = {
             name: name || 'New Session',
             model: model || '',
             messages: [],
-            context: { summary: null, summaryUpToIndex: -1 },
+            context: { summary: null, summaryUpToIndex: -1, needsNaming: true },
             createdAt: Date.now()
         };
         await apiFetch(this.BASE, {
@@ -424,12 +424,13 @@ const OllamaAPI = {
             return 4096;
         }
     },
-    summarize: async function(model, messages) {
+    summarize: async function(model, messages, signal) {
         try {
             const res = await fetch(this.BASE_URL + '/chat', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ model: model, messages: messages, stream: false, think: false })
+                body: JSON.stringify({ model: model, messages: messages, stream: false, think: false }),
+                signal: signal
             });
             if (!res.ok) throw new Error('summarize failed');
             const data = await res.json();
@@ -1754,6 +1755,11 @@ const UIManager = {
     sendMessage: async function() {
         const self = this;
         if (this.isStreaming) return;
+        // Cancel any in-flight naming call so it doesn't queue behind this message in Ollama
+        if (this._namingController) {
+            this._namingController.abort();
+            this._namingController = null;
+        }
         const input = document.getElementById('message-input');
         const content = input.value.trim();
         if (!content && this.attachedFiles.length === 0) return;
@@ -1913,16 +1919,8 @@ const UIManager = {
                 self.updateSendBtn();
                 self.setStatus('');
                 document.getElementById('stop-gen-btn').style.display = 'none';
-                if (sessionAtSend.messages.length === 2) {
-                    var _defaultNames = [];
-                    Object.keys(I18n._strings).forEach(function(lang) {
-                        var s = I18n._strings[lang];
-                        if (s.newChat) _defaultNames.push(s.newChat.toLowerCase());
-                        if (s.defaultSession) _defaultNames.push(s.defaultSession.toLowerCase());
-                    });
-                    if (_defaultNames.indexOf(sessionAtSend.name.toLowerCase()) !== -1) {
-                        self.autoNameSession(sessionAtSend);
-                    }
+                if (sessionAtSend.context && sessionAtSend.context.needsNaming) {
+                    self.autoNameSession(sessionAtSend);
                 }
             },
             function(err) {
@@ -1943,26 +1941,38 @@ const UIManager = {
     },
 
     autoNameSession: async function(session) {
+        if (!this._namingInProgress) this._namingInProgress = new Set();
+        if (this._namingInProgress.has(session.id)) return;
+        this._namingInProgress.add(session.id);
+        const controller = new AbortController();
+        this._namingController = controller;
         try {
-            var firstUser = session.messages.find(function(m) { return m.role === 'user'; });
-            if (!firstUser) return;
-            var userText = typeof firstUser.content === 'string' ? firstUser.content
-                : (Array.isArray(firstUser.content) ? ((firstUser.content.find(function(p) { return p.type === 'text'; }) || {}).text || '') : '');
-            if (!userText.trim() && firstUser.files && firstUser.files.length > 0) {
-                userText = firstUser.files.map(function(f) { return f.snippet || ''; }).join(' ').trim();
-            }
-            if (!userText.trim()) return;
+            var msgs = (session.messages || []).slice(-4);
+            if (!msgs.length) return;
+            var excerpt = msgs.map(function(m) {
+                var text = typeof m.content === 'string' ? m.content : '';
+                if (!text.trim() && m.files && m.files.length > 0)
+                    text = m.files.map(function(f) { return f.snippet || ''; }).join(' ');
+                return (m.role === 'user' ? 'User: ' : 'Assistant: ') + text.slice(0, 200);
+            }).join('\n');
+            if (!excerpt.trim()) return;
             var name = await OllamaAPI.summarize(session.model, [{
                 role: 'user',
-                content: 'Give a short title (3-5 words) for a chat conversation that starts with this message: "' + userText.slice(0, 300) + '". Reply with only the title, no quotes, no explanation.'
-            }]);
+                content: 'Give a short title (3-5 words) for this conversation:\n\n' + excerpt + '\n\nReply with only the title, no quotes, no explanation.'
+            }], controller.signal);
+            if (controller.signal.aborted) return;
             if (!name || !name.trim()) return;
             name = name.trim().replace(/^["""''']+|["""''']+$/g, '').trim();
             if (!name) return;
             session.name = name;
+            session.context.needsNaming = false;
             await SessionStore.updateSession(session);
             await this.renderSessions();
         } catch(e) {}
+        finally {
+            this._namingInProgress.delete(session.id);
+            if (this._namingController === controller) this._namingController = null;
+        }
     },
 
     showError: function(message) {
