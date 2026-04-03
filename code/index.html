@@ -167,7 +167,7 @@
         </div>
         <div class="attachments-bar" id="attachments-bar"></div>
         <div class="input-area">
-            <div style="position:relative;flex-shrink:0;">
+            <div style="position:relative;flex-shrink:0;display:flex;align-items:stretch;">
                 <button class="attach-btn" id="attach-btn" title="Attach file">+</button>
                 <div class="attach-menu" id="attach-menu">
                     <button class="attach-menu-item" id="attach-camera">📷 Camera</button>
@@ -176,7 +176,7 @@
                     <button class="attach-menu-item" id="attach-file">📄 File</button>
                 </div>
             </div>
-            <input type="file" id="file-input" style="display:none" multiple>
+            <input type="file" id="file-input" style="display:none" multiple accept=".pdf,.docx,.xlsx,.txt,.csv,.json,.xml,.md,.html,.css,.js,.py,.java,.c,.cpp,.h,.sh,.bat,.yml,.yaml,.toml,.ini,.cfg,.log">
             <input type="file" id="camera-input" style="display:none" accept="image/*" capture="environment">
             <input type="file" id="video-input" style="display:none" accept="video/*" capture="environment">
             <input type="file" id="gallery-input" style="display:none" accept="image/*">
