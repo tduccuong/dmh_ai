@@ -15,6 +15,8 @@ RUN adduser -D -u 1000 appuser && \
 COPY backend/server.py /app/server.py
 COPY index.html /usr/share/nginx/html/
 COPY logo.png /usr/share/nginx/html/logo.png
+COPY manifest.json /usr/share/nginx/html/manifest.json
+COPY sw.js /usr/share/nginx/html/sw.js
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY start.sh /start.sh
 RUN chmod +x /start.sh
