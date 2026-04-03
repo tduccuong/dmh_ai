@@ -1,7 +1,121 @@
-use_default_settings: true
+use_default_settings:
+  engines:
+    # Whitelist only. SearXNG defaults enable 70+ engines which hammers every
+    # source simultaneously and is the fastest way to get your home IP banned.
+    keep_only:
+      # --- Web ---
+      - brave          # Independent index (not a Bing/Google reskin). Most tolerant
+                       # of automated/home-IP access. Best diversity. Weight 2 below.
+      - bing           # Most complete non-Google index. Rarely rate-limits aggressively.
+      - duckduckgo     # Bing-backed but different ranking signals. CAPTCHA issue fixed early 2025.
+      - google         # Best quality but most aggressive blocking. Tune suspended_times
+                       # below so it recovers in 1h instead of the default 24h.
+      - qwant          # European independent index. CAPTCHA issue resolved March 2025.
+      - mojeek         # Truly independent UK index. Best diversity value. Give extra timeout.
+
+      # --- News (critical for freshness/current events) ---
+      - brave news
+      - bing news      # Excellent freshness. Own crawler.
+      - yahoo news     # Yahoo's own news crawler; updates within minutes of publication.
+      - duckduckgo news
+      - google news    # More reliable than Google web for scraping.
+
+      # --- Knowledge / Infoboxes ---
+      - wikipedia      # Always reliable. Weight 2.
+      - wikidata       # Structured facts. Weight 2.
+
+      # --- Specialty ---
+      - github
+      - stackoverflow
+      - youtube
+
+general:
+  debug: false
+  donation_url: false
+
 server:
-  secret_key: dmh-ai-searxng
+  secret_key: "dmh-ai-searxng"
+  limiter: false          # Requires Valkey/Redis — skip for home use
+  public_instance: false
+  image_proxy: true       # Route image URLs through SearXNG; keeps your IP out of image CDN logs
+  method: POST            # Query strings don't appear in server logs or browser history
+
 search:
   formats:
     - html
     - json
+  safe_search: 0
+  autocomplete: brave     # Reliable, privacy-respecting autocomplete
+  default_lang: ""        # Auto-detect from query; handles multilingual use well
+
+  # How long to suspend an engine after a transient failure (network blip, timeout).
+  # Defaults (5s / 120s) are well-tuned; leave them.
+  ban_time_on_fail: 5
+  max_ban_time_on_fail: 120
+
+  # Per-error-type suspension times.
+  # Default is 86400 (24h) for bans — way too long for a home user who searches
+  # infrequently. Lowering to 1h means after a Google/Bing block the engine
+  # re-tries sooner; since you search infrequently it often succeeds.
+  suspended_times:
+    SearxEngineAccessDenied: 3600        # 1h (default: 86400)
+    SearxEngineCaptcha: 3600             # 1h (default: 86400)
+    SearxEngineTooManyRequests: 900      # 15min (default: 3600)
+    cf_SearxEngineCaptcha: 86400         # Cloudflare: keep long, they mean it
+    cf_SearxEngineAccessDenied: 86400
+    recaptcha_SearxEngineCaptcha: 86400  # Google reCAPTCHA: keep long
+
+outgoing:
+  # Raise from default 2.0 — the biggest single improvement.
+  # Default 2s causes Mojeek, Qwant, Google to time out on every request,
+  # inflating error counts and triggering engine suspensions unfairly.
+  request_timeout: 6.0
+
+  # Hard ceiling. You said slower is fine; 15s lets slow engines contribute.
+  max_request_timeout: 15.0
+
+  enable_http2: true      # Faster + looks more like a real browser to upstream engines
+  pool_connections: 100
+  pool_maxsize: 10
+  keepalive_expiry: 5.0
+
+  # No retries on a single home IP — retrying just re-hits the same blocked IP.
+  # Let the other engines cover it instead.
+  retries: 0
+
+engines:
+  # Override defaults for specific engines.
+
+  - name: brave
+    disabled: false
+    weight: 2             # Independent index — boost its ranking contribution
+
+  - name: mojeek
+    disabled: false
+    weight: 1
+    timeout: 10.0         # Mojeek can be slow; give it extra time since you don't mind waiting
+
+  - name: google
+    disabled: false
+    weight: 1
+    timeout: 6.0
+
+  - name: brave news
+    disabled: false
+    weight: 2
+
+  - name: bing news
+    disabled: false
+    weight: 2
+
+  - name: yahoo news
+    disabled: false
+    weight: 2
+
+  - name: wikipedia
+    disabled: false
+    weight: 2
+
+  - name: wikidata
+    disabled: false
+    weight: 2
