@@ -502,6 +502,32 @@ function addCopyButtons(el) {
     });
 }
 
+function formatTs(ts) {
+    if (!ts) return '';
+    var d = new Date(ts);
+    var now = new Date();
+    var pad = function(n) { return n < 10 ? '0' + n : '' + n; };
+    var time = pad(d.getHours()) + ':' + pad(d.getMinutes());
+    if (d.toDateString() === now.toDateString()) return time;
+    var yesterday = new Date(now); yesterday.setDate(now.getDate() - 1);
+    if (d.toDateString() === yesterday.toDateString()) return 'Yesterday ' + time;
+    var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    var sameYear = d.getFullYear() === now.getFullYear();
+    return months[d.getMonth()] + ' ' + d.getDate() + (sameYear ? '' : ' ' + d.getFullYear()) + ' ' + time;
+}
+
+function buildMsgHeader(msg, session) {
+    var ts = formatTs(msg.ts);
+    var prefix = ts ? '[' + ts + '] ' : '';
+    if (msg.role === 'user') {
+        var user = Auth._user;
+        var displayName = user ? (user.name || user.email.split('@')[0]) : '';
+        return prefix + displayName + ':';
+    }
+    var model = msg.model || (session && session.model) || '';
+    return prefix + (model || 'Assistant') + ':';
+}
+
 function prepareForAPI(messages) {
     return messages.map(function(msg) {
         if (msg.role !== 'user') return msg;
@@ -1148,14 +1174,22 @@ const UIManager = {
         container.innerHTML = '';
         if (!this.currentSession) return;
         var sessionId = this.currentSession.id;
+        var renderSession = this.currentSession;
         this.currentSession.messages.forEach(function(msg) {
             const div = document.createElement('div');
             div.className = 'message ' + msg.role;
+            var hdr = document.createElement('div');
+            hdr.className = 'msg-header';
+            hdr.textContent = buildMsgHeader(msg, renderSession);
+            div.appendChild(hdr);
+            var body = document.createElement('div');
+            body.className = 'msg-body';
             if (msg.role === 'assistant') {
-                div.innerHTML = marked.parse(msg.content || '');
-                addCopyButtons(div); wrapTables(div);
+                body.innerHTML = marked.parse(msg.content || '');
+                div.appendChild(body);
+                addCopyButtons(body); wrapTables(body);
             } else {
-                div.textContent = msg.content || '';
+                body.textContent = msg.content || '';
                 if (msg.images && msg.images.length > 0) {
                     msg.images.forEach(function(img) {
                         var wrap = document.createElement('div');
@@ -1189,7 +1223,7 @@ const UIManager = {
                             })(sessionId, img.fileId, img.name || img.fileId);
                             wrap.appendChild(dl);
                         }
-                        div.appendChild(wrap);
+                        body.appendChild(wrap);
                     });
                 }
                 if (msg.files && msg.files.length > 0) {
@@ -1227,9 +1261,10 @@ const UIManager = {
                             pre.textContent = f.snippet;
                             wrap.appendChild(pre);
                         }
-                        div.appendChild(wrap);
+                        body.appendChild(wrap);
                     });
                 }
+                div.appendChild(body);
             }
             container.appendChild(div);
         });
@@ -1666,7 +1701,7 @@ const UIManager = {
             return;
         }
 
-        var userMsgForStorage = { role: 'user', content: content };
+        var userMsgForStorage = { role: 'user', content: content, ts: Date.now() };
         if (imagesForStorage.length > 0) userMsgForStorage.images = imagesForStorage;
         if (filesForStorage.length > 0) userMsgForStorage.files = filesForStorage;
         var userMsgForAPI = { role: 'user', content: contentForAPI };
@@ -1682,8 +1717,16 @@ const UIManager = {
         input.style.height = 'auto';
 
         const container = document.getElementById('chat-container');
+        const assistantTs = Date.now();
         const assistantDiv = document.createElement('div');
         assistantDiv.className = 'message assistant';
+        const assistantHdr = document.createElement('div');
+        assistantHdr.className = 'msg-header';
+        assistantHdr.textContent = buildMsgHeader({ role: 'assistant', ts: assistantTs, model: this.currentSession.model }, this.currentSession);
+        assistantDiv.appendChild(assistantHdr);
+        const bodyDiv = document.createElement('div');
+        bodyDiv.className = 'msg-body';
+        assistantDiv.appendChild(bodyDiv);
         container.appendChild(assistantDiv);
         container.scrollTop = container.scrollHeight;
 
@@ -1727,14 +1770,14 @@ const UIManager = {
                     syslog('[INJECT] synthesized results injected into context');
                 } else {
                     syslog('[SEARCH] fallback: search returned no results');
-                    assistantDiv.innerHTML = '<em style="color:#d0a050;">' + t('searchUnavail') + '</em><br><br>';
+                    bodyDiv.innerHTML = '<em style="color:#d0a050;">' + t('searchUnavail') + '</em><br><br>';
                 }
             }
         }
         this.setStatus(t('waiting1') + this.currentSession.model + t('waiting2') + this.currentSession.name + t('waiting3'));
 
         let assistantContent = '';
-        const searchWarning = assistantDiv.innerHTML;
+        const searchWarning = bodyDiv.innerHTML;
         const sessionAtSend = this.currentSession;
         self._pendingSession = sessionAtSend;
         OllamaAPI.streamChat(
@@ -1744,13 +1787,13 @@ const UIManager = {
                 assistantContent += chunk;
                 self._pendingContent = assistantContent;
                 if (self.currentSession === sessionAtSend) {
-                    assistantDiv.innerHTML = searchWarning + marked.parse(assistantContent);
-                    addCopyButtons(assistantDiv); wrapTables(assistantDiv);
+                    bodyDiv.innerHTML = searchWarning + marked.parse(assistantContent);
+                    addCopyButtons(bodyDiv); wrapTables(bodyDiv);
                     container.scrollTop = container.scrollHeight;
                 }
             },
             function() {
-                sessionAtSend.messages.push({ role: 'assistant', content: assistantContent });
+                sessionAtSend.messages.push({ role: 'assistant', content: assistantContent, ts: assistantTs, model: sessionAtSend.model });
                 var userMsg = sessionAtSend.messages[sessionAtSend.messages.length - 2];
                 if (userMsg && userMsg.role === 'user') userMsg._sentToLLM = true;
                 SessionStore.updateSession(sessionAtSend);
@@ -1776,8 +1819,8 @@ const UIManager = {
             function(err) {
                 console.error('Stream error:', err);
                 if (self.currentSession === sessionAtSend && assistantContent) {
-                    assistantDiv.innerHTML = searchWarning + marked.parse(assistantContent);
-                    addCopyButtons(assistantDiv); wrapTables(assistantDiv);
+                    bodyDiv.innerHTML = searchWarning + marked.parse(assistantContent);
+                    addCopyButtons(bodyDiv); wrapTables(bodyDiv);
                 }
                 self.saveStreamingProgress();
                 self._streamController = null;
