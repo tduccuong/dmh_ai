@@ -1757,6 +1757,7 @@ const UIManager = {
         document.getElementById('send-btn').disabled = true;
         document.getElementById('stop-gen-btn').textContent = t('stopGen');
         document.getElementById('stop-gen-btn').style.display = '';
+        this.setStatus(t('waiting1') + this.currentSession.model + t('waiting2') + this.currentSession.name + t('waiting3'));
 
         let apiMessages = prepareForAPI(ContextManager.buildContextMessages(this.currentSession));
         apiMessages[apiMessages.length - 1] = userMsgForAPI;
@@ -1793,8 +1794,6 @@ const UIManager = {
                 }
             }
         }
-        this.setStatus(t('waiting1') + this.currentSession.model + t('waiting2') + this.currentSession.name + t('waiting3'));
-
         let assistantContent = '';
         const searchWarning = bodyDiv.innerHTML;
         const sessionAtSend = this.currentSession;
