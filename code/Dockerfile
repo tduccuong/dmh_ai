@@ -9,7 +9,9 @@ RUN apk add --no-cache python3 su-exec && \
     wget -qO /usr/share/nginx/html/mammoth.min.js \
       https://cdn.jsdelivr.net/npm/mammoth@1.8.0/mammoth.browser.min.js && \
     wget -qO /usr/share/nginx/html/xlsx.min.js \
-      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
+      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js && \
+    wget -qO /usr/share/nginx/html/heic2any.min.js \
+      https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js
 RUN adduser -D -u 1000 appuser && \
     mkdir -p /data /app && chown appuser:appuser /data /app
 COPY backend/server.py /app/server.py

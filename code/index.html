@@ -12,6 +12,7 @@
     <script src="/marked.min.js"></script>
     <script src="/mammoth.min.js"></script>
     <script src="/xlsx.min.js"></script>
+    <script src="/heic2any.min.js"></script>
     <script type="module">
         import * as pdfjsLib from '/pdf.min.js';
         pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.js';
@@ -51,6 +52,10 @@
         @media (max-width: 600px) { .send-label { display: none; } }
         .status-bar { padding: 6px 20px; background: #281e38; color: #b098b8; font-size: 13px; display: none; align-items: center; gap: 8px; }
         .status-bar.visible { display: flex; }
+        .voice-bar { padding: 8px 20px; background: #2a1020; color: #f08080; font-size: 13px; display: none; align-items: center; gap: 10px; cursor: pointer; user-select: none; }
+        .voice-bar.visible { display: flex; }
+        .voice-dot { width: 10px; height: 10px; background: #e05050; border-radius: 50%; flex-shrink: 0; animation: voice-pulse 1s ease-in-out infinite; }
+        @keyframes voice-pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(0.7); } }
         .spinner { width: 14px; height: 14px; border: 2px solid #b098b8; border-top-color: #c87830; border-radius: 50%; flex-shrink: 0;
             animation: spin 0.8s linear infinite; }
         @keyframes spin { to { transform: rotate(360deg); } }
@@ -170,6 +175,7 @@
             <div class="spinner"></div>
             <span id="status-text"></span>
         </div>
+        <div class="voice-bar" id="voice-bar"><span class="voice-dot"></span><span id="voice-bar-text"></span></div>
         <div class="attachments-bar" id="attachments-bar"></div>
         <div class="input-area">
             <div style="position:relative;flex-shrink:0;display:flex;align-items:stretch;">
@@ -179,12 +185,13 @@
                     <button class="attach-menu-item" id="attach-video">🎥 Video</button>
                     <button class="attach-menu-item" id="attach-gallery">🖼 Gallery</button>
                     <button class="attach-menu-item" id="attach-file">📄 File</button>
+                    <button class="attach-menu-item" id="attach-voice">🎤 Voice</button>
                 </div>
             </div>
             <input type="file" id="file-input" style="display:none" multiple accept=".pdf,.docx,.xlsx,.txt,.csv,.json,.xml,.md,.html,.css,.js,.py,.java,.c,.cpp,.h,.sh,.bat,.yml,.yaml,.toml,.ini,.cfg,.log">
             <input type="file" id="camera-input" style="display:none" accept="image/*" capture="environment">
             <input type="file" id="video-input" style="display:none" accept="video/*" capture="environment">
-            <input type="file" id="gallery-input" style="display:none" accept="image/*">
+            <input type="file" id="gallery-input" style="display:none" accept="image/*,.heic,.heif">
             <textarea class="message-input" id="message-input" placeholder="Type a message..." rows="1"></textarea>
             <button class="send-btn" id="send-btn"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg><span class="send-label" id="send-label">Send</span></button>
         </div>
@@ -229,6 +236,9 @@ const I18n = {
             waiting1: 'Waiting for ', waiting2: ' in thread "', waiting3: '" to answer...',
             searchUnavail: '⚠ Web search unavailable — answering from model training data, which may be outdated.',
             attaching: 'Preparing attachment...',
+            voiceListening: 'Listening... tap to stop',
+            voiceNotSupported: 'Voice input not supported in this browser',
+            voiceHttpError: 'Voice input requires HTTPS. Use the microphone button on your keyboard instead.',
         },
         vi: {
             retry: 'Thử lại', clear: 'Xóa', send: 'Gửi', cancel: 'Hủy', ok: 'OK',
@@ -253,6 +263,9 @@ const I18n = {
             waiting1: 'Đang chờ ', waiting2: ' trong phiên "', waiting3: '" trả lời...',
             searchUnavail: '⚠ Tìm kiếm web không khả dụng — trả lời từ dữ liệu huấn luyện, có thể đã lỗi thời.',
             attaching: 'Đang chuẩn bị tệp đính kèm...',
+            voiceListening: 'Đang nghe... nhấn để dừng',
+            voiceNotSupported: 'Trình duyệt này không hỗ trợ nhập giọng nói',
+            voiceHttpError: 'Nhập giọng nói yêu cầu HTTPS. Hãy dùng nút micro trên bàn phím thay thế.',
         },
         de: {
             retry: 'Wiederholen', clear: 'Löschen', send: 'Senden', cancel: 'Abbrechen', ok: 'OK',
@@ -277,6 +290,9 @@ const I18n = {
             waiting1: 'Warte auf ', waiting2: ' in Sitzung "', waiting3: '"...',
             searchUnavail: '⚠ Websuche nicht verfügbar — Antwort basiert auf Trainingsdaten, möglicherweise veraltet.',
             attaching: 'Anhang wird vorbereitet...',
+            voiceListening: 'Zuhören... tippen zum Stoppen',
+            voiceNotSupported: 'Spracheingabe in diesem Browser nicht unterstützt',
+            voiceHttpError: 'Spracheingabe erfordert HTTPS. Nutzen Sie stattdessen die Mikrofontaste auf Ihrer Tastatur.',
         },
         es: {
             retry: 'Reintentar', clear: 'Limpiar', send: 'Enviar', cancel: 'Cancelar', ok: 'OK',
@@ -301,6 +317,9 @@ const I18n = {
             waiting1: 'Esperando a ', waiting2: ' en hilo "', waiting3: '" para responder...',
             searchUnavail: '⚠ Búsqueda web no disponible — respondiendo con datos de entrenamiento, pueden estar desactualizados.',
             attaching: 'Preparando archivo adjunto...',
+            voiceListening: 'Escuchando... toca para detener',
+            voiceNotSupported: 'Entrada de voz no compatible con este navegador',
+            voiceHttpError: 'La entrada de voz requiere HTTPS. Use el botón de micrófono en su teclado.',
         },
         fr: {
             retry: 'Réessayer', clear: 'Effacer', send: 'Envoyer', cancel: 'Annuler', ok: 'OK',
@@ -325,6 +344,9 @@ const I18n = {
             waiting1: 'En attente de ', waiting2: ' dans le fil "', waiting3: '"...',
             searchUnavail: '⚠ Recherche web indisponible — réponse basée sur les données d\'entraînement, potentiellement obsolètes.',
             attaching: 'Préparation de la pièce jointe...',
+            voiceListening: 'Écoute... appuyez pour arrêter',
+            voiceNotSupported: 'Saisie vocale non prise en charge par ce navigateur',
+            voiceHttpError: 'La saisie vocale nécessite HTTPS. Utilisez le bouton micro de votre clavier.',
         }
     },
     t: function(key) { return (this._strings[this._lang] || this._strings.en)[key] || this._strings.en[key] || key; },
@@ -784,6 +806,49 @@ const UIManager = {
         document.getElementById('attach-video').addEventListener('click', function() { document.getElementById('video-input').click(); });
         document.getElementById('attach-gallery').addEventListener('click', function() { document.getElementById('gallery-input').click(); });
         document.getElementById('attach-file').addEventListener('click', function() { document.getElementById('file-input').click(); });
+
+        var _voiceRecognition = null;
+        var _langMap = { en: 'en-US', vi: 'vi-VN', de: 'de-DE', es: 'es-ES', fr: 'fr-FR' };
+        function stopVoice() {
+            if (_voiceRecognition) { _voiceRecognition.stop(); _voiceRecognition = null; }
+            document.getElementById('voice-bar').classList.remove('visible');
+        }
+        document.getElementById('voice-bar').addEventListener('click', stopVoice);
+        document.getElementById('attach-voice').addEventListener('click', function() {
+            attachMenu.classList.remove('open');
+            var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!SR) {
+                self.setStatus(t('voiceNotSupported'));
+                setTimeout(function() { self.setStatus(''); }, 3000);
+                return;
+            }
+            var rec = new SR();
+            _voiceRecognition = rec;
+            rec.lang = _langMap[I18n._lang] || 'en-US';
+            rec.continuous = false;
+            rec.interimResults = true;
+            var bar = document.getElementById('voice-bar');
+            var input = document.getElementById('message-input');
+            var base = input.value;
+            document.getElementById('voice-bar-text').textContent = t('voiceListening');
+            bar.classList.add('visible');
+            rec.onresult = function(e) {
+                var transcript = '';
+                for (var i = 0; i < e.results.length; i++) transcript += e.results[i][0].transcript;
+                input.value = base + (base && transcript ? ' ' : '') + transcript;
+                input.dispatchEvent(new Event('input'));
+            };
+            rec.onend = function() { _voiceRecognition = null; bar.classList.remove('visible'); };
+            rec.onerror = function(e) {
+                _voiceRecognition = null;
+                bar.classList.remove('visible');
+                var msg = (e.error === 'not-allowed' || e.error === 'service-not-allowed')
+                    ? t('voiceHttpError') : t('voiceNotSupported');
+                self.setStatus(msg);
+                setTimeout(function() { self.setStatus(''); }, 5000);
+            };
+            rec.start();
+        });
         this.initializeApp();
     },
     
@@ -1104,8 +1169,16 @@ const UIManager = {
         for (var i = 0; i < files.length; i++) {
             var file = files[i];
             try {
-                var IMAGE_EXTS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'];
+                var IMAGE_EXTS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.heic', '.heif'];
                 var nameLower = file.name.toLowerCase();
+                var isHeic = nameLower.endsWith('.heic') || nameLower.endsWith('.heif') ||
+                             file.type === 'image/heic' || file.type === 'image/heif';
+                if (isHeic && typeof heic2any !== 'undefined') {
+                    var converted = await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.9 });
+                    var jpegName = file.name.replace(/\.hei[cf]$/i, '.jpg');
+                    file = new File([converted], jpegName, { type: 'image/jpeg' });
+                    nameLower = file.name.toLowerCase();
+                }
                 var isImage = IMAGE_EXTS.some(function(ext) { return nameLower.endsWith(ext); });
                 var isText = file.type.startsWith('text/');
                 var isPdf = await self.isPdf(file);
