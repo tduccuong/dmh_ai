@@ -53,11 +53,19 @@ def init_db():
             token TEXT PRIMARY KEY,
             user_id TEXT NOT NULL,
             created_at INTEGER)''')
-        # Migration: add user_id column to sessions if missing
+        # Migrations
         try:
             c.execute('ALTER TABLE sessions ADD COLUMN user_id TEXT DEFAULT ""')
         except sqlite3.OperationalError:
-            pass  # already exists
+            pass
+        try:
+            c.execute('ALTER TABLE users ADD COLUMN password_changed INTEGER DEFAULT 0')
+        except sqlite3.OperationalError:
+            pass
+        try:
+            c.execute('ALTER TABLE users ADD COLUMN deleted INTEGER DEFAULT 0')
+        except sqlite3.OperationalError:
+            pass
         # Seed default admin user
         if not c.execute('SELECT id FROM users WHERE email=?', ('admin@dmhai.local',)).fetchone():
             uid = secrets.token_hex(8)
@@ -125,11 +133,11 @@ class H(BaseHTTPRequestHandler):
         token = auth[7:].strip()
         with sqlite3.connect(DB) as c:
             row = c.execute(
-                'SELECT u.id, u.email, u.name, u.role FROM auth_tokens t JOIN users u ON t.user_id=u.id WHERE t.token=?',
+                'SELECT u.id, u.email, u.name, u.role, u.password_changed FROM auth_tokens t JOIN users u ON t.user_id=u.id WHERE t.token=? AND u.deleted=0',
                 (token,)
             ).fetchone()
         if row:
-            return {'id': row[0], 'email': row[1], 'name': row[2] or row[1].split('@')[0], 'role': row[3]}
+            return {'id': row[0], 'email': row[1], 'name': row[2] or row[1].split('@')[0], 'role': row[3], 'passwordChanged': bool(row[4])}
         return None
 
     def require_auth(self):
@@ -161,7 +169,7 @@ class H(BaseHTTPRequestHandler):
                 self.send_json(403, {'error': 'Forbidden'})
                 return
             with sqlite3.connect(DB) as c:
-                rows = c.execute('SELECT id, email, name, role, created_at FROM users ORDER BY created_at').fetchall()
+                rows = c.execute('SELECT id, email, name, role, created_at FROM users WHERE deleted=0 ORDER BY created_at').fetchall()
             self.send_json(200, [{'id': r[0], 'email': r[1], 'name': r[2], 'role': r[3], 'createdAt': r[4]} for r in rows])
             return
 
@@ -239,7 +247,7 @@ class H(BaseHTTPRequestHandler):
             email = (d.get('email') or '').strip().lower()
             password = d.get('password') or ''
             with sqlite3.connect(DB) as c:
-                row = c.execute('SELECT id, email, name, role, password_hash FROM users WHERE email=?', (email,)).fetchone()
+                row = c.execute('SELECT id, email, name, role, password_hash, password_changed FROM users WHERE email=? AND deleted=0', (email,)).fetchone()
             if not row or not verify_password(password, row[4]):
                 self.send_json(401, {'error': 'Invalid username or password'})
                 return
@@ -248,7 +256,7 @@ class H(BaseHTTPRequestHandler):
                 c.execute('INSERT INTO auth_tokens (token, user_id, created_at) VALUES (?,?,?)',
                           (token, row[0], int(time.time())))
             display = row[2] or row[1].split('@')[0]
-            self.send_json(200, {'token': token, 'user': {'id': row[0], 'email': row[1], 'name': display, 'role': row[3]}})
+            self.send_json(200, {'token': token, 'user': {'id': row[0], 'email': row[1], 'name': display, 'role': row[3], 'passwordChanged': bool(row[5])}})
             return
 
         if p == '/auth/logout':
@@ -276,14 +284,22 @@ class H(BaseHTTPRequestHandler):
             if not email or not password:
                 self.send_json(400, {'error': 'Email and password are required'})
                 return
-            uid = secrets.token_hex(8)
-            try:
-                with sqlite3.connect(DB) as c:
-                    c.execute('INSERT INTO users (id,email,name,password_hash,role,created_at) VALUES (?,?,?,?,?,?)',
-                              (uid, email, name, hash_password(password), role, int(time.time())))
-            except sqlite3.IntegrityError:
-                self.send_json(409, {'error': 'Email already exists'})
-                return
+            with sqlite3.connect(DB) as c:
+                existing = c.execute('SELECT id, deleted FROM users WHERE email=?', (email,)).fetchone()
+                if existing:
+                    if existing[1] == 1:
+                        # Reactivate soft-deleted user
+                        c.execute(
+                            'UPDATE users SET name=?, password_hash=?, role=?, deleted=0, password_changed=0 WHERE id=?',
+                            (name, hash_password(password), role, existing[0])
+                        )
+                        self.send_json(200, {'id': existing[0], 'email': email, 'name': name, 'role': role})
+                    else:
+                        self.send_json(409, {'error': 'Email already exists'})
+                    return
+                uid = secrets.token_hex(8)
+                c.execute('INSERT INTO users (id,email,name,password_hash,role,created_at) VALUES (?,?,?,?,?,?)',
+                          (uid, email, name, hash_password(password), role, int(time.time())))
             self.send_json(200, {'id': uid, 'email': email, 'name': name, 'role': role})
             return
 
@@ -356,7 +372,7 @@ class H(BaseHTTPRequestHandler):
                 self.send_json(401, {'error': 'Current password is incorrect'})
                 return
             with sqlite3.connect(DB) as c:
-                c.execute('UPDATE users SET password_hash=? WHERE id=?', (hash_password(new_pw), user['id']))
+                c.execute('UPDATE users SET password_hash=?, password_changed=1 WHERE id=?', (hash_password(new_pw), user['id']))
             self.send_json(200, {'ok': True})
             return
 
@@ -418,7 +434,7 @@ class H(BaseHTTPRequestHandler):
                 self.send_json(400, {'error': 'Cannot delete your own account'})
                 return
             with sqlite3.connect(DB) as c:
-                c.execute('DELETE FROM users WHERE id=?', (uid,))
+                c.execute('UPDATE users SET deleted=1 WHERE id=?', (uid,))
                 c.execute('DELETE FROM auth_tokens WHERE user_id=?', (uid,))
             self.send_json(200, {'ok': True})
             return

@@ -63,6 +63,8 @@
         @keyframes spin { to { transform: rotate(360deg); } }
         .error-banner { width: 100%; background: #c0392b; color: white; padding: 10px 20px; text-align: center; display: none; font-size: 14px; flex-shrink: 0; }
         .error-banner button { background: white; color: #c0392b; border: none; padding: 6px 14px; border-radius: 6px; cursor: pointer; margin-left: 15px; font-weight: 600; font-size: 13px; }
+        .pw-warning-banner { width: 100%; background: #7a2000; color: #ffb090; padding: 9px 20px; text-align: center; display: none; font-size: 13px; flex-shrink: 0; }
+        .pw-warning-banner button { background: #ffb090; color: #7a2000; border: none; padding: 4px 12px; border-radius: 5px; cursor: pointer; margin-left: 12px; font-weight: 600; font-size: 12px; }
         .endpoint-section { padding-top: 14px; margin-top: 14px; border-top: 1px solid #382850; }
         .endpoint-label { font-size: 11px; color: #b098b8; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; display: block; }
         .endpoint-input { width: 100%; padding: 8px 10px; border-radius: 6px; border: 1px solid #483868; background: #1c1828; color: #eee; font-size: 12px; }
@@ -206,6 +208,10 @@
         </div>
     </div>
     <div class="main">
+        <div class="pw-warning-banner" id="pw-warning-banner">
+            <span id="pw-warning-text"></span>
+            <button id="pw-warning-btn"></button>
+        </div>
         <div class="error-banner" id="error-banner">
             <span id="error-message">Cannot connect to Ollama</span>
             <button onclick="location.reload()">Retry</button>
@@ -364,6 +370,8 @@ const I18n = {
             voiceEmpty: 'Nothing was recognized. To record in a different language, tap the flag button to switch language first. Currently listening in ',
             iosChromeHint: 'To add DMH-AI to your home screen, open this page in Safari, tap the Share button (⎙), then "Add to Home Screen".',
             iosCertHint: 'To avoid the certificate warning: tap here to install the certificate, then go to Settings → General → About → Certificate Trust Settings and enable it.',
+            pwWarning: '⚠ You are using the default password. Please change it now.',
+            pwWarningBtn: 'Change password',
         },
         vi: {
             retry: 'Thử lại', clear: 'Xóa', send: 'Gửi', cancel: 'Hủy', ok: 'OK', stopGen: '■ Dừng',
@@ -394,6 +402,8 @@ const I18n = {
             voiceEmpty: 'Không nhận ra giọng nói. Để ghi âm bằng ngôn ngữ khác, nhấn nút cờ để chọn ngôn ngữ trước. Hiện đang nghe bằng ',
             iosChromeHint: 'Để thêm DMH-AI vào màn hình chính, mở trang này trong Safari, nhấn nút Chia sẻ (⎙), rồi chọn "Thêm vào Màn hình chính".',
             iosCertHint: 'Để bỏ cảnh báo chứng chỉ: nhấn đây để cài chứng chỉ, rồi vào Cài đặt → Cài đặt chung → Giới thiệu → Cài đặt tin cậy chứng chỉ và bật lên.',
+            pwWarning: '⚠ Bạn đang dùng mật khẩu mặc định. Hãy đổi mật khẩu ngay.',
+            pwWarningBtn: 'Đổi mật khẩu',
         },
         de: {
             retry: 'Wiederholen', clear: 'Löschen', send: 'Senden', cancel: 'Abbrechen', ok: 'OK', stopGen: '■ Stopp',
@@ -424,6 +434,8 @@ const I18n = {
             voiceEmpty: 'Nichts erkannt. Um in einer anderen Sprache aufzunehmen, tippen Sie zuerst auf die Flagge. Aktuell wird gehört auf ',
             iosChromeHint: 'Um DMH-AI zum Home-Bildschirm hinzuzufügen, öffnen Sie die Seite in Safari, tippen auf Teilen (⎙) und wählen „Zum Home-Bildschirm".',
             iosCertHint: 'Um die Zertifikatwarnung zu vermeiden: hier tippen zum Installieren, dann Einstellungen → Allgemein → Info → Zertifikat-Vertrauenseinstellungen und aktivieren.',
+            pwWarning: '⚠ Sie verwenden noch das Standardpasswort. Bitte jetzt ändern.',
+            pwWarningBtn: 'Passwort ändern',
         },
         es: {
             retry: 'Reintentar', clear: 'Limpiar', send: 'Enviar', cancel: 'Cancelar', ok: 'OK', stopGen: '■ Detener',
@@ -454,6 +466,8 @@ const I18n = {
             voiceEmpty: 'No se reconoció nada. Para grabar en otro idioma, toca el botón de bandera primero. Actualmente escuchando en ',
             iosChromeHint: 'Para agregar DMH-AI a la pantalla de inicio, abre la página en Safari, toca Compartir (⎙) y selecciona "Agregar a inicio".',
             iosCertHint: 'Para evitar la advertencia: toca aquí para instalar el certificado, luego ve a Ajustes → General → Información → Configuración de confianza de certificados y actívalo.',
+            pwWarning: '⚠ Está usando la contraseña predeterminada. Cámbiela ahora.',
+            pwWarningBtn: 'Cambiar contraseña',
         },
         fr: {
             retry: 'Réessayer', clear: 'Effacer', send: 'Envoyer', cancel: 'Annuler', ok: 'OK', stopGen: '■ Arrêter',
@@ -484,6 +498,8 @@ const I18n = {
             voiceEmpty: 'Rien reconnu. Pour enregistrer dans une autre langue, appuyez d\'abord sur le drapeau. Langue actuelle : ',
             iosChromeHint: 'Pour ajouter DMH-AI à l\'écran d\'accueil, ouvrez la page dans Safari, appuyez sur Partager (⎙) puis « Sur l\'écran d\'accueil ».',
             iosCertHint: 'Pour éviter l\'avertissement : appuyez ici pour installer le certificat, puis Réglages → Général → À propos → Réglages de confiance des certificats et activez.',
+            pwWarning: '⚠ Vous utilisez le mot de passe par défaut. Veuillez le changer maintenant.',
+            pwWarningBtn: 'Changer le mot de passe',
         }
     },
     t: function(key) { return (this._strings[this._lang] || this._strings.en)[key] || this._strings.en[key] || key; },
@@ -936,6 +952,8 @@ const UIManager = {
             document.getElementById('error-message').textContent = t('cannotConnect');
             document.querySelector('#error-banner button').textContent = t('retry');
             document.getElementById('modal-cancel').textContent = t('cancel');
+            document.getElementById('pw-warning-text').textContent = t('pwWarning');
+            document.getElementById('pw-warning-btn').textContent = t('pwWarningBtn');
         }
         applyLanguage();
 
@@ -1015,6 +1033,9 @@ const UIManager = {
             userDropdown.classList.remove('open');
             await Auth.logout();
             self.showLoginScreen();
+        });
+        document.getElementById('pw-warning-btn').addEventListener('click', function() {
+            self.showChangePassword();
         });
         var attachMenu = document.getElementById('attach-menu');
         var isMobileDevice = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
@@ -1166,6 +1187,8 @@ const UIManager = {
                     try { var d = await res.json(); if (d.error) msg = d.error; } catch(_) {}
                     setCpwError(msg);
                 } else {
+                    if (Auth._user) { Auth._user.passwordChanged = true; localStorage.setItem('auth_user', JSON.stringify(Auth._user)); }
+                    UIManager.updatePwWarning();
                     closeCpw();
                 }
             } catch(e) {
@@ -1196,7 +1219,6 @@ const UIManager = {
 
     hideLoginScreen: function() {
         document.getElementById('login-screen').classList.add('hidden');
-        // Show admin controls if user is admin
         var user = Auth.user;
         if (user) {
             document.getElementById('user-dropdown-identity').textContent = 'Signed in as ' + (user.name || user.email);
@@ -1204,6 +1226,13 @@ const UIManager = {
             document.getElementById('user-manage-btn').style.display = isAdmin ? '' : 'none';
             document.getElementById('user-manage-sep').style.display = isAdmin ? '' : 'none';
         }
+        this.updatePwWarning();
+    },
+
+    updatePwWarning: function() {
+        var user = Auth.user;
+        var show = user && user.role === 'admin' && !user.passwordChanged;
+        document.getElementById('pw-warning-banner').style.display = show ? 'block' : 'none';
     },
 
     checkAuthAndInit: async function() {
