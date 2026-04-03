@@ -7,7 +7,7 @@
     <link rel="icon" type="image/png" href="/logo.png">
     <link rel="manifest" href="/manifest.json">
     <meta name="apple-mobile-web-app-title" content="DMH-AI">
-    <link rel="apple-touch-icon" href="/logo.png">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
     <meta name="theme-color" content="#281e38">
     <script src="/marked.min.js"></script>
     <script src="/mammoth.min.js"></script>
@@ -240,6 +240,8 @@ const I18n = {
             voiceNotSupported: 'Voice input not supported in this browser',
             voiceHttpError: 'Voice input requires HTTPS. Access the app on port 8443 to enable it.',
             voiceEmpty: 'Nothing was recognized. To record in a different language, tap the flag button to switch language first. Currently listening in ',
+            iosChromeHint: 'To add DMH-AI to your home screen, open this page in Safari, tap the Share button (⎙), then "Add to Home Screen".',
+            iosCertHint: 'To avoid the certificate warning: tap here to install the certificate, then go to Settings → General → About → Certificate Trust Settings and enable it.',
         },
         vi: {
             retry: 'Thử lại', clear: 'Xóa', send: 'Gửi', cancel: 'Hủy', ok: 'OK',
@@ -268,6 +270,8 @@ const I18n = {
             voiceNotSupported: 'Trình duyệt này không hỗ trợ nhập giọng nói',
             voiceHttpError: 'Nhập giọng nói yêu cầu HTTPS. Truy cập ứng dụng qua cổng 8443 để sử dụng.',
             voiceEmpty: 'Không nhận ra giọng nói. Để ghi âm bằng ngôn ngữ khác, nhấn nút cờ để chọn ngôn ngữ trước. Hiện đang nghe bằng ',
+            iosChromeHint: 'Để thêm DMH-AI vào màn hình chính, mở trang này trong Safari, nhấn nút Chia sẻ (⎙), rồi chọn "Thêm vào Màn hình chính".',
+            iosCertHint: 'Để bỏ cảnh báo chứng chỉ: nhấn đây để cài chứng chỉ, rồi vào Cài đặt → Cài đặt chung → Giới thiệu → Cài đặt tin cậy chứng chỉ và bật lên.',
         },
         de: {
             retry: 'Wiederholen', clear: 'Löschen', send: 'Senden', cancel: 'Abbrechen', ok: 'OK',
@@ -296,6 +300,8 @@ const I18n = {
             voiceNotSupported: 'Spracheingabe in diesem Browser nicht unterstützt',
             voiceHttpError: 'Spracheingabe erfordert HTTPS. Öffnen Sie die App über Port 8443.',
             voiceEmpty: 'Nichts erkannt. Um in einer anderen Sprache aufzunehmen, tippen Sie zuerst auf die Flagge. Aktuell wird gehört auf ',
+            iosChromeHint: 'Um DMH-AI zum Home-Bildschirm hinzuzufügen, öffnen Sie die Seite in Safari, tippen auf Teilen (⎙) und wählen „Zum Home-Bildschirm".',
+            iosCertHint: 'Um die Zertifikatwarnung zu vermeiden: hier tippen zum Installieren, dann Einstellungen → Allgemein → Info → Zertifikat-Vertrauenseinstellungen und aktivieren.',
         },
         es: {
             retry: 'Reintentar', clear: 'Limpiar', send: 'Enviar', cancel: 'Cancelar', ok: 'OK',
@@ -324,6 +330,8 @@ const I18n = {
             voiceNotSupported: 'Entrada de voz no compatible con este navegador',
             voiceHttpError: 'La entrada de voz requiere HTTPS. Acceda a la aplicación por el puerto 8443.',
             voiceEmpty: 'No se reconoció nada. Para grabar en otro idioma, toca el botón de bandera primero. Actualmente escuchando en ',
+            iosChromeHint: 'Para agregar DMH-AI a la pantalla de inicio, abre la página en Safari, toca Compartir (⎙) y selecciona "Agregar a inicio".',
+            iosCertHint: 'Para evitar la advertencia: toca aquí para instalar el certificado, luego ve a Ajustes → General → Información → Configuración de confianza de certificados y actívalo.',
         },
         fr: {
             retry: 'Réessayer', clear: 'Effacer', send: 'Envoyer', cancel: 'Annuler', ok: 'OK',
@@ -352,6 +360,8 @@ const I18n = {
             voiceNotSupported: 'Saisie vocale non prise en charge par ce navigateur',
             voiceHttpError: 'La saisie vocale nécessite HTTPS. Accédez à l\'application via le port 8443.',
             voiceEmpty: 'Rien reconnu. Pour enregistrer dans une autre langue, appuyez d\'abord sur le drapeau. Langue actuelle : ',
+            iosChromeHint: 'Pour ajouter DMH-AI à l\'écran d\'accueil, ouvrez la page dans Safari, appuyez sur Partager (⎙) puis « Sur l\'écran d\'accueil ».',
+            iosCertHint: 'Pour éviter l\'avertissement : appuyez ici pour installer le certificat, puis Réglages → Général → À propos → Réglages de confiance des certificats et activez.',
         }
     },
     t: function(key) { return (this._strings[this._lang] || this._strings.en)[key] || this._strings.en[key] || key; },
@@ -887,6 +897,23 @@ const UIManager = {
     
     initializeApp: async function() {
         this.updateSendBtn();
+        var ua = navigator.userAgent;
+        var isIos = /iphone|ipad|ipod/i.test(ua);
+        var isIosChrome = isIos && /CriOS/i.test(ua);
+        var isIosSafari = isIos && !isIosChrome;
+        if (isIosChrome && !localStorage.getItem('iosChromeHintShown')) {
+            localStorage.setItem('iosChromeHintShown', '1');
+            this.setStatus(t('iosChromeHint'));
+            setTimeout(function() { UIManager.setStatus(''); }, 9000);
+        }
+        if (isIosSafari && location.protocol === 'https:' && !localStorage.getItem('iosCertHintShown')) {
+            localStorage.setItem('iosCertHintShown', '1');
+            var certUrl = 'http://' + location.hostname + ':8080/dmh-ai.crt';
+            var statusEl = document.getElementById('status-bar');
+            statusEl.innerHTML = '<a href="' + certUrl + '" style="color:#c87830">' + t('iosCertHint') + '</a>';
+            statusEl.classList.add('visible');
+            setTimeout(function() { statusEl.classList.remove('visible'); statusEl.innerHTML = ''; }, 15000);
+        }
         const savedEndpoint = AppConfig.ollamaEndpoint;
         OllamaAPI.setEndpoint(savedEndpoint);
         document.getElementById('endpoint-input').value = savedEndpoint;
