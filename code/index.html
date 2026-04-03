@@ -106,18 +106,30 @@
         .mgr-close { background: none; border: none; color: #b098b8; font-size: 20px; cursor: pointer; padding: 0 4px; }
         .mgr-close:hover { color: #eee; }
         .mgr-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 20px; }
-        .mgr-table th { text-align: left; color: #b098b8; font-weight: 500; padding: 6px 8px; border-bottom: 1px solid #281e38; }
-        .mgr-table td { padding: 8px 8px; border-bottom: 1px solid #1c1628; color: #ccc; vertical-align: middle; }
-        .mgr-table tr:hover td { background: rgba(255,255,255,0.03); }
-        .mgr-del-btn { background: none; border: none; color: #fca5a5; cursor: pointer; font-size: 13px; padding: 2px 6px; border-radius: 4px; }
+        .mgr-table th { text-align: left; color: #b098b8; font-weight: 500; padding: 6px 8px; border-bottom: 2px solid #4a3860; }
+        .mgr-table td { padding: 8px 8px; border-bottom: 1px solid #382850; color: #ccc; vertical-align: middle; }
+        .mgr-table tr:hover td { background: rgba(255,255,255,0.05); }
+        .mgr-del-btn { background: none; border: none; color: #fca5a5; cursor: pointer; padding: 4px 6px; border-radius: 4px; line-height: 1; }
         .mgr-del-btn:hover { background: rgba(252,165,165,0.15); }
+        @media (max-width: 480px) {
+            .mgr-table thead { display: none; }
+            .mgr-table tr { display: flex; flex-wrap: wrap; align-items: center; padding: 8px 4px; border-bottom: 1px solid #382850; gap: 4px; }
+            .mgr-table td { display: block; border: none; padding: 2px 4px; }
+            .mgr-table td:first-child { flex: 1 1 100%; font-weight: 500; color: #eee; word-break: break-all; }
+            .mgr-table td:nth-child(2) { flex: 1; color: #b098b8; font-size: 12px; }
+            .mgr-table td:nth-child(3) { color: #b098b8; font-size: 12px; }
+            .mgr-table td:last-child { margin-left: auto; padding: 0; }
+        }
         .mgr-add-title { font-size: 14px; font-weight: 500; color: #b098b8; margin-bottom: 10px; }
         .mgr-row { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
         .mgr-input { flex: 1; min-width: 120px; padding: 9px 11px; border-radius: 6px; border: 1px solid #382850; background: #141018; color: #eee; font-size: 13px; outline: none; }
         .mgr-input:focus { border-color: #c87830; }
-        .mgr-input:focus { border-color: #c87830; }
         .mgr-select { padding: 9px 11px; border-radius: 6px; border: 1px solid #382850; background: #141018; color: #eee; font-size: 13px; outline: none; }
         .mgr-add-btn { padding: 9px 16px; background: #c87830; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500; }
+        @media (max-width: 480px) {
+            .mgr-row { flex-direction: column; }
+            .mgr-input, .mgr-select, .mgr-add-btn { width: 100%; box-sizing: border-box; }
+        }
         .mgr-add-btn:hover { background: #a86020; }
         .mgr-error { color: #e94560; font-size: 13px; min-height: 18px; margin-bottom: 8px; }
         .attach-btn { padding: 0 14px; background: #141018; color: #b098b8; border: 1px solid #281e38; border-radius: 8px; cursor: pointer; font-size: 20px; line-height: 1; flex-shrink: 0; }
@@ -1311,7 +1323,8 @@ const UIManager = {
                 if (u.id !== Auth.user.id) {
                     var del = document.createElement('button');
                     del.className = 'mgr-del-btn';
-                    del.textContent = 'Remove';
+                    del.title = 'Remove';
+                    del.innerHTML = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>';
                     del.addEventListener('click', async function() {
                         if (!confirm('Remove ' + u.email + '?')) return;
                         await apiFetch('/users/' + u.id, { method: 'DELETE' });
