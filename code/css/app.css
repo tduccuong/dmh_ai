@@ -141,7 +141,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 .login-user-wrap:focus-within { border-color: #c87830; }
 .login-user-wrap .login-field { border: none; margin-bottom: 0; flex: 1; min-width: 0; border-radius: 0; }
 .login-domain-suffix { padding: 0 12px 0 2px; color: #786888; font-size: 14px; white-space: nowrap; flex-shrink: 0; user-select: none; }
-.login-error { color: #e94560; font-size: 13px; min-height: 18px; margin-bottom: 10px; }
+.login-error { color: #e94560; font-size: 13px; min-height: 18px; margin-bottom: 10px; line-height: 1.4; word-break: break-word; }
 .login-btn { width: 100%; padding: 11px; background: #c87830; color: white; border: none; border-radius: 7px; cursor: pointer; font-size: 15px; font-weight: 600; }
 .login-btn:hover { background: #a86020; }
 .login-btn:disabled { opacity: 0.6; cursor: not-allowed; }

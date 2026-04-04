@@ -194,11 +194,22 @@ const Auth = {
     get user() { return this._user; },
     get isLoggedIn() { return !!this._token && !!this._user; },
     async login(email, password) {
-        const res = await fetch('/auth/login', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email: email, password: password })
-        });
+        let res;
+        try {
+            res = await fetch('/auth/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email: email, password: password }),
+                signal: AbortSignal.timeout(10000)
+            });
+        } catch(e) {
+            // On iOS/Android with an untrusted self-signed certificate, fetch hangs or
+            // fails immediately with a network error. Give the user actionable guidance.
+            if (location.protocol === 'https:') {
+                throw new Error('Cannot connect. On mobile, you may need to install the self-signed certificate first — see the README or try the HTTP endpoint (port 8080).');
+            }
+            throw new Error('Cannot connect to server. Is the app running?');
+        }
         if (!res.ok) throw new Error('Invalid username or password');
         const data = await res.json();
         this._token = data.token;
