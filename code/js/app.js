@@ -4,7 +4,7 @@ const I18n = {
     _lang: localStorage.getItem('lang') || 'en',
     _strings: {
         en: {
-            retry: 'Retry', clear: 'Clear', send: 'Send', cancel: 'Cancel', ok: 'OK', stopGen: '■ Stop',
+            retry: 'Retry', clear: 'Clear', send: 'Send', cancel: 'Cancel', ok: 'OK', stopGen: 'Stop',
             update: 'Update', rename: 'Rename', delete_: 'Delete', download: '⬇ Download',
             newSession: '+ New Session', newChat: 'New chat',
             typePlaceholder: 'Type a message...', attachFile: 'Attach file',
@@ -36,9 +36,10 @@ const I18n = {
             iosCertHint: 'To avoid the certificate warning: tap here to install the certificate, then go to Settings → General → About → Certificate Trust Settings and enable it.',
             pwWarning: '⚠ You are using the default password. Please change it now.',
             pwWarningBtn: 'Change password',
+            recQuickAnswer: '👁 Quick Answer', recDeepThinker: '💡 Deep Thinker', recTechExpert: '🛠 Technical Expert',
         },
         vi: {
-            retry: 'Thử lại', clear: 'Xóa', send: 'Gửi', cancel: 'Hủy', ok: 'OK', stopGen: '■ Dừng',
+            retry: 'Thử lại', clear: 'Xóa', send: 'Gửi', cancel: 'Hủy', ok: 'OK', stopGen: 'Dừng',
             update: 'Cập nhật', rename: 'Đổi tên', delete_: 'Xóa', download: '⬇ Tải về',
             newSession: '+ Phiên mới', newChat: 'Cuộc trò chuyện mới',
             typePlaceholder: 'Nhập tin nhắn...', attachFile: 'Đính kèm tệp',
@@ -70,9 +71,10 @@ const I18n = {
             iosCertHint: 'Để bỏ cảnh báo chứng chỉ: nhấn đây để cài chứng chỉ, rồi vào Cài đặt → Cài đặt chung → Giới thiệu → Cài đặt tin cậy chứng chỉ và bật lên.',
             pwWarning: '⚠ Bạn đang dùng mật khẩu mặc định. Hãy đổi mật khẩu ngay.',
             pwWarningBtn: 'Đổi mật khẩu',
+            recQuickAnswer: '👁 Trả lời nhanh', recDeepThinker: '💡 Suy nghĩ sâu', recTechExpert: '🛠 Chuyên gia kỹ thuật',
         },
         de: {
-            retry: 'Wiederholen', clear: 'Löschen', send: 'Senden', cancel: 'Abbrechen', ok: 'OK', stopGen: '■ Stopp',
+            retry: 'Wiederholen', clear: 'Löschen', send: 'Senden', cancel: 'Abbrechen', ok: 'OK', stopGen: 'Stopp',
             update: 'Aktualisieren', rename: 'Umbenennen', delete_: 'Löschen', download: '⬇ Herunterladen',
             newSession: '+ Neue Sitzung', newChat: 'Neuer Chat',
             typePlaceholder: 'Nachricht eingeben...', attachFile: 'Datei anhängen',
@@ -104,9 +106,10 @@ const I18n = {
             iosCertHint: 'Um die Zertifikatwarnung zu vermeiden: hier tippen zum Installieren, dann Einstellungen → Allgemein → Info → Zertifikat-Vertrauenseinstellungen und aktivieren.',
             pwWarning: '⚠ Sie verwenden noch das Standardpasswort. Bitte jetzt ändern.',
             pwWarningBtn: 'Passwort ändern',
+            recQuickAnswer: '👁 Schnelle Antwort', recDeepThinker: '💡 Tiefdenker', recTechExpert: '🛠 Technischer Experte',
         },
         es: {
-            retry: 'Reintentar', clear: 'Limpiar', send: 'Enviar', cancel: 'Cancelar', ok: 'OK', stopGen: '■ Detener',
+            retry: 'Reintentar', clear: 'Limpiar', send: 'Enviar', cancel: 'Cancelar', ok: 'OK', stopGen: 'Detener',
             update: 'Actualizar', rename: 'Renombrar', delete_: 'Eliminar', download: '⬇ Descargar',
             newSession: '+ Nueva sesión', newChat: 'Nueva conversación',
             typePlaceholder: 'Escribe un mensaje...', attachFile: 'Adjuntar archivo',
@@ -138,9 +141,10 @@ const I18n = {
             iosCertHint: 'Para evitar la advertencia: toca aquí para instalar el certificado, luego ve a Ajustes → General → Información → Configuración de confianza de certificados y actívalo.',
             pwWarning: '⚠ Está usando la contraseña predeterminada. Cámbiela ahora.',
             pwWarningBtn: 'Cambiar contraseña',
+            recQuickAnswer: '👁 Respuesta rápida', recDeepThinker: '💡 Pensador profundo', recTechExpert: '🛠 Experto técnico',
         },
         fr: {
-            retry: 'Réessayer', clear: 'Effacer', send: 'Envoyer', cancel: 'Annuler', ok: 'OK', stopGen: '■ Arrêter',
+            retry: 'Réessayer', clear: 'Effacer', send: 'Envoyer', cancel: 'Annuler', ok: 'OK', stopGen: 'Arrêter',
             update: 'Mettre à jour', rename: 'Renommer', delete_: 'Supprimer', download: '⬇ Télécharger',
             newSession: '+ Nouvelle session', newChat: 'Nouvelle conversation',
             typePlaceholder: 'Tapez un message...', attachFile: 'Joindre un fichier',
@@ -172,6 +176,7 @@ const I18n = {
             iosCertHint: 'Pour éviter l\'avertissement : appuyez ici pour installer le certificat, puis Réglages → Général → À propos → Réglages de confiance des certificats et activez.',
             pwWarning: '⚠ Vous utilisez le mot de passe par défaut. Veuillez le changer maintenant.',
             pwWarningBtn: 'Changer le mot de passe',
+            recQuickAnswer: '👁 Réponse rapide', recDeepThinker: '💡 Réflexion profonde', recTechExpert: '🛠 Expert technique',
         }
     },
     t: function(key) { return (this._strings[this._lang] || this._strings.en)[key] || this._strings.en[key] || key; },
@@ -249,6 +254,305 @@ const AppConfig = {
     saveOllamaEndpoint: function(url) {
         if (url) localStorage.setItem('ollama-endpoint', url);
         else localStorage.removeItem('ollama-endpoint');
+    }
+};
+
+function getRecommendedCloudModels() {
+    return [
+        { name: 'ministral-3:8b-cloud',        label: t('recQuickAnswer') },
+        { name: 'qwen3-vl:235b-cloud',         label: t('recDeepThinker') },
+        { name: 'devstral-small-2:24b-cloud',  label: t('recTechExpert')  },
+    ];
+}
+// Constant names for filtering (language-independent)
+const RECOMMENDED_CLOUD_MODEL_NAMES = ['ministral-3:8b-cloud', 'qwen3-vl:235b-cloud', 'devstral-small-2:24b-cloud'];
+
+const Settings = {
+    _accounts: [],
+    _cloudModels: [],
+    get accounts() { return this._accounts; },
+    get cloudModels() { return this._cloudModels; },
+    saveAccounts: function(list) {
+        this._accounts = list;
+        this._persist();
+    },
+    saveCloudModels: function(list) {
+        this._cloudModels = list;
+        this._persist();
+    },
+    _persist: function() {
+        apiFetch('/admin/settings', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ accounts: this._accounts, cloudModels: this._cloudModels })
+        }).catch(function() {});
+    },
+    load: async function() {
+        try {
+            const res = await apiFetch('/admin/settings');
+            if (res && res.ok) {
+                const d = await res.json();
+                this._accounts = Array.isArray(d.accounts) ? d.accounts : [];
+                this._cloudModels = Array.isArray(d.cloudModels) ? d.cloudModels : [];
+            }
+        } catch(e) {}
+    }
+};
+
+const SettingsModal = {
+    open: async function() {
+        await Settings.load();
+        this._renderAccounts();
+        this._renderCloudModels();
+        this._updateSubsectionState();
+        document.getElementById('settings-ollama-url').value = AppConfig.ollamaEndpoint || '';
+        document.getElementById('settings-overlay').classList.add('open');
+    },
+    close: function() {
+        document.getElementById('settings-overlay').classList.remove('open');
+    },
+    _trashBtn: function() {
+        var btn = document.createElement('button');
+        btn.className = 'settings-trash-btn';
+        btn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M9 6V4h6v2"/></svg>';
+        return btn;
+    },
+    _renderAccounts: function() {
+        var list = document.getElementById('cloud-accounts-list');
+        list.innerHTML = '';
+        Settings.accounts.forEach(function(acct, i) {
+            var item = document.createElement('div');
+            item.className = 'settings-list-item';
+            item.innerHTML = '<span class="settings-list-item-label">' + acct.name + '</span><span class="settings-list-item-sub">••••••••</span>';
+            var del = SettingsModal._trashBtn();
+            del.addEventListener('click', function() {
+                var accts = Settings.accounts;
+                accts.splice(i, 1);
+                Settings.saveAccounts(accts);
+                SettingsModal._renderAccounts();
+                SettingsModal._updateSubsectionState();
+                UIManager.refreshModelSelect();
+            });
+            item.appendChild(del);
+            list.appendChild(item);
+        });
+    },
+    _renderCloudModels: function() {
+        var list = document.getElementById('cloud-models-list');
+        list.innerHTML = '';
+        Settings.cloudModels.forEach(function(name, i) {
+            var item = document.createElement('div');
+            item.className = 'settings-list-item';
+            item.innerHTML = '<span class="settings-list-item-label">' + name + '</span>';
+            var del = SettingsModal._trashBtn();
+            del.addEventListener('click', function() {
+                var models = Settings.cloudModels;
+                models.splice(i, 1);
+                Settings.saveCloudModels(models);
+                SettingsModal._renderCloudModels();
+                UIManager.refreshModelSelect();
+            });
+            item.appendChild(del);
+            list.appendChild(item);
+        });
+    },
+    _updateSubsectionState: function() {
+        var sub = document.getElementById('cloud-models-subsection');
+        var hasAccounts = Settings.accounts.length > 0;
+        sub.classList.toggle('disabled', !hasAccounts);
+    },
+    _addCloudModel: function(name) {
+        name = name.trim();
+        if (!name) return;
+        // Recommended models are shown automatically — don't add to user list
+        if (RECOMMENDED_CLOUD_MODEL_NAMES.indexOf(name) !== -1) return;
+        var models = Settings.cloudModels;
+        if (models.indexOf(name) !== -1) return;
+        models.push(name);
+        Settings.saveCloudModels(models);
+        this._renderCloudModels();
+        UIManager.refreshModelSelect();
+        document.getElementById('cloud-model-search').value = '';
+        document.getElementById('cloud-model-suggestions').classList.remove('open');
+    },
+    init: function() {
+        var self = this;
+        document.getElementById('settings-close-btn').addEventListener('click', function() { self.close(); });
+        document.getElementById('settings-overlay').addEventListener('click', function(e) {
+            if (e.target === e.currentTarget) self.close();
+        });
+        // Add account — probe first
+        document.getElementById('cloud-acct-add-btn').addEventListener('click', async function() {
+            var name = document.getElementById('cloud-acct-name').value.trim();
+            var key = document.getElementById('cloud-acct-key').value.trim();
+            var errEl = document.getElementById('cloud-acct-error');
+            errEl.style.display = 'none';
+            if (!name || !key) return;
+            var btn = document.getElementById('cloud-acct-add-btn');
+            btn.disabled = true;
+            btn.textContent = 'Checking…';
+            var ok = await CloudAccountPool.probe({ name: name, apiKey: key });
+            btn.disabled = false;
+            btn.textContent = '+ Add';
+            if (!ok) {
+                errEl.textContent = 'Account unreachable. Check the API key and try again.';
+                errEl.style.display = 'block';
+                return;
+            }
+            var accts = Settings.accounts;
+            if (accts.some(function(a) { return a.name === name; })) {
+                errEl.textContent = 'An account with that name already exists.';
+                errEl.style.display = 'block';
+                return;
+            }
+            accts.push({ name: name, apiKey: key });
+            Settings.saveAccounts(accts);
+            document.getElementById('cloud-acct-name').value = '';
+            document.getElementById('cloud-acct-key').value = '';
+            self._renderAccounts();
+            self._updateSubsectionState();
+            UIManager.refreshModelSelect();
+        });
+        // Cloud model search
+        var searchInput = document.getElementById('cloud-model-search');
+        var suggestions = document.getElementById('cloud-model-suggestions');
+        var _searchTimer = null;
+        searchInput.addEventListener('input', function() {
+            var q = this.value.trim();
+            suggestions.innerHTML = '';
+            if (!q) { suggestions.classList.remove('open'); return; }
+            clearTimeout(_searchTimer);
+            _searchTimer = setTimeout(async function() {
+                suggestions.innerHTML = '';
+                var models = [];
+                // Search Ollama public registry via backend proxy
+                try {
+                    var res = await apiFetch('/registry?q=' + encodeURIComponent(q));
+                    if (res.ok) {
+                        var data = await res.json();
+                        models = (data.models || [])
+                            .map(function(m) { return m.name; })
+                            .filter(function(n) { return RECOMMENDED_CLOUD_MODEL_NAMES.indexOf(n) === -1; });
+                    }
+                } catch(e) {}
+                // Also show locally-installed cloud models that match the query
+                try {
+                    var localModels = await OllamaAPI.fetchModels();
+                    var localCloud = localModels
+                        .filter(function(m) {
+                            var tag = m.name.includes(':') ? m.name.split(':')[1] : '';
+                            return tag.includes('cloud')
+                                && m.name.toLowerCase().includes(q.toLowerCase())
+                                && RECOMMENDED_CLOUD_MODEL_NAMES.indexOf(m.name) === -1;
+                        })
+                        .map(function(m) { return m.name; });
+                    localCloud.forEach(function(n) { if (models.indexOf(n) === -1) models.push(n); });
+                } catch(e) {}
+                if (!models.length) { suggestions.classList.remove('open'); return; }
+                models.forEach(function(name) {
+                    var item = document.createElement('div');
+                    item.className = 'settings-suggestion-item';
+                    item.textContent = name;
+                    item.addEventListener('mousedown', function(e) {
+                        e.preventDefault();
+                        self._addCloudModel(name);
+                    });
+                    suggestions.appendChild(item);
+                });
+                suggestions.classList.add('open');
+            }, 350);
+        });
+        searchInput.addEventListener('blur', function() {
+            setTimeout(function() { suggestions.classList.remove('open'); }, 150);
+        });
+        searchInput.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') self._addCloudModel(searchInput.value);
+        });
+        document.getElementById('cloud-model-add-btn').addEventListener('click', function() {
+            self._addCloudModel(searchInput.value);
+        });
+        // Local Ollama URL save
+        document.getElementById('settings-ollama-url-save').addEventListener('click', function() {
+            var url = document.getElementById('settings-ollama-url').value.trim();
+            AppConfig.saveOllamaEndpoint(url);
+            UIManager.updateEndpoint();
+        });
+    }
+};
+
+const CloudAccountPool = {
+    _idx: 0,
+    _state: {}, // { name: { unreachableUntil, backoffMs, probeTimer } }
+
+    probe: async function(acct) {
+        try {
+            const res = await fetch('/cloud-api/tags', {
+                headers: {
+                    'Authorization': 'Bearer ' + (Auth.token || ''),
+                    'X-Cloud-Key': acct.apiKey
+                },
+                signal: AbortSignal.timeout(8000)
+            });
+            return res.ok;
+        } catch(e) {
+            return false;
+        }
+    },
+
+    getNext: function() {
+        const accounts = Settings.accounts;
+        if (!accounts.length) return null;
+        const now = Date.now();
+        for (let i = 0; i < accounts.length; i++) {
+            const idx = (this._idx + i) % accounts.length;
+            const acct = accounts[idx];
+            const state = this._state[acct.name];
+            if (!state || now >= state.unreachableUntil) {
+                this._idx = (idx + 1) % accounts.length;
+                return acct;
+            }
+        }
+        // All unreachable — return least-recently-failed
+        let bestAcct = null, earliest = Infinity;
+        accounts.forEach(function(acct) {
+            const st = CloudAccountPool._state[acct.name];
+            if (st && st.unreachableUntil < earliest) { earliest = st.unreachableUntil; bestAcct = acct; }
+        });
+        return bestAcct || accounts[this._idx % accounts.length];
+    },
+
+    markFailed: function(acct) {
+        if (!acct) return;
+        const MIN_BACKOFF = 30000;
+        const state = this._state[acct.name] || { backoffMs: MIN_BACKOFF };
+        if (!this._state[acct.name]) state.backoffMs = MIN_BACKOFF;
+        state.unreachableUntil = Date.now() + state.backoffMs;
+        this._state[acct.name] = state;
+        this._scheduleProbe(acct, state.backoffMs);
+        state.backoffMs = Math.min(state.backoffMs * 2, 30 * 60 * 1000);
+    },
+
+    markRecovered: function(acct) {
+        if (!acct) return;
+        const state = this._state[acct.name];
+        if (state && state.probeTimer) clearTimeout(state.probeTimer);
+        delete this._state[acct.name];
+    },
+
+    _scheduleProbe: function(acct, delay) {
+        const self = this;
+        const state = this._state[acct.name];
+        if (!state) return;
+        if (state.probeTimer) clearTimeout(state.probeTimer);
+        state.probeTimer = setTimeout(async function() {
+            if (!self._state[acct.name]) return;
+            const ok = await self.probe(acct);
+            if (ok) {
+                self.markRecovered(acct);
+            } else {
+                self.markFailed(acct);
+            }
+        }, delay);
     }
 };
 
@@ -440,11 +744,13 @@ const OllamaAPI = {
             return null;
         }
     },
-    streamChat: function(model, messages, onChunk, onComplete, onError, signal) {
+    streamChat: function(model, messages, onChunk, onComplete, onError, signal, authHeaders, baseUrl) {
         const controller = signal ? null : new AbortController();
-        fetch(this.BASE_URL + '/chat', {
+        const hdrs = Object.assign({ 'Content-Type': 'application/json' }, authHeaders || {});
+        const url = (baseUrl || this.BASE_URL) + '/chat';
+        fetch(url, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: hdrs,
             body: JSON.stringify({ model: model, messages: messages, stream: true, think: false }),
             signal: signal || controller.signal
         })
@@ -614,17 +920,18 @@ function applyLanguage() {
         el.classList.toggle('active', el.dataset.lang === I18n.lang);
     });
     document.getElementById('new-session-btn').textContent = t('newSession');
-    document.getElementById('endpoint-label').textContent = t('ollamaEndpoint');
-    document.getElementById('endpoint-update-btn').textContent = t('update');
     document.getElementById('message-input').placeholder = t('typePlaceholder');
     document.getElementById('send-label').textContent = t('send');
-    document.getElementById('stop-gen-btn').textContent = t('stopGen');
+    document.getElementById('stop-label').textContent = t('stopGen');
     document.getElementById('attach-btn').title = t('attachFile');
     document.getElementById('error-message').textContent = t('cannotConnect');
     document.querySelector('#error-banner button').textContent = t('retry');
     document.getElementById('modal-cancel').textContent = t('cancel');
     document.getElementById('pw-warning-text').textContent = t('pwWarning');
     document.getElementById('pw-warning-btn').textContent = t('pwWarningBtn');
+    if (typeof UIManager !== 'undefined' && UIManager.refreshModelSelect) {
+        UIManager.refreshModelSelect();
+    }
 }
 
 function setCpwError(msg) {
@@ -717,8 +1024,7 @@ const UIManager = {
             });
         }
         document.getElementById('new-session-btn').addEventListener('click', function() { self.createNewSession(); });
-        document.getElementById('endpoint-update-btn').addEventListener('click', function() { self.updateEndpoint(); });
-        document.getElementById('endpoint-input').addEventListener('keydown', function(e) { if (e.key === 'Enter') self.updateEndpoint(); });
+        document.getElementById('sidebar-settings-btn').addEventListener('click', function() { SettingsModal.open(); });
         document.getElementById('send-btn').addEventListener('click', function() { self.sendMessage(); });
         document.getElementById('message-input').addEventListener('keydown', function(e) {
             if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (!self.isStreaming) self.sendMessage(); }
@@ -744,6 +1050,27 @@ const UIManager = {
             }
         });
         document.getElementById('header-model-select').addEventListener('change', function(e) { self.switchModel(e.target.value); });
+        // Custom model dropdown open/close
+        document.getElementById('model-dropdown-trigger').addEventListener('click', function() {
+            var menu = document.getElementById('model-dropdown-menu');
+            var trigger = this;
+            var isOpen = menu.classList.toggle('open');
+            trigger.classList.toggle('open', isOpen);
+            if (isOpen && window.innerWidth <= 768) {
+                var rect = trigger.getBoundingClientRect();
+                menu.style.top = (rect.bottom + 4) + 'px';
+            } else {
+                menu.style.top = '';
+            }
+        });
+        document.addEventListener('click', function(e) {
+            if (!document.getElementById('model-dropdown-wrap').contains(e.target)) {
+                var menu = document.getElementById('model-dropdown-menu');
+                menu.classList.remove('open');
+                menu.style.top = '';
+                document.getElementById('model-dropdown-trigger').classList.remove('open');
+            }
+        });
 
         // User menu
         var userMenuBtn = document.getElementById('user-menu-btn');
@@ -938,6 +1265,13 @@ const UIManager = {
             }
         });
 
+        // Settings
+        SettingsModal.init();
+        document.getElementById('user-settings-btn').addEventListener('click', function() {
+            document.getElementById('user-dropdown').classList.remove('open');
+            SettingsModal.open();
+        });
+
         // Manage users close
         document.getElementById('mgr-close').addEventListener('click', function() {
             document.getElementById('mgr-overlay').classList.remove('visible');
@@ -965,6 +1299,8 @@ const UIManager = {
             var isAdmin = user.role === 'admin';
             document.getElementById('user-manage-btn').style.display = isAdmin ? '' : 'none';
             document.getElementById('user-manage-sep').style.display = isAdmin ? '' : 'none';
+            document.getElementById('user-settings-btn').style.display = isAdmin ? '' : 'none';
+            document.getElementById('user-settings-sep').style.display = isAdmin ? '' : 'none';
         }
         this.updatePwWarning();
     },
@@ -1085,9 +1421,9 @@ const UIManager = {
         }
         const savedEndpoint = AppConfig.ollamaEndpoint;
         OllamaAPI.setEndpoint(savedEndpoint);
-        document.getElementById('endpoint-input').value = savedEndpoint;
 
         await this.loadPrefs();
+        await Settings.load();
 
         try {
             const models = await OllamaAPI.fetchModels();
@@ -1099,8 +1435,7 @@ const UIManager = {
         try {
             const sessions = await SessionStore.getSessions();
             if (sessions.length === 0) {
-                const model = document.getElementById('header-model-select').value;
-                const defaultSession = await SessionStore.createSession(t('newChat'), model);
+                const defaultSession = await SessionStore.createSession(t('newChat'), this.getDefaultModel());
                 await SessionStore.setCurrentSessionId(defaultSession.id);
                 this.currentSession = defaultSession;
             } else {
@@ -1112,14 +1447,25 @@ const UIManager = {
                 var thirtyMin = 30 * 60 * 1000;
                 if (lastActivity && Date.now() - lastActivity > thirtyMin &&
                         this.currentSession.messages && this.currentSession.messages.length > 0) {
-                    var autoModel = document.getElementById('header-model-select').value || this.currentSession.model;
-                    var autoSession = await SessionStore.createSession(t('newChat'), autoModel);
+                    var autoSession = await SessionStore.createSession(t('newChat'), this.getDefaultModel() || this.currentSession.model);
                     await SessionStore.setCurrentSessionId(autoSession.id);
                     this.currentSession = autoSession;
                 }
             }
             if (this.currentSession && this.currentSession.model) {
-                document.getElementById('header-model-select').value = this.currentSession.model;
+                var sel = document.getElementById('header-model-select');
+                var sessionModel = this.currentSession.model;
+                var modelAvailable = Array.from(sel.options).some(function(o) { return o.value === sessionModel; });
+                if (modelAvailable) {
+                    this._setModelDropdownValue(sessionModel);
+                } else {
+                    // Model no longer available (e.g. pool deleted); keep dropdown value from populateModelSelects
+                    var dropdownModel = sel.value || this._lastUsedModel;
+                    if (dropdownModel && dropdownModel !== sessionModel) {
+                        this.currentSession.model = dropdownModel;
+                        SessionStore.updateSession(this.currentSession);
+                    }
+                }
             }
             await this.renderSessions();
             this.renderChat();
@@ -1131,21 +1477,120 @@ const UIManager = {
 
     populateModelSelects: function(models) {
         const select = document.getElementById('header-model-select');
+        const menu = document.getElementById('model-dropdown-menu');
         select.innerHTML = '';
+        menu.innerHTML = '';
         const self = this;
-        models.forEach(function(model) {
-            const option = document.createElement('option');
-            option.value = model.name;
-            option.textContent = model.name + OllamaAPI.formatSize(model.size);
-            select.appendChild(option);
-        });
-        const names = models.map(function(m) { return m.name; });
-        if (self._lastUsedModel && names.indexOf(self._lastUsedModel) !== -1) {
-            select.value = self._lastUsedModel;
-        } else if (models.length > 0) {
-            self._lastUsedModel = models[0].name;
-            select.value = models[0].name;
+        const hasPool = Settings.accounts.length > 0;
+        const recModels = getRecommendedCloudModels();
+        const recNames = RECOMMENDED_CLOUD_MODEL_NAMES;
+        const cloudModelNames = Settings.cloudModels.filter(function(n) { return recNames.indexOf(n) === -1; });
+        const localModels = models.filter(function(m) {
+            return recNames.indexOf(m.name) === -1 && Settings.cloudModels.indexOf(m.name) === -1;
+        }).sort(function(a, b) { return (a.size || 0) - (b.size || 0); });
+
+        function makeOption(value, text) {
+            var opt = document.createElement('option');
+            opt.value = value; opt.textContent = text;
+            select.appendChild(opt);
         }
+        function makeItem(value, text, disabled) {
+            var el = document.createElement('div');
+            el.className = 'model-dropdown-item' + (disabled ? ' disabled' : '');
+            el.textContent = text;
+            el.dataset.value = value;
+            if (!disabled) {
+                el.addEventListener('click', function() {
+                    self._setModelDropdownValue(value);
+                    document.getElementById('header-model-select').dispatchEvent(new Event('change'));
+                    var menu = document.getElementById('model-dropdown-menu');
+                    menu.classList.remove('open');
+                    menu.style.top = '';
+                    document.getElementById('model-dropdown-trigger').classList.remove('open');
+                });
+            }
+            return el;
+        }
+
+        // Recommended section — always visible, disabled when no pool account is active
+        var recSection = document.createElement('div');
+        recSection.className = 'model-dropdown-section';
+        var recHdr = document.createElement('div');
+        recHdr.className = 'model-dropdown-section-hdr recommended' + (hasPool ? '' : ' inactive');
+        recHdr.innerHTML = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg> Recommended';
+        recSection.appendChild(recHdr);
+        recModels.forEach(function(rec) {
+            var displayText = rec.label + ' - ' + rec.name;
+            if (hasPool) makeOption(rec.name, displayText);
+            recSection.appendChild(makeItem(rec.name, displayText, !hasPool));
+        });
+        menu.appendChild(recSection);
+        var dividerRec = document.createElement('div');
+        dividerRec.className = 'model-dropdown-divider';
+        menu.appendChild(dividerRec);
+
+        // Cloud Models section (user-added, excluding recommended)
+        var cloudSection = document.createElement('div');
+        cloudSection.className = 'model-dropdown-section';
+        var cloudHdr = document.createElement('div');
+        cloudHdr.className = 'model-dropdown-section-hdr cloud';
+        cloudHdr.innerHTML = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg> Cloud Models';
+        cloudSection.appendChild(cloudHdr);
+        if (cloudModelNames.length === 0) {
+            cloudSection.appendChild(makeItem('', 'No cloud models configured', true));
+        } else {
+            cloudModelNames.forEach(function(name) {
+                makeOption(name, name);
+                cloudSection.appendChild(makeItem(name, name, false));
+            });
+        }
+        menu.appendChild(cloudSection);
+
+        // Divider
+        var divider = document.createElement('div');
+        divider.className = 'model-dropdown-divider';
+        menu.appendChild(divider);
+
+        // Local Models section
+        var localSection = document.createElement('div');
+        localSection.className = 'model-dropdown-section';
+        var localHdr = document.createElement('div');
+        localHdr.className = 'model-dropdown-section-hdr local';
+        localHdr.innerHTML = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg> Local Models';
+        localSection.appendChild(localHdr);
+        localModels.forEach(function(model) {
+            makeOption(model.name, model.name + OllamaAPI.formatSize(model.size));
+            localSection.appendChild(makeItem(model.name, model.name + OllamaAPI.formatSize(model.size), false));
+        });
+        menu.appendChild(localSection);
+
+        // Set initial value: last used (if still active) → first recommended (if pool) → first user cloud → first local
+        const activeNames = (hasPool ? recNames : []).concat(cloudModelNames).concat(localModels.map(function(m) { return m.name; }));
+        var initial = (self._lastUsedModel && activeNames.indexOf(self._lastUsedModel) !== -1)
+            ? self._lastUsedModel
+            : (hasPool ? recNames[0] : (cloudModelNames.length > 0 ? cloudModelNames[0] : (localModels.length > 0 ? localModels[0].name : '')));
+        self._setModelDropdownValue(initial || '');
+        if (initial) document.getElementById('header-model-select').dispatchEvent(new Event('change'));
+    },
+
+    _setModelDropdownValue: function(value) {
+        var select = document.getElementById('header-model-select');
+        var label = document.getElementById('model-dropdown-label');
+        select.value = value;
+        var rec = value && getRecommendedCloudModels().find(function(r) { return r.name === value; });
+        label.textContent = rec ? (rec.label + ' - ' + value) : (value || 'Select model...');
+        this._lastUsedModel = value;
+        // Update selected highlight
+        document.getElementById('model-dropdown-menu').querySelectorAll('.model-dropdown-item').forEach(function(el) {
+            el.classList.toggle('selected', el.dataset.value === value);
+        });
+    },
+
+    refreshModelSelect: async function() {
+        try {
+            var models = await OllamaAPI.fetchModels();
+            this.populateModelSelects(models);
+        } catch(e) {}
     },
 
     renderSessions: async function() {
@@ -1193,7 +1638,7 @@ const UIManager = {
                     const remaining = await SessionStore.getSessions();
                     self.currentSession = remaining.length > 0
                         ? remaining[0]
-                        : await SessionStore.createSession(t('newChat'), document.getElementById('header-model-select').value || '');
+                        : await SessionStore.createSession(t('newChat'), self.getDefaultModel());
                     await SessionStore.setCurrentSessionId(self.currentSession.id);
                     self.renderChat();
                 }
@@ -1531,28 +1976,21 @@ const UIManager = {
     },
 
     updateEndpoint: async function() {
-        const url = document.getElementById('endpoint-input').value.trim();
+        const url = AppConfig.ollamaEndpoint;
         if (!url) return;
         OllamaAPI.setEndpoint(url);
-        AppConfig.saveOllamaEndpoint(url);
-        const btn = document.getElementById('endpoint-update-btn');
-        btn.disabled = true;
-        btn.textContent = t('updating');
         try {
             const models = await OllamaAPI.fetchModels();
             const currentModel = this.currentSession ? this.currentSession.model : null;
             this.populateModelSelects(models);
             const names = models.map(function(m) { return m.name; });
             if (currentModel && names.indexOf(currentModel) !== -1) {
-                document.getElementById('header-model-select').value = currentModel;
+                this._setModelDropdownValue(currentModel);
             } else if (models.length > 0) {
                 this.switchModel(models[0].name);
             }
         } catch (e) {
             this.showError(t('cannotConnectTo') + url);
-        } finally {
-            btn.disabled = false;
-            btn.textContent = t('update');
         }
     },
 
@@ -1568,8 +2006,18 @@ const UIManager = {
         this.renderChat();
     },
 
+    getDefaultModel: function() {
+        const currentVal = document.getElementById('header-model-select').value;
+        if (currentVal) return currentVal;
+        const cloudModels = Settings.cloudModels;
+        if (cloudModels.length > 0) return cloudModels[0];
+        const select = document.getElementById('header-model-select');
+        if (select.options.length > 0) return select.options[0].value;
+        return '';
+    },
+
     createNewSession: async function() {
-        const currentModel = document.getElementById('header-model-select').value;
+        const currentModel = this.getDefaultModel();
         const session = await SessionStore.createSession(t('newChat'), currentModel);
         await SessionStore.setCurrentSessionId(session.id);
         this.currentSession = session;
@@ -1581,7 +2029,7 @@ const UIManager = {
     switchSession: async function(id) {
         this.currentSession = await SessionStore.getSession(id);
         await SessionStore.setCurrentSessionId(id);
-        document.getElementById('header-model-select').value = this.currentSession.model;
+        this._setModelDropdownValue(this.currentSession.model);
         await this.renderSessions();
         this.renderChat();
     },
@@ -1610,7 +2058,7 @@ const UIManager = {
         }
         this._lastUsedModel = modelName;
         this.savePrefs({ model: modelName });
-        document.getElementById('header-model-select').value = modelName;
+        this._setModelDropdownValue(modelName);
     },
 
     setStatus: function(text) {
@@ -1642,7 +2090,7 @@ const UIManager = {
                     stream: false,
                     think: false,
                     options: { temperature: 0, num_predict: 4 },
-                    prompt: contextBlock + 'New message: ' + userMessage + '\n\nDoes this new message benefit from a live web search? Answer YES for: current news/events, prices, sports scores, weather, recently released software/tools, real-world experiences and community opinions ("what did people do", "how do others", "best practices people use"), tips others have shared online, or any question where up-to-date or crowd-sourced information would improve the answer. Answer NO for: follow-ups, formatting/rephrasing/translation/summarization requests, or questions fully answerable from general knowledge. Reply in English only with YES or NO.\n\nAnswer:'
+                    prompt: contextBlock + 'New message: ' + userMessage + '\n\nDoes this new message benefit from a live web search? Answer YES for: current news/events, prices, sports scores, weather, recently released software/tools, real-world experiences and community opinions ("what did people do", "how do others", "best practices people use"), tips others have shared online, or any question where up-to-date or crowd-sourced information would improve the answer. Answer NO for: follow-ups, formatting/rephrasing/translation/summarization requests, questions addressed to you the AI assistant ("what can you do", "who are you", "help me", capability or greeting questions), or questions fully answerable from general knowledge. Reply in English only with YES or NO.\n\nAnswer:'
                 }),
                 signal: signal
             });
@@ -1823,6 +2271,12 @@ const UIManager = {
         input.style.height = 'auto';
 
         const container = document.getElementById('chat-container');
+        // Capture user message element now (before assistantDiv is appended) so the RAF uses the right ref
+        var userMsgEl = container.lastElementChild;
+        requestAnimationFrame(function() {
+            if (userMsgEl) container.scrollTop = userMsgEl.offsetTop;
+        });
+
         const assistantTs = Date.now();
         const assistantDiv = document.createElement('div');
         assistantDiv.className = 'message assistant';
@@ -1834,16 +2288,6 @@ const UIManager = {
         bodyDiv.className = 'msg-body';
         assistantDiv.appendChild(bodyDiv);
         container.appendChild(assistantDiv);
-        requestAnimationFrame(function() {
-            var userMsgDiv = assistantDiv.previousElementSibling;
-            if (userMsgDiv) {
-                var msgTop = userMsgDiv.getBoundingClientRect().top;
-                var containerTop = container.getBoundingClientRect().top;
-                container.scrollTop += msgTop - containerTop;
-            } else {
-                container.scrollTop = container.scrollHeight;
-            }
-        });
 
         this.isStreaming = true;
         this._pendingContent = '';
@@ -1852,7 +2296,7 @@ const UIManager = {
         const pipelineSignal = pipelineController.signal;
         self._streamController = pipelineController;
         document.getElementById('send-btn').disabled = true;
-        document.getElementById('stop-gen-btn').textContent = t('stopGen');
+        document.getElementById('stop-label').textContent = t('stopGen');
         document.getElementById('stop-gen-btn').style.display = '';
         this.setStatus(this.currentSession.model + t('replying'));
 
@@ -1918,50 +2362,81 @@ const UIManager = {
         const searchWarning = bodyDiv.innerHTML;
         const sessionAtSend = this.currentSession;
         self._pendingSession = sessionAtSend;
-        OllamaAPI.streamChat(
-            sessionAtSend.model,
-            apiMessages,
-            function(chunk) {
-                assistantContent += chunk;
-                self._pendingContent = assistantContent;
-                if (self.currentSession === sessionAtSend) {
-                    bodyDiv.innerHTML = searchWarning + marked.parse(assistantContent);
-                    addCopyButtons(bodyDiv); wrapTables(bodyDiv);
-                    var overflowed = container.scrollHeight > container.scrollTop + container.clientHeight + 40;
-                    document.getElementById('scroll-bottom-btn').style.display = overflowed ? 'flex' : 'none';
-                }
-            },
-            function() {
-                sessionAtSend.messages.push({ role: 'assistant', content: assistantContent, ts: assistantTs, model: sessionAtSend.model });
-                var userMsg = sessionAtSend.messages[sessionAtSend.messages.length - 2];
-                if (userMsg && userMsg.role === 'user') userMsg._sentToLLM = true;
-                SessionStore.updateSession(sessionAtSend);
-                self._pendingContent = '';
-                self._pendingSession = null;
-                self._streamController = null;
-                self.isStreaming = false;
-                self.updateSendBtn();
-                self.setStatus('');
-                document.getElementById('stop-gen-btn').style.display = 'none';
-                if (sessionAtSend.context && sessionAtSend.context.needsNaming) {
-                    self.autoNameSession(sessionAtSend);
-                }
-            },
-            function(err) {
-                console.error('Stream error:', err);
-                if (self.currentSession === sessionAtSend && assistantContent) {
-                    bodyDiv.innerHTML = searchWarning + marked.parse(assistantContent);
-                    addCopyButtons(bodyDiv); wrapTables(bodyDiv);
-                }
-                self.saveStreamingProgress();
-                self._streamController = null;
-                self.isStreaming = false;
-                self.updateSendBtn();
-                self.setStatus('');
-                document.getElementById('stop-gen-btn').style.display = 'none';
-            },
-            pipelineSignal
-        );
+        const isCloud = sessionAtSend.model && (function(m) {
+            var tag = m.includes(':') ? m.split(':')[1] : m;
+            return tag.includes('cloud');
+        })(sessionAtSend.model);
+        const usePool = isCloud && Settings.accounts.length > 0;
+        const maxRetries = usePool ? Settings.accounts.length : 0;
+
+        function doStream(acct, retryCount) {
+            const authHeaders = acct ? {
+                'Authorization': 'Bearer ' + (Auth.token || ''),
+                'X-Cloud-Key': acct.apiKey
+            } : {};
+            const baseUrl = acct ? '/cloud-api' : null;
+            OllamaAPI.streamChat(
+                sessionAtSend.model,
+                apiMessages,
+                function(chunk) {
+                    assistantContent += chunk;
+                    self._pendingContent = assistantContent;
+                    if (self.currentSession === sessionAtSend) {
+                        bodyDiv.innerHTML = searchWarning + marked.parse(assistantContent);
+                        addCopyButtons(bodyDiv); wrapTables(bodyDiv);
+                        var overflowed = container.scrollHeight > container.scrollTop + container.clientHeight + 40;
+                        document.getElementById('scroll-bottom-btn').style.display = overflowed ? 'flex' : 'none';
+                    }
+                },
+                function() {
+                    if (acct) CloudAccountPool.markRecovered(acct);
+                    sessionAtSend.messages.push({ role: 'assistant', content: assistantContent, ts: assistantTs, model: sessionAtSend.model });
+                    var userMsg = sessionAtSend.messages[sessionAtSend.messages.length - 2];
+                    if (userMsg && userMsg.role === 'user') userMsg._sentToLLM = true;
+                    SessionStore.updateSession(sessionAtSend);
+                    self._pendingContent = '';
+                    self._pendingSession = null;
+                    self._streamController = null;
+                    self.isStreaming = false;
+                    self.updateSendBtn();
+                    self.setStatus('');
+                    document.getElementById('stop-gen-btn').style.display = 'none';
+                    if (sessionAtSend.context && sessionAtSend.context.needsNaming) {
+                        self.autoNameSession(sessionAtSend);
+                    }
+                },
+                function(err) {
+                    if (acct && retryCount < maxRetries) {
+                        var statusMatch = err.message && err.message.match(/\((\d+)\)/);
+                        var status = statusMatch ? parseInt(statusMatch[1]) : 0;
+                        if (status === 429 || status === 503 || status === 401 || status === 403) {
+                            CloudAccountPool.markFailed(acct);
+                            var nextAcct = CloudAccountPool.getNext();
+                            if (nextAcct && nextAcct.name !== acct.name) {
+                                doStream(nextAcct, retryCount + 1);
+                                return;
+                            }
+                        }
+                    }
+                    console.error('Stream error:', err);
+                    if (self.currentSession === sessionAtSend && assistantContent) {
+                        bodyDiv.innerHTML = searchWarning + marked.parse(assistantContent);
+                        addCopyButtons(bodyDiv); wrapTables(bodyDiv);
+                    }
+                    self.saveStreamingProgress();
+                    self._streamController = null;
+                    self.isStreaming = false;
+                    self.updateSendBtn();
+                    self.setStatus('');
+                    document.getElementById('stop-gen-btn').style.display = 'none';
+                },
+                pipelineSignal,
+                authHeaders,
+                baseUrl
+            );
+        }
+
+        doStream(usePool ? CloudAccountPool.getNext() : null, 0);
     },
 
     autoNameSession: async function(session) {
@@ -1986,7 +2461,13 @@ const UIManager = {
             }], controller.signal);
             if (controller.signal.aborted) return;
             if (!name || !name.trim()) return;
-            name = name.trim().replace(/^["""''']+|["""''']+$/g, '').trim();
+            name = name.trim()
+                .replace(/^["""''']+|["""''']+$/g, '')   // strip surrounding quotes
+                .replace(/\*{1,3}([^*]*)\*{1,3}/g, '$1') // strip ***bold italic*** **bold** *italic*
+                .replace(/_{1,2}([^_]*)_{1,2}/g, '$1')   // strip __bold__ _italic_
+                .replace(/^#{1,6}\s+/, '')                // strip heading markers
+                .replace(/`([^`]*)`/g, '$1')              // strip inline code
+                .trim();
             if (!name) return;
             session.name = name;
             session.context.needsNaming = false;

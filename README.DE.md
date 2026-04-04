@@ -10,8 +10,10 @@ Eine leichtgewichtige, selbst gehostete Chat-Oberfläche für Ollama auf Ihrem l
 ## Funktionen
 
 - **Integrierte Websuche** — wie Perplexity, aber selbst gehostet und privat. DMH-AI erkennt automatisch, wenn Ihre Frage aktuelle Informationen benötigt, durchsucht das Web über eine integrierte SearXNG-Instanz und fasst die Ergebnisse zu einer kohärenten, quellenbasierten Antwort zusammen. Funktioniert in jeder Sprache.
-- **Benutzerverwaltung** — vollständige, wenn auch einfache Mehrbenutzerunterstützung. Jeder Nutzer hat eigene Anmeldedaten, eigene Chat-Sitzungen und eigenen Dateispeicher. Ein Admin-Konto wird beim ersten Start automatisch erstellt; Admins können weitere Nutzer direkt in der Oberfläche hinzufügen und entfernen.
+- **Cloud-Konto-Pool** — fügen Sie in den Einstellungen mehrere Ollama-Cloud-API-Konten hinzu. DMH-AI wechselt automatisch zwischen den Konten, sodass Ratelimits und Kontingente nie manuell verwaltet werden müssen. Cloud-Modellanfragen werden direkt an die Ollama-Cloud-API gesendet, unter Verwendung des API-Schlüssels des ausgewählten Kontos. Vollständig transparent für Nutzer.
+- **Empfohlene Cloud-Modelle** — ist ein Cloud-Konto-Pool aktiv, erscheint oben in der Modellauswahl automatisch ein kuratierter Abschnitt "★ Empfohlen" mit drei vorkonfigurierten Modellen: 👁 Schnelle Antwort (`ministral-3:8b-cloud`), 💡 Tiefes Denken (`qwen3-vl:235b-cloud`) und 🛠 Technischer Experte (`devstral-small-2:24b-cloud`). Kein Einrichtungsaufwand — einfach ein Konto hinzufügen und Sie können sofort loslegen.
 - **Medienanhänge** — Dokumente (PDF, DOCX, XLSX), Bilder und Videos vom Gerät anhängen. Auf dem Handy direkt ein Foto aufnehmen oder ein Video aufzeichnen und in den Chat einfügen — kein Speichern in der Galerie nötig.
+- Benutzerverwaltung — vollständige, wenn auch einfache Mehrbenutzerunterstützung. Jeder Nutzer hat eigene Anmeldedaten, eigene Chat-Sitzungen und eigenen Dateispeicher. Ein Admin-Konto wird beim ersten Start automatisch erstellt; Admins können weitere Nutzer direkt in der Oberfläche hinzufügen und entfernen.
 - Chat mit jedem Ollama-Modell — Cloud oder lokal — über eine übersichtliche Web-Oberfläche
 - Persistente Chat-Sitzungen in SQLite gespeichert
 - Automatische Kontextzusammenfassung — endlos chatten ohne Token-Limits
@@ -147,6 +149,37 @@ Beim ersten Start erstellt DMH-AI automatisch ein Standard-Admin-Konto:
 | `admin` | `dmhai` |
 
 Nach der Anmeldung unter dem Benutzersymbol → **Passwort ändern** ein neues Passwort festlegen. Weitere Nutzer können unter dem Benutzersymbol → **Benutzer verwalten** hinzugefügt werden.
+
+### Admin-Einstellungen
+
+Als Admin steht Ihnen die Option **Einstellungen** im Benutzermenü zur Verfügung (sowie eine Schaltfläche am unteren Ende der Seitenleiste).
+
+**Ollama Cloud — API-Konten**
+
+> **Ein API-Schlüssel ist erforderlich.** Der Kontoname ist nur eine selbst gewählte Bezeichnung zur leichteren Wiedererkennung — er kann beliebig sein. Der API-Schlüssel ist das eigentliche Zugangsmittel für Ollama-Cloud-Modelle.
+
+**So erhalten Sie einen API-Schlüssel:**
+1. Anmelden auf [ollama.com](https://ollama.com)
+2. Profilbild (oben rechts) → **Settings** → **API Keys** anklicken
+3. **Create new key** anklicken, beliebigen Namen vergeben, Schlüssel kopieren
+
+Fügen Sie ein oder mehrere Konten (Bezeichnung + API-Schlüssel) hinzu. DMH-AI verwaltet einen Pool aller Konten und **wechselt automatisch** zwischen ihnen — wird ein Konto gedrosselt oder das Kontingent aufgebraucht, übernimmt das nächste Konto nahtlos. Für Nutzer vollständig transparent.
+
+**Ollama Cloud — Empfohlene Modelle**
+
+Ist der Cloud-Konto-Pool aktiv, erscheinen drei Modelle automatisch im Abschnitt "★ Empfohlen" oben im Dropdown — ohne jegliche Konfiguration:
+
+- 👁 **Schnelle Antwort** (`ministral-3:8b-cloud`) — schnell, ressourcenschonend
+- 💡 **Tiefes Denken** (`qwen3-vl:235b-cloud`) — bildtauglich, tiefes logisches Denken
+- 🛠 **Technischer Experte** (`devstral-small-2:24b-cloud`) — Programmierung und technische Aufgaben
+
+**Ollama Cloud — Cloud-Modelle**
+
+Sobald Konten vorhanden sind, legen Sie fest, welche weiteren Cloud-Modelle im Modell-Selektor erscheinen. Das Suchfeld fragt das **öffentliche Ollama-Modellverzeichnis** ab — nicht nur lokal installierte Modelle — sodass Sie jedes Cloud-Modell direkt finden und hinzufügen können, ohne ollama.com besuchen zu müssen. Die drei empfohlenen Modelle oben werden aus den Suchergebnissen ausgeschlossen, da sie bereits automatisch verfügbar sind. Hinzugefügte Modelle erscheinen im Abschnitt **☁ Cloud Models** des Dropdowns.
+
+**Ollama Local — Endpunkt-URL**
+
+Legen Sie die URL Ihrer lokalen Ollama-Instanz fest (Standard: `http://localhost:11434`). Nützlich, wenn Ollama auf einem anderen Gerät im Netzwerk läuft.
 
 Chat-Sitzungen und hochgeladene Dateien jedes Nutzers werden vollständig getrennt gespeichert.
 

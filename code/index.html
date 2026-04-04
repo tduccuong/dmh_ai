@@ -30,9 +30,10 @@
         <button class="new-session-btn" id="new-session-btn">+ New Session</button>
         <div class="sessions-list" id="sessions-list"></div>
         <div class="endpoint-section">
-            <span class="endpoint-label" id="endpoint-label">Ollama Endpoint</span>
-            <input class="endpoint-input" id="endpoint-input" type="text" value="" placeholder="http://localhost:11434">
-            <button class="endpoint-update-btn" id="endpoint-update-btn">Update</button>
+            <button class="sidebar-settings-btn" id="sidebar-settings-btn">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                Settings
+            </button>
         </div>
     </div>
     <div class="main">
@@ -52,7 +53,14 @@
                 <div class="lang-dropdown" id="lang-dropdown"></div>
             </div>
             <button class="new-chat-btn" id="header-new-chat-btn" title="New chat"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>
-            <select class="model-select" id="header-model-select" style="flex:1;"></select>
+            <select id="header-model-select" style="display:none"></select>
+            <div class="model-dropdown-wrap" id="model-dropdown-wrap">
+                <button class="model-dropdown-trigger" id="model-dropdown-trigger">
+                    <span id="model-dropdown-label">Select model...</span>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+                </button>
+                <div class="model-dropdown-menu" id="model-dropdown-menu"></div>
+            </div>
             <div class="user-menu-wrap" id="user-menu-wrap">
                 <button class="user-menu-btn" id="user-menu-btn" title="Account">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
@@ -60,13 +68,30 @@
                 <div class="user-dropdown" id="user-dropdown">
                     <div class="user-dropdown-identity" id="user-dropdown-identity"></div>
                     <div class="user-dropdown-sep"></div>
-                    <button class="user-dropdown-item user-dropdown-item-danger" id="user-clear-btn">Clear current chat thread</button>
+                    <button class="user-dropdown-item user-dropdown-item-danger" id="user-clear-btn">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+                        Clear current chat thread
+                    </button>
+                    <div class="user-dropdown-sep" id="user-settings-sep" style="display:none"></div>
+                    <button class="user-dropdown-item" id="user-settings-btn" style="display:none">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                        Settings
+                    </button>
                     <div class="user-dropdown-sep"></div>
-                    <button class="user-dropdown-item" id="user-change-pw-btn">Change password</button>
+                    <button class="user-dropdown-item" id="user-change-pw-btn">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                        Change password
+                    </button>
                     <div class="user-dropdown-sep" id="user-manage-sep" style="display:none"></div>
-                    <button class="user-dropdown-item" id="user-manage-btn" style="display:none">Manage users</button>
+                    <button class="user-dropdown-item" id="user-manage-btn" style="display:none">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                        Manage users
+                    </button>
                     <div class="user-dropdown-sep"></div>
-                    <button class="user-dropdown-item" id="user-signout-btn">Sign out...</button>
+                    <button class="user-dropdown-item" id="user-signout-btn">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+                        Sign out
+                    </button>
                 </div>
             </div>
         </div>
@@ -74,7 +99,6 @@
         <div class="status-bar" id="status-bar">
             <div class="spinner"></div>
             <span id="status-text"></span>
-            <button class="stop-gen-btn" id="stop-gen-btn" style="display:none"></button>
         </div>
         <div class="voice-bar" id="voice-bar"><span class="voice-dot"></span><span id="voice-bar-text"></span></div>
         <div class="attachments-bar" id="attachments-bar"></div>
@@ -93,7 +117,10 @@
             <input type="file" id="camera-input" style="display:none" accept="image/*" capture="environment">
             <input type="file" id="video-input" style="display:none" accept="video/*" capture="environment">
             <input type="file" id="gallery-input" style="display:none" accept="image/*,.heic,.heif">
-            <textarea class="message-input" id="message-input" placeholder="Type a message..." rows="1"></textarea>
+            <div class="message-input-wrap">
+                <textarea class="message-input" id="message-input" placeholder="Type a message..." rows="1"></textarea>
+                <button class="stop-gen-btn" id="stop-gen-btn" style="display:none"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="3" width="18" height="18" rx="2"/></svg><span class="stop-label" id="stop-label"></span></button>
+            </div>
             <button class="send-btn" id="send-btn"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg><span class="send-label" id="send-label">Send</span></button>
         </div>
     </div>
@@ -165,6 +192,58 @@
     </div>
 </div>
 <script src="/js/app.js" defer></script>
+    <div class="settings-overlay" id="settings-overlay">
+        <div class="settings-modal">
+            <div class="settings-hdr">
+                <span class="settings-hdr-title">Settings</span>
+                <button class="settings-close-btn" id="settings-close-btn">✕</button>
+            </div>
+            <div class="settings-body">
+                <!-- Section 1: Ollama Cloud -->
+                <div class="settings-section">
+                    <div class="settings-section-title">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>
+                        Ollama Cloud
+                    </div>
+                    <!-- Sub-section 1: Accounts -->
+                    <div class="settings-subsection">
+                        <div class="settings-subsection-title">API Accounts</div>
+                        <div id="cloud-accounts-list" class="settings-list"></div>
+                        <div class="settings-add-row">
+                            <input id="cloud-acct-name" class="settings-input" placeholder="Account name">
+                            <input id="cloud-acct-key" class="settings-input" type="password" placeholder="API key" style="flex:2">
+                            <button class="settings-add-btn" id="cloud-acct-add-btn">+ Add</button>
+                        </div>
+                        <div id="cloud-acct-error" style="display:none;color:#e05060;font-size:12px;margin-top:6px;"></div>
+                    </div>
+                    <!-- Sub-section 2: Cloud Models -->
+                    <div class="settings-subsection" id="cloud-models-subsection">
+                        <div class="settings-subsection-title">Cloud Models</div>
+                        <div id="cloud-models-list" class="settings-list"></div>
+                        <div class="settings-search-wrap">
+                            <input id="cloud-model-search" class="settings-input" placeholder="Search or type model name...">
+                            <button class="settings-add-btn" id="cloud-model-add-btn">+ Add</button>
+                            <div class="settings-suggestions" id="cloud-model-suggestions"></div>
+                        </div>
+                    </div>
+                </div>
+                <!-- Section 2: Ollama Local -->
+                <div class="settings-section">
+                    <div class="settings-section-title">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                        Ollama Local
+                    </div>
+                    <div class="settings-subsection">
+                        <div class="settings-subsection-title">Endpoint URL</div>
+                        <div class="settings-add-row">
+                            <input id="settings-ollama-url" class="settings-input" placeholder="http://localhost:11434" style="flex:3">
+                            <button class="settings-add-btn" id="settings-ollama-url-save">Save</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
     <button id="scroll-bottom-btn" style="display:none;position:fixed;bottom:120px;right:20px;width:36px;height:36px;border-radius:50%;background:rgba(58,42,80,0.75);border:1px solid #8060c0;color:#c0a0e0;cursor:pointer;z-index:9999;align-items:center;justify-content:center;font-size:18px;line-height:1;">&#8595;</button>
 </body>
 </html>

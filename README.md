@@ -10,12 +10,14 @@ A lightweight, self-hosted chat UI for Ollama running on your local machine. Run
 ## Features
 
 - **Built-in web search** — like Perplexity, but self-hosted and private. DMH-AI automatically detects when your question needs current information, searches the web via a bundled SearXNG instance, and synthesizes the results into a coherent, sourced answer. Works in any language.
-- **User management** — complete albeit simple multi-user support. Each user has their own login, their own chat sessions, and their own file storage. An admin account is created on first run; admins can add and remove users from within the UI. No external auth service required.
+- **Cloud account pool** — add multiple Ollama cloud API accounts in Settings. DMH-AI automatically rotates through them so you never manually manage rate limits or quotas. Cloud model requests are sent directly to the Ollama cloud API using the selected account's key. Completely transparent to users.
+- **Recommended cloud models** — when a cloud account pool is active, a curated "★ Recommended" section appears at the top of the model selector with three pre-configured models: 👁 Quick Answer, 💡 Deep Thinker, and 🛠 Technical Expert. No setup needed — just add an account and you are ready to start.
 - **Rich media attachments** — attach documents (PDF, DOCX, XLSX), images, and videos from your device. On mobile, take a fresh photo or record a video directly and attach it to the chat — no need to save to gallery first.
+- User management — complete albeit simple multi-user support. Each user has their own login, their own chat sessions, and their own file storage. An admin account is created on first run; admins can add and remove users from within the UI. No external auth service required.
 - Chat with any Ollama model — cloud or local — via a clean browser UI
 - Persistent chat sessions stored in SQLite
 - Rolling context summarization — chat forever without hitting context limits
-- Markdown rendering for assistant responses
+- Markdown rendering for LLM responses
 - Multi-language UI: English, Vietnamese, German, Spanish, French
 - Accessible from any device on your network
 
@@ -147,6 +149,37 @@ On first run, DMH-AI creates a default admin account:
 | `admin` | `dmhai` |
 
 Sign in, then go to the user icon → **Change password** to set a new password. To add more users, go to the user icon → **Manage users**.
+
+### Admin Settings
+
+As an admin, you have a **Settings** option in the user menu (and a shortcut button at the bottom of the sidebar).
+
+**Ollama Cloud — API Accounts**
+
+> **An API key is required.** The account name is just a label you assign for your own reference — it can be anything. The API key is what grants access to Ollama cloud models.
+
+**How to get an API key:**
+1. Sign in at [ollama.com](https://ollama.com)
+2. Click your profile icon (top right) → **Settings** → **API Keys**
+3. Click **Create new key**, give it any name, copy the key
+
+Add one or more accounts (label + API key). DMH-AI keeps a pool of all added accounts and **automatically rotates** through them when making cloud model requests — if one account hits its rate limit or quota, the next one is used seamlessly. You never need to think about which account is active.
+
+**Ollama Cloud — Recommended Models**
+
+When the cloud account pool is active, three models appear automatically in a "★ Recommended" section at the top of the model dropdown — no configuration required:
+
+- 👁 **Quick Answer** (`ministral-3:8b-cloud`) — fast, lightweight
+- 💡 **Deep Thinker** (`qwen3-vl:235b-cloud`) — vision-capable, deep reasoning
+- 🛠 **Technical Expert** (`devstral-small-2:24b-cloud`) — coding and technical tasks
+
+**Ollama Cloud — Cloud Models**
+
+Once accounts are added, configure which additional cloud models appear in the model selector. The search field queries the **Ollama public model registry** — not just locally installed models — so you can discover and add any cloud model without visiting ollama.com. The three recommended models above are excluded from search results since they're already available automatically. Added models appear in the **☁ Cloud Models** section of the model dropdown.
+
+**Ollama Local — Endpoint URL**
+
+Set the URL of your local Ollama instance (default: `http://localhost:11434`). Useful when Ollama runs on a different machine on your network.
 
 Each user's chat sessions and uploaded files are kept completely separate.
 

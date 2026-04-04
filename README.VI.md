@@ -10,8 +10,10 @@ Giao diện chat nhẹ, tự host cho Ollama chạy trên máy tính cá nhân. 
 ## Tính năng
 
 - **Tìm kiếm web tích hợp** — tương tự Perplexity, nhưng tự host và riêng tư. DMH-AI tự động phát hiện khi câu hỏi của bạn cần thông tin mới nhất, tìm kiếm web qua SearXNG tích hợp, và tổng hợp kết quả thành câu trả lời mạch lạc, có nguồn. Hoạt động với mọi ngôn ngữ.
-- **Quản lý người dùng** — hỗ trợ đa người dùng đầy đủ tuy đơn giản. Mỗi người dùng có đăng nhập riêng, phiên chat riêng và lưu trữ tệp riêng. Tài khoản admin được tạo tự động khi khởi chạy lần đầu; admin có thể thêm và xóa người dùng ngay trong giao diện.
+- **Nhóm tài khoản cloud** — thêm nhiều tài khoản Ollama cloud API trong Cài đặt. DMH-AI tự động luân phiên giữa các tài khoản để không bao giờ vượt giới hạn lượt dùng. Yêu cầu đến mô hình cloud được gửi trực tiếp đến Ollama cloud API bằng API key của tài khoản đang được chọn. Hoàn toàn minh bạch với người dùng.
+- **Mô hình cloud được đề xuất** — khi nhóm tài khoản cloud đang hoạt động, một mục "★ Được đề xuất" sẽ xuất hiện ở đầu danh sách chọn mô hình với ba mô hình được cấu hình sẵn: 👁 Trả lời nhanh (`ministral-3:8b-cloud`), 💡 Suy luận sâu (`qwen3-vl:235b-cloud`), và 🛠 Chuyên gia kỹ thuật (`devstral-small-2:24b-cloud`). Không cần cài đặt — chỉ cần thêm tài khoản là bạn sẵn sàng bắt đầu.
 - **Đính kèm đa phương tiện** — đính kèm tài liệu (PDF, DOCX, XLSX), hình ảnh và video từ thiết bị. Trên điện thoại, chụp ảnh hoặc quay video trực tiếp và đính kèm vào chat — không cần lưu vào thư viện trước.
+- Quản lý người dùng — hỗ trợ đa người dùng đầy đủ tuy đơn giản. Mỗi người dùng có đăng nhập riêng, phiên chat riêng và lưu trữ tệp riêng. Tài khoản admin được tạo tự động khi khởi chạy lần đầu; admin có thể thêm và xóa người dùng ngay trong giao diện.
 - Chat với mọi mô hình Ollama — cloud hoặc local — qua giao diện web gọn gàng
 - Lưu phiên chat vào SQLite
 - Tự động tóm tắt ngữ cảnh cuốn — chat mãi không lo vượt giới hạn token
@@ -147,6 +149,37 @@ Khi khởi chạy lần đầu, DMH-AI tạo tài khoản admin mặc định:
 | `admin` | `dmhai` |
 
 Đăng nhập xong, vào biểu tượng người dùng → **Đổi mật khẩu** để đặt mật khẩu mới. Để thêm người dùng khác, vào biểu tượng người dùng → **Quản lý người dùng**.
+
+### Cài đặt dành cho Admin
+
+Với tài khoản admin, bạn có mục **Cài đặt** trong menu người dùng (và nút tắt ở cuối thanh bên).
+
+**Ollama Cloud — Tài khoản API**
+
+> **API key là bắt buộc.** Tên tài khoản chỉ là nhãn bạn đặt để dễ nhớ — có thể đặt tùy ý. API key mới là thứ cấp quyền truy cập vào mô hình cloud Ollama.
+
+**Cách lấy API key:**
+1. Đăng nhập tại [ollama.com](https://ollama.com)
+2. Nhấn vào ảnh đại diện (góc trên phải) → **Settings** → **API Keys**
+3. Nhấn **Create new key**, đặt tên tùy ý, sao chép key
+
+Thêm một hoặc nhiều tài khoản (nhãn + API key). DMH-AI lưu toàn bộ tài khoản vào nhóm và **tự động luân phiên** khi gửi yêu cầu đến mô hình cloud — nếu một tài khoản bị giới hạn lượt dùng, tài khoản tiếp theo được dùng ngay, hoàn toàn trong suốt với người dùng.
+
+**Ollama Cloud — Mô hình được đề xuất**
+
+Khi nhóm tài khoản cloud đang hoạt động, ba mô hình sau tự động xuất hiện ở mục "★ Được đề xuất" ở đầu dropdown — không cần cấu hình gì:
+
+- 👁 **Trả lời nhanh** (`ministral-3:8b-cloud`) — nhanh, nhẹ
+- 💡 **Suy luận sâu** (`qwen3-vl:235b-cloud`) — hỗ trợ hình ảnh, suy luận sâu
+- 🛠 **Chuyên gia kỹ thuật** (`devstral-small-2:24b-cloud`) — lập trình và các tác vụ kỹ thuật
+
+**Ollama Cloud — Mô hình Cloud**
+
+Sau khi thêm tài khoản, chọn thêm các mô hình cloud khác hiển thị trong danh sách chọn mô hình. Ô tìm kiếm truy vấn trực tiếp **kho mô hình công khai của Ollama** — không chỉ các mô hình đã cài — giúp bạn khám phá và thêm bất kỳ mô hình cloud nào mà không cần vào ollama.com. Ba mô hình được đề xuất ở trên bị loại khỏi kết quả tìm kiếm vì chúng đã tự động có sẵn. Mô hình được thêm sẽ xuất hiện ở mục **☁ Cloud Models** của dropdown.
+
+**Ollama Local — URL Endpoint**
+
+Đặt URL cho Ollama trên máy (mặc định: `http://localhost:11434`). Hữu ích khi Ollama chạy trên máy khác trong mạng nội bộ.
 
 Phiên chat và tệp tải lên của mỗi người dùng được lưu trữ hoàn toàn riêng biệt.
 

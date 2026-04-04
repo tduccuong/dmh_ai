@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-import base64, hashlib, json, mimetypes, os, re, secrets, shutil, sqlite3, time, urllib.request, urllib.parse
+import base64, hashlib, http.client, json, mimetypes, os, re, secrets, shutil, sqlite3, ssl, time, urllib.request, urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 
@@ -185,6 +186,87 @@ class H(BaseHTTPRequestHandler):
             self.send_json(200, prefs)
             return
 
+        if p == '/admin/settings':
+            with sqlite3.connect(DB) as c:
+                row = c.execute('SELECT value FROM settings WHERE key=?', ('admin_cloud_settings',)).fetchone()
+            data = json.loads(row[0]) if row else {}
+            self.send_json(200, data)
+            return
+
+        if p.startswith('/cloud-api/'):
+            cloud_key = self.headers.get('X-Cloud-Key', '').strip()
+            sub = p[len('/cloud-api/'):]
+            try:
+                ctx = ssl.create_default_context()
+                conn = http.client.HTTPSConnection('ollama.com', context=ctx, timeout=10)
+                conn.request('GET', '/api/' + sub, headers={'Authorization': 'Bearer ' + cloud_key})
+                resp = conn.getresponse()
+                body = resp.read()
+                conn.close()
+                self.send_response(resp.status)
+                self.send_header('Content-Type', resp.getheader('Content-Type', 'application/json'))
+                self.send_header('Content-Length', len(body))
+                self.end_headers()
+                self.wfile.write(body)
+            except Exception as e:
+                self.send_json(500, {'error': str(e)})
+            return
+
+        if p == '/registry':
+            qs = urllib.parse.parse_qs(urlparse(self.path).query)
+            q = qs.get('q', [''])[0].strip()
+            if not q:
+                self.send_json(200, {'models': []})
+                return
+            try:
+                # Stage 1: search for model names on ollama.com
+                _ua = 'Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/115.0'
+                url = 'https://ollama.com/search?' + urllib.parse.urlencode({'q': q})
+                req = urllib.request.Request(url, headers={'User-Agent': _ua, 'Accept': 'text/html'})
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    body = resp.read().decode('utf-8', errors='replace')
+                model_names = []
+                seen_names = set()
+                for name in re.findall(r'href=["\'](?:https://ollama\.com)?/library/([\w][\w.-]{0,60})["\']', body):
+                    if name not in seen_names:
+                        seen_names.add(name)
+                        model_names.append(name)
+
+                # Stage 2: fetch each model page in parallel, extract cloud tags only
+                def get_cloud_tags(model_name):
+                    try:
+                        murl = 'https://ollama.com/library/' + model_name
+                        mreq = urllib.request.Request(murl, headers={'User-Agent': _ua, 'Accept': 'text/html'})
+                        with urllib.request.urlopen(mreq, timeout=6) as r:
+                            mb = r.read().decode('utf-8', errors='replace')
+                        tags = set()
+                        # href="/library/model:tag" patterns that contain "cloud"
+                        for tag in re.findall(
+                            r'/library/' + re.escape(model_name) + r':([\w][^"\'>\s]{0,60})',
+                            mb
+                        ):
+                            if 'cloud' in tag:
+                                tags.add(tag)
+                        # Any quoted token matching *cloud* that looks like a valid tag
+                        if not tags:
+                            for tag in re.findall(r'["\']([a-z0-9][a-z0-9._-]*cloud[a-z0-9._-]*)["\']', mb):
+                                if re.match(r'^[\w.-]+$', tag) and len(tag) <= 60:
+                                    tags.add(tag)
+                        return [model_name + ':' + t for t in sorted(tags)]
+                    except Exception:
+                        return []
+
+                cloud_results = []
+                with ThreadPoolExecutor(max_workers=6) as ex:
+                    for tags in ex.map(get_cloud_tags, model_names[:8], timeout=10):
+                        cloud_results.extend(tags)
+
+                self.send_json(200, {'models': [{'name': m} for m in cloud_results[:20]]})
+            except Exception as e:
+                log(f'[REGISTRY] ERROR: {e}')
+                self.send_json(500, {'error': str(e)})
+            return
+
         if p == '/search':
             qs = urllib.parse.parse_qs(urlparse(self.path).query)
             q = qs.get('q', [''])[0]
@@ -282,6 +364,46 @@ class H(BaseHTTPRequestHandler):
 
         user = self.require_auth()
         if not user:
+            return
+
+        if p.startswith('/cloud-api/'):
+            cloud_key = self.headers.get('X-Cloud-Key', '').strip()
+            if not cloud_key:
+                self.send_json(400, {'error': 'Missing cloud API key'})
+                return
+            sub = p[len('/cloud-api/'):]
+            content_len = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_len) if content_len else b''
+            try:
+                ctx = ssl.create_default_context()
+                conn = http.client.HTTPSConnection('ollama.com', context=ctx, timeout=300)
+                conn.request('POST', '/api/' + sub, body=body, headers={
+                    'Authorization': 'Bearer ' + cloud_key,
+                    'Content-Type': 'application/json',
+                })
+                resp = conn.getresponse()
+                self.send_response(resp.status)
+                self.send_header('Content-Type', resp.getheader('Content-Type', 'application/x-ndjson'))
+                self.end_headers()
+                try:
+                    while True:
+                        chunk = resp.read(4096)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                        self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                finally:
+                    conn.close()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            except Exception as e:
+                log(f'[CLOUD-API] ERROR: {e}')
+                try:
+                    self.send_json(500, {'error': str(e)})
+                except Exception:
+                    pass
             return
 
         if p == '/users':
@@ -401,6 +523,21 @@ class H(BaseHTTPRequestHandler):
                 prefs.update({k: v for k, v in d.items() if k in ('lang', 'model')})
                 c.execute('INSERT OR REPLACE INTO settings (key, value) VALUES (?,?)', (key, json.dumps(prefs)))
             self.send_json(200, prefs)
+            return
+
+        if p == '/admin/settings':
+            user = self.require_auth()
+            if not user:
+                return
+            if user['role'] != 'admin':
+                self.send_json(403, {'error': 'Forbidden'})
+                return
+            d = self.body()
+            allowed = {k: d[k] for k in ('accounts', 'cloudModels') if k in d}
+            with sqlite3.connect(DB) as c:
+                c.execute('INSERT OR REPLACE INTO settings (key, value) VALUES (?,?)',
+                          ('admin_cloud_settings', json.dumps(allowed)))
+            self.send_json(200, {'ok': True})
             return
 
         m_user = re.match(r'^/users/([^/]+)$', p)
