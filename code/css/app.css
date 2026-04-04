@@ -30,6 +30,15 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 .send-btn { padding: 12px 24px; background: #c87830; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; display: flex; align-items: center; gap: 6px; }
 .send-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 @media (max-width: 600px) { .send-label { display: none; } }
+@keyframes scroll-btn-pulse {
+    0%, 100% { opacity: 0.45; box-shadow: 0 0 6px 1px rgba(160,100,255,0.3); }
+    50%       { opacity: 0.95; box-shadow: 0 0 14px 4px rgba(160,100,255,0.7); }
+}
+#scroll-bottom-btn { animation: scroll-btn-pulse 0.9s ease-in-out infinite; }
+#scroll-bottom-btn:hover { background: rgba(90,60,130,0.9) !important; animation: none; opacity: 1; box-shadow: 0 0 16px 5px rgba(160,100,255,0.8) !important; }
+@media (max-width: 768px) {
+    #scroll-bottom-btn { box-shadow: 0 0 10px 3px rgba(160,100,255,0.5) !important; }
+}
 .status-bar { padding: 6px 20px; background: #281e38; color: #b098b8; font-size: 13px; display: none; align-items: center; gap: 8px; }
 .status-bar.visible { display: flex; }
 .stop-gen-btn { margin-left: auto; padding: 0 10px; background: #7a2020; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; flex-shrink: 0; align-self: stretch; }

@@ -66,6 +66,10 @@ def init_db():
             c.execute('ALTER TABLE users ADD COLUMN deleted INTEGER DEFAULT 0')
         except sqlite3.OperationalError:
             pass
+        try:
+            c.execute('ALTER TABLE sessions ADD COLUMN updated_at INTEGER DEFAULT 0')
+        except sqlite3.OperationalError:
+            pass
         # Seed default admin user
         if not c.execute('SELECT id FROM users WHERE email=?', ('admin@dmhai.local',)).fetchone():
             uid = secrets.token_hex(8)
@@ -73,10 +77,11 @@ def init_db():
                       (uid, 'admin@dmhai.local', None, hash_password('dmhai'), 'admin', int(time.time())))
 
 def parse(row):
-    d = dict(zip(['id', 'name', 'model', 'messages', 'context', 'created_at'], row))
+    d = dict(zip(['id', 'name', 'model', 'messages', 'context', 'created_at', 'updated_at'], row))
     d['messages'] = json.loads(d['messages'] or '[]')
     d['context'] = json.loads(d['context'] or 'null')
     d['createdAt'] = d.pop('created_at')
+    d['updatedAt'] = d.pop('updated_at')
     return d
 
 def parse_multipart(rfile, content_type, content_length):
@@ -227,7 +232,7 @@ class H(BaseHTTPRequestHandler):
         with sqlite3.connect(DB) as c:
             if p == '/sessions':
                 rows = c.execute(
-                    'SELECT id,name,model,messages,context,created_at FROM sessions WHERE user_id=? ORDER BY created_at',
+                    'SELECT id,name,model,messages,context,created_at,updated_at FROM sessions WHERE user_id=? ORDER BY COALESCE(updated_at,created_at) DESC',
                     (user['id'],)
                 ).fetchall()
                 self.send_json(200, [parse(r) for r in rows])
@@ -239,7 +244,7 @@ class H(BaseHTTPRequestHandler):
                 m = re.match(r'^/sessions/([^/]+)$', p)
                 if m:
                     row = c.execute(
-                        'SELECT id,name,model,messages,context,created_at FROM sessions WHERE id=? AND user_id=?',
+                        'SELECT id,name,model,messages,context,created_at,updated_at FROM sessions WHERE id=? AND user_id=?',
                         (m.group(1), user['id'])
                     ).fetchone()
                     self.send_json(200 if row else 404, parse(row) if row else {'error': 'Not found'})
@@ -319,12 +324,13 @@ class H(BaseHTTPRequestHandler):
         if p == '/sessions':
             d = self.body()
             with sqlite3.connect(DB) as c:
+                now = int(time.time() * 1000)
                 c.execute(
-                    'INSERT INTO sessions (id,name,model,messages,context,created_at,user_id) VALUES (?,?,?,?,?,?,?)',
+                    'INSERT INTO sessions (id,name,model,messages,context,created_at,updated_at,user_id) VALUES (?,?,?,?,?,?,?,?)',
                     (d['id'], d['name'], d.get('model', ''),
                      json.dumps(d.get('messages', [])),
                      json.dumps(d.get('context')),
-                     d['createdAt'], user['id'])
+                     d['createdAt'], now, user['id'])
                 )
             self.send_json(200, d)
         elif p == '/assets':
@@ -428,12 +434,13 @@ class H(BaseHTTPRequestHandler):
             else:
                 m = re.match(r'^/sessions/([^/]+)$', p)
                 if m:
+                    now = int(time.time() * 1000)
                     c.execute(
-                        'UPDATE sessions SET name=?,model=?,messages=?,context=? WHERE id=? AND user_id=?',
+                        'UPDATE sessions SET name=?,model=?,messages=?,context=?,updated_at=? WHERE id=? AND user_id=?',
                         (d['name'], d.get('model', ''),
                          json.dumps(d.get('messages', [])),
                          json.dumps(d.get('context')),
-                         m.group(1), user['id'])
+                         now, m.group(1), user['id'])
                     )
                     self.send_json(200, d)
                 else:

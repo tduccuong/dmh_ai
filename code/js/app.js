@@ -6,7 +6,7 @@ const I18n = {
         en: {
             retry: 'Retry', clear: 'Clear', send: 'Send', cancel: 'Cancel', ok: 'OK', stopGen: '■ Stop',
             update: 'Update', rename: 'Rename', delete_: 'Delete', download: '⬇ Download',
-            newSession: '+ New Session', defaultSession: 'Default Session', newChat: 'New chat',
+            newSession: '+ New Session', newChat: 'New chat',
             typePlaceholder: 'Type a message...', attachFile: 'Attach file',
             ollamaEndpoint: 'Ollama Endpoint',
             cannotConnect: 'Cannot connect to Ollama',
@@ -25,7 +25,7 @@ const I18n = {
             analyzingGaps: 'Analyzing gaps...',
             deepSearching: 'Deep searching (round 2)...',
             synthesizing: 'Synthesizing results...',
-            waiting1: 'Waiting for ', waiting2: ' in thread "', waiting3: '" to answer...',
+            replying: ' replying...',
             searchUnavail: '⚠ Web search unavailable — answering from model training data, which may be outdated.',
             attaching: 'Preparing attachment...',
             voiceListening: 'Recording... tap to stop',
@@ -40,7 +40,7 @@ const I18n = {
         vi: {
             retry: 'Thử lại', clear: 'Xóa', send: 'Gửi', cancel: 'Hủy', ok: 'OK', stopGen: '■ Dừng',
             update: 'Cập nhật', rename: 'Đổi tên', delete_: 'Xóa', download: '⬇ Tải về',
-            newSession: '+ Phiên mới', defaultSession: 'Phiên mặc định', newChat: 'Cuộc trò chuyện mới',
+            newSession: '+ Phiên mới', newChat: 'Cuộc trò chuyện mới',
             typePlaceholder: 'Nhập tin nhắn...', attachFile: 'Đính kèm tệp',
             ollamaEndpoint: 'Điểm cuối Ollama',
             cannotConnect: 'Không thể kết nối Ollama',
@@ -59,7 +59,7 @@ const I18n = {
             analyzingGaps: 'Đang phân tích khoảng trống...',
             deepSearching: 'Đang tìm kiếm chuyên sâu (vòng 2)...',
             synthesizing: 'Đang tổng hợp kết quả...',
-            waiting1: 'Đang chờ ', waiting2: ' trong phiên "', waiting3: '" trả lời...',
+            replying: ' đang trả lời...',
             searchUnavail: '⚠ Tìm kiếm web không khả dụng — trả lời từ dữ liệu huấn luyện, có thể đã lỗi thời.',
             attaching: 'Đang chuẩn bị tệp đính kèm...',
             voiceListening: 'Đang ghi âm... nhấn để dừng',
@@ -74,7 +74,7 @@ const I18n = {
         de: {
             retry: 'Wiederholen', clear: 'Löschen', send: 'Senden', cancel: 'Abbrechen', ok: 'OK', stopGen: '■ Stopp',
             update: 'Aktualisieren', rename: 'Umbenennen', delete_: 'Löschen', download: '⬇ Herunterladen',
-            newSession: '+ Neue Sitzung', defaultSession: 'Standardsitzung', newChat: 'Neuer Chat',
+            newSession: '+ Neue Sitzung', newChat: 'Neuer Chat',
             typePlaceholder: 'Nachricht eingeben...', attachFile: 'Datei anhängen',
             ollamaEndpoint: 'Ollama-Endpunkt',
             cannotConnect: 'Verbindung zu Ollama fehlgeschlagen',
@@ -93,7 +93,7 @@ const I18n = {
             analyzingGaps: 'Lücken werden analysiert...',
             deepSearching: 'Tiefensuche läuft (Runde 2)...',
             synthesizing: 'Ergebnisse werden zusammengefasst...',
-            waiting1: 'Warte auf ', waiting2: ' in Sitzung "', waiting3: '"...',
+            replying: ' antwortet...',
             searchUnavail: '⚠ Websuche nicht verfügbar — Antwort basiert auf Trainingsdaten, möglicherweise veraltet.',
             attaching: 'Anhang wird vorbereitet...',
             voiceListening: 'Aufnahme... tippen zum Stoppen',
@@ -108,7 +108,7 @@ const I18n = {
         es: {
             retry: 'Reintentar', clear: 'Limpiar', send: 'Enviar', cancel: 'Cancelar', ok: 'OK', stopGen: '■ Detener',
             update: 'Actualizar', rename: 'Renombrar', delete_: 'Eliminar', download: '⬇ Descargar',
-            newSession: '+ Nueva sesión', defaultSession: 'Sesión predeterminada', newChat: 'Nueva conversación',
+            newSession: '+ Nueva sesión', newChat: 'Nueva conversación',
             typePlaceholder: 'Escribe un mensaje...', attachFile: 'Adjuntar archivo',
             ollamaEndpoint: 'Punto de acceso Ollama',
             cannotConnect: 'No se puede conectar a Ollama',
@@ -127,7 +127,7 @@ const I18n = {
             analyzingGaps: 'Analizando brechas...',
             deepSearching: 'Búsqueda profunda (ronda 2)...',
             synthesizing: 'Sintetizando resultados...',
-            waiting1: 'Esperando a ', waiting2: ' en hilo "', waiting3: '" para responder...',
+            replying: ' respondiendo...',
             searchUnavail: '⚠ Búsqueda web no disponible — respondiendo con datos de entrenamiento, pueden estar desactualizados.',
             attaching: 'Preparando archivo adjunto...',
             voiceListening: 'Grabando... toca para detener',
@@ -142,7 +142,7 @@ const I18n = {
         fr: {
             retry: 'Réessayer', clear: 'Effacer', send: 'Envoyer', cancel: 'Annuler', ok: 'OK', stopGen: '■ Arrêter',
             update: 'Mettre à jour', rename: 'Renommer', delete_: 'Supprimer', download: '⬇ Télécharger',
-            newSession: '+ Nouvelle session', defaultSession: 'Session par défaut', newChat: 'Nouvelle conversation',
+            newSession: '+ Nouvelle session', newChat: 'Nouvelle conversation',
             typePlaceholder: 'Tapez un message...', attachFile: 'Joindre un fichier',
             ollamaEndpoint: 'Point d\'accès Ollama',
             cannotConnect: 'Connexion à Ollama impossible',
@@ -161,7 +161,7 @@ const I18n = {
             analyzingGaps: 'Analyse des lacunes...',
             deepSearching: 'Recherche approfondie (tour 2)...',
             synthesizing: 'Synthèse des résultats...',
-            waiting1: 'En attente de ', waiting2: ' dans le fil "', waiting3: '"...',
+            replying: ' répond...',
             searchUnavail: '⚠ Recherche web indisponible — réponse basée sur les données d\'entraînement, potentiellement obsolètes.',
             attaching: 'Préparation de la pièce jointe...',
             voiceListening: 'Enregistrement... appuyez pour arrêter',
@@ -687,6 +687,20 @@ const UIManager = {
             self.updateSendBtn();
             self.setStatus('');
             document.getElementById('stop-gen-btn').style.display = 'none';
+            document.getElementById('scroll-bottom-btn').style.display = 'none';
+        });
+        document.getElementById('scroll-bottom-btn').addEventListener('click', function() {
+            var c = document.getElementById('chat-container');
+            c.scrollTop = c.scrollHeight;
+        });
+        document.getElementById('chat-container').addEventListener('scroll', function() {
+            var c = this;
+            var atBottom = c.scrollHeight - c.scrollTop - c.clientHeight < 40;
+            if (atBottom) {
+                document.getElementById('scroll-bottom-btn').style.display = 'none';
+            } else if (c.scrollHeight > c.clientHeight) {
+                document.getElementById('scroll-bottom-btn').style.display = 'flex';
+            }
         });
         document.addEventListener('visibilitychange', function() {
             if (document.hidden && self.isStreaming) self.saveStreamingProgress();
@@ -1086,7 +1100,7 @@ const UIManager = {
             const sessions = await SessionStore.getSessions();
             if (sessions.length === 0) {
                 const model = document.getElementById('header-model-select').value;
-                const defaultSession = await SessionStore.createSession(t('defaultSession'), model);
+                const defaultSession = await SessionStore.createSession(t('newChat'), model);
                 await SessionStore.setCurrentSessionId(defaultSession.id);
                 this.currentSession = defaultSession;
             } else {
@@ -1099,7 +1113,7 @@ const UIManager = {
                 if (lastActivity && Date.now() - lastActivity > thirtyMin &&
                         this.currentSession.messages && this.currentSession.messages.length > 0) {
                     var autoModel = document.getElementById('header-model-select').value || this.currentSession.model;
-                    var autoSession = await SessionStore.createSession(t('defaultSession'), autoModel);
+                    var autoSession = await SessionStore.createSession(t('newChat'), autoModel);
                     await SessionStore.setCurrentSessionId(autoSession.id);
                     this.currentSession = autoSession;
                 }
@@ -1179,7 +1193,7 @@ const UIManager = {
                     const remaining = await SessionStore.getSessions();
                     self.currentSession = remaining.length > 0
                         ? remaining[0]
-                        : await SessionStore.createSession('New Session', '');
+                        : await SessionStore.createSession(t('newChat'), document.getElementById('header-model-select').value || '');
                     await SessionStore.setCurrentSessionId(self.currentSession.id);
                     self.renderChat();
                 }
@@ -1820,7 +1834,16 @@ const UIManager = {
         bodyDiv.className = 'msg-body';
         assistantDiv.appendChild(bodyDiv);
         container.appendChild(assistantDiv);
-        container.scrollTop = container.scrollHeight;
+        requestAnimationFrame(function() {
+            var userMsgDiv = assistantDiv.previousElementSibling;
+            if (userMsgDiv) {
+                var msgTop = userMsgDiv.getBoundingClientRect().top;
+                var containerTop = container.getBoundingClientRect().top;
+                container.scrollTop += msgTop - containerTop;
+            } else {
+                container.scrollTop = container.scrollHeight;
+            }
+        });
 
         this.isStreaming = true;
         this._pendingContent = '';
@@ -1831,7 +1854,7 @@ const UIManager = {
         document.getElementById('send-btn').disabled = true;
         document.getElementById('stop-gen-btn').textContent = t('stopGen');
         document.getElementById('stop-gen-btn').style.display = '';
-        this.setStatus(t('waiting1') + this.currentSession.model + t('waiting2') + this.currentSession.name + t('waiting3'));
+        this.setStatus(this.currentSession.model + t('replying'));
 
         let apiMessages = prepareForAPI(ContextManager.buildContextMessages(this.currentSession));
         apiMessages[apiMessages.length - 1] = userMsgForAPI;
@@ -1904,7 +1927,8 @@ const UIManager = {
                 if (self.currentSession === sessionAtSend) {
                     bodyDiv.innerHTML = searchWarning + marked.parse(assistantContent);
                     addCopyButtons(bodyDiv); wrapTables(bodyDiv);
-                    container.scrollTop = container.scrollHeight;
+                    var overflowed = container.scrollHeight > container.scrollTop + container.clientHeight + 40;
+                    document.getElementById('scroll-bottom-btn').style.display = overflowed ? 'flex' : 'none';
                 }
             },
             function() {
