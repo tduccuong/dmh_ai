@@ -126,9 +126,12 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 .settings-suggestion-item { padding: 8px 12px; font-size: 13px; color: #c0b0d8; cursor: pointer; }
 .settings-suggestion-item:hover { background: #281e38; color: #eee; }
 /* Login screen */
-.login-screen { position: fixed; inset: 0; background: #141018; display: flex; align-items: center; justify-content: center; z-index: 2000; }
+.login-screen { position: fixed; inset: 0; background: #141018; display: flex; align-items: center; justify-content: center; z-index: 2000; overflow-y: auto; }
 .login-screen.hidden { display: none; }
 .login-box { background: #1c1628; border: 1px solid #382850; border-radius: 12px; padding: 36px 32px 28px; width: 340px; max-width: 92vw; box-shadow: 0 16px 48px rgba(0,0,0,0.6); }
+@media (max-width: 768px) {
+    .login-screen { align-items: flex-start; padding: 8vh 0 40px; }
+}
 .login-logo { display: flex; align-items: center; gap: 12px; margin-bottom: 28px; }
 .login-logo img { height: 40px; width: 40px; border-radius: 8px; object-fit: contain; }
 .login-logo h1 { font-size: 22px; color: #e09040; letter-spacing: 0.04em; }
