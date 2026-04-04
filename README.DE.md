@@ -1,144 +1,69 @@
 # DMH-AI
 
-Eine leichtgewichtige, selbst gehostete Chat-Oberfläche für Ollama auf Ihrem lokalen Rechner. Läuft vollständig in Docker — kein Node.js, keine Python-Abhängigkeiten.
+Eine selbst gehostete KI-Chat-App, die auf Ihrem Computer läuft — wie ChatGPT, aber privat, kostenlos und ganz Ihnen gehörend.
+
+**Für wen ist das?**
+
+- **Cloud-Nutzer** — Sie möchten schnelles, leistungsstarkes KI-Chatten ohne Sorgen um Nutzungslimits. Sie brauchen keinen leistungsstarken Computer. Sie nutzen Ollamas Cloud-Modelle über Ihren eigenen API-Schlüssel — DMH-AI übernimmt automatisch die Kontoverwaltung und Ratenlimit-Umgehung im Hintergrund, ohne dass Sie sich darum kümmern müssen.
+- **Datenschutz-Nutzer** — Sie möchten, dass alles auf Ihrem eigenen Rechner bleibt, vollständig offline. Nichts verlässt jemals Ihr Netzwerk.
+
+Beide Modi funktionieren in derselben App. Sie können jederzeit frei wechseln.
 
 ## Screenshots
 
 ![Bildanalyse](image-analysis.png)
 ![Websuche](web-search.png)
 
-## Funktionen
+## Was Sie bekommen
 
-- **Integrierte Websuche** — wie Perplexity, aber selbst gehostet und privat. DMH-AI erkennt automatisch, wenn Ihre Frage aktuelle Informationen benötigt, durchsucht das Web über eine integrierte SearXNG-Instanz und fasst die Ergebnisse zu einer kohärenten, quellenbasierten Antwort zusammen. Funktioniert in jeder Sprache.
-- **Cloud-Konto-Pool** — fügen Sie in den Einstellungen mehrere Ollama-Cloud-API-Konten hinzu. DMH-AI wechselt automatisch zwischen den Konten, sodass Ratelimits und Kontingente nie manuell verwaltet werden müssen. Cloud-Modellanfragen werden direkt an die Ollama-Cloud-API gesendet, unter Verwendung des API-Schlüssels des ausgewählten Kontos. Vollständig transparent für Nutzer.
-- **Empfohlene Cloud-Modelle** — ist ein Cloud-Konto-Pool aktiv, erscheint oben in der Modellauswahl automatisch ein kuratierter Abschnitt "★ Empfohlen" mit drei vorkonfigurierten Modellen: 👁 Schnelle Antwort (`ministral-3:8b-cloud`), 💡 Tiefes Denken (`qwen3-vl:235b-cloud`) und 🛠 Technischer Experte (`devstral-small-2:24b-cloud`). Kein Einrichtungsaufwand — einfach ein Konto hinzufügen und Sie können sofort loslegen.
-- **Medienanhänge** — Dokumente (PDF, DOCX, XLSX), Bilder und Videos vom Gerät anhängen. Auf dem Handy direkt ein Foto aufnehmen oder ein Video aufzeichnen und in den Chat einfügen — kein Speichern in der Galerie nötig.
-- Benutzerverwaltung — vollständige, wenn auch einfache Mehrbenutzerunterstützung. Jeder Nutzer hat eigene Anmeldedaten, eigene Chat-Sitzungen und eigenen Dateispeicher. Ein Admin-Konto wird beim ersten Start automatisch erstellt; Admins können weitere Nutzer direkt in der Oberfläche hinzufügen und entfernen.
-- Chat mit jedem Ollama-Modell — Cloud oder lokal — über eine übersichtliche Web-Oberfläche
-- Persistente Chat-Sitzungen in SQLite gespeichert
-- Automatische Kontextzusammenfassung — endlos chatten ohne Token-Limits
-- Markdown-Darstellung für Antworten
-- Mehrsprachige Oberfläche: Englisch, Vietnamesisch, Deutsch, Spanisch, Französisch
-- Zugriff von jedem Gerät im Netzwerk
-
-## Voraussetzungen
-
-- [Docker](https://docs.docker.com/get-docker/) mit Compose-Plugin
-- [Ollama](https://ollama.com/download) lokal auf Port 11434
-
-### Ollama installieren
-
-**Linux:**
-```bash
-curl -fsSL https://ollama.com/install.sh | sh
-```
-
-**Windows:**
-Installationsprogramm herunterladen und ausführen von [ollama.com/download](https://ollama.com/download)
-
-Installation überprüfen:
-```bash
-ollama --version
-```
-
-## Schritt 1 — Modelle auswählen
-
-DMH-AI funktioniert mit **Cloud-Modellen** (empfohlen für die meisten Nutzer) und **lokalen Modellen** (wenn Datenschutz oberste Priorität hat). Sie können beide frei kombinieren — im UI einfach umschalten.
+- **Integrierte Websuche** — wie Perplexity, aber selbst gehostet und privat. Stellen Sie eine Frage und DMH-AI entscheidet selbst, ob eine Websuche nötig ist. Falls ja, werden live Ergebnisse über die integrierte Suchmaschine abgerufen und zu einer quellenbasierten, aktuellen Antwort zusammengefasst. Funktioniert in jeder Sprache.
+- **Medienanhänge** — Dokumente (PDF, DOCX, XLSX), Bilder und Videos anhängen. Auf dem Handy ein Foto aufnehmen oder ein Video direkt aufzeichnen und in den Chat einfügen — kein Speichern in der Galerie nötig.
+- **Mehrbenutzerunterstützung** — jede Person hat eigene Anmeldedaten, eigene Chat-Verläufe und eigene Dateien. Ein Admin-Konto wird beim ersten Start automatisch erstellt. Admins können Nutzer direkt in der App hinzufügen und entfernen.
+- **Persistenter Chat-Verlauf** — alle Unterhaltungen werden gespeichert und sind durchsuchbar.
+- **Rollierender Kontext** — chatten Sie so lange Sie möchten, ohne an KI-Speichergrenzen zu stoßen.
+- **Mehrsprachige Oberfläche** — Englisch, Vietnamesisch, Deutsch, Spanisch, Französisch.
+- **Zugriff von jedem Gerät im Heimnetzwerk** — Smartphone, Tablet, Laptop.
 
 ---
 
-### Option A: Cloud-Modelle (empfohlen)
+## Schnellstart
 
-**Am besten für die meisten Nutzer.** Ollamas Cloud-Modelle sind schnell, leistungsstark und kostenlos mit großzügigen Limits im Free-Tier. Die Inferenz läuft auf Ollamas Servern und wird über Ihre lokale Ollama-Instanz gestreamt — keine GPU nötig, keine Konfigurationsänderungen in DMH-AI.
+Es gibt zwei Wege. Wählen Sie den für Sie passenden.
 
-**Unsere Top-Empfehlung:**
-
-| Modell | Warum |
-|---|---|
-| `mistral-large-3:675b-cloud` | Bester Allrounder — schnell, bildtauglich (analysiert Bilder), hervorragend für allgemeinen Chat, Programmierung, logisches Denken und Mehrsprachigkeit |
-| `ministral-3:14b-cloud` | Mittlere Größe, guter Allrounder — extrem schnell und ebenfalls bildtauglich |
-
-Weitere empfehlenswerte Cloud-Modelle:
-
-| Modell | Hinweise |
-|---|---|
-| `qwen3.5:cloud` | Stark in Mehrsprachigkeit und logischem Denken |
-| `gemini-3-flash-preview:cloud` | Googles Flaggschiff-Modell, tiefes Reasoning und sehr schnell |
-
-**Einrichtung:**
-
-1. **Kostenloses Ollama-Konto erstellen** auf [ollama.com](https://ollama.com) — klicken Sie auf **Sign Up**.
-
-2. **Lokales Ollama mit Ihrem Konto verbinden:**
-   ```bash
-   ollama login
-   ```
-   Ein Browserfenster öffnet sich zur Authentifizierung. Nach dem Login ist Ihre lokale Ollama-Instanz mit Ihrem Konto verknüpft.
-
-3. **Cloud-Modell herunterladen:**
-   ```bash
-   ollama pull mistral-large-3:675b-cloud
-   ```
-
-Das war's. Das Modell erscheint sofort in der DMH-AI-Auswahlliste — auswählen und loschatten.
-
-Cloud-Modelle sind am `:cloud`-Tag erkennbar. Sie benötigen eine Internetverbindung, belasten aber Ihre lokale Hardware nicht.
+| | Weg A: Cloud | Weg B: Lokal |
+|---|---|---|
+| **Am besten für** | Die meisten Nutzer | Datenschutz-Nutzer |
+| **GPU erforderlich?** | Nein | Je nach Modellgröße |
+| **Internet nötig?** | Ja (für KI-Antworten) | Nein |
+| **Verlassen Daten das Gerät?** | KI-Anfragen gehen an Ollama-Server | Niemals |
+| **Einrichtungszeit** | ~5 Minuten | ~10 Minuten |
 
 ---
 
-### Option B: Lokale Modelle (vollständig offline, maximaler Datenschutz)
+## Schritt 1 — Docker installieren
 
-**Am besten wenn Datenschutz oberste Priorität hat.** Alle Daten bleiben auf Ihrem Rechner — nichts verlässt Ihr Netzwerk. Erfordert ausreichend RAM/VRAM für das Modell.
-
-**Text und Dokumente (schnell, wenig Speicher):**
-
-| Modell | Größe | Hinweise |
-|---|---|---|
-| `gemma3n:e2b` | ~5,6 GB | Bestes kleines mehrsprachiges Allzweck-Modell |
-| `phi4-mini:3.8b` | ~2,5 GB | Gutes kleines Allzweck-Modell |
-| `granite4:3b` | ~2,1 GB | Starkes Reasoning und schnell |
-
-**Bilder und Vision:**
-
-| Modell | Größe | Hinweise |
-|---|---|---|
-| `ministral-3:3b` | ~3 GB | Unterstützt Bildeingabe, auch gut für allgemeine Aufgaben und schnell |
-
-**Lokales Modell herunterladen:**
-```bash
-ollama pull mistral-3:3b
-```
-
-Unter Linux Ollama starten, falls nicht bereits als Dienst aktiv:
-```bash
-ollama serve
-```
-Unter Windows startet Ollama automatisch — `ollama serve` ist nicht nötig.
-
-## Schritt 2 — Docker installieren
+Docker führt DMH-AI in einem eigenständigen Container aus. Für beide Wege erforderlich.
 
 **Linux:**
 ```bash
 curl -fsSL https://get.docker.com | sh
 ```
 
-**Windows:** **Docker Desktop** herunterladen und installieren von [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop/). Nach der Installation Docker Desktop öffnen und warten, bis das Wal-Symbol in der Taskleiste aufhört zu animieren.
+**Windows:** Laden Sie **Docker Desktop** herunter und führen Sie es aus: [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop/). Nach der Installation öffnen Sie Docker Desktop und warten Sie, bis das Wal-Symbol in der Taskleiste aufhört zu animieren — dann ist es bereit.
 
-## Schritt 3 — DMH-AI starten
+## Schritt 2 — DMH-AI starten
 
 **Linux:**
 ```bash
 ./build.sh && ./dist/run.sh
 ```
 
-**Windows** — in der Eingabeaufforderung:
+**Windows** — Eingabeaufforderung öffnen und ausführen:
 ```
 build.bat && dist\run.bat
 ```
 
-Öffnen Sie [http://localhost:8080](http://localhost:8080) im Browser. Andere Geräte im Netzwerk können über `http://<Ihre-IP-Adresse>:8080` zugreifen.
-
-Für **Spracheingabe** den HTTPS-Endpunkt `https://localhost:8443` (oder `https://<Ihre-IP-Adresse>:8443`) verwenden. Die Warnung zum selbstsignierten Zertifikat einmalig akzeptieren. Auf iOS den Link in der Zertifikatswarnung tippen, um das Zertifikat herunterzuladen und über Einstellungen zu installieren.
+Öffnen Sie [http://localhost:8080](http://localhost:8080) im Browser.
 
 ### Erste Anmeldung
 
@@ -148,62 +73,154 @@ Beim ersten Start erstellt DMH-AI automatisch ein Standard-Admin-Konto:
 |---|---|
 | `admin` | `dmhai` |
 
-Nach der Anmeldung unter dem Benutzersymbol → **Passwort ändern** ein neues Passwort festlegen. Weitere Nutzer können unter dem Benutzersymbol → **Benutzer verwalten** hinzugefügt werden.
+Anmelden, dann **sofort das Passwort ändern**: Benutzersymbol (oben rechts) → **Passwort ändern**.
 
-### Admin-Einstellungen
+---
 
-Als Admin steht Ihnen die Option **Einstellungen** im Benutzermenü zur Verfügung (sowie eine Schaltfläche am unteren Ende der Seitenleiste).
+## Weg A: Cloud-Modelle (für die meisten Nutzer empfohlen)
+
+Ollama bietet leistungsstarke Cloud-KI-Modelle kostenlos an, mit großzügigen Nutzungslimits. Ihre Fragen werden zur Verarbeitung an Ollamas Server gesendet — schnell, kein GPU nötig, keine Abonnementgebühr.
+
+### Ollama API-Schlüssel erstellen
+
+Sie benötigen einen API-Schlüssel für Cloud-Modelle. Kostenlos.
+
+1. Gehen Sie zu [ollama.com](https://ollama.com) und erstellen Sie ein kostenloses Konto (auf **Sign Up** klicken)
+2. Klicken Sie auf Ihr Profilbild (oben rechts) → **Settings** → **API Keys**
+3. Klicken Sie auf **Create new key**, geben Sie einen beliebigen Namen an und kopieren Sie den Schlüssel an einen sicheren Ort
+
+### API-Schlüssel in DMH-AI hinzufügen
+
+1. Benutzersymbol → **Einstellungen**
+2. Unter **Ollama Cloud — API-Konten** auf **Konto hinzufügen** klicken
+3. Einen beliebigen Namen eingeben (z. B. "mein Konto") und den kopierten API-Schlüssel einfügen
+4. Auf **Speichern** klicken
+
+Das war's. Drei empfohlene Modelle erscheinen sofort oben in der Modellauswahl — einfach eines auswählen und loschatten.
+
+**Empfohlene Modelle (sofort nutzbar, keine weitere Einrichtung):**
+
+- 👁 **Schnelle Antwort** — schnelle Reaktionen für alltägliche Fragen
+- 💡 **Tiefes Denken** — langsamer, aber gründlicher; ideal für komplexe Fragen und Bildanalyse
+- 🛠 **Technischer Experte** — optimiert für Programmierung und technische Aufgaben
+
+---
+
+## Weg B: Lokale Modelle (vollständig offline, maximaler Datenschutz)
+
+Alles läuft auf Ihrem Rechner. Für KI kein Internet nötig. Ihre Daten verlassen niemals Ihr Netzwerk.
+
+### Ollama installieren
+
+Ollama führt das KI-Modell lokal auf Ihrem Computer aus.
+
+**Linux:**
+```bash
+curl -fsSL https://ollama.com/install.sh | sh
+```
+
+**Windows:** Installationsprogramm herunterladen und ausführen von [ollama.com/download](https://ollama.com/download). Ollama startet nach der Installation automatisch im Hintergrund.
+
+Installation überprüfen:
+```bash
+ollama --version
+```
+
+### Ein Modell herunterladen
+
+Wählen Sie ein Modell basierend auf den Möglichkeiten Ihres Computers. Die angegebene Größe ist der benötigte Festplatten- und RAM-Speicher.
+
+**Gute Ausgangspunkte (Text und Dokumente):**
+
+| Modell | Größe | Hinweise |
+|---|---|---|
+| `gemma3n:e2b` | ~5,6 GB | Bestes kleines mehrsprachiges Modell |
+| `phi4-mini:3.8b` | ~2,5 GB | Guter Allrounder, wenig Speicher |
+| `granite4:3b` | ~2,1 GB | Schnell, starkes Reasoning |
+
+**Für Bildanalyse:**
+
+| Modell | Größe | Hinweise |
+|---|---|---|
+| `ministral-3:3b` | ~3 GB | Unterstützt Bildeingabe, schnell |
+
+Gewähltes Modell herunterladen (Beispiel):
+```bash
+ollama pull gemma3n:e2b
+```
+
+Unter Linux Ollama starten, falls nicht bereits als Dienst aktiv:
+```bash
+ollama serve
+```
+Unter Windows startet Ollama automatisch — `ollama serve` ist nicht nötig.
+
+Ihre lokal laufenden Modelle erscheinen in der Modellauswahl. Eines auswählen und loschatten.
+
+---
+
+## Zugriff von anderen Geräten im Netzwerk
+
+Sobald DMH-AI läuft, kann jedes Smartphone, Tablet oder Laptop im selben WLAN es nutzen.
+
+Finden Sie die lokale IP-Adresse Ihres Rechners (z. B. `192.168.1.10`) und öffnen Sie `http://192.168.1.10:8080` auf einem beliebigen Gerät.
+
+**Spracheingabe** erfordert HTTPS. Verwenden Sie `https://<Ihre-IP>:8443`. Der Browser zeigt eine Sicherheitswarnung wegen des selbstsignierten Zertifikats — das ist erwartet, einmalig akzeptieren. Auf iOS den Link in der Zertifikatswarnung tippen, um das Zertifikat herunterzuladen und über Einstellungen zu installieren (einmalig pro Gerät).
+
+---
+
+## Admin-Einstellungen Referenz
+
+Benutzersymbol → **Einstellungen** (nur Admins).
 
 **Ollama Cloud — API-Konten**
 
-> **Ein API-Schlüssel ist erforderlich.** Der Kontoname ist nur eine selbst gewählte Bezeichnung zur leichteren Wiedererkennung — er kann beliebig sein. Der API-Schlüssel ist das eigentliche Zugangsmittel für Ollama-Cloud-Modelle.
-
-**So erhalten Sie einen API-Schlüssel:**
-1. Anmelden auf [ollama.com](https://ollama.com)
-2. Profilbild (oben rechts) → **Settings** → **API Keys** anklicken
-3. **Create new key** anklicken, beliebigen Namen vergeben, Schlüssel kopieren
-
-Fügen Sie ein oder mehrere Konten (Bezeichnung + API-Schlüssel) hinzu. DMH-AI verwaltet einen Pool aller Konten und **wechselt automatisch** zwischen ihnen — wird ein Konto gedrosselt oder das Kontingent aufgebraucht, übernimmt das nächste Konto nahtlos. Für Nutzer vollständig transparent.
+Ein oder mehrere Konten (Bezeichnung + API-Schlüssel) hinzufügen. DMH-AI wechselt automatisch zwischen allen hinzugefügten Konten — wenn eines sein Ratenlimit erreicht, übernimmt das nächste nahtlos. Sie können Schlüssel von mehreren Ollama-Konten hinzufügen, um Ihr Kontingent effektiv zu vervielfachen.
 
 **Ollama Cloud — Empfohlene Modelle**
 
-Ist der Cloud-Konto-Pool aktiv, erscheinen drei Modelle automatisch im Abschnitt "★ Empfohlen" oben im Dropdown — ohne jegliche Konfiguration:
-
-- 👁 **Schnelle Antwort** (`ministral-3:8b-cloud`) — schnell, ressourcenschonend
-- 💡 **Tiefes Denken** (`qwen3-vl:235b-cloud`) — bildtauglich, tiefes logisches Denken
-- 🛠 **Technischer Experte** (`devstral-small-2:24b-cloud`) — Programmierung und technische Aufgaben
+Sobald mindestens ein Konto vorhanden ist, erscheinen drei Modelle automatisch oben in der Modellauswahl — ohne weitere Konfiguration.
 
 **Ollama Cloud — Cloud-Modelle**
 
-Sobald Konten vorhanden sind, legen Sie fest, welche weiteren Cloud-Modelle im Modell-Selektor erscheinen. Das Suchfeld fragt das **öffentliche Ollama-Modellverzeichnis** ab — nicht nur lokal installierte Modelle — sodass Sie jedes Cloud-Modell direkt finden und hinzufügen können, ohne ollama.com besuchen zu müssen. Die drei empfohlenen Modelle oben werden aus den Suchergebnissen ausgeschlossen, da sie bereits automatisch verfügbar sind. Hinzugefügte Modelle erscheinen im Abschnitt **☁ Cloud Models** des Dropdowns.
+Weitere Cloud-Modelle über die drei empfohlenen hinaus hinzufügen. Das Suchfeld fragt das öffentliche Ollama-Modellverzeichnis ab — Sie können jedes Cloud-Modell direkt finden und hinzufügen, ohne ollama.com besuchen zu müssen. Hinzugefügte Modelle erscheinen im Abschnitt **☁ Cloud Models** der Modellauswahl.
 
 **Ollama Local — Endpunkt-URL**
 
-Legen Sie die URL Ihrer lokalen Ollama-Instanz fest (Standard: `http://localhost:11434`). Nützlich, wenn Ollama auf einem anderen Gerät im Netzwerk läuft.
+Standardmäßig verbindet sich DMH-AI mit Ollama unter `http://localhost:11434`. Ändern Sie dies, wenn Ollama auf einem anderen Rechner in Ihrem Netzwerk läuft (z. B. einem Heimserver).
 
-Chat-Sitzungen und hochgeladene Dateien jedes Nutzers werden vollständig getrennt gespeichert.
+---
 
-Benutzerdaten werden gespeichert in:
-- `dist/db/` — SQLite-Chat-Datenbank
-- `dist/user_assets/` — Hochgeladene Dateien, nach Sitzung organisiert
-- `dist/system_logs/system.log` — Websuche- und System-Protokoll
+## Websuche
 
-Zum Umzug auf einen anderen Rechner den gesamten `dist/`-Ordner kopieren — alle Daten sind enthalten.
+DMH-AI enthält eine integrierte Websuche-Pipeline — ähnlich wie Perplexity oder ChatGPT Search, aber selbst gehostet und privat.
 
-## Websuche — Ihr eigenes selbst gehostetes Perplexity
-
-DMH-AI enthält eine integrierte Websuche-Pipeline, ähnlich wie Perplexity, ChatGPT Search und Google Gemini — aber vollständig selbst gehostet und privat.
-
-**So funktioniert es:**
+**Wie es funktioniert:**
 
 1. Sie stellen eine Frage in beliebiger Sprache
-2. Das KI-Modell beurteilt, ob Ihre Frage aktuelle Webdaten benötigt (keine fest codierten Schlüsselwörter — es versteht die Absicht)
-3. Falls ja, extrahiert DMH-AI Suchbegriffe, fragt die integrierte SearXNG-Suchmaschine ab und ruft die besten Ergebnisse ab
-4. Das KI-Modell fasst die Suchergebnisse zu einer kohärenten, gut strukturierten Antwort zusammen, die auf aktuellen Informationen basiert
+2. Die KI entscheidet, ob Ihre Frage aktuelle Informationen aus dem Web benötigt (keine fest codierten Schlüsselwörter — sie versteht die Absicht)
+3. Falls ja, sucht DMH-AI über die integrierte SearXNG-Instanz und ruft die besten Ergebnisse ab
+4. Die KI fasst die Ergebnisse zu einer kohärenten, gut strukturierten Antwort mit aktuellen Informationen zusammen
 
-Alles geschieht automatisch und transparent — Sie stellen einfach Ihre Frage und erhalten eine aktuelle Antwort. Keine API-Schlüssel, keine Abonnements, keine Daten verlassen Ihr Netzwerk (Suchanfragen laufen über Ihre selbst gehostete SearXNG-Instanz).
+Sie müssen nichts anders machen — stellen Sie einfach Ihre Frage. Suchanfragen laufen über Ihre eigene SearXNG-Instanz, nicht über Drittanbieter-Dienste.
 
-## Architektur
+---
+
+## Ihre Daten
+
+Alle Daten werden im Ordner `dist/` neben der App gespeichert:
+
+- `dist/db/` — Chat-Verlauf (SQLite-Datenbank)
+- `dist/user_assets/` — hochgeladene Dateien, nach Sitzung organisiert
+- `dist/system_logs/system.log` — Websuche- und System-Protokoll
+
+Um DMH-AI auf einen anderen Rechner zu übertragen, kopieren Sie den gesamten `dist/`-Ordner. Alle Daten kommen mit.
+
+Weitere Nutzer hinzufügen: Benutzersymbol → **Benutzer verwalten**.
+
+---
+
+## Architektur (für Entwickler)
 
 ```
 Browser
@@ -228,7 +245,7 @@ code/
   nginx.conf              # Reverse-Proxy-Konfiguration
   Dockerfile              # nginx:alpine + python3
   start.sh                # Entrypoint: startet Python-Backend dann nginx
-  docker-compose.yml      # Compose-Datei
+  docker-compose.yml      # Compose-Quelldatei
   searxng-settings.yml    # SearXNG-Konfiguration (aktiviert JSON-API auf Port 8888)
   run.sh                  # Linux-Startskript (wird nach dist/ kopiert von build.sh)
   run.bat                 # Windows-Startskript (wird nach dist/ kopiert von build.bat)

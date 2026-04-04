@@ -1,209 +1,226 @@
 # DMH-AI
 
-Giao diện chat nhẹ, tự host cho Ollama chạy trên máy tính cá nhân. Chạy hoàn toàn trong Docker — không cần Node.js, không cần cài thêm thư viện Python.
+Ứng dụng chat AI tự host chạy trên máy tính của bạn — giống ChatGPT, nhưng riêng tư, miễn phí và hoàn toàn thuộc về bạn.
+
+**Dành cho ai?**
+
+- **Người dùng cloud** — bạn muốn chat AI nhanh, mạnh mà không lo vượt hạn mức. Không cần máy tính mạnh. Bạn dùng mô hình cloud của Ollama qua API key cá nhân — DMH-AI tự động quản lý việc luân phiên tài khoản và giới hạn lượt dùng ở hậu trường, bạn không cần lo nghĩ gì cả.
+- **Người ưu tiên bảo mật** — bạn muốn mọi thứ ở lại trên máy của mình, hoàn toàn offline. Không có gì rời khỏi mạng nội bộ của bạn.
+
+Cả hai chế độ chạy trong cùng một ứng dụng. Bạn có thể chuyển đổi tự do.
 
 ## Ảnh chụp màn hình
 
 ![Phân tích hình ảnh](image-analysis.png)
 ![Tìm kiếm web](web-search.png)
 
-## Tính năng
+## Tính năng nổi bật
 
-- **Tìm kiếm web tích hợp** — tương tự Perplexity, nhưng tự host và riêng tư. DMH-AI tự động phát hiện khi câu hỏi của bạn cần thông tin mới nhất, tìm kiếm web qua SearXNG tích hợp, và tổng hợp kết quả thành câu trả lời mạch lạc, có nguồn. Hoạt động với mọi ngôn ngữ.
-- **Nhóm tài khoản cloud** — thêm nhiều tài khoản Ollama cloud API trong Cài đặt. DMH-AI tự động luân phiên giữa các tài khoản để không bao giờ vượt giới hạn lượt dùng. Yêu cầu đến mô hình cloud được gửi trực tiếp đến Ollama cloud API bằng API key của tài khoản đang được chọn. Hoàn toàn minh bạch với người dùng.
-- **Mô hình cloud được đề xuất** — khi nhóm tài khoản cloud đang hoạt động, một mục "★ Được đề xuất" sẽ xuất hiện ở đầu danh sách chọn mô hình với ba mô hình được cấu hình sẵn: 👁 Trả lời nhanh (`ministral-3:8b-cloud`), 💡 Suy luận sâu (`qwen3-vl:235b-cloud`), và 🛠 Chuyên gia kỹ thuật (`devstral-small-2:24b-cloud`). Không cần cài đặt — chỉ cần thêm tài khoản là bạn sẵn sàng bắt đầu.
-- **Đính kèm đa phương tiện** — đính kèm tài liệu (PDF, DOCX, XLSX), hình ảnh và video từ thiết bị. Trên điện thoại, chụp ảnh hoặc quay video trực tiếp và đính kèm vào chat — không cần lưu vào thư viện trước.
-- Quản lý người dùng — hỗ trợ đa người dùng đầy đủ tuy đơn giản. Mỗi người dùng có đăng nhập riêng, phiên chat riêng và lưu trữ tệp riêng. Tài khoản admin được tạo tự động khi khởi chạy lần đầu; admin có thể thêm và xóa người dùng ngay trong giao diện.
-- Chat với mọi mô hình Ollama — cloud hoặc local — qua giao diện web gọn gàng
-- Lưu phiên chat vào SQLite
-- Tự động tóm tắt ngữ cảnh cuốn — chat mãi không lo vượt giới hạn token
-- Hiển thị Markdown cho câu trả lời
-- Giao diện đa ngôn ngữ: Tiếng Anh, Tiếng Việt, Tiếng Đức, Tiếng Tây Ban Nha, Tiếng Pháp
-- Truy cập từ mọi thiết bị trong mạng nội bộ
-
-## Yêu cầu
-
-- [Docker](https://docs.docker.com/get-docker/) với plugin Compose
-- [Ollama](https://ollama.com/download) chạy trên cổng 11434
-
-### Cài đặt Ollama
-
-**Linux:**
-```bash
-curl -fsSL https://ollama.com/install.sh | sh
-```
-
-**Windows:**
-Tải và chạy trình cài đặt từ [ollama.com/download](https://ollama.com/download)
-
-Kiểm tra cài đặt:
-```bash
-ollama --version
-```
-
-## Bước 1 — Chọn mô hình
-
-DMH-AI hoạt động với cả **mô hình cloud** (khuyên dùng cho đa số người dùng) và **mô hình local** (khi bảo mật là ưu tiên hàng đầu). Bạn có thể kết hợp cả hai — chuyển đổi tự do trong giao diện.
+- **Tìm kiếm web tích hợp** — tương tự Perplexity, nhưng tự host và riêng tư. Bạn hỏi bình thường, DMH-AI tự quyết định có cần tìm kiếm web không. Nếu cần, kết quả được tổng hợp thành câu trả lời có nguồn, cập nhật. Hoạt động với mọi ngôn ngữ.
+- **Đính kèm đa phương tiện** — đính kèm tài liệu (PDF, DOCX, XLSX), hình ảnh và video. Trên điện thoại, chụp ảnh hoặc quay video trực tiếp và đưa vào chat — không cần lưu vào thư viện trước.
+- **Hỗ trợ nhiều người dùng** — mỗi người có đăng nhập riêng, lịch sử chat riêng và tệp riêng. Tài khoản admin được tạo tự động khi khởi chạy lần đầu. Admin có thể thêm và xóa người dùng ngay trong ứng dụng.
+- **Lưu lịch sử chat** — toàn bộ cuộc trò chuyện được lưu và có thể tìm lại.
+- **Ngữ cảnh cuốn** — chat bao lâu cũng được, không lo vượt giới hạn bộ nhớ AI.
+- **Giao diện đa ngôn ngữ** — Tiếng Anh, Tiếng Việt, Tiếng Đức, Tiếng Tây Ban Nha, Tiếng Pháp.
+- **Truy cập từ mọi thiết bị trong mạng nội bộ** — điện thoại, máy tính bảng, laptop.
 
 ---
 
-### Lựa chọn A: Mô hình Cloud (khuyên dùng)
+## Bắt đầu nhanh
 
-**Phù hợp nhất cho đa số người dùng.** Mô hình cloud của Ollama nhanh, mạnh, và miễn phí với hạn mức rộng rãi cho tài khoản miễn phí. Suy luận chạy trên máy chủ của Ollama và truyền qua Ollama trên máy bạn — không cần GPU, không cần thay đổi cấu hình DMH-AI.
+Có hai hướng thiết lập. Chọn hướng phù hợp với bạn.
 
-**Khuyên dùng nhất:**
-
-| Mô hình | Lý do |
-|---|---|
-| `mistral-large-3:675b-cloud` | Toàn diện nhất — nhanh, hỗ trợ hình ảnh, xuất sắc trong chat đa năng, lập trình, suy luận và đa ngôn ngữ |
-| `ministral-3:14b-cloud` | Kích thước trung bình, đa năng — cực nhanh và cũng hỗ trợ hình ảnh |
-
-Các mô hình cloud khác đáng thử:
-
-| Mô hình | Ghi chú |
-|---|---|
-| `qwen3.5:cloud` | Mạnh về đa ngôn ngữ và suy luận |
-| `gemini-3-flash-preview:cloud` | Mô hình hàng đầu của Google, suy luận sâu và rất nhanh |
-
-**Cách thiết lập:**
-
-1. **Tạo tài khoản Ollama miễn phí** tại [ollama.com](https://ollama.com) — nhấn **Sign Up**.
-
-2. **Kết nối Ollama trên máy với tài khoản:**
-   ```bash
-   ollama login
-   ```
-   Trình duyệt sẽ mở để xác thực. Sau khi đăng nhập, Ollama trên máy bạn được liên kết với tài khoản.
-
-3. **Tải mô hình cloud:**
-   ```bash
-   ollama pull mistral-large-3:675b-cloud
-   ```
-
-Vậy là xong. Mô hình xuất hiện ngay trong danh sách của DMH-AI — chọn và bắt đầu chat.
-
-Mô hình cloud có thẻ `:cloud`. Cần kết nối internet nhưng không tốn tài nguyên máy tính của bạn.
+| | Hướng A: Cloud | Hướng B: Local |
+|---|---|---|
+| **Phù hợp với** | Đa số người dùng | Người ưu tiên bảo mật |
+| **Cần GPU?** | Không | Tùy mô hình |
+| **Cần internet?** | Có (cho AI phản hồi) | Không |
+| **Dữ liệu rời máy?** | Yêu cầu AI đến máy chủ Ollama | Không bao giờ |
+| **Thời gian cài đặt** | ~5 phút | ~10 phút |
 
 ---
 
-### Lựa chọn B: Mô hình Local (hoàn toàn offline, bảo mật tối đa)
+## Bước 1 — Cài Docker
 
-**Phù hợp khi bảo mật là ưu tiên hàng đầu.** Mọi dữ liệu ở trên máy bạn — không gì rời khỏi mạng nội bộ. Cần đủ RAM/VRAM để chạy mô hình.
-
-**Văn bản và tài liệu (nhanh, ít bộ nhớ):**
-
-| Mô hình | Dung lượng | Ghi chú |
-|---|---|---|
-| `gemma3n:e2b` | ~5.6 GB | Mô hình nhỏ đa ngôn ngữ tốt nhất |
-| `phi4-mini:3.8b` | ~2.5 GB | Mô hình nhỏ đa năng tốt |
-| `granite4:3b` | ~2.1 GB | Suy luận mạnh và nhanh |
-
-**Hình ảnh:**
-
-| Mô hình | Dung lượng | Ghi chú |
-|---|---|---|
-| `ministral-3:3b` | ~3 GB | Hỗ trợ hình ảnh, đa năng và nhanh |
-
-**Tải mô hình local:**
-```bash
-ollama pull mistral-3:3b
-```
-
-Trên Linux, khởi động Ollama nếu chưa chạy:
-```bash
-ollama serve
-```
-Trên Windows, Ollama tự động khởi động — không cần chạy `ollama serve`.
-
-## Bước 2 — Cài đặt Docker
+Docker chạy DMH-AI trong một container độc lập. Bắt buộc cho cả hai hướng.
 
 **Linux:**
 ```bash
 curl -fsSL https://get.docker.com | sh
 ```
 
-**Windows:** Tải và chạy **Docker Desktop** từ [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop/). Sau khi cài, mở Docker Desktop và đợi cho đến khi biểu tượng cá voi trên thanh tác vụ ngừng chuyển động.
+**Windows:** Tải và chạy **Docker Desktop** từ [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop/). Sau khi cài, mở Docker Desktop và đợi biểu tượng cá voi trên thanh tác vụ ngừng chuyển động — khi đó là sẵn sàng.
 
-## Bước 3 — Chạy DMH-AI
+## Bước 2 — Khởi động DMH-AI
 
 **Linux:**
 ```bash
 ./build.sh && ./dist/run.sh
 ```
 
-**Windows** — trong Command Prompt:
+**Windows** — mở Command Prompt và chạy:
 ```
 build.bat && dist\run.bat
 ```
 
-Mở [http://localhost:8080](http://localhost:8080) trong trình duyệt. Các thiết bị khác trong mạng có thể truy cập tại `http://<địa-chỉ-IP-máy-bạn>:8080`.
-
-Để dùng **nhập liệu bằng giọng nói**, dùng cổng HTTPS `https://localhost:8443` (hoặc `https://<địa-chỉ-IP-máy-bạn>:8443`). Chấp nhận cảnh báo chứng chỉ tự ký một lần. Trên iOS, nhấn vào liên kết cảnh báo chứng chỉ để tải về và cài đặt qua Cài đặt.
+Mở [http://localhost:8080](http://localhost:8080) trong trình duyệt.
 
 ### Đăng nhập lần đầu
 
-Khi khởi chạy lần đầu, DMH-AI tạo tài khoản admin mặc định:
+Lần đầu khởi chạy, DMH-AI tạo tài khoản admin mặc định:
 
 | Tên đăng nhập | Mật khẩu |
 |---|---|
 | `admin` | `dmhai` |
 
-Đăng nhập xong, vào biểu tượng người dùng → **Đổi mật khẩu** để đặt mật khẩu mới. Để thêm người dùng khác, vào biểu tượng người dùng → **Quản lý người dùng**.
+Đăng nhập xong, **đổi mật khẩu ngay**: nhấn biểu tượng người dùng (góc trên phải) → **Đổi mật khẩu**.
 
-### Cài đặt dành cho Admin
+---
 
-Với tài khoản admin, bạn có mục **Cài đặt** trong menu người dùng (và nút tắt ở cuối thanh bên).
+## Hướng A: Mô hình Cloud (khuyên dùng cho đa số)
+
+Ollama cung cấp mô hình AI cloud mạnh mẽ hoàn toàn miễn phí, với hạn mức sử dụng rộng rãi. Câu hỏi của bạn được gửi đến máy chủ Ollama để xử lý — nhanh, không cần GPU, không phí đăng ký.
+
+### Lấy API key Ollama
+
+Bạn cần API key để dùng mô hình cloud. Hoàn toàn miễn phí.
+
+1. Vào [ollama.com](https://ollama.com) và tạo tài khoản miễn phí (nhấn **Sign Up**)
+2. Nhấn vào ảnh đại diện (góc trên phải) → **Settings** → **API Keys**
+3. Nhấn **Create new key**, đặt tên tùy ý, sao chép key và lưu lại
+
+### Thêm API key vào DMH-AI
+
+1. Nhấn biểu tượng người dùng → **Cài đặt**
+2. Trong mục **Ollama Cloud — Tài khoản API**, nhấn **Thêm tài khoản**
+3. Nhập tên tùy ý (ví dụ: "tài khoản của tôi") và dán API key vừa sao chép
+4. Nhấn **Lưu**
+
+Xong. Ba mô hình được đề xuất xuất hiện ngay ở đầu danh sách chọn mô hình — chỉ cần chọn một cái và bắt đầu chat.
+
+**Mô hình được đề xuất (dùng ngay, không cần cài thêm):**
+
+- 👁 **Trả lời nhanh** — phản hồi nhanh cho câu hỏi hằng ngày
+- 💡 **Suy luận sâu** — chậm hơn nhưng kỹ hơn; tốt cho câu hỏi phức tạp, phân tích hình ảnh
+- 🛠 **Chuyên gia kỹ thuật** — tối ưu cho lập trình và tác vụ kỹ thuật
+
+---
+
+## Hướng B: Mô hình Local (hoàn toàn offline, bảo mật tối đa)
+
+Mọi thứ chạy trên máy của bạn. Không cần internet cho AI. Dữ liệu không bao giờ rời khỏi mạng nội bộ.
+
+### Cài Ollama
+
+Ollama chạy mô hình AI cục bộ trên máy tính của bạn.
+
+**Linux:**
+```bash
+curl -fsSL https://ollama.com/install.sh | sh
+```
+
+**Windows:** Tải và chạy trình cài đặt từ [ollama.com/download](https://ollama.com/download). Ollama tự khởi động ở nền sau khi cài xong.
+
+Kiểm tra cài đặt:
+```bash
+ollama --version
+```
+
+### Tải mô hình
+
+Chọn mô hình dựa trên khả năng máy của bạn. Dung lượng ghi là lượng ổ cứng và RAM bạn cần.
+
+**Điểm khởi đầu tốt (văn bản và tài liệu):**
+
+| Mô hình | Dung lượng | Ghi chú |
+|---|---|---|
+| `gemma3n:e2b` | ~5.6 GB | Mô hình nhỏ đa ngôn ngữ tốt nhất |
+| `phi4-mini:3.8b` | ~2.5 GB | Đa năng, ít bộ nhớ |
+| `granite4:3b` | ~2.1 GB | Nhanh, suy luận mạnh |
+
+**Nếu muốn phân tích hình ảnh:**
+
+| Mô hình | Dung lượng | Ghi chú |
+|---|---|---|
+| `ministral-3:3b` | ~3 GB | Hỗ trợ hình ảnh, nhanh |
+
+Tải mô hình đã chọn (ví dụ):
+```bash
+ollama pull gemma3n:e2b
+```
+
+Trên Linux, nếu Ollama chưa chạy dưới dạng dịch vụ:
+```bash
+ollama serve
+```
+Trên Windows, Ollama tự khởi động — không cần chạy `ollama serve`.
+
+Các mô hình local đang chạy sẽ xuất hiện trong danh sách chọn mô hình. Chọn một cái và bắt đầu chat.
+
+---
+
+## Truy cập từ thiết bị khác trong mạng
+
+Sau khi DMH-AI chạy, bất kỳ điện thoại, máy tính bảng hay laptop nào trong cùng mạng Wi-Fi đều có thể dùng.
+
+Tìm địa chỉ IP local của máy bạn (ví dụ: `192.168.1.10`) và mở `http://192.168.1.10:8080` trên thiết bị bất kỳ.
+
+**Nhập liệu bằng giọng nói** cần HTTPS. Dùng `https://<địa-chỉ-IP>:8443`. Trình duyệt sẽ hiện cảnh báo về chứng chỉ tự ký — đây là bình thường, chấp nhận một lần. Trên iOS, nhấn vào liên kết trong cảnh báo chứng chỉ để tải về và cài qua Cài đặt (làm một lần cho mỗi thiết bị).
+
+---
+
+## Tài liệu tham khảo Cài đặt Admin
+
+Nhấn biểu tượng người dùng → **Cài đặt** (chỉ admin).
 
 **Ollama Cloud — Tài khoản API**
 
-> **API key là bắt buộc.** Tên tài khoản chỉ là nhãn bạn đặt để dễ nhớ — có thể đặt tùy ý. API key mới là thứ cấp quyền truy cập vào mô hình cloud Ollama.
-
-**Cách lấy API key:**
-1. Đăng nhập tại [ollama.com](https://ollama.com)
-2. Nhấn vào ảnh đại diện (góc trên phải) → **Settings** → **API Keys**
-3. Nhấn **Create new key**, đặt tên tùy ý, sao chép key
-
-Thêm một hoặc nhiều tài khoản (nhãn + API key). DMH-AI lưu toàn bộ tài khoản vào nhóm và **tự động luân phiên** khi gửi yêu cầu đến mô hình cloud — nếu một tài khoản bị giới hạn lượt dùng, tài khoản tiếp theo được dùng ngay, hoàn toàn trong suốt với người dùng.
+Thêm một hoặc nhiều tài khoản (nhãn + API key). DMH-AI tự động luân phiên qua tất cả tài khoản đã thêm — nếu một tài khoản bị giới hạn lượt dùng, tài khoản tiếp theo tiếp quản mà không bị gián đoạn. Bạn có thể thêm key từ nhiều tài khoản Ollama để nhân đôi hạn mức.
 
 **Ollama Cloud — Mô hình được đề xuất**
 
-Khi nhóm tài khoản cloud đang hoạt động, ba mô hình sau tự động xuất hiện ở mục "★ Được đề xuất" ở đầu dropdown — không cần cấu hình gì:
-
-- 👁 **Trả lời nhanh** (`ministral-3:8b-cloud`) — nhanh, nhẹ
-- 💡 **Suy luận sâu** (`qwen3-vl:235b-cloud`) — hỗ trợ hình ảnh, suy luận sâu
-- 🛠 **Chuyên gia kỹ thuật** (`devstral-small-2:24b-cloud`) — lập trình và các tác vụ kỹ thuật
+Khi có ít nhất một tài khoản, ba mô hình tự động xuất hiện ở đầu danh sách chọn mô hình — không cần cấu hình thêm.
 
 **Ollama Cloud — Mô hình Cloud**
 
-Sau khi thêm tài khoản, chọn thêm các mô hình cloud khác hiển thị trong danh sách chọn mô hình. Ô tìm kiếm truy vấn trực tiếp **kho mô hình công khai của Ollama** — không chỉ các mô hình đã cài — giúp bạn khám phá và thêm bất kỳ mô hình cloud nào mà không cần vào ollama.com. Ba mô hình được đề xuất ở trên bị loại khỏi kết quả tìm kiếm vì chúng đã tự động có sẵn. Mô hình được thêm sẽ xuất hiện ở mục **☁ Cloud Models** của dropdown.
+Thêm mô hình cloud ngoài ba mô hình được đề xuất. Ô tìm kiếm truy vấn kho mô hình công khai của Ollama — bạn có thể tìm và thêm bất kỳ mô hình cloud nào mà không cần vào ollama.com. Mô hình được thêm xuất hiện ở mục **☁ Cloud Models** trong danh sách chọn.
 
 **Ollama Local — URL Endpoint**
 
-Đặt URL cho Ollama trên máy (mặc định: `http://localhost:11434`). Hữu ích khi Ollama chạy trên máy khác trong mạng nội bộ.
+Mặc định, DMH-AI kết nối Ollama tại `http://localhost:11434`. Thay đổi nếu Ollama chạy trên máy khác trong mạng nội bộ (ví dụ: máy chủ tại nhà).
 
-Phiên chat và tệp tải lên của mỗi người dùng được lưu trữ hoàn toàn riêng biệt.
+---
 
-Dữ liệu được lưu trong:
-- `dist/db/` — Cơ sở dữ liệu SQLite
-- `dist/user_assets/` — Tệp đã tải lên, theo phiên
-- `dist/system_logs/system.log` — Nhật ký hệ thống và tìm kiếm web
+## Tìm kiếm web
 
-Để chuyển sang máy khác, sao chép toàn bộ thư mục `dist/` — mọi dữ liệu đi theo.
-
-## Tìm kiếm Web — Perplexity tự host của riêng bạn
-
-DMH-AI tích hợp quy trình tìm kiếm web tương tự Perplexity, ChatGPT Search, và Google Gemini — nhưng hoàn toàn tự host và riêng tư.
+DMH-AI tích hợp quy trình tìm kiếm web — tương tự Perplexity hay ChatGPT Search, nhưng tự host và riêng tư.
 
 **Cách hoạt động:**
 
 1. Bạn đặt câu hỏi bằng bất kỳ ngôn ngữ nào
-2. Mô hình AI tự đánh giá câu hỏi có cần dữ liệu web mới nhất không (không dùng từ khóa cứng — nó hiểu ý định)
-3. Nếu cần, DMH-AI trích xuất từ khóa, truy vấn SearXNG tích hợp, và lấy kết quả hàng đầu
-4. Mô hình AI tổng hợp kết quả thành câu trả lời mạch lạc, có cấu trúc, dựa trên thông tin mới nhất
+2. AI tự đánh giá xem câu hỏi có cần thông tin trực tiếp từ web không (không dùng từ khóa cứng — nó hiểu ý định)
+3. Nếu cần, DMH-AI tìm kiếm qua SearXNG tích hợp và lấy kết quả hàng đầu
+4. AI tổng hợp kết quả thành câu trả lời mạch lạc, có cấu trúc, dựa trên thông tin mới nhất
 
-Tất cả diễn ra tự động và minh bạch — bạn chỉ cần hỏi và nhận câu trả lời cập nhật. Không cần API key, không cần đăng ký dịch vụ, không có dữ liệu rời khỏi mạng của bạn (truy vấn tìm kiếm đi qua SearXNG tự host).
+Bạn không cần làm gì khác — chỉ cần hỏi. Truy vấn tìm kiếm đi qua SearXNG tự host của bạn, không qua dịch vụ bên thứ ba nào.
 
-## Kiến trúc
+---
+
+## Dữ liệu của bạn
+
+Toàn bộ dữ liệu được lưu trong thư mục `dist/`:
+
+- `dist/db/` — lịch sử chat (cơ sở dữ liệu SQLite)
+- `dist/user_assets/` — tệp đã tải lên, theo phiên
+- `dist/system_logs/system.log` — nhật ký tìm kiếm web và hệ thống
+
+Để chuyển DMH-AI sang máy khác, sao chép toàn bộ thư mục `dist/`. Mọi dữ liệu đi theo.
+
+Để thêm người dùng: biểu tượng người dùng → **Quản lý người dùng**.
+
+---
+
+## Kiến trúc (dành cho lập trình viên)
 
 ```
 Trình duyệt

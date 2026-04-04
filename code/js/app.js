@@ -2077,7 +2077,7 @@ const UIManager = {
         document.getElementById('status-bar').classList.toggle('visible', !!text);
     },
 
-    detectWebSearch: async function(userMessage, recentMsgs, signal) {
+    detectWebSearch: async function(userMessage, recentMsgs, signal, images) {
         // Explicit user instruction always wins — skip LLM check.
         // Match: any search-intent word + any web/internet/online word (covers all 5 UI languages).
         var _hasSearchVerb = /\b(search|find|look up|google|tìm\s*ki[eế]m|tìm|such[et]?|googlen|busca[r]?|busque|cherche[rz]?|recherche[rz]?)\b/i;
@@ -2093,16 +2093,18 @@ const UIManager = {
                     return (m.role === 'user' ? 'User: ' : 'Assistant: ') + text.slice(0, 300);
                 }).join('\n') + '\n\n';
             }
+            var body = {
+                model: this.currentSession.model,
+                stream: false,
+                think: false,
+                options: { temperature: 0, num_predict: 4 },
+                prompt: contextBlock + 'New message: ' + userMessage + '\n\nDoes this new message benefit from a live web search? Answer YES for: current news/events, prices, sports scores, weather, recently released software/tools, real-world experiences and community opinions ("what did people do", "how do others", "best practices people use"), tips others have shared online, or any question where up-to-date or crowd-sourced information would improve the answer. Answer NO for: follow-ups, formatting/rephrasing/translation/summarization requests, questions addressed to you the AI assistant ("what can you do", "who are you", "help me", capability or greeting questions), questions about an attached image or file, or questions fully answerable from general knowledge. Reply in English only with YES or NO.\n\nAnswer:'
+            };
+            if (images && images.length > 0) body.images = images;
             const res = await fetch(OllamaAPI.BASE_URL + '/generate', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    model: this.currentSession.model,
-                    stream: false,
-                    think: false,
-                    options: { temperature: 0, num_predict: 4 },
-                    prompt: contextBlock + 'New message: ' + userMessage + '\n\nDoes this new message benefit from a live web search? Answer YES for: current news/events, prices, sports scores, weather, recently released software/tools, real-world experiences and community opinions ("what did people do", "how do others", "best practices people use"), tips others have shared online, or any question where up-to-date or crowd-sourced information would improve the answer. Answer NO for: follow-ups, formatting/rephrasing/translation/summarization requests, questions addressed to you the AI assistant ("what can you do", "who are you", "help me", capability or greeting questions), or questions fully answerable from general knowledge. Reply in English only with YES or NO.\n\nAnswer:'
-                }),
+                body: JSON.stringify(body),
                 signal: signal
             });
             const data = await res.json();
@@ -2314,8 +2316,8 @@ const UIManager = {
         let apiMessages = prepareForAPI(ContextManager.buildContextMessages(this.currentSession));
         apiMessages[apiMessages.length - 1] = userMsgForAPI;
         const recentMsgs = (this.currentSession.messages || []).filter(function(m) { return m.role === 'user' || m.role === 'assistant'; }).slice(-4);
-        const effectiveContent = content.trim() || contentForAPI.trim();
-        const needsWebSearch = await this.detectWebSearch(effectiveContent, recentMsgs, pipelineSignal);
+        const effectiveContent = contentForAPI.trim() || content.trim();
+        const needsWebSearch = await this.detectWebSearch(effectiveContent, recentMsgs, pipelineSignal, imagesForAPI);
         if (pipelineSignal.aborted) return;
         const cleanedContent = effectiveContent;
         syslog('[SEND] user="' + content.slice(0, 120) + '" needsWebSearch=' + needsWebSearch + ' cleanedQuery="' + cleanedContent + '"');
