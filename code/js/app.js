@@ -1,5 +1,24 @@
 marked.use({ gfm: true, breaks: true });
 
+function renderWithMath(markdown) {
+    if (!window.katex) return marked.parse(markdown);
+    var blocks = [];
+    var n = 0;
+    var ph = function(i) { return 'KATEXBLOCK' + i + 'END'; };
+    // Extract math blocks before marked sees them (longest delimiters first)
+    var safe = markdown
+        .replace(/\$\$([\s\S]*?)\$\$/g, function(_, m) { blocks.push({d: true, m: m}); return ph(n++); })
+        .replace(/\\\[([\s\S]*?)\\\]/g, function(_, m) { blocks.push({d: true, m: m}); return ph(n++); })
+        .replace(/\\\(([\s\S]*?)\\\)/g, function(_, m) { blocks.push({d: false, m: m}); return ph(n++); })
+        .replace(/\$([^\$\n]{1,400}?)\$/g, function(_, m) { blocks.push({d: false, m: m}); return ph(n++); });
+    var html = marked.parse(safe);
+    blocks.forEach(function(b, i) {
+        var rendered = katex.renderToString(b.m, { displayMode: b.d, throwOnError: false, output: 'html' });
+        html = html.split(ph(i)).join(rendered);
+    });
+    return html;
+}
+
 const I18n = {
     _lang: localStorage.getItem('lang') || 'en',
     _strings: {
@@ -271,11 +290,11 @@ const AppConfig = {
 function getRecommendedCloudModels() {
     return [
         { name: 'ministral-3:14b-cloud',       label: t('recQuickAnswer') },
-        { name: 'mistral-large-3:675b-cloud',  label: t('recDeepThinker') },
+        { name: 'qwen3-vl:235b-instruct-cloud',  label: t('recDeepThinker') },
     ];
 }
 // Constant names for filtering (language-independent)
-const RECOMMENDED_CLOUD_MODEL_NAMES = ['ministral-3:14b-cloud', 'mistral-large-3:675b-cloud'];
+const RECOMMENDED_CLOUD_MODEL_NAMES = ['ministral-3:14b-cloud', 'qwen3-vl:235b-instruct-cloud'];
 
 const Settings = {
     _accounts: [],
@@ -701,16 +720,17 @@ const Lightbox = {
         // Load full image from server if available
         if (fileId && sessionId) {
             apiFetch('/assets/' + sessionId + '/' + fileId)
-                .then(function(r) { return r.blob(); })
+                .then(function(r) {
+                    if (!r.ok) throw new Error('fetch failed: ' + r.status);
+                    return r.blob();
+                })
                 .then(function(blob) {
                     var url = URL.createObjectURL(blob);
                     var full = new Image();
-                    full.onload = function() {
-                        img.src = url;
-                    };
+                    full.onload = function() { img.src = url; };
                     full.src = url;
                 })
-                .catch(function() {});
+                .catch(function(e) { console.warn('Lightbox full-res load failed:', e); });
         }
 
         // Push history state so back button closes lightbox
@@ -884,11 +904,7 @@ const Lightbox = {
 
         lb.addEventListener('touchend', function(e) {
             if (e.touches.length < 2) self._lastDist = 0;
-            if (e.touches.length === 0) {
-                self._dragging = false;
-                // Tap to close if not zoomed and didn't drag
-                if (self._scale <= 1 && !mouseMoved) history.back();
-            }
+            if (e.touches.length === 0) self._dragging = false;
         }, { passive: true });
     }
 };
@@ -1897,7 +1913,7 @@ const UIManager = {
             var body = document.createElement('div');
             body.className = 'msg-body';
             if (msg.role === 'assistant') {
-                body.innerHTML = marked.parse(msg.content || '');
+                body.innerHTML = renderWithMath(msg.content || '');
                 div.appendChild(body);
                 addCopyButtons(body); wrapTables(body);
             } else {
@@ -2001,7 +2017,7 @@ const UIManager = {
         return new Promise(function(resolve) {
             var img = new Image();
             img.onload = function() {
-                var scale = Math.min(1, 100 / img.naturalWidth);
+                var scale = Math.min(1, 500 / img.naturalWidth);
                 var canvas = document.createElement('canvas');
                 canvas.width = Math.round(img.naturalWidth * scale);
                 canvas.height = Math.round(img.naturalHeight * scale);
@@ -2321,7 +2337,7 @@ const UIManager = {
                 stream: false,
                 think: false,
                 options: { temperature: 0, num_predict: 4 },
-                prompt: contextBlock + 'New message: ' + userMessage + '\n\nDoes this new message benefit from a live web search? Answer YES for: current news/events, prices, sports scores, weather, recently released software/tools, real-world experiences and community opinions ("what did people do", "how do others", "best practices people use"), tips others have shared online, or any question where up-to-date or crowd-sourced information would improve the answer. Answer NO for: follow-ups, formatting/rephrasing/translation/summarization requests, questions addressed to you the AI assistant ("what can you do", "who are you", "help me", capability or greeting questions), questions about an attached image or file, or questions fully answerable from general knowledge. Reply in English only with YES or NO.\n\nAnswer:'
+                prompt: contextBlock + 'New message: ' + userMessage + '\n\nDoes this new message benefit from a live web search? Answer YES for: current news/events, prices, sports scores, weather, recently released software/tools, real-world experiences and community opinions ("what did people do", "how do others", "best practices people use"), tips others have shared online, or any question where up-to-date or crowd-sourced information would improve the answer. Answer NO for: math problems, calculations, equations, proofs, or any question requiring computation or logical reasoning; follow-ups, formatting/rephrasing/translation/summarization requests, questions addressed to you the AI assistant ("what can you do", "who are you", "help me", capability or greeting questions), questions about an attached image or file, or questions fully answerable from general knowledge. Reply in English only with YES or NO.\n\nAnswer:'
             };
             if (images && images.length > 0) body.images = images;
             const res = await fetch(OllamaAPI.BASE_URL + '/generate', {
@@ -2620,7 +2636,7 @@ const UIManager = {
                     assistantContent += chunk;
                     self._pendingContent = assistantContent;
                     if (self.currentSession === sessionAtSend) {
-                        bodyDiv.innerHTML = searchWarning + marked.parse(assistantContent);
+                        bodyDiv.innerHTML = searchWarning + renderWithMath(assistantContent);
                         addCopyButtons(bodyDiv); wrapTables(bodyDiv);
                         var overflowed = container.scrollHeight > container.scrollTop + container.clientHeight + 40;
                         document.getElementById('scroll-bottom-btn').style.display = overflowed ? 'flex' : 'none';
@@ -2658,7 +2674,7 @@ const UIManager = {
                     }
                     console.error('Stream error:', err);
                     if (self.currentSession === sessionAtSend && assistantContent) {
-                        bodyDiv.innerHTML = searchWarning + marked.parse(assistantContent);
+                        bodyDiv.innerHTML = searchWarning + renderWithMath(assistantContent);
                         addCopyButtons(bodyDiv); wrapTables(bodyDiv);
                     }
                     self.saveStreamingProgress();

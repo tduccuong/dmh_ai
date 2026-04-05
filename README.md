@@ -101,7 +101,7 @@ That's it. Three recommended models appear instantly at the top of the model sel
 **Recommended models (ready to use, no extra setup):**
 
 - 👁 **Quick Answer** (`ministral-3:14b-cloud`) — fast responses for everyday questions
-- 💡 **Deep Thinker** (`mistral-large-3:675b-cloud`) — slower but more thorough; great for complex questions, image analysis
+- 💡 **Deep Thinker** (`qwen3-vl:235b-instruct-cloud`) — slower but more thorough; great for complex questions, image analysis
 
 ---
 
