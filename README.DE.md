@@ -102,7 +102,6 @@ Das war's. Drei empfohlene Modelle erscheinen sofort oben in der Modellauswahl �
 
 - 👁 **Schnelle Antwort** — schnelle Reaktionen für alltägliche Fragen
 - 💡 **Tiefes Denken** — langsamer, aber gründlicher; ideal für komplexe Fragen und Bildanalyse
-- 🛠 **Technischer Experte** — optimiert für Programmierung und technische Aufgaben
 
 ---
 

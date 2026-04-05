@@ -270,13 +270,12 @@ const AppConfig = {
 
 function getRecommendedCloudModels() {
     return [
-        { name: 'ministral-3:8b-cloud',        label: t('recQuickAnswer') },
-        { name: 'qwen3-vl:235b-cloud',         label: t('recDeepThinker') },
-        { name: 'devstral-small-2:24b-cloud',  label: t('recTechExpert')  },
+        { name: 'ministral-3:14b-cloud',       label: t('recQuickAnswer') },
+        { name: 'mistral-large-3:675b-cloud',  label: t('recDeepThinker') },
     ];
 }
 // Constant names for filtering (language-independent)
-const RECOMMENDED_CLOUD_MODEL_NAMES = ['ministral-3:8b-cloud', 'qwen3-vl:235b-cloud', 'devstral-small-2:24b-cloud'];
+const RECOMMENDED_CLOUD_MODEL_NAMES = ['ministral-3:14b-cloud', 'mistral-large-3:675b-cloud'];
 
 const Settings = {
     _accounts: [],
@@ -673,6 +672,224 @@ const SessionStore = {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ id: id })
         });
+    }
+};
+
+const Lightbox = {
+    _scale: 1,
+    _tx: 0,
+    _ty: 0,
+    _dragging: false,
+    _lastX: 0,
+    _lastY: 0,
+    _lastDist: 0,
+    _lastMidX: 0,
+    _lastMidY: 0,
+    _open: false,
+
+    open: function(thumbSrc, fileId, sessionId) {
+        var lb = document.getElementById('img-lightbox');
+        var img = document.getElementById('img-lightbox-img');
+        this._scale = 1;
+        this._tx = 0;
+        this._ty = 0;
+        this._open = true;
+        img.src = thumbSrc;
+        lb.style.display = 'flex';
+        this._applyTransform();
+
+        // Load full image from server if available
+        if (fileId && sessionId) {
+            apiFetch('/assets/' + sessionId + '/' + fileId)
+                .then(function(r) { return r.blob(); })
+                .then(function(blob) {
+                    var url = URL.createObjectURL(blob);
+                    var full = new Image();
+                    full.onload = function() {
+                        img.src = url;
+                    };
+                    full.src = url;
+                })
+                .catch(function() {});
+        }
+
+        // Push history state so back button closes lightbox
+        history.pushState({ lightbox: true }, '');
+    },
+
+    close: function() {
+        if (!this._open) return;
+        this._open = false;
+        var lb = document.getElementById('img-lightbox');
+        lb.style.display = 'none';
+        var img = document.getElementById('img-lightbox-img');
+        img.src = '';
+    },
+
+    _applyTransform: function() {
+        var img = document.getElementById('img-lightbox-img');
+        img.style.transform = 'translate(' + this._tx + 'px, ' + this._ty + 'px) scale(' + this._scale + ')';
+        img.style.cursor = this._scale > 1 ? 'grab' : 'zoom-in';
+    },
+
+    _clampPan: function() {
+        var img = document.getElementById('img-lightbox-img');
+        var vw = window.innerWidth, vh = window.innerHeight;
+        var iw = img.naturalWidth || img.offsetWidth;
+        var ih = img.naturalHeight || img.offsetHeight;
+        // Scaled image dimensions
+        var sw = Math.min(iw, vw) * this._scale;
+        var sh = Math.min(ih, vh) * this._scale;
+        var maxTx = Math.max(0, (sw - vw) / 2);
+        var maxTy = Math.max(0, (sh - vh) / 2);
+        this._tx = Math.max(-maxTx, Math.min(maxTx, this._tx));
+        this._ty = Math.max(-maxTy, Math.min(maxTy, this._ty));
+    },
+
+    init: function() {
+        var self = this;
+        var lb = document.getElementById('img-lightbox');
+        var img = document.getElementById('img-lightbox-img');
+
+        // Close button
+        document.getElementById('img-lightbox-close').addEventListener('click', function(e) {
+            e.stopPropagation();
+            history.back();
+        });
+
+        // Click backdrop to close (only when not zoomed and click wasn't a drag)
+        lb.addEventListener('click', function(e) {
+            if (e.target === lb && self._scale <= 1) history.back();
+        });
+
+        // Esc key
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape' && self._open) history.back();
+        });
+
+        // Back button
+        window.addEventListener('popstate', function(e) {
+            if (self._open) self.close();
+        });
+
+        // ---- Mouse events (desktop) ----
+        var mouseMoved = false;
+        img.addEventListener('mousedown', function(e) {
+            if (self._scale <= 1) return;
+            e.preventDefault();
+            self._dragging = true;
+            self._lastX = e.clientX;
+            self._lastY = e.clientY;
+            mouseMoved = false;
+            img.style.cursor = 'grabbing';
+        });
+        window.addEventListener('mousemove', function(e) {
+            if (!self._dragging) return;
+            var dx = e.clientX - self._lastX;
+            var dy = e.clientY - self._lastY;
+            if (Math.abs(dx) > 2 || Math.abs(dy) > 2) mouseMoved = true;
+            self._tx += dx;
+            self._ty += dy;
+            self._lastX = e.clientX;
+            self._lastY = e.clientY;
+            self._clampPan();
+            self._applyTransform();
+        });
+        window.addEventListener('mouseup', function() {
+            if (self._dragging) {
+                self._dragging = false;
+                img.style.cursor = self._scale > 1 ? 'grab' : 'zoom-in';
+            }
+        });
+
+        // Scroll wheel zoom
+        lb.addEventListener('wheel', function(e) {
+            if (!self._open) return;
+            e.preventDefault();
+            var factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+            var newScale = Math.max(0.5, Math.min(10, self._scale * factor));
+            // Zoom toward mouse pointer
+            var rect = img.getBoundingClientRect();
+            var mx = e.clientX - (rect.left + rect.width / 2);
+            var my = e.clientY - (rect.top + rect.height / 2);
+            self._tx += mx * (1 - factor);
+            self._ty += my * (1 - factor);
+            self._scale = newScale;
+            self._clampPan();
+            self._applyTransform();
+        }, { passive: false });
+
+        // ---- Touch events (mobile) ----
+        var lastTap = 0;
+        lb.addEventListener('touchstart', function(e) {
+            if (!self._open) return;
+            if (e.touches.length === 1) {
+                self._lastX = e.touches[0].clientX;
+                self._lastY = e.touches[0].clientY;
+                self._dragging = true;
+                mouseMoved = false;
+                // Double-tap to reset zoom
+                var now = Date.now();
+                if (now - lastTap < 300) {
+                    self._scale = 1; self._tx = 0; self._ty = 0;
+                    self._applyTransform();
+                }
+                lastTap = now;
+            } else if (e.touches.length === 2) {
+                self._dragging = false;
+                var dx = e.touches[1].clientX - e.touches[0].clientX;
+                var dy = e.touches[1].clientY - e.touches[0].clientY;
+                self._lastDist = Math.hypot(dx, dy);
+                self._lastMidX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+                self._lastMidY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+            }
+        }, { passive: true });
+
+        lb.addEventListener('touchmove', function(e) {
+            if (!self._open) return;
+            e.preventDefault();
+            if (e.touches.length === 1 && self._dragging && self._scale > 1) {
+                var dx = e.touches[0].clientX - self._lastX;
+                var dy = e.touches[0].clientY - self._lastY;
+                if (Math.abs(dx) > 2 || Math.abs(dy) > 2) mouseMoved = true;
+                self._tx += dx;
+                self._ty += dy;
+                self._lastX = e.touches[0].clientX;
+                self._lastY = e.touches[0].clientY;
+                self._clampPan();
+                self._applyTransform();
+            } else if (e.touches.length === 2) {
+                var ddx = e.touches[1].clientX - e.touches[0].clientX;
+                var ddy = e.touches[1].clientY - e.touches[0].clientY;
+                var dist = Math.hypot(ddx, ddy);
+                var factor = dist / self._lastDist;
+                var newScale = Math.max(0.5, Math.min(10, self._scale * factor));
+                // Zoom toward pinch midpoint
+                var midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+                var midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+                var img2 = document.getElementById('img-lightbox-img');
+                var rect = img2.getBoundingClientRect();
+                var cx = midX - (rect.left + rect.width / 2);
+                var cy = midY - (rect.top + rect.height / 2);
+                self._tx += cx * (1 - factor);
+                self._ty += cy * (1 - factor);
+                self._scale = newScale;
+                self._lastDist = dist;
+                self._lastMidX = midX;
+                self._lastMidY = midY;
+                self._clampPan();
+                self._applyTransform();
+            }
+        }, { passive: false });
+
+        lb.addEventListener('touchend', function(e) {
+            if (e.touches.length < 2) self._lastDist = 0;
+            if (e.touches.length === 0) {
+                self._dragging = false;
+                // Tap to close if not zoomed and didn't drag
+                if (self._scale <= 1 && !mouseMoved) history.back();
+            }
+        }, { passive: true });
     }
 };
 
@@ -1695,6 +1912,12 @@ const UIManager = {
                             : 'data:' + img.mime + ';base64,' + img.base64;
                         el.src = src;
                         el.style.cssText = 'max-width:100px;border-radius:4px;display:block;';
+                        el.className = 'img-thumb-clickable';
+                        (function(thumbSrc, fid, sid) {
+                            el.addEventListener('click', function() {
+                                Lightbox.open(thumbSrc, fid, sid);
+                            });
+                        })(src, img.fileId || null, sessionId);
                         wrap.appendChild(el);
                         if (img.fileId) {
                             var dl = document.createElement('button');
@@ -2360,10 +2583,12 @@ const UIManager = {
                     const synthesis = await this.synthesizeResults(cleanedContent, queries.join(' '), allFormatted, today, pipelineSignal);
                     if (pipelineSignal.aborted) return;
                     syslog('[SYNTHESIS] ' + synthesis.slice(0, 200));
-                    apiMessages = apiMessages.slice(0, -1).concat([{
+                    var injectedMsg = {
                         role: 'user',
                         content: 'User request: ' + cleanedContent + '\n\nWeb search results (retrieved ' + today + '):\n' + synthesis + '\n\nUsing the user request and the web search results above, compile a complete and accurate answer.'
-                    }]);
+                    };
+                    if (imagesForAPI.length > 0) injectedMsg.images = imagesForAPI;
+                    apiMessages = apiMessages.slice(0, -1).concat([injectedMsg]);
                     syslog('[INJECT] synthesized results injected into context');
                 } else {
                     syslog('[SEARCH] fallback: all rounds returned no results');
@@ -2504,5 +2729,6 @@ const UIManager = {
 };
 
 document.addEventListener('DOMContentLoaded', function() {
+    Lightbox.init();
     UIManager.init();
 });

@@ -102,7 +102,6 @@ Xong. Ba mô hình được đề xuất xuất hiện ngay ở đầu danh sác
 
 - 👁 **Trả lời nhanh** — phản hồi nhanh cho câu hỏi hằng ngày
 - 💡 **Suy luận sâu** — chậm hơn nhưng kỹ hơn; tốt cho câu hỏi phức tạp, phân tích hình ảnh
-- 🛠 **Chuyên gia kỹ thuật** — tối ưu cho lập trình và tác vụ kỹ thuật
 
 ---
 

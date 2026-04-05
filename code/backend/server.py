@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import base64, hashlib, http.client, json, mimetypes, os, re, secrets, shutil, sqlite3, ssl, time, urllib.request, urllib.parse
+import base64, hashlib, http.client, json, mimetypes, os, re, secrets, shutil, socket, sqlite3, ssl, time, urllib.request, urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
@@ -376,7 +376,7 @@ class H(BaseHTTPRequestHandler):
             body = self.rfile.read(content_len) if content_len else b''
             try:
                 ctx = ssl.create_default_context()
-                conn = http.client.HTTPSConnection('ollama.com', context=ctx, timeout=300)
+                conn = http.client.HTTPSConnection('ollama.com', context=ctx, timeout=None)
                 conn.request('POST', '/api/' + sub, body=body, headers={
                     'Authorization': 'Bearer ' + cloud_key,
                     'Content-Type': 'application/json',
@@ -392,7 +392,7 @@ class H(BaseHTTPRequestHandler):
                             break
                         self.wfile.write(chunk)
                         self.wfile.flush()
-                except (BrokenPipeError, ConnectionResetError):
+                except (BrokenPipeError, ConnectionResetError, socket.timeout):
                     pass
                 finally:
                     conn.close()

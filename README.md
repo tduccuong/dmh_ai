@@ -100,9 +100,8 @@ That's it. Three recommended models appear instantly at the top of the model sel
 
 **Recommended models (ready to use, no extra setup):**
 
-- 👁 **Quick Answer** — fast responses for everyday questions
-- 💡 **Deep Thinker** — slower but more thorough; great for complex questions, image analysis
-- 🛠 **Technical Expert** — optimized for coding and technical tasks
+- 👁 **Quick Answer** (`ministral-3:14b-cloud`) — fast responses for everyday questions
+- 💡 **Deep Thinker** (`mistral-large-3:675b-cloud`) — slower but more thorough; great for complex questions, image analysis
 
 ---
 
