@@ -1867,6 +1867,7 @@ const UIManager = {
         sessions.forEach(function(s) {
             const item = document.createElement('div');
             item.className = 'session-item' + (s.id === self.currentSession.id ? ' active' : '');
+            item.dataset.id = s.id;
 
             const nameSpan = document.createElement('span');
             nameSpan.className = 'session-name';
@@ -2341,6 +2342,10 @@ const UIManager = {
     },
 
     switchSession: async function(id) {
+        // Immediately highlight the clicked item before any async work
+        document.querySelectorAll('.session-item').forEach(function(el) {
+            el.classList.toggle('active', el.dataset.id === id);
+        });
         this.currentSession = await SessionStore.getSession(id);
         await SessionStore.setCurrentSessionId(id);
         this._setModelDropdownValue(this.currentSession.model);
