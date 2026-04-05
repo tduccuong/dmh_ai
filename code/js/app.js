@@ -270,6 +270,22 @@ function apiFetch(url, options) {
     return fetch(url, options);
 }
 
+function isCloudModel(model) {
+    return RECOMMENDED_CLOUD_MODEL_NAMES.indexOf(model) !== -1 ||
+           Settings.cloudModels.indexOf(model) !== -1;
+}
+
+function cloudRoutedFetch(model, path, body, signal) {
+    var acct = isCloudModel(model) ? CloudAccountPool.getNext() : null;
+    var url = acct ? '/cloud-api' + path : OllamaAPI.BASE_URL + path;
+    var headers = { 'Content-Type': 'application/json' };
+    if (acct) {
+        headers['Authorization'] = 'Bearer ' + (Auth.token || '');
+        headers['X-Cloud-Key'] = acct.apiKey;
+    }
+    return fetch(url, { method: 'POST', headers: headers, body: JSON.stringify(body), signal: signal });
+}
+
 function syslog(msg) {
     apiFetch('/log', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({msg}) }).catch(function(){});
 }
@@ -974,12 +990,8 @@ const OllamaAPI = {
     },
     summarize: async function(model, messages, signal) {
         try {
-            const res = await fetch(this.BASE_URL + '/chat', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ model: model, messages: messages, stream: false, think: false }),
-                signal: signal
-            });
+            const res = await cloudRoutedFetch(model, '/chat',
+                { model: model, messages: messages, stream: false, think: false }, signal);
             if (!res.ok) throw new Error('summarize failed');
             const data = await res.json();
             return (data.message && data.message.content) ? data.message.content : null;
@@ -1257,13 +1269,18 @@ const UIManager = {
         applyLanguage();
 
         document.getElementById('stop-gen-btn').addEventListener('click', function() {
+            var pendingSession = self._pendingSession;
             if (self._streamController) { self._streamController.abort(); self._streamController = null; }
             self.saveStreamingProgress();
             self.isStreaming = false;
+            self._releaseWakeLock();
             self.updateSendBtn();
             self.setStatus('');
             document.getElementById('stop-gen-btn').style.display = 'none';
             document.getElementById('scroll-bottom-btn').style.display = 'none';
+            if (pendingSession && pendingSession.context && pendingSession.context.needsNaming) {
+                self.autoNameSession(pendingSession);
+            }
         });
         document.getElementById('scroll-bottom-btn').addEventListener('click', function() {
             var c = document.getElementById('chat-container');
@@ -2406,27 +2423,34 @@ const UIManager = {
                 stream: false,
                 think: false,
                 options: { temperature: 0, num_predict: 4 },
-                prompt: contextBlock + 'New message: ' + userMessage + '\n\nDoes this new message benefit from a live web search? Answer YES for: current news/events, prices, sports scores, weather, recently released software/tools, real-world experiences and community opinions ("what did people do", "how do others", "best practices people use"), tips others have shared online, or any question where up-to-date or crowd-sourced information would improve the answer. Answer NO for: math problems, calculations, equations, proofs, or any question requiring computation or logical reasoning; follow-ups, formatting/rephrasing/translation/summarization requests, questions addressed to you the AI assistant ("what can you do", "who are you", "help me", capability or greeting questions), questions about an attached image or file, or questions fully answerable from general knowledge. Reply in English only with YES or NO.\n\nAnswer:'
+                prompt: contextBlock + 'New message: ' + userMessage + '\n\nDoes this new message benefit from a live web search? Answer YES for: current news/events, prices, sports scores, weather, any named software/tool/product/project/company/person (even if the name looks like a common word — e.g. "Arc" could be a browser, "Linear" a project tool, "pi" could be an AI coding assistant, "cursor" a code editor), comparisons between named products or tools, real-world experiences and community opinions ("what did people do", "how do others", "best practices people use"), tips others have shared online, any question about a specific named thing you are not fully confident about, any question where the subject might have changed or been released recently, or any question where up-to-date or crowd-sourced information would improve the answer. When in doubt, answer YES. Answer NO only for: pure math/calculation/logic questions with no named subjects, questions addressed directly to you the AI ("what can you do", "who are you", "help me"), questions about an attached image or file, or simple factual questions fully answered by timeless well-established knowledge (e.g. "what is the capital of France"). Reply in English only with YES or NO.\n\nAnswer:'
             };
             if (images && images.length > 0) body.images = images;
-            const res = await fetch(OllamaAPI.BASE_URL + '/generate', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body),
-                signal: signal
-            });
-            const data = await res.json();
-            return /^(yes|ja|oui|s[ií]|да)/i.test((data.response || '').trim());
-        } catch (e) { return false; }
+            syslog('[DETECT] model=' + body.model + ' isCloud=' + isCloudModel(body.model) + ' msg=' + userMessage.slice(0, 80));
+            const res = await cloudRoutedFetch(body.model, '/generate', body, signal);
+            if (!res.ok) { syslog('[DETECT] fetch failed status=' + res.status); return false; }
+            const text = await res.text();
+            syslog('[DETECT] raw response=' + text.slice(0, 200));
+            var responseText = '';
+            try {
+                var parsed = JSON.parse(text);
+                responseText = parsed.response || '';
+            } catch(e) {
+                // NDJSON: accumulate response fields across lines
+                text.trim().split('\n').forEach(function(line) {
+                    try { var obj = JSON.parse(line); if (obj.response) responseText += obj.response; } catch(_) {}
+                });
+            }
+            syslog('[DETECT] responseText=' + responseText.trim().slice(0, 40));
+            return /^(yes|ja|oui|s[ií]|да)/i.test(responseText.trim());
+        } catch (e) { syslog('[DETECT] error=' + e.message); return false; }
     },
 
     getSearchQueries: async function(userMessage, signal) {
         try {
-            const res = await fetch(OllamaAPI.BASE_URL + '/generate', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    model: this.currentSession.model,
+            const model = this.currentSession.model;
+            const res = await cloudRoutedFetch(model, '/generate', {
+                    model: model,
                     stream: false,
                     think: false,
                     options: { temperature: 0 },
@@ -2441,9 +2465,7 @@ const UIManager = {
                         '- Reply in English only\n' +
                         '- Reply with exactly 2 lines, each line is one search query. No numbering, no explanation.\n\n' +
                         'Question: "' + userMessage + '"'
-                }),
-                signal: signal
-            });
+                }, signal);
             const data = await res.json();
             const reply = (data.response || '').trim();
             if (!reply || /^(no|nein|non|нет)\b/i.test(reply)) return null;
@@ -2484,11 +2506,9 @@ const UIManager = {
 
     getGapQueries: async function(question, resultsText, signal) {
         try {
-            const res = await fetch(OllamaAPI.BASE_URL + '/generate', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    model: this.currentSession.model,
+            const model = this.currentSession.model;
+            const res = await cloudRoutedFetch(model, '/generate', {
+                    model: model,
                     stream: false,
                     think: false,
                     options: { temperature: 0 },
@@ -2503,9 +2523,7 @@ const UIManager = {
                         '- Otherwise reply with 1-2 search queries, one per line, no numbering\n' +
                         '- Do NOT answer the question\n' +
                         '- Reply in English only'
-                }),
-                signal: signal
-            });
+                }, signal);
             const data = await res.json();
             const reply = (data.response || '').trim();
             if (!reply || /^none\b/i.test(reply)) return [];
@@ -2518,18 +2536,14 @@ const UIManager = {
 
     synthesizeResults: async function(question, keywords, results, today, signal) {
         try {
-            const res = await fetch(OllamaAPI.BASE_URL + '/generate', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    model: this.currentSession.model,
+            const model = this.currentSession.model;
+            const res = await cloudRoutedFetch(model, '/generate', {
+                    model: model,
                     stream: false,
                     think: false,
                     options: { temperature: 0 },
                     prompt: 'Today is ' + today + '. Extract the key facts from these web search results to answer the question. Be concise and factual. Use only what the results say.\n\nQuestion: ' + question + '\n\nSearch results:\n' + results + '\n\nKey facts from results:'
-                }),
-                signal: signal
-            });
+                }, signal);
             const data = await res.json();
             return (data.response || '').trim() || results;
         } catch (e) { return results; }
@@ -2686,11 +2700,7 @@ const UIManager = {
         const searchWarning = bodyDiv.innerHTML;
         const sessionAtSend = this.currentSession;
         self._pendingSession = sessionAtSend;
-        const isCloud = sessionAtSend.model && (function(m) {
-            var tag = m.includes(':') ? m.split(':')[1] : m;
-            return tag.includes('cloud');
-        })(sessionAtSend.model);
-        const usePool = isCloud && Settings.accounts.length > 0;
+        const usePool = isCloudModel(sessionAtSend.model) && Settings.accounts.length > 0;
         const maxRetries = usePool ? Settings.accounts.length : 0;
 
         function doStream(acct, retryCount) {
