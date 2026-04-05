@@ -2606,6 +2606,7 @@ const UIManager = {
         container.appendChild(assistantDiv);
 
         this.isStreaming = true;
+        this._acquireWakeLock();
         this._pendingContent = '';
         this._pendingSession = null;
         const pipelineController = new AbortController();
@@ -2758,7 +2759,6 @@ const UIManager = {
         }
 
         self._activeBodyDiv = bodyDiv;
-        self._acquireWakeLock();
         doStream(usePool ? CloudAccountPool.getNext() : null, 0);
     },
 

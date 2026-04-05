@@ -33,8 +33,7 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
 .session-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: #9888a8; }
 .session-item:hover .session-name { color: #ddd; }
 .session-item.active .session-name { color: #fff; font-weight: 500; }
-.session-actions { display: flex; gap: 2px; flex-shrink: 0; opacity: 0; transition: opacity 0.15s; }
-.session-item:hover .session-actions, .session-item.active .session-actions { opacity: 1; }
+.session-actions { display: flex; gap: 2px; flex-shrink: 0; }
 .session-btn { background: none; border: none; cursor: pointer; padding: 2px 6px; border-radius: 4px; font-size: 12px; line-height: 1; }
 .session-btn-edit { color: #93c5fd; }
 .session-btn-edit:hover { background: rgba(147,197,253,0.2); }
