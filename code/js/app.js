@@ -1206,6 +1206,7 @@ const UIManager = {
         toggle.addEventListener('click', function() { sidebar.classList.contains('collapsed') ? openSidebar() : closeSidebar(); });
         document.getElementById('header-new-chat-btn').addEventListener('click', function() { self.createNewSession(); });
         overlay.addEventListener('click', closeSidebar);
+        document.getElementById('sidebar-close-btn').addEventListener('click', closeSidebar);
         document.getElementById('message-input').addEventListener('focus', function() { if (isMobile()) closeSidebar(); });
         if (window.innerWidth <= 768 && window.innerHeight > window.innerWidth) closeSidebar();
 
