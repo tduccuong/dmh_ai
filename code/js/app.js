@@ -1862,7 +1862,6 @@ const UIManager = {
         select.value = value;
         var rec = value && getRecommendedCloudModels().find(function(r) { return r.name === value; });
         label.textContent = rec ? (rec.label + ' - ' + value) : (value || 'Select model...');
-        this._lastUsedModel = value;
         // Update selected highlight
         document.getElementById('model-dropdown-menu').querySelectorAll('.model-dropdown-item').forEach(function(el) {
             el.classList.toggle('selected', el.dataset.value === value);
