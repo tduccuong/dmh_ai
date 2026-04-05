@@ -1207,7 +1207,7 @@ const UIManager = {
         document.getElementById('header-new-chat-btn').addEventListener('click', function() { self.createNewSession(); });
         overlay.addEventListener('click', closeSidebar);
         document.getElementById('message-input').addEventListener('focus', function() { if (isMobile()) closeSidebar(); });
-        if (window.innerWidth <= 768) closeSidebar();
+        if (window.innerWidth <= 768 && window.innerHeight > window.innerWidth) closeSidebar();
 
         // Language switcher
         var langDropdown = document.getElementById('lang-dropdown');

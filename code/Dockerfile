@@ -26,6 +26,7 @@ COPY js/ /usr/share/nginx/html/js/
 COPY logo.png /usr/share/nginx/html/logo.png
 RUN magick /usr/share/nginx/html/logo.png -resize 180x180 /usr/share/nginx/html/apple-touch-icon.png
 COPY manifest.json /usr/share/nginx/html/manifest.json
+COPY sw.js /usr/share/nginx/html/sw.js
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY start.sh /start.sh
 RUN chmod +x /start.sh
