@@ -2327,15 +2327,23 @@ const UIManager = {
     },
 
     getDefaultModel: function() {
+        const sel = document.getElementById('header-model-select');
+        const activeOptions = Array.from(sel.options).map(function(o) { return o.value; }).filter(Boolean);
+        // User's last-selected model takes priority if still available
+        if (this._lastUsedModel && activeOptions.indexOf(this._lastUsedModel) !== -1) {
+            return this._lastUsedModel;
+        }
+        // Fallback order: Recommended → Cloud → Local
         const hasPool = Settings.accounts.length > 0;
-        if (hasPool) return RECOMMENDED_CLOUD_MODEL_NAMES[0];
-        const userCloudModels = Settings.cloudModels.filter(function(n) { return RECOMMENDED_CLOUD_MODEL_NAMES.indexOf(n) === -1; });
+        if (hasPool) {
+            var rec = RECOMMENDED_CLOUD_MODEL_NAMES.find(function(n) { return activeOptions.indexOf(n) !== -1; });
+            if (rec) return rec;
+        }
+        const userCloudModels = Settings.cloudModels.filter(function(n) {
+            return RECOMMENDED_CLOUD_MODEL_NAMES.indexOf(n) === -1 && activeOptions.indexOf(n) !== -1;
+        });
         if (userCloudModels.length > 0) return userCloudModels[0];
-        const currentVal = document.getElementById('header-model-select').value;
-        if (currentVal) return currentVal;
-        const select = document.getElementById('header-model-select');
-        if (select.options.length > 0) return select.options[0].value;
-        return '';
+        return activeOptions.length > 0 ? activeOptions[0] : '';
     },
 
     createNewSession: async function() {
