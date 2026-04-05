@@ -1687,14 +1687,7 @@ const UIManager = {
                 this.currentSession = currentId ? sessions.find(function(s) { return s.id === currentId; }) : sessions[0];
                 if (!this.currentSession) this.currentSession = sessions[0];
                 await SessionStore.setCurrentSessionId(this.currentSession.id);
-                var lastActivity = parseInt(localStorage.getItem('lastActivityAt') || '0');
-                var thirtyMin = 30 * 60 * 1000;
-                if (lastActivity && Date.now() - lastActivity > thirtyMin &&
-                        this.currentSession.messages && this.currentSession.messages.length > 0) {
-                    var autoSession = await SessionStore.createSession(t('newChat'), this.getDefaultModel() || this.currentSession.model);
-                    await SessionStore.setCurrentSessionId(autoSession.id);
-                    this.currentSession = autoSession;
-                }
+                // No auto-creation on return — stay in the last active session
             }
             if (this.currentSession && this.currentSession.model) {
                 var sel = document.getElementById('header-model-select');
@@ -1803,7 +1796,7 @@ const UIManager = {
         localHdr.innerHTML = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg> Local Models';
         localSection.appendChild(localHdr);
         if (localModels.length === 0) {
-            localSection.appendChild(makeItem('', 'No models added', true));
+            localSection.appendChild(makeItem('', 'No local models configured', true));
         } else {
             localModels.forEach(function(model) {
                 makeOption(model.name, model.name + OllamaAPI.formatSize(model.size));
@@ -2273,10 +2266,20 @@ const UIManager = {
     },
 
     createNewSession: async function() {
-        const currentModel = this.getDefaultModel();
-        const session = await SessionStore.createSession(t('newChat'), currentModel);
-        await SessionStore.setCurrentSessionId(session.id);
-        this.currentSession = session;
+        // If already in an empty session, just focus input
+        if (this.currentSession && (!this.currentSession.messages || this.currentSession.messages.length === 0)) {
+            document.getElementById('message-input').focus();
+            return;
+        }
+        // Reuse an existing empty session if one exists
+        const sessions = await SessionStore.getSessions();
+        var empty = sessions.find(function(s) { return !s.messages || s.messages.length === 0; });
+        if (!empty) {
+            empty = await SessionStore.createSession(t('newChat'), this.getDefaultModel());
+        }
+        await SessionStore.setCurrentSessionId(empty.id);
+        this.currentSession = empty;
+        this._setModelDropdownValue(this.currentSession.model);
         await this.renderSessions();
         this.renderChat();
         document.getElementById('message-input').focus();
