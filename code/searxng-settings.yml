@@ -71,8 +71,9 @@ outgoing:
   # inflating error counts and triggering engine suspensions unfairly.
   request_timeout: 6.0
 
-  # Hard ceiling. You said slower is fine; 15s lets slow engines contribute.
-  max_request_timeout: 15.0
+  # Hard ceiling. Must stay below our backend timeout (20s) so SearXNG always
+  # responds before we give up. 17s gives 3s margin.
+  max_request_timeout: 17.0
 
   enable_http2: true      # Faster + looks more like a real browser to upstream engines
   pool_connections: 100
@@ -99,6 +100,14 @@ engines:
     disabled: false
     weight: 1
     timeout: 6.0
+
+  - name: duckduckgo
+    disabled: false
+    timeout: 5.0             # Short timeout — DDG has ConnectTimeout issues; fail fast
+
+  - name: duckduckgo news
+    disabled: false
+    timeout: 5.0             # Same — fail fast rather than hang SearXNG
 
   - name: brave news
     disabled: false

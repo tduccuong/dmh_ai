@@ -43,6 +43,7 @@ const I18n = {
             searchingWeb: 'Searching the web (round 1)...',
             analyzingGaps: 'Analyzing gaps...',
             deepSearching: 'Deep searching (round 2)...',
+            fetchingPages: 'Reading web sources...',
             synthesizing: 'Synthesizing results...',
             replying: ' replying...',
             searchUnavail: '⚠ Web search unavailable — answering from model training data, which may be outdated.',
@@ -78,6 +79,7 @@ const I18n = {
             searchingWeb: 'Đang tìm kiếm web (vòng 1)...',
             analyzingGaps: 'Đang phân tích khoảng trống...',
             deepSearching: 'Đang tìm kiếm chuyên sâu (vòng 2)...',
+            fetchingPages: 'Đang đọc nguồn web...',
             synthesizing: 'Đang tổng hợp kết quả...',
             replying: ' đang trả lời...',
             searchUnavail: '⚠ Tìm kiếm web không khả dụng — trả lời từ dữ liệu huấn luyện, có thể đã lỗi thời.',
@@ -113,6 +115,7 @@ const I18n = {
             searchingWeb: 'Websuche läuft (Runde 1)...',
             analyzingGaps: 'Lücken werden analysiert...',
             deepSearching: 'Tiefensuche läuft (Runde 2)...',
+            fetchingPages: 'Web-Quellen werden gelesen...',
             synthesizing: 'Ergebnisse werden zusammengefasst...',
             replying: ' antwortet...',
             searchUnavail: '⚠ Websuche nicht verfügbar — Antwort basiert auf Trainingsdaten, möglicherweise veraltet.',
@@ -148,6 +151,7 @@ const I18n = {
             searchingWeb: 'Buscando en la web (ronda 1)...',
             analyzingGaps: 'Analizando brechas...',
             deepSearching: 'Búsqueda profunda (ronda 2)...',
+            fetchingPages: 'Leyendo fuentes web...',
             synthesizing: 'Sintetizando resultados...',
             replying: ' respondiendo...',
             searchUnavail: '⚠ Búsqueda web no disponible — respondiendo con datos de entrenamiento, pueden estar desactualizados.',
@@ -183,6 +187,7 @@ const I18n = {
             searchingWeb: 'Recherche web (tour 1)...',
             analyzingGaps: 'Analyse des lacunes...',
             deepSearching: 'Recherche approfondie (tour 2)...',
+            fetchingPages: 'Lecture des sources web...',
             synthesizing: 'Synthèse des résultats...',
             replying: ' répond...',
             searchUnavail: '⚠ Recherche web indisponible — réponse basée sur les données d\'entraînement, potentiellement obsolètes.',
@@ -305,12 +310,12 @@ const AppConfig = {
 
 function getRecommendedCloudModels() {
     return [
-        { name: 'ministral-3:14b-cloud',       label: t('recQuickAnswer') },
+        { name: 'gemma4:31b-cloud',              label: t('recQuickAnswer') },
         { name: 'qwen3-vl:235b-instruct-cloud',  label: t('recDeepThinker') },
     ];
 }
 // Constant names for filtering (language-independent)
-const RECOMMENDED_CLOUD_MODEL_NAMES = ['ministral-3:14b-cloud', 'qwen3-vl:235b-instruct-cloud'];
+const RECOMMENDED_CLOUD_MODEL_NAMES = ['gemma4:31b-cloud', 'qwen3-vl:235b-instruct-cloud'];
 
 const Settings = {
     _accounts: [],
@@ -1007,7 +1012,7 @@ const OllamaAPI = {
         fetch(url, {
             method: 'POST',
             headers: hdrs,
-            body: JSON.stringify({ model: model, messages: messages, stream: true, think: false }),
+            body: JSON.stringify({ model: model, messages: messages, stream: true }),
             signal: signal || controller.signal
         })
         .then(async function(response) {
@@ -2354,8 +2359,12 @@ const UIManager = {
         // Reuse an existing empty session if one exists
         const sessions = await SessionStore.getSessions();
         var empty = sessions.find(function(s) { return !s.messages || s.messages.length === 0; });
+        const defaultModel = this.getDefaultModel();
         if (!empty) {
-            empty = await SessionStore.createSession(t('newChat'), this.getDefaultModel());
+            empty = await SessionStore.createSession(t('newChat'), defaultModel);
+        } else if (defaultModel && empty.model !== defaultModel) {
+            empty.model = defaultModel;
+            SessionStore.updateSession(empty);
         }
         await SessionStore.setCurrentSessionId(empty.id);
         this.currentSession = empty;
@@ -2429,7 +2438,7 @@ const UIManager = {
                 model: this.currentSession.model,
                 stream: false,
                 think: false,
-                options: { temperature: 0, num_predict: 4 },
+                options: { temperature: 0, num_predict: 300, think: false },
                 prompt: contextBlock + 'New message: ' + userMessage + '\n\nDoes this new message benefit from a live web search? Answer YES for: current news/events, prices, sports scores, weather, any named software/tool/product/project/company/person (even if the name looks like a common word — e.g. "Arc" could be a browser, "Linear" a project tool, "pi" could be an AI coding assistant, "cursor" a code editor), comparisons between named products or tools, real-world experiences and community opinions ("what did people do", "how do others", "best practices people use"), tips others have shared online, any question about a specific named thing you are not fully confident about, any question where the subject might have changed or been released recently, or any question where up-to-date or crowd-sourced information would improve the answer. When in doubt, answer YES. Answer NO only for: pure math/calculation/logic questions with no named subjects, questions addressed directly to you the AI ("what can you do", "who are you", "help me"), questions about an attached image or file, or simple factual questions fully answered by timeless well-established knowledge (e.g. "what is the capital of France"). Reply in English only with YES or NO.\n\nAnswer:'
             };
             if (images && images.length > 0) body.images = images;
@@ -2441,7 +2450,8 @@ const UIManager = {
             var responseText = '';
             try {
                 var parsed = JSON.parse(text);
-                responseText = parsed.response || '';
+                // response field first; fall back to thinking field (some models put answer there)
+                responseText = parsed.response || parsed.thinking || '';
             } catch(e) {
                 // NDJSON: accumulate response fields across lines
                 text.trim().split('\n').forEach(function(line) {
@@ -2495,7 +2505,10 @@ const UIManager = {
 
     formatSearchResults: function(results) {
         return results.map(function(r, i) {
-            return (i + 1) + '. ' + r.title + ' (' + r.url + ')\n   ' + (r.content || '').slice(0, 800);
+            var out = (i + 1) + '. ' + r.title + ' (' + r.url + ')';
+            if (r.content) out += '\n   Snippet: ' + r.content.slice(0, 300);
+            if (r.fetchedContent) out += '\n   Content: ' + r.fetchedContent;
+            return out;
         }).join('\n\n');
     },
 
@@ -2509,6 +2522,27 @@ const UIManager = {
             });
         });
         return merged;
+    },
+
+    enrichResults: async function(results, signal) {
+        var SKIP_DOMAINS = ['facebook.com', 'instagram.com', 'twitter.com', 'x.com', 'youtube.com', 'youtu.be', 'tiktok.com', 'linkedin.com', 'reddit.com'];
+        var fetchable = results.filter(function(r) {
+            try { var h = new URL(r.url).hostname; return !SKIP_DOMAINS.some(function(d) { return h === d || h.endsWith('.' + d); }); }
+            catch(e) { return false; }
+        });
+        var toFetch = fetchable.slice(0, 8);
+        var fetches = toFetch.map(function(r) {
+            return apiFetch('/fetch-page?url=' + encodeURIComponent(r.url), { signal: signal })
+                .then(function(res) { return res.ok ? res.json() : null; })
+                .catch(function() { return null; });
+        });
+        var texts = await Promise.all(fetches);
+        texts.forEach(function(data, i) {
+            if (data && data.text && data.text.length >= 500) {
+                toFetch[i].fetchedContent = data.text.slice(0, 2000);
+            }
+        });
+        return results;
     },
 
     getGapQueries: async function(question, resultsText, signal) {
@@ -2683,6 +2717,11 @@ const UIManager = {
                     }
                 }
 
+                if (allRaw.length > 0) {
+                    this.setStatus(t('fetchingPages'));
+                    await this.enrichResults(allRaw, pipelineSignal);
+                    if (pipelineSignal.aborted) return;
+                }
                 const allFormatted = allRaw.length ? this.formatSearchResults(allRaw) : null;
                 if (allFormatted) {
                     this.setStatus(t('synthesizing'));

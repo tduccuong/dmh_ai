@@ -1,8 +1,36 @@
 #!/usr/bin/env python3
 import base64, hashlib, http.client, json, mimetypes, os, re, secrets, shutil, socket, sqlite3, ssl, time, urllib.request, urllib.parse
 from concurrent.futures import ThreadPoolExecutor
+from html.parser import HTMLParser
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
+
+class _TextExtractor(HTMLParser):
+    _SKIP = {'script','style','nav','header','footer','aside','noscript','iframe','svg','button','form','meta','link'}
+    def __init__(self):
+        super().__init__()
+        self._depth = 0
+        self._parts = []
+    def handle_starttag(self, tag, attrs):
+        if tag in self._SKIP: self._depth += 1
+    def handle_endtag(self, tag):
+        if tag in self._SKIP: self._depth = max(0, self._depth - 1)
+    def handle_data(self, data):
+        if self._depth == 0:
+            t = data.strip()
+            if t: self._parts.append(t)
+
+def _html_to_text(raw_bytes):
+    try:
+        html = raw_bytes.decode('utf-8', errors='replace')
+    except Exception:
+        return ''
+    p = _TextExtractor()
+    try:
+        p.feed(html)
+    except Exception:
+        pass
+    return re.sub(r'\s+', ' ', ' '.join(p._parts)).strip()
 
 DB = '/data/db/chat.db'
 ASSETS_DIR = '/data/user_assets'
@@ -280,7 +308,7 @@ class H(BaseHTTPRequestHandler):
                 })
                 log(f'[SEARCH] query="{q}" url={search_url}')
                 req = urllib.request.Request(search_url, headers={'User-Agent': 'Mozilla/5.0'})
-                with urllib.request.urlopen(req, timeout=10) as resp:
+                with urllib.request.urlopen(req, timeout=20) as resp:
                     data = json.loads(resp.read())
                 results = [{'title': r.get('title',''), 'url': r.get('url',''), 'content': r.get('content','')}
                            for r in data.get('results', [])[:8]]
@@ -289,6 +317,30 @@ class H(BaseHTTPRequestHandler):
             except Exception as e:
                 log(f'[SEARCH] ERROR: {e}')
                 self.send_json(500, {'error': str(e)})
+            return
+
+        if p == '/fetch-page':
+            qs = urllib.parse.parse_qs(urlparse(self.path).query)
+            url = qs.get('url', [''])[0]
+            if not url:
+                self.send_json(400, {'error': 'Missing url'})
+                return
+            try:
+                ua = 'Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/115.0'
+                req = urllib.request.Request(url, headers={'User-Agent': ua, 'Accept': 'text/html,text/plain'})
+                with urllib.request.urlopen(req, timeout=6) as resp:
+                    ct = resp.headers.get('Content-Type', '')
+                    if 'html' not in ct and 'text/plain' not in ct:
+                        log(f'[FETCH-PAGE] skip non-html: {url[:80]} ct={ct}')
+                        self.send_json(200, {'text': ''})
+                        return
+                    body = resp.read(120000)
+                text = _html_to_text(body)
+                log(f'[FETCH-PAGE] ok url={url[:80]} chars={len(text)}')
+                self.send_json(200, {'text': text[:3000]})
+            except Exception as e:
+                log(f'[FETCH-PAGE] err url={url[:80]} err={e}')
+                self.send_json(200, {'text': ''})
             return
 
         m = re.match(r'^/assets/([^/]+)/([^/]+)$', p)
