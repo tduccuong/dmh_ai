@@ -1192,6 +1192,9 @@ const UIManager = {
     _lastUsedModel: null,
     _pendingContent: '',
     _pendingSession: null,
+    _wakeLock: null,
+    _activeBodyDiv: null,
+    _streamingWhenHidden: false,
 
     init: function() {
         const self = this;
@@ -1207,6 +1210,27 @@ const UIManager = {
         document.getElementById('header-new-chat-btn').addEventListener('click', function() { self.createNewSession(); });
         overlay.addEventListener('click', closeSidebar);
         document.getElementById('sidebar-close-btn').addEventListener('click', closeSidebar);
+
+        // Wake lock + visibility recovery for mobile streaming
+        document.addEventListener('visibilitychange', function() {
+            if (document.visibilityState === 'hidden') {
+                self._streamingWhenHidden = self.isStreaming;
+            } else {
+                if (self._streamingWhenHidden && !self.isStreaming && self._activeBodyDiv) {
+                    var notice = document.createElement('div');
+                    notice.style.cssText = 'margin-top:10px;padding:8px 12px;background:#2a1a10;border:1px solid #c87830;border-radius:6px;color:#d0a050;font-size:13px;display:flex;align-items:center;gap:10px;';
+                    notice.innerHTML = '⚠ Response was interrupted (screen locked).';
+                    var retryBtn = document.createElement('button');
+                    retryBtn.textContent = 'Retry';
+                    retryBtn.style.cssText = 'padding:4px 12px;background:#c87830;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;flex-shrink:0;';
+                    retryBtn.onclick = function() { self.retryLastMessage(); };
+                    notice.appendChild(retryBtn);
+                    self._activeBodyDiv.appendChild(notice);
+                }
+                self._streamingWhenHidden = false;
+                if (self.isStreaming) self._acquireWakeLock();
+            }
+        });
         document.getElementById('message-input').addEventListener('focus', function() { if (isMobile()) closeSidebar(); });
         if (window.innerWidth <= 768 && window.innerHeight > window.innerWidth) closeSidebar();
 
@@ -2254,6 +2278,36 @@ const UIManager = {
         this.renderChat();
     },
 
+    _acquireWakeLock: async function() {
+        if (!('wakeLock' in navigator) || this._wakeLock) return;
+        try {
+            var self = this;
+            this._wakeLock = await navigator.wakeLock.request('screen');
+            this._wakeLock.addEventListener('release', function() { self._wakeLock = null; });
+        } catch (e) {}
+    },
+
+    _releaseWakeLock: function() {
+        if (this._wakeLock) { this._wakeLock.release(); this._wakeLock = null; }
+    },
+
+    retryLastMessage: function() {
+        if (!this.currentSession) return;
+        var msgs = this.currentSession.messages;
+        // Find last user message that has not yet a complete assistant reply after it
+        for (var i = msgs.length - 1; i >= 0; i--) {
+            if (msgs[i].role === 'user') {
+                document.getElementById('message-input').value = msgs[i].content || '';
+                // Remove the partial assistant message and the user message from history
+                this.currentSession.messages = msgs.slice(0, i);
+                SessionStore.updateSession(this.currentSession);
+                this.renderChat();
+                this.sendMessage();
+                return;
+            }
+        }
+    },
+
     getDefaultModel: function() {
         const hasPool = Settings.accounts.length > 0;
         if (hasPool) return RECOMMENDED_CLOUD_MODEL_NAMES[0];
@@ -2661,7 +2715,9 @@ const UIManager = {
                     self._pendingContent = '';
                     self._pendingSession = null;
                     self._streamController = null;
+                    self._activeBodyDiv = null;
                     self.isStreaming = false;
+                    self._releaseWakeLock();
                     self.updateSendBtn();
                     self.setStatus('');
                     document.getElementById('stop-gen-btn').style.display = 'none';
@@ -2690,6 +2746,7 @@ const UIManager = {
                     self.saveStreamingProgress();
                     self._streamController = null;
                     self.isStreaming = false;
+                    self._releaseWakeLock();
                     self.updateSendBtn();
                     self.setStatus('');
                     document.getElementById('stop-gen-btn').style.display = 'none';
@@ -2700,6 +2757,8 @@ const UIManager = {
             );
         }
 
+        self._activeBodyDiv = bodyDiv;
+        self._acquireWakeLock();
         doStream(usePool ? CloudAccountPool.getNext() : null, 0);
     },
 
