@@ -325,6 +325,7 @@ class H(BaseHTTPRequestHandler):
             if not url:
                 self.send_json(400, {'error': 'Missing url'})
                 return
+            text = ''
             try:
                 ua = 'Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/115.0'
                 req = urllib.request.Request(url, headers={'User-Agent': ua, 'Accept': 'text/html,text/plain'})
@@ -332,15 +333,29 @@ class H(BaseHTTPRequestHandler):
                     ct = resp.headers.get('Content-Type', '')
                     if 'html' not in ct and 'text/plain' not in ct:
                         log(f'[FETCH-PAGE] skip non-html: {url[:80]} ct={ct}')
-                        self.send_json(200, {'text': ''})
-                        return
-                    body = resp.read(120000)
-                text = _html_to_text(body)
-                log(f'[FETCH-PAGE] ok url={url[:80]} chars={len(text)}')
-                self.send_json(200, {'text': text[:3000]})
+                    else:
+                        body = resp.read(120000)
+                        text = _html_to_text(body)
+                        log(f'[FETCH-PAGE] direct ok url={url[:80]} chars={len(text)}')
             except Exception as e:
-                log(f'[FETCH-PAGE] err url={url[:80]} err={e}')
-                self.send_json(200, {'text': ''})
+                log(f'[FETCH-PAGE] direct err url={url[:80]} err={e}')
+            # Fallback to Jina Reader for JS-rendered pages
+            if len(text) < 500:
+                try:
+                    jina_req = urllib.request.Request(
+                        'https://r.jina.ai/' + url,
+                        headers={'User-Agent': 'Mozilla/5.0', 'Accept': 'text/plain', 'X-No-Cache': 'true'}
+                    )
+                    with urllib.request.urlopen(jina_req, timeout=10) as resp:
+                        jina_text = resp.read(200000).decode('utf-8', errors='replace')
+                        if len(jina_text) >= 500:
+                            text = jina_text
+                            log(f'[FETCH-PAGE] jina ok url={url[:80]} chars={len(text)}')
+                        else:
+                            log(f'[FETCH-PAGE] jina empty url={url[:80]} chars={len(jina_text)}')
+                except Exception as e:
+                    log(f'[FETCH-PAGE] jina err url={url[:80]} err={e}')
+            self.send_json(200, {'text': text[:3000]})
             return
 
         m = re.match(r'^/assets/([^/]+)/([^/]+)$', p)
@@ -434,6 +449,12 @@ class H(BaseHTTPRequestHandler):
                     'Content-Type': 'application/json',
                 })
                 resp = conn.getresponse()
+                if resp.status >= 400:
+                    err_body = resp.read()
+                    log(f'[CLOUD-API] upstream error status={resp.status} body={err_body[:300]}')
+                    self.send_json(resp.status, {'error': err_body.decode('utf-8', errors='replace')[:500]})
+                    conn.close()
+                    return
                 self.send_response(resp.status)
                 self.send_header('Content-Type', resp.getheader('Content-Type', 'application/x-ndjson'))
                 self.end_headers()

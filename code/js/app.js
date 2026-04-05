@@ -40,9 +40,7 @@ const I18n = {
             unsupported1: 'Unsupported file: ', unsupported2: '. Supported: PDF, DOCX, XLSX, plain text, ',
             noVision1: '⚠ ', noVision2: ' does not support images. Switch to a vision-capable model and send again.',
             genKeywords: 'Generating search keywords...',
-            searchingWeb: 'Searching the web (round 1)...',
-            analyzingGaps: 'Analyzing gaps...',
-            deepSearching: 'Deep searching (round 2)...',
+            searchingWeb: 'Searching the web...',
             fetchingPages: 'Reading web sources...',
             synthesizing: 'Synthesizing results...',
             replying: ' replying...',
@@ -57,6 +55,7 @@ const I18n = {
             pwWarning: '⚠ You are using the default password. Please change it now.',
             pwWarningBtn: 'Change password',
             recQuickAnswer: '👁 Quick Answer', recDeepThinker: '💡 Deep Thinker', recTechExpert: '🛠 Technical Expert',
+            noModelAvail: 'No model available. Please configure a model in Settings first.',
         },
         vi: {
             retry: 'Thử lại', clear: 'Xóa', send: 'Gửi', cancel: 'Hủy', ok: 'OK', stopGen: 'Dừng',
@@ -76,9 +75,7 @@ const I18n = {
             unsupported1: 'Tệp không hỗ trợ: ', unsupported2: '. Hỗ trợ: PDF, DOCX, XLSX, văn bản, ',
             noVision1: '⚠ ', noVision2: ' không hỗ trợ hình ảnh. Hãy chọn mô hình hỗ trợ hình ảnh và gửi lại.',
             genKeywords: 'Đang tạo từ khóa tìm kiếm...',
-            searchingWeb: 'Đang tìm kiếm web (vòng 1)...',
-            analyzingGaps: 'Đang phân tích khoảng trống...',
-            deepSearching: 'Đang tìm kiếm chuyên sâu (vòng 2)...',
+            searchingWeb: 'Đang tìm kiếm web...',
             fetchingPages: 'Đang đọc nguồn web...',
             synthesizing: 'Đang tổng hợp kết quả...',
             replying: ' đang trả lời...',
@@ -93,6 +90,7 @@ const I18n = {
             pwWarning: '⚠ Bạn đang dùng mật khẩu mặc định. Hãy đổi mật khẩu ngay.',
             pwWarningBtn: 'Đổi mật khẩu',
             recQuickAnswer: '👁 Trả lời nhanh', recDeepThinker: '💡 Suy nghĩ sâu', recTechExpert: '🛠 Chuyên gia kỹ thuật',
+            noModelAvail: 'Không có mô hình nào. Vui lòng cấu hình trong Cài đặt trước.',
         },
         de: {
             retry: 'Wiederholen', clear: 'Löschen', send: 'Senden', cancel: 'Abbrechen', ok: 'OK', stopGen: 'Stopp',
@@ -112,9 +110,7 @@ const I18n = {
             unsupported1: 'Nicht unterstützte Datei: ', unsupported2: '. Unterstützt: PDF, DOCX, XLSX, Text, ',
             noVision1: '⚠ ', noVision2: ' unterstützt keine Bilder. Wählen Sie ein bildtaugliches Modell und senden Sie erneut.',
             genKeywords: 'Suchbegriffe werden generiert...',
-            searchingWeb: 'Websuche läuft (Runde 1)...',
-            analyzingGaps: 'Lücken werden analysiert...',
-            deepSearching: 'Tiefensuche läuft (Runde 2)...',
+            searchingWeb: 'Websuche läuft...',
             fetchingPages: 'Web-Quellen werden gelesen...',
             synthesizing: 'Ergebnisse werden zusammengefasst...',
             replying: ' antwortet...',
@@ -129,6 +125,7 @@ const I18n = {
             pwWarning: '⚠ Sie verwenden noch das Standardpasswort. Bitte jetzt ändern.',
             pwWarningBtn: 'Passwort ändern',
             recQuickAnswer: '👁 Schnelle Antwort', recDeepThinker: '💡 Tiefdenker', recTechExpert: '🛠 Technischer Experte',
+            noModelAvail: 'Kein Modell verfügbar. Bitte zuerst in den Einstellungen konfigurieren.',
         },
         es: {
             retry: 'Reintentar', clear: 'Limpiar', send: 'Enviar', cancel: 'Cancelar', ok: 'OK', stopGen: 'Detener',
@@ -148,9 +145,7 @@ const I18n = {
             unsupported1: 'Archivo no compatible: ', unsupported2: '. Compatible: PDF, DOCX, XLSX, texto, ',
             noVision1: '⚠ ', noVision2: ' no admite imágenes. Seleccione un modelo con visión y envíe de nuevo.',
             genKeywords: 'Generando palabras clave...',
-            searchingWeb: 'Buscando en la web (ronda 1)...',
-            analyzingGaps: 'Analizando brechas...',
-            deepSearching: 'Búsqueda profunda (ronda 2)...',
+            searchingWeb: 'Buscando en la web...',
             fetchingPages: 'Leyendo fuentes web...',
             synthesizing: 'Sintetizando resultados...',
             replying: ' respondiendo...',
@@ -165,6 +160,7 @@ const I18n = {
             pwWarning: '⚠ Está usando la contraseña predeterminada. Cámbiela ahora.',
             pwWarningBtn: 'Cambiar contraseña',
             recQuickAnswer: '👁 Respuesta rápida', recDeepThinker: '💡 Pensador profundo', recTechExpert: '🛠 Experto técnico',
+            noModelAvail: 'Ningún modelo disponible. Configure uno en Ajustes primero.',
         },
         fr: {
             retry: 'Réessayer', clear: 'Effacer', send: 'Envoyer', cancel: 'Annuler', ok: 'OK', stopGen: 'Arrêter',
@@ -184,9 +180,7 @@ const I18n = {
             unsupported1: 'Fichier non pris en charge : ', unsupported2: '. Pris en charge : PDF, DOCX, XLSX, texte, ',
             noVision1: '⚠ ', noVision2: ' ne prend pas en charge les images. Sélectionnez un modèle compatible et réessayez.',
             genKeywords: 'Génération des mots-clés...',
-            searchingWeb: 'Recherche web (tour 1)...',
-            analyzingGaps: 'Analyse des lacunes...',
-            deepSearching: 'Recherche approfondie (tour 2)...',
+            searchingWeb: 'Recherche web...',
             fetchingPages: 'Lecture des sources web...',
             synthesizing: 'Synthèse des résultats...',
             replying: ' répond...',
@@ -201,6 +195,7 @@ const I18n = {
             pwWarning: '⚠ Vous utilisez le mot de passe par défaut. Veuillez le changer maintenant.',
             pwWarningBtn: 'Changer le mot de passe',
             recQuickAnswer: '👁 Réponse rapide', recDeepThinker: '💡 Réflexion profonde', recTechExpert: '🛠 Expert technique',
+            noModelAvail: 'Aucun modèle disponible. Veuillez d\'abord en configurer un dans les Paramètres.',
         }
     },
     t: function(key) { return (this._strings[this._lang] || this._strings.en)[key] || this._strings.en[key] || key; },
@@ -310,12 +305,12 @@ const AppConfig = {
 
 function getRecommendedCloudModels() {
     return [
-        { name: 'gemma4:31b-cloud',              label: t('recQuickAnswer') },
+        { name: 'ministral-3:14b-cloud',          label: t('recQuickAnswer') },
         { name: 'qwen3-vl:235b-instruct-cloud',  label: t('recDeepThinker') },
     ];
 }
 // Constant names for filtering (language-independent)
-const RECOMMENDED_CLOUD_MODEL_NAMES = ['gemma4:31b-cloud', 'qwen3-vl:235b-instruct-cloud'];
+const RECOMMENDED_CLOUD_MODEL_NAMES = ['ministral-3:14b-cloud', 'qwen3-vl:235b-instruct-cloud'];
 
 const Settings = {
     _accounts: [],
@@ -1167,7 +1162,7 @@ const ContextManager = {
         var summary = await OllamaAPI.summarize(session.model, summarizeInput);
         if (!summary) return;
 
-        session.context = { summary: summary, summaryUpToIndex: keepFrom - 1 };
+        session.context = { summary: summary, summaryUpToIndex: keepFrom - 1, needsNaming: ctx.needsNaming };
         await SessionStore.updateSession(session);
     }
 };
@@ -2293,7 +2288,7 @@ const UIManager = {
         const ok = await Modal.confirm(t('clearSession'), t('clearConfirm1') + this.currentSession.name + t('clearConfirm2'), t('clear'));
         if (!ok) return;
         this.currentSession.messages = [];
-        this.currentSession.context = { summary: null, summaryUpToIndex: -1 };
+        this.currentSession.context = { summary: null, summaryUpToIndex: -1, needsNaming: true };
         await SessionStore.updateSession(this.currentSession);
         this.attachedFiles = [];
         this.renderAttachments();
@@ -2347,7 +2342,7 @@ const UIManager = {
             return RECOMMENDED_CLOUD_MODEL_NAMES.indexOf(n) === -1 && activeOptions.indexOf(n) !== -1;
         });
         if (userCloudModels.length > 0) return userCloudModels[0];
-        return activeOptions.length > 0 ? activeOptions[0] : '';
+        return activeOptions.length > 0 ? activeOptions[0] : null;
     },
 
     createNewSession: async function() {
@@ -2360,6 +2355,10 @@ const UIManager = {
         const sessions = await SessionStore.getSessions();
         var empty = sessions.find(function(s) { return !s.messages || s.messages.length === 0; });
         const defaultModel = this.getDefaultModel();
+        if (!defaultModel) {
+            this.showError(t('noModelAvail'));
+            return;
+        }
         if (!empty) {
             empty = await SessionStore.createSession(t('newChat'), defaultModel);
         } else if (defaultModel && empty.model !== defaultModel) {
@@ -2463,7 +2462,14 @@ const UIManager = {
         } catch (e) { syslog('[DETECT] error=' + e.message); return false; }
     },
 
+    _buildBaseQuery: function(userMessage) {
+        var year = new Date().getFullYear();
+        var keywords = StopWords.extractKeywords(userMessage);
+        return keywords.indexOf(String(year)) === -1 ? keywords + ' ' + year : keywords;
+    },
+
     getSearchQueries: async function(userMessage, signal) {
+        const baseQuery = this._buildBaseQuery(userMessage);
         try {
             const model = this.currentSession.model;
             const res = await cloudRoutedFetch(model, '/generate', {
@@ -2472,25 +2478,30 @@ const UIManager = {
                     think: false,
                     options: { temperature: 0 },
                     prompt:
-                        'You are a search query generator. Generate 2 search queries for the question below.\n' +
-                        'Query 1: broad query covering the main topic.\n' +
-                        'Query 2: a different specific angle or sub-aspect of the same question.\n' +
+                        'Generate 1-2 search queries that are VARIATIONS of the base query below.\n' +
+                        'Use synonyms or alternative phrasings — keep ALL the same proper names, product names, and topics.\n' +
+                        'Do NOT drop, replace, or reinterpret any word that looks like a name or product.\n' +
                         'Rules:\n' +
                         '- Do NOT answer the question\n' +
-                        '- Do NOT use names or facts from your training — they may be outdated\n' +
                         '- Always include the year ' + new Date().getFullYear() + '\n' +
-                        '- Reply in English only\n' +
-                        '- Reply with exactly 2 lines, each line is one search query. No numbering, no explanation.\n\n' +
-                        'Question: "' + userMessage + '"'
+                        '- Reply in the SAME language as the base query\n' +
+                        '- Reply with one search query per line. No numbering, no explanation.\n\n' +
+                        'Base query: "' + baseQuery + '"\n' +
+                        'Original question: "' + userMessage + '"'
                 }, signal);
             const data = await res.json();
             const reply = (data.response || '').trim();
-            if (!reply || /^(no|nein|non|нет)\b/i.test(reply)) return null;
-            const lines = reply.split('\n')
-                .map(function(s) { return s.replace(/^[\d\.\-\*\s]+/, '').replace(/['"*]/g, '').trim(); })
-                .filter(Boolean);
-            return lines.length ? lines.slice(0, 2) : null;
-        } catch (e) { return null; }
+            const variations = reply.length
+                ? reply.split('\n')
+                    .map(function(s) { return s.replace(/^[\d\.\-\*\s]+/, '').replace(/['"*]/g, '').trim(); })
+                    .filter(Boolean)
+                    .slice(0, 2)
+                : [];
+            // Base query always first — guaranteed accurate
+            return [baseQuery].concat(variations);
+        } catch (e) {
+            return [baseQuery];
+        }
     },
 
     searchWebRaw: async function(keywords, signal) {
@@ -2504,12 +2515,16 @@ const UIManager = {
     },
 
     formatSearchResults: function(results) {
-        return results.map(function(r, i) {
-            var out = (i + 1) + '. ' + r.title + ' (' + r.url + ')';
-            if (r.content) out += '\n   Snippet: ' + r.content.slice(0, 300);
-            if (r.fetchedContent) out += '\n   Content: ' + r.fetchedContent;
-            return out;
-        }).join('\n\n');
+        var n = 0;
+        return results.map(function(r) {
+            if (!r.fetchedContent && !r.content) return null;
+            n++;
+            if (r.fetchedContent) {
+                return n + '. ' + r.title + '\n' + r.fetchedContent;
+            } else {
+                return n + '. ' + r.title + '\n' + r.content.slice(0, 300);
+            }
+        }).filter(Boolean).join('\n\n');
     },
 
     searchWebParallel: async function(queries, signal) {
@@ -2537,42 +2552,23 @@ const UIManager = {
                 .catch(function() { return null; });
         });
         var texts = await Promise.all(fetches);
+        // First pass: collect pages that have enough content
+        var pagesWithContent = [];
         texts.forEach(function(data, i) {
             if (data && data.text && data.text.length >= 500) {
-                toFetch[i].fetchedContent = data.text.slice(0, 2000);
+                pagesWithContent.push({ result: toFetch[i], text: data.text });
             }
         });
+        // Distribute content budget proportionally by page size
+        var TOTAL_CONTENT_BUDGET = 8000;
+        var totalSize = pagesWithContent.reduce(function(sum, p) { return sum + p.text.length; }, 0);
+        pagesWithContent.forEach(function(p) {
+            var budget = totalSize <= TOTAL_CONTENT_BUDGET
+                ? p.text.length
+                : Math.floor(TOTAL_CONTENT_BUDGET * p.text.length / totalSize);
+            p.result.fetchedContent = p.text.slice(0, budget);
+        });
         return results;
-    },
-
-    getGapQueries: async function(question, resultsText, signal) {
-        try {
-            const model = this.currentSession.model;
-            const res = await cloudRoutedFetch(model, '/generate', {
-                    model: model,
-                    stream: false,
-                    think: false,
-                    options: { temperature: 0 },
-                    prompt:
-                        'You are a search query generator analyzing gaps in search results.\n\n' +
-                        'Question: "' + question + '"\n\n' +
-                        'Round 1 search results:\n' + resultsText.slice(0, 2000) + '\n\n' +
-                        'Identify specific aspects of the question that the results do NOT adequately cover.\n' +
-                        'Generate 1-2 targeted search queries to fill those gaps.\n' +
-                        'Rules:\n' +
-                        '- If results already cover the question well, reply with only: NONE\n' +
-                        '- Otherwise reply with 1-2 search queries, one per line, no numbering\n' +
-                        '- Do NOT answer the question\n' +
-                        '- Reply in English only'
-                }, signal);
-            const data = await res.json();
-            const reply = (data.response || '').trim();
-            if (!reply || /^none\b/i.test(reply)) return [];
-            const lines = reply.split('\n')
-                .map(function(s) { return s.replace(/^[\d\.\-\*\s]+/, '').replace(/['"*]/g, '').trim(); })
-                .filter(Boolean);
-            return lines.slice(0, 2);
-        } catch (e) { return []; }
     },
 
     synthesizeResults: async function(question, keywords, results, today, signal) {
@@ -2586,8 +2582,8 @@ const UIManager = {
                     prompt: 'Today is ' + today + '. Extract the key facts from these web search results to answer the question. Be concise and factual. Use only what the results say.\n\nQuestion: ' + question + '\n\nSearch results:\n' + results + '\n\nKey facts from results:'
                 }, signal);
             const data = await res.json();
-            return (data.response || '').trim() || results;
-        } catch (e) { return results; }
+            return (data.response || '').trim() || null;
+        } catch (e) { return null; }
     },
 
     sendMessage: async function() {
@@ -2603,7 +2599,7 @@ const UIManager = {
         if (!content && this.attachedFiles.length === 0) return;
 
         if (!this.currentSession.context) {
-            this.currentSession.context = { summary: null, summaryUpToIndex: -1 };
+            this.currentSession.context = { summary: null, summaryUpToIndex: -1, needsNaming: true };
         }
 
         const contextWindow = await OllamaAPI.fetchContextWindow(this.currentSession.model);
@@ -2691,51 +2687,34 @@ const UIManager = {
             if (pipelineSignal.aborted) return;
             syslog('[QUERIES] result="' + (queries ? queries.join(' | ') : 'null') + '"');
             if (queries) {
-                // Round 1: search 2 orthogonal queries in parallel
                 this.setStatus(t('searchingWeb'));
-                const round1Raw = await this.searchWebParallel(queries, pipelineSignal);
+                const allRaw = await this.searchWebParallel(queries, pipelineSignal);
                 if (pipelineSignal.aborted) return;
-                syslog('[SEARCH R1] got ' + round1Raw.length + ' results');
-
-                let allRaw = round1Raw;
-                if (round1Raw.length > 0) {
-                    // Gap analysis: ask LLM what's still missing
-                    this.setStatus(t('analyzingGaps'));
-                    const r1Formatted = this.formatSearchResults(round1Raw);
-                    const gapQueries = await this.getGapQueries(cleanedContent, r1Formatted, pipelineSignal);
-                    if (pipelineSignal.aborted) return;
-                    syslog('[GAP QUERIES] result="' + gapQueries.join(' | ') + '"');
-
-                    if (gapQueries.length > 0) {
-                        // Round 2: fill gaps, deduplicate against round 1
-                        this.setStatus(t('deepSearching'));
-                        const round2Raw = await this.searchWebParallel(gapQueries, pipelineSignal);
-                        if (pipelineSignal.aborted) return;
-                        syslog('[SEARCH R2] got ' + round2Raw.length + ' results');
-                        const seenUrls = new Set(round1Raw.map(function(r) { return r.url; }));
-                        round2Raw.forEach(function(r) { if (!seenUrls.has(r.url)) allRaw.push(r); });
-                    }
-                }
+                syslog('[SEARCH] got ' + allRaw.length + ' results');
 
                 if (allRaw.length > 0) {
                     this.setStatus(t('fetchingPages'));
                     await this.enrichResults(allRaw, pipelineSignal);
                     if (pipelineSignal.aborted) return;
                 }
-                const allFormatted = allRaw.length ? this.formatSearchResults(allRaw) : null;
+                // Cap to top 10 results to keep synthesis prompt bounded
+                const topResults = allRaw.slice(0, 10);
+                const allFormatted = topResults.length ? this.formatSearchResults(topResults) : null;
                 if (allFormatted) {
                     this.setStatus(t('synthesizing'));
                     const today = new Date().toDateString();
                     const synthesis = await this.synthesizeResults(cleanedContent, queries.join(' '), allFormatted, today, pipelineSignal);
                     if (pipelineSignal.aborted) return;
-                    syslog('[SYNTHESIS] ' + synthesis.slice(0, 200));
+                    // Use synthesis if available, otherwise fall back to truncated raw results
+                    const injectedResults = synthesis || allFormatted.slice(0, 8000);
+                    syslog('[SYNTHESIS] ' + (synthesis ? 'ok' : 'failed, using raw') + ' len=' + injectedResults.length);
                     var injectedMsg = {
                         role: 'user',
-                        content: 'User request: ' + cleanedContent + '\n\nWeb search results (retrieved ' + today + '):\n' + synthesis + '\n\nUsing the user request and the web search results above, compile a complete and accurate answer.'
+                        content: 'User request: ' + cleanedContent + '\n\nWeb search results (retrieved ' + today + '):\n' + injectedResults + '\n\nUsing the user request and the web search results above, compile a complete and accurate answer.'
                     };
                     if (imagesForAPI.length > 0) injectedMsg.images = imagesForAPI;
                     apiMessages = apiMessages.slice(0, -1).concat([injectedMsg]);
-                    syslog('[INJECT] synthesized results injected into context');
+                    syslog('[INJECT] results injected into context');
                 } else {
                     syslog('[SEARCH] fallback: all rounds returned no results');
                     bodyDiv.innerHTML = '<em style="color:#d0a050;">' + t('searchUnavail') + '</em><br><br>';

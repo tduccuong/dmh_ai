@@ -7,7 +7,6 @@ use_default_settings:
       - brave          # Independent index (not a Bing/Google reskin). Most tolerant
                        # of automated/home-IP access. Best diversity. Weight 2 below.
       - bing           # Most complete non-Google index. Rarely rate-limits aggressively.
-      - duckduckgo     # Bing-backed but different ranking signals. CAPTCHA issue fixed early 2025.
       - google         # Best quality but most aggressive blocking. Tune suspended_times
                        # below so it recovers in 1h instead of the default 24h.
       - qwant          # European independent index. CAPTCHA issue resolved March 2025.
@@ -17,7 +16,6 @@ use_default_settings:
       - brave news
       - bing news      # Excellent freshness. Own crawler.
       - yahoo news     # Yahoo's own news crawler; updates within minutes of publication.
-      - duckduckgo news
       - google news    # More reliable than Google web for scraping.
 
       # --- Knowledge / Infoboxes ---
@@ -71,9 +69,9 @@ outgoing:
   # inflating error counts and triggering engine suspensions unfairly.
   request_timeout: 6.0
 
-  # Hard ceiling. Must stay below our backend timeout (20s) so SearXNG always
-  # responds before we give up. 17s gives 3s margin.
-  max_request_timeout: 17.0
+  # Hard ceiling. DuckDuckGo removed (ConnectTimeout), so engines should finish
+  # within 6s. 8s gives 2s margin; well below our 20s backend timeout.
+  max_request_timeout: 8.0
 
   enable_http2: true      # Faster + looks more like a real browser to upstream engines
   pool_connections: 100
@@ -100,14 +98,6 @@ engines:
     disabled: false
     weight: 1
     timeout: 6.0
-
-  - name: duckduckgo
-    disabled: false
-    timeout: 5.0             # Short timeout — DDG has ConnectTimeout issues; fail fast
-
-  - name: duckduckgo news
-    disabled: false
-    timeout: 5.0             # Same — fail fast rather than hang SearXNG
 
   - name: brave news
     disabled: false
