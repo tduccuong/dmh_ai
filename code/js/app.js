@@ -1201,7 +1201,7 @@ const UIManager = {
         var toggle = document.getElementById('sidebar-toggle');
         var headerLogo = document.getElementById('header-logo');
         var isMobile = function() { return window.innerWidth <= 768; };
-        function closeSidebar() { sidebar.classList.add('collapsed'); overlay.classList.remove('visible'); headerLogo.style.display = ''; }
+        function closeSidebar() { sidebar.classList.add('collapsed'); overlay.classList.remove('visible'); headerLogo.style.display = 'none'; }
         function openSidebar() { sidebar.classList.remove('collapsed'); if (isMobile()) overlay.classList.add('visible'); headerLogo.style.display = 'none'; }
         toggle.addEventListener('click', function() { sidebar.classList.contains('collapsed') ? openSidebar() : closeSidebar(); });
         document.getElementById('header-new-chat-btn').addEventListener('click', function() { self.createNewSession(); });
@@ -1802,10 +1802,14 @@ const UIManager = {
         localHdr.className = 'model-dropdown-section-hdr local';
         localHdr.innerHTML = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg> Local Models';
         localSection.appendChild(localHdr);
-        localModels.forEach(function(model) {
-            makeOption(model.name, model.name + OllamaAPI.formatSize(model.size));
-            localSection.appendChild(makeItem(model.name, model.name + OllamaAPI.formatSize(model.size), false));
-        });
+        if (localModels.length === 0) {
+            localSection.appendChild(makeItem('', 'No models added', true));
+        } else {
+            localModels.forEach(function(model) {
+                makeOption(model.name, model.name + OllamaAPI.formatSize(model.size));
+                localSection.appendChild(makeItem(model.name, model.name + OllamaAPI.formatSize(model.size), false));
+            });
+        }
         menu.appendChild(localSection);
 
         // Set initial value: last used (if still active) → first recommended (if pool) → first user cloud → first local
@@ -2257,10 +2261,12 @@ const UIManager = {
     },
 
     getDefaultModel: function() {
+        const hasPool = Settings.accounts.length > 0;
+        if (hasPool) return RECOMMENDED_CLOUD_MODEL_NAMES[0];
+        const userCloudModels = Settings.cloudModels.filter(function(n) { return RECOMMENDED_CLOUD_MODEL_NAMES.indexOf(n) === -1; });
+        if (userCloudModels.length > 0) return userCloudModels[0];
         const currentVal = document.getElementById('header-model-select').value;
         if (currentVal) return currentVal;
-        const cloudModels = Settings.cloudModels;
-        if (cloudModels.length > 0) return cloudModels[0];
         const select = document.getElementById('header-model-select');
         if (select.options.length > 0) return select.options[0].value;
         return '';

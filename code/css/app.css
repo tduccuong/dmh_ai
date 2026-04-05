@@ -3,9 +3,9 @@ html { height: 100%; }
 body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #141018; color: #eee; height: 100%; height: 100dvh; display: flex; overflow: hidden; }
 .sidebar { width: 280px; background: #1c1628; padding: 20px; display: flex; flex-direction: column; border-right: 1px solid #281e38; }
 .main { flex: 1; display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
-.header { padding: 20px; background: #281e38; border-bottom: 1px solid #141018; }
+.header { padding: 10px 20px; background: #281e38; border-bottom: 1px solid #141018; display: flex; align-items: center; gap: 6px; }
 .model-select { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #141018; background: #141018; color: #eee; font-size: 14px; }
-.model-dropdown-wrap { flex: 1; position: relative; min-width: 0; }
+.model-dropdown-wrap { flex: 1; height: 38px; position: relative; min-width: 0; }
 .model-dropdown-trigger { width: 100%; padding: 0 10px; height: 100%; background: #141018; border: 1px solid #141018; border-radius: 8px; color: #eee; font-size: 13px; cursor: pointer; display: flex; align-items: center; gap: 6px; text-align: left; }
 .model-dropdown-trigger:hover { border-color: #382850; }
 .model-dropdown-trigger.open { border-color: #6040a0; }
@@ -74,8 +74,8 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
 .sidebar-settings-btn { display: flex; align-items: center; gap: 8px; width: 100%; padding: 10px 14px; background: #2a1e40; border: 1px solid #6040a0; border-radius: 7px; color: #c0a0e8; font-size: 13px; cursor: pointer; font-weight: 600; box-shadow: 0 0 8px rgba(120,60,200,0.2); }
 .sidebar-settings-btn:hover { background: #3a2a58; border-color: #8060c0; color: #e0c8ff; box-shadow: 0 0 14px rgba(140,80,240,0.4); }
 .sidebar-settings-btn svg { flex-shrink: 0; }
-.user-menu-wrap { position: relative; flex-shrink: 0; display: flex; align-items: stretch; }
-.user-menu-btn { padding: 0 12px; background: #141018; color: #b098b8; border: 1px solid #281e38; border-radius: 8px; cursor: pointer; display: flex; align-items: center; }
+.user-menu-wrap { position: relative; flex-shrink: 0; height: 38px; }
+.user-menu-btn { padding: 0 12px; height: 38px; background: #141018; color: #b098b8; border: 1px solid #281e38; border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
 .user-menu-btn:hover { background: #281e38; color: #eee; }
 .user-dropdown { display: none; position: absolute; top: 100%; right: 0; background: #1c1628; border: 1px solid #382850; border-radius: 8px; margin-top: 4px; z-index: 200; min-width: 220px; box-shadow: 0 8px 24px rgba(0,0,0,0.6); overflow: hidden; }
 .user-dropdown.open { display: block; }
@@ -223,12 +223,12 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
 .message.assistant strong { color: #d8c0a0; }
 .sidebar { flex-shrink: 0; transition: width 0.2s, padding 0.2s; overflow: hidden; }
 .sidebar.collapsed { width: 0; padding: 0; border-right: none; }
-.sidebar-toggle { padding: 0 10px; background: #141018; color: #b098b8; border: 1px solid #281e38; border-radius: 8px; cursor: pointer; font-size: 20px; line-height: 1; flex-shrink: 0; }
+.sidebar-toggle { padding: 0 10px; height: 38px; background: #141018; color: #b098b8; border: 1px solid #281e38; border-radius: 8px; cursor: pointer; font-size: 20px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
 .sidebar-toggle:hover { color: #eee; }
-.new-chat-btn { display: none; padding: 0 10px; background: #141018; color: #b098b8; border: 1px solid #281e38; border-radius: 8px; cursor: pointer; font-size: 18px; line-height: 1; flex-shrink: 0; align-self: stretch; }
+.new-chat-btn { display: none; padding: 0 10px; height: 38px; background: #141018; color: #b098b8; border: 1px solid #281e38; border-radius: 8px; cursor: pointer; font-size: 18px; flex-shrink: 0; align-items: center; justify-content: center; }
 .new-chat-btn:hover { color: #eee; }
-.lang-wrap { position: relative; flex-shrink: 0; display: flex; align-items: stretch; }
-.lang-flag { padding: 0 10px; background: #141018; color: #b098b8; border: 1px solid #281e38; border-radius: 8px; cursor: pointer; font-size: 22px; flex-shrink: 0; display: flex; align-items: center; }
+.lang-wrap { position: relative; flex-shrink: 0; }
+.lang-flag { padding: 0 10px; height: 38px; background: #141018; color: #b098b8; border: 1px solid #281e38; border-radius: 8px; cursor: pointer; font-size: 22px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
 .lang-dropdown { display: none; position: absolute; top: 100%; left: 0; background: #1c1628; border: 1px solid #382850; border-radius: 6px; margin-top: 4px; z-index: 200; min-width: 150px; box-shadow: 0 8px 24px rgba(0,0,0,0.5); }
 .lang-dropdown.open { display: block; }
 .lang-option { display: block; width: 100%; padding: 8px 12px; background: none; border: none; color: #b098b8; font-size: 13px; cursor: pointer; text-align: left; white-space: nowrap; }
@@ -241,13 +241,14 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
     .sidebar.collapsed { left: -280px; }
     .message { width: 100%; }
     .main { position: fixed; inset: 0; display: flex; flex-direction: column; height: 100%; height: 100dvh; }
-    .header { flex-shrink: 0; padding: 10px; }
+    .header { flex-shrink: 0; padding: 8px 10px; gap: 3px; }
     .chat-container { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; }
     .input-area { flex-shrink: 0; padding: 10px; }
     .status-bar { flex-shrink: 0; }
     .attachments-bar { flex-shrink: 0; }
-    .new-chat-btn { display: flex; align-items: center; }
+    .new-chat-btn { display: flex; }
     .model-dropdown-menu.open { position: fixed; left: 0; right: 0; width: 100vw; }
+    .lang-flag { padding: 0 4px; }
 }
 
 /* Image lightbox */
