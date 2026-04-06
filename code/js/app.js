@@ -2834,6 +2834,7 @@ const UIManager = {
 
         let apiMessages = prepareForAPI(ContextManager.buildContextMessages(this.currentSession));
         apiMessages[apiMessages.length - 1] = userMsgForAPI;
+        apiMessages.unshift({ role: 'system', content: 'You are DMH-AI, a helpful, knowledgeable, and friendly AI assistant. You are ready to help with anything — answering questions, writing, analysis, coding, math, research, brainstorming, and more. Be clear, concise, and honest. If you don\'t know something, say so. Never claim to be a different AI (such as ChatGPT, Gemini, or Claude).' });
         var relevant = ContextManager.retrieveRelevant(this.currentSession, content, 4);
         if (relevant.length > 0) {
             var snippets = relevant.map(function(p, i) {
