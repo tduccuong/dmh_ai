@@ -207,15 +207,13 @@
                 <button class="settings-close-btn" id="settings-close-btn">✕</button>
             </div>
             <div class="settings-body">
-                <!-- Section 1: Ollama Cloud -->
+                <!-- Section 1: Ollama Accounts -->
                 <div class="settings-section">
                     <div class="settings-section-title">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>
-                        Ollama Cloud
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                        Ollama Accounts
                     </div>
-                    <!-- Sub-section 1: Accounts -->
                     <div class="settings-subsection">
-                        <div class="settings-subsection-title">API Accounts</div>
                         <div id="cloud-accounts-list" class="settings-list"></div>
                         <div class="settings-add-row">
                             <input id="cloud-acct-name" class="settings-input" placeholder="Account name">
@@ -224,9 +222,14 @@
                         </div>
                         <div id="cloud-acct-error" style="display:none;color:#e05060;font-size:12px;margin-top:6px;"></div>
                     </div>
-                    <!-- Sub-section 2: Cloud Models -->
-                    <div class="settings-subsection" id="cloud-models-subsection">
-                        <div class="settings-subsection-title">Cloud Models</div>
+                </div>
+                <!-- Section 2: Ollama Cloud Models -->
+                <div class="settings-section" id="cloud-models-section">
+                    <div class="settings-section-title">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>
+                        Ollama Cloud Models
+                    </div>
+                    <div class="settings-subsection">
                         <div id="cloud-models-list" class="settings-list"></div>
                         <div class="settings-search-wrap">
                             <input id="cloud-model-search" class="settings-input" placeholder="Search or type model name...">
@@ -235,14 +238,13 @@
                         </div>
                     </div>
                 </div>
-                <!-- Section 2: Ollama Local -->
+                <!-- Section 3: Ollama Local Models -->
                 <div class="settings-section">
                     <div class="settings-section-title">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-                        Ollama Local
+                        Ollama Local Models
                     </div>
                     <div class="settings-subsection">
-                        <div class="settings-subsection-title">Endpoint URL</div>
                         <div class="settings-add-row">
                             <input id="settings-ollama-url" class="settings-input" placeholder="http://localhost:11434" style="flex:3">
                             <button class="settings-add-btn" id="settings-ollama-url-save">Save</button>

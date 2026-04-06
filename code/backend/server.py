@@ -148,6 +148,13 @@ def parse_multipart(rfile, content_type, content_length):
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
 
+    def _get_local_endpoint(self):
+        with sqlite3.connect(DB) as c:
+            row = c.execute('SELECT value FROM settings WHERE key=?', ('admin_cloud_settings',)).fetchone()
+        data = json.loads(row[0]) if row else {}
+        ep = data.get('ollamaEndpoint', '').rstrip('/')
+        return ep if ep else 'http://127.0.0.1:11434'
+
     def send_json(self, code, data):
         body = json.dumps(data).encode()
         self.send_response(code)
@@ -185,6 +192,28 @@ class H(BaseHTTPRequestHandler):
 
     def do_GET(self):
         p = urlparse(self.path).path
+
+        if p.startswith('/local-api/'):
+            sub = p[len('/local-api/'):]
+            endpoint = self._get_local_endpoint()
+            parsed = urlparse(endpoint)
+            host = parsed.hostname
+            port = parsed.port or (443 if parsed.scheme == 'https' else 80)
+            try:
+                ConnClass = http.client.HTTPSConnection if parsed.scheme == 'https' else http.client.HTTPConnection
+                conn = ConnClass(host, port, timeout=10)
+                conn.request('GET', '/api/' + sub)
+                resp = conn.getresponse()
+                body = resp.read()
+                conn.close()
+                self.send_response(resp.status)
+                self.send_header('Content-Type', resp.getheader('Content-Type', 'application/json'))
+                self.send_header('Content-Length', len(body))
+                self.end_headers()
+                self.wfile.write(body)
+            except Exception as e:
+                self.send_json(500, {'error': str(e)})
+            return
 
         if p == '/auth/me':
             user = self.get_auth_user()
@@ -429,6 +458,45 @@ class H(BaseHTTPRequestHandler):
             self.send_json(200, {'ok': True})
             return
 
+        if p.startswith('/local-api/'):
+            sub = p[len('/local-api/'):]
+            endpoint = self._get_local_endpoint()
+            parsed = urlparse(endpoint)
+            host = parsed.hostname
+            port = parsed.port or (443 if parsed.scheme == 'https' else 80)
+            content_len = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_len) if content_len else b''
+            try:
+                ConnClass = http.client.HTTPSConnection if parsed.scheme == 'https' else http.client.HTTPConnection
+                conn = ConnClass(host, port, timeout=None)
+                conn.request('POST', '/api/' + sub, body=body, headers={
+                    'Content-Type': 'application/json',
+                })
+                resp = conn.getresponse()
+                self.send_response(resp.status)
+                self.send_header('Content-Type', resp.getheader('Content-Type', 'application/x-ndjson'))
+                self.end_headers()
+                try:
+                    while True:
+                        chunk = resp.read(4096)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                        self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError, socket.timeout):
+                    pass
+                finally:
+                    conn.close()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            except Exception as e:
+                log(f'[LOCAL-API] ERROR: {e}')
+                try:
+                    self.send_json(500, {'error': str(e)})
+                except Exception:
+                    pass
+            return
+
         user = self.require_auth()
         if not user:
             return
@@ -606,7 +674,7 @@ class H(BaseHTTPRequestHandler):
                 self.send_json(403, {'error': 'Forbidden'})
                 return
             d = self.body()
-            allowed = {k: d[k] for k in ('accounts', 'cloudModels') if k in d}
+            allowed = {k: d[k] for k in ('accounts', 'cloudModels', 'ollamaEndpoint') if k in d}
             with sqlite3.connect(DB) as c:
                 c.execute('INSERT OR REPLACE INTO settings (key, value) VALUES (?,?)',
                           ('admin_cloud_settings', json.dumps(allowed)))

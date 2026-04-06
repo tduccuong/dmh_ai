@@ -321,6 +321,7 @@ const RECOMMENDED_CLOUD_MODEL_NAMES = ['ministral-3:14b-cloud', 'qwen3-vl:235b-i
 const Settings = {
     _accounts: [],
     _cloudModels: [],
+    _ollamaEndpoint: '',
     get accounts() { return this._accounts; },
     get cloudModels() { return this._cloudModels; },
     saveAccounts: function(list) {
@@ -331,11 +332,15 @@ const Settings = {
         this._cloudModels = list;
         this._persist();
     },
+    saveOllamaEndpoint: function(url) {
+        this._ollamaEndpoint = url || '';
+        AppConfig.saveOllamaEndpoint(url);
+    },
     _persist: function() {
         apiFetch('/admin/settings', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ accounts: this._accounts, cloudModels: this._cloudModels })
+            body: JSON.stringify({ accounts: this._accounts, cloudModels: this._cloudModels, ollamaEndpoint: this._ollamaEndpoint })
         }).catch(function() {});
     },
     load: async function() {
@@ -345,6 +350,11 @@ const Settings = {
                 const d = await res.json();
                 this._accounts = Array.isArray(d.accounts) ? d.accounts : [];
                 this._cloudModels = Array.isArray(d.cloudModels) ? d.cloudModels : [];
+                if (d.ollamaEndpoint !== undefined) {
+                    this._ollamaEndpoint = d.ollamaEndpoint || '';
+                    AppConfig.saveOllamaEndpoint(this._ollamaEndpoint);
+                    OllamaAPI.setEndpoint(this._ollamaEndpoint);
+                }
             }
         } catch(e) {}
     }
@@ -408,7 +418,7 @@ const SettingsModal = {
         });
     },
     _updateSubsectionState: function() {
-        var sub = document.getElementById('cloud-models-subsection');
+        var sub = document.getElementById('cloud-models-section');
         var hasAccounts = Settings.accounts.length > 0;
         sub.classList.toggle('disabled', !hasAccounts);
     },
@@ -525,8 +535,7 @@ const SettingsModal = {
         // Local Ollama URL save
         document.getElementById('settings-ollama-url-save').addEventListener('click', function() {
             var url = document.getElementById('settings-ollama-url').value.trim();
-            AppConfig.saveOllamaEndpoint(url);
-            UIManager.updateEndpoint();
+            UIManager.updateEndpoint(url);
         });
     }
 };
@@ -935,7 +944,7 @@ const OllamaAPI = {
     endpoint: '',
     contextWindowCache: {},
     capabilityCache: {},
-    get BASE_URL() { return this.endpoint ? this.endpoint + '/api' : '/api'; },
+    get BASE_URL() { return this.endpoint ? '/local-api' : '/api'; },
     setEndpoint: function(url) {
         this.endpoint = url.replace(/\/+$/, '');
         this.contextWindowCache = {};
@@ -1725,7 +1734,18 @@ const UIManager = {
             const models = await OllamaAPI.fetchModels();
             this.populateModelSelects(models);
         } catch (e) {
-            this.showError(t('cannotConnectFull'));
+            if (OllamaAPI.endpoint) {
+                // Custom endpoint unreachable — fall back to default /api so local models still appear
+                OllamaAPI.setEndpoint('');
+                try {
+                    const models = await OllamaAPI.fetchModels();
+                    this.populateModelSelects(models);
+                } catch (e2) {
+                    this.showError(t('cannotConnectFull'));
+                }
+            } else {
+                this.showError(t('cannotConnectFull'));
+            }
         }
 
         try {
@@ -2281,12 +2301,24 @@ const UIManager = {
         this._pendingSession = null;
     },
 
-    updateEndpoint: async function() {
-        const url = AppConfig.ollamaEndpoint;
-        if (!url) return;
+    updateEndpoint: async function(url) {
         OllamaAPI.setEndpoint(url);
+        AppConfig.saveOllamaEndpoint(url);
+        if (!url) {
+            // Cleared: wipe from DB and refresh using /api
+            Settings._ollamaEndpoint = '';
+            Settings._persist();
+            try {
+                var models = await OllamaAPI.fetchModels();
+                this.populateModelSelects(models);
+            } catch(e) {}
+            return;
+        }
         try {
             const models = await OllamaAPI.fetchModels();
+            // Connection succeeded: persist to DB
+            Settings._ollamaEndpoint = url;
+            Settings._persist();
             const currentModel = this.currentSession ? this.currentSession.model : null;
             this.populateModelSelects(models);
             const names = models.map(function(m) { return m.name; });
@@ -2296,6 +2328,10 @@ const UIManager = {
                 this.switchModel(models[0].name);
             }
         } catch (e) {
+            // Connection failed: revert and do NOT save to DB
+            var prevEndpoint = Settings._ollamaEndpoint;
+            OllamaAPI.setEndpoint(prevEndpoint);
+            AppConfig.saveOllamaEndpoint(prevEndpoint);
             this.showError(t('cannotConnectTo') + url);
         }
     },
