@@ -113,6 +113,7 @@ Das war's. Drei empfohlene Modelle erscheinen sofort oben in der Modellauswahl �
 - 👁 **Schnelle Antwort** — schnelle Reaktionen für alltägliche Fragen
 - ✍ **Wortschmied** — hervorragend beim Schreiben: E-Mails, Essays, Literatur, kreative Texte
 - 💡 **Tiefes Denken** — langsamer, aber gründlicher; ideal für komplexe Fragen und Bildanalyse
+- 🧮 **Mathe-Meister** — optimiert für Mathematik, Logik und Schlussfolgerungen
 
 ---
 
@@ -189,7 +190,7 @@ Ein oder mehrere Konten (Bezeichnung + API-Schlüssel) hinzufügen. DMH-AI wechs
 
 **Ollama Cloud — Empfohlene Modelle**
 
-Sobald mindestens ein Konto vorhanden ist, erscheinen drei Modelle automatisch oben in der Modellauswahl — ohne weitere Konfiguration: **Schnelle Antwort**, **Wortschmied** und **Tiefes Denken**.
+Sobald mindestens ein Konto vorhanden ist, erscheinen vier Modelle automatisch oben in der Modellauswahl — ohne weitere Konfiguration: **Schnelle Antwort**, **Wortschmied**, **Tiefes Denken** und **Mathe-Meister**.
 
 **Ollama Cloud — Cloud-Modelle**
 

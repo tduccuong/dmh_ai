@@ -113,6 +113,7 @@ Xong. Ba mô hình được đề xuất xuất hiện ngay ở đầu danh sác
 - 👁 **Trả lời nhanh** — phản hồi nhanh cho câu hỏi hằng ngày
 - ✍ **Nhà văn** — xuất sắc về viết lách: email, bài luận, văn học, văn bản sáng tạo
 - 💡 **Suy luận sâu** — chậm hơn nhưng kỹ hơn; tốt cho câu hỏi phức tạp, phân tích hình ảnh
+- 🧮 **Toán học** — tối ưu cho toán học, logic và suy luận
 
 ---
 
@@ -189,7 +190,7 @@ Thêm một hoặc nhiều tài khoản (nhãn + API key). DMH-AI tự động l
 
 **Ollama Cloud — Mô hình được đề xuất**
 
-Khi có ít nhất một tài khoản, ba mô hình tự động xuất hiện ở đầu danh sách chọn mô hình — không cần cấu hình thêm: **Trả lời nhanh**, **Nhà văn** và **Suy luận sâu**.
+Khi có ít nhất một tài khoản, bốn mô hình tự động xuất hiện ở đầu danh sách chọn mô hình — không cần cấu hình thêm: **Trả lời nhanh**, **Nhà văn**, **Suy luận sâu** và **Toán học**.
 
 **Ollama Cloud — Mô hình Cloud**
 

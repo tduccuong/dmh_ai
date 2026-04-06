@@ -375,7 +375,7 @@ class H(BaseHTTPRequestHandler):
                         'https://r.jina.ai/' + url,
                         headers={'User-Agent': 'Mozilla/5.0', 'Accept': 'text/plain', 'X-No-Cache': 'true'}
                     )
-                    with urllib.request.urlopen(jina_req, timeout=10) as resp:
+                    with urllib.request.urlopen(jina_req, timeout=5) as resp:
                         jina_text = resp.read(200000).decode('utf-8', errors='replace')
                         if len(jina_text) >= 500:
                             text = jina_text

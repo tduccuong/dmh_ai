@@ -55,7 +55,7 @@ const I18n = {
             pwWarning: '⚠ You are using the default password. Please change it now.',
             pwWarningBtn: 'Change password',
             settings: 'Settings',
-            recQuickAnswer: '👁 Quick Answer', recDeepThinker: '💡 Deep Thinker', recTechExpert: '🛠 Technical Expert', recWordsmith: '✍ Wordsmith',
+            recQuickAnswer: '👁 Quick Answer', recDeepThinker: '💡 Deep Thinker', recTechExpert: '🛠 Technical Expert', recWordsmith: '✍ Wordsmith', recMathMaster: '🧮 Math Master',
             noModelAvail: 'No model available. Please configure a model in Settings first.',
         },
         vi: {
@@ -91,7 +91,7 @@ const I18n = {
             pwWarning: '⚠ Bạn đang dùng mật khẩu mặc định. Hãy đổi mật khẩu ngay.',
             pwWarningBtn: 'Đổi mật khẩu',
             settings: 'Cài đặt',
-            recQuickAnswer: '👁 Trả lời nhanh', recDeepThinker: '💡 Suy nghĩ sâu', recTechExpert: '🛠 Chuyên gia kỹ thuật', recWordsmith: '✍ Nhà văn',
+            recQuickAnswer: '👁 Trả lời nhanh', recDeepThinker: '💡 Suy nghĩ sâu', recTechExpert: '🛠 Chuyên gia kỹ thuật', recWordsmith: '✍ Nhà văn', recMathMaster: '🧮 Toán học',
             noModelAvail: 'Không có mô hình nào. Vui lòng cấu hình trong Cài đặt trước.',
         },
         de: {
@@ -127,7 +127,7 @@ const I18n = {
             pwWarning: '⚠ Sie verwenden noch das Standardpasswort. Bitte jetzt ändern.',
             pwWarningBtn: 'Passwort ändern',
             settings: 'Einstellungen',
-            recQuickAnswer: '👁 Schnelle Antwort', recDeepThinker: '💡 Tiefdenker', recTechExpert: '🛠 Technischer Experte', recWordsmith: '✍ Wortschmied',
+            recQuickAnswer: '👁 Schnelle Antwort', recDeepThinker: '💡 Tiefdenker', recTechExpert: '🛠 Technischer Experte', recWordsmith: '✍ Wortschmied', recMathMaster: '🧮 Mathe-Meister',
             noModelAvail: 'Kein Modell verfügbar. Bitte zuerst in den Einstellungen konfigurieren.',
         },
         es: {
@@ -163,7 +163,7 @@ const I18n = {
             pwWarning: '⚠ Está usando la contraseña predeterminada. Cámbiela ahora.',
             pwWarningBtn: 'Cambiar contraseña',
             settings: 'Configuración',
-            recQuickAnswer: '👁 Respuesta rápida', recDeepThinker: '💡 Pensador profundo', recTechExpert: '🛠 Experto técnico', recWordsmith: '✍ Plumista',
+            recQuickAnswer: '👁 Respuesta rápida', recDeepThinker: '💡 Pensador profundo', recTechExpert: '🛠 Experto técnico', recWordsmith: '✍ Plumista', recMathMaster: '🧮 Maestro Matemático',
             noModelAvail: 'Ningún modelo disponible. Configure uno en Ajustes primero.',
         },
         fr: {
@@ -199,7 +199,7 @@ const I18n = {
             pwWarning: '⚠ Vous utilisez le mot de passe par défaut. Veuillez le changer maintenant.',
             pwWarningBtn: 'Changer le mot de passe',
             settings: 'Paramètres',
-            recQuickAnswer: '👁 Réponse rapide', recDeepThinker: '💡 Réflexion profonde', recTechExpert: '🛠 Expert technique', recWordsmith: '✍ Plume',
+            recQuickAnswer: '👁 Réponse rapide', recDeepThinker: '💡 Réflexion profonde', recTechExpert: '🛠 Expert technique', recWordsmith: '✍ Plume', recMathMaster: '🧮 Maître des maths',
             noModelAvail: 'Aucun modèle disponible. Veuillez d\'abord en configurer un dans les Paramètres.',
         }
     },
@@ -313,10 +313,11 @@ function getRecommendedCloudModels() {
         { name: 'ministral-3:14b-cloud',          label: t('recQuickAnswer') },
         { name: 'gemma4:31b-cloud',               label: t('recWordsmith') },
         { name: 'qwen3-vl:235b-instruct-cloud',   label: t('recDeepThinker') },
+        { name: 'qwen3-vl:235b-cloud',            label: t('recMathMaster') },
     ];
 }
 // Constant names for filtering (language-independent)
-const RECOMMENDED_CLOUD_MODEL_NAMES = ['ministral-3:14b-cloud', 'qwen3-vl:235b-instruct-cloud', 'gemma4:31b-cloud'];
+const RECOMMENDED_CLOUD_MODEL_NAMES = ['ministral-3:14b-cloud', 'qwen3-vl:235b-instruct-cloud', 'gemma4:31b-cloud', 'qwen3-vl:235b-cloud'];
 
 const Settings = {
     _accounts: [],
