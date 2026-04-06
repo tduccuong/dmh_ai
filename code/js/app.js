@@ -54,7 +54,7 @@ const I18n = {
             iosCertHint: 'To avoid the certificate warning: tap here to install the certificate, then go to Settings → General → About → Certificate Trust Settings and enable it.',
             pwWarning: '⚠ You are using the default password. Please change it now.',
             pwWarningBtn: 'Change password',
-            recQuickAnswer: '👁 Quick Answer', recDeepThinker: '💡 Deep Thinker', recTechExpert: '🛠 Technical Expert',
+            recQuickAnswer: '👁 Quick Answer', recDeepThinker: '💡 Deep Thinker', recTechExpert: '🛠 Technical Expert', recWordsmith: '✍ Wordsmith',
             noModelAvail: 'No model available. Please configure a model in Settings first.',
         },
         vi: {
@@ -89,7 +89,7 @@ const I18n = {
             iosCertHint: 'Để bỏ cảnh báo chứng chỉ: nhấn đây để cài chứng chỉ, rồi vào Cài đặt → Cài đặt chung → Giới thiệu → Cài đặt tin cậy chứng chỉ và bật lên.',
             pwWarning: '⚠ Bạn đang dùng mật khẩu mặc định. Hãy đổi mật khẩu ngay.',
             pwWarningBtn: 'Đổi mật khẩu',
-            recQuickAnswer: '👁 Trả lời nhanh', recDeepThinker: '💡 Suy nghĩ sâu', recTechExpert: '🛠 Chuyên gia kỹ thuật',
+            recQuickAnswer: '👁 Trả lời nhanh', recDeepThinker: '💡 Suy nghĩ sâu', recTechExpert: '🛠 Chuyên gia kỹ thuật', recWordsmith: '✍ Nhà văn',
             noModelAvail: 'Không có mô hình nào. Vui lòng cấu hình trong Cài đặt trước.',
         },
         de: {
@@ -124,7 +124,7 @@ const I18n = {
             iosCertHint: 'Um die Zertifikatwarnung zu vermeiden: hier tippen zum Installieren, dann Einstellungen → Allgemein → Info → Zertifikat-Vertrauenseinstellungen und aktivieren.',
             pwWarning: '⚠ Sie verwenden noch das Standardpasswort. Bitte jetzt ändern.',
             pwWarningBtn: 'Passwort ändern',
-            recQuickAnswer: '👁 Schnelle Antwort', recDeepThinker: '💡 Tiefdenker', recTechExpert: '🛠 Technischer Experte',
+            recQuickAnswer: '👁 Schnelle Antwort', recDeepThinker: '💡 Tiefdenker', recTechExpert: '🛠 Technischer Experte', recWordsmith: '✍ Wortschmied',
             noModelAvail: 'Kein Modell verfügbar. Bitte zuerst in den Einstellungen konfigurieren.',
         },
         es: {
@@ -159,7 +159,7 @@ const I18n = {
             iosCertHint: 'Para evitar la advertencia: toca aquí para instalar el certificado, luego ve a Ajustes → General → Información → Configuración de confianza de certificados y actívalo.',
             pwWarning: '⚠ Está usando la contraseña predeterminada. Cámbiela ahora.',
             pwWarningBtn: 'Cambiar contraseña',
-            recQuickAnswer: '👁 Respuesta rápida', recDeepThinker: '💡 Pensador profundo', recTechExpert: '🛠 Experto técnico',
+            recQuickAnswer: '👁 Respuesta rápida', recDeepThinker: '💡 Pensador profundo', recTechExpert: '🛠 Experto técnico', recWordsmith: '✍ Plumista',
             noModelAvail: 'Ningún modelo disponible. Configure uno en Ajustes primero.',
         },
         fr: {
@@ -194,7 +194,7 @@ const I18n = {
             iosCertHint: 'Pour éviter l\'avertissement : appuyez ici pour installer le certificat, puis Réglages → Général → À propos → Réglages de confiance des certificats et activez.',
             pwWarning: '⚠ Vous utilisez le mot de passe par défaut. Veuillez le changer maintenant.',
             pwWarningBtn: 'Changer le mot de passe',
-            recQuickAnswer: '👁 Réponse rapide', recDeepThinker: '💡 Réflexion profonde', recTechExpert: '🛠 Expert technique',
+            recQuickAnswer: '👁 Réponse rapide', recDeepThinker: '💡 Réflexion profonde', recTechExpert: '🛠 Expert technique', recWordsmith: '✍ Plume',
             noModelAvail: 'Aucun modèle disponible. Veuillez d\'abord en configurer un dans les Paramètres.',
         }
     },
@@ -306,11 +306,12 @@ const AppConfig = {
 function getRecommendedCloudModels() {
     return [
         { name: 'ministral-3:14b-cloud',          label: t('recQuickAnswer') },
-        { name: 'qwen3-vl:235b-instruct-cloud',  label: t('recDeepThinker') },
+        { name: 'gemma4:31b-cloud',               label: t('recWordsmith') },
+        { name: 'qwen3-vl:235b-instruct-cloud',   label: t('recDeepThinker') },
     ];
 }
 // Constant names for filtering (language-independent)
-const RECOMMENDED_CLOUD_MODEL_NAMES = ['ministral-3:14b-cloud', 'qwen3-vl:235b-instruct-cloud'];
+const RECOMMENDED_CLOUD_MODEL_NAMES = ['ministral-3:14b-cloud', 'qwen3-vl:235b-instruct-cloud', 'gemma4:31b-cloud'];
 
 const Settings = {
     _accounts: [],
@@ -1313,7 +1314,7 @@ const UIManager = {
         document.getElementById('sidebar-settings-btn').addEventListener('click', function() { SettingsModal.open(); });
         document.getElementById('send-btn').addEventListener('click', function() { self.sendMessage(); });
         document.getElementById('message-input').addEventListener('keydown', function(e) {
-            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (!self.isStreaming) self.sendMessage(); }
+            if (e.key === 'Enter' && e.ctrlKey) { e.preventDefault(); if (!self.isStreaming) self.sendMessage(); }
         });
         document.getElementById('message-input').addEventListener('input', function() {
             this.style.height = 'auto';
@@ -2437,9 +2438,9 @@ const UIManager = {
         try {
             var contextBlock = '';
             if (recentMsgs && recentMsgs.length > 0) {
-                contextBlock = 'Recent conversation:\n' + recentMsgs.map(function(m) {
+                contextBlock = 'Conversation so far:\n' + recentMsgs.map(function(m) {
                     var text = typeof m.content === 'string' ? m.content : (Array.isArray(m.content) ? m.content.filter(function(p) { return p.type === 'text'; }).map(function(p) { return p.text; }).join(' ') : '');
-                    return (m.role === 'user' ? 'User: ' : 'Assistant: ') + text.slice(0, 300);
+                    return (m.role === 'user' ? 'User: ' : 'Assistant: ') + text.slice(0, 400);
                 }).join('\n') + '\n\n';
             }
             var body = {
@@ -2447,7 +2448,18 @@ const UIManager = {
                 stream: false,
                 think: false,
                 options: { temperature: 0, num_predict: 300, think: false },
-                prompt: contextBlock + 'New message: ' + userMessage + '\n\nDoes answering this message require a live web search to get current or recent information that you cannot reliably know from training data?\n\nAnswer YES if any of these apply:\n- Breaking news, current events, live scores, current prices, stock values, today\'s weather\n- A specific named product, tool, software, or system you are not confident you know well — when in doubt about a specific named thing, answer YES\n- A person\'s current status, recent actions, or latest work\n\nAnswer NO for everything else — including: science and how things work, history, math and logic, geography, general knowledge, explanations of well-known concepts, opinions or debates, coding help, writing help.\n\nKey rule: general topics → NO; specific named things you might not know → YES.\n\nReply with YES or NO only.\n\nAnswer:'
+                prompt: contextBlock +
+                    'New message: ' + userMessage + '\n\n' +
+                    'Should this message be answered with a live web search?\n\n' +
+                    'Answer YES if any of these apply:\n' +
+                    '- The user explicitly asks for "current", "latest", "up-to-date", "this year" information — in any language (aktuell, dieses Jahr, derzeit, actuel, cette année, actualmente, hiện tại, năm nay, etc.)\n' +
+                    '- The topic involves figures that change year-to-year: tax rates, salary tables, laws, regulations, prices, statistics\n' +
+                    '- Breaking news, live scores, current prices, stock values, today\'s weather\n' +
+                    '- A specific named product, tool, software, or system the assistant may not know well or that may have been released recently\n' +
+                    '- The user implies the previous answer was outdated or asks for fresher data\n' +
+                    '- A person\'s current status, recent actions, or latest work\n\n' +
+                    'Answer NO for: science/how things work, history, math/logic, geography, well-known concepts, opinions/debates, coding help, writing help — anything well-covered by training data where the user is not asking for current figures.\n\n' +
+                    'Reply with YES or NO only.\n\nAnswer:'
             };
             if (images && images.length > 0) body.images = images;
             syslog('[DETECT] model=' + body.model + ' isCloud=' + isCloudModel(body.model) + ' msg=' + userMessage.slice(0, 80));
@@ -2471,33 +2483,55 @@ const UIManager = {
         } catch (e) { syslog('[DETECT] error=' + e.message); return false; }
     },
 
-    _buildBaseQuery: function(userMessage) {
+    _buildBaseQuery: function(userMessage, recentMsgs) {
         var year = new Date().getFullYear();
         var keywords = StopWords.extractKeywords(userMessage);
+        // If the current message is too short to be a useful query (< 3 keywords),
+        // augment with keywords from the most recent prior user message for context.
+        if (keywords.split(/\s+/).filter(Boolean).length < 3 && recentMsgs && recentMsgs.length > 0) {
+            var priorUser = null;
+            for (var i = recentMsgs.length - 1; i >= 0; i--) {
+                if (recentMsgs[i].role === 'user') { priorUser = recentMsgs[i]; break; }
+            }
+            if (priorUser) {
+                var priorText = typeof priorUser.content === 'string' ? priorUser.content
+                    : (Array.isArray(priorUser.content) ? priorUser.content.filter(function(p) { return p.type === 'text'; }).map(function(p) { return p.text; }).join(' ') : '');
+                var priorKeywords = StopWords.extractKeywords(priorText);
+                if (priorKeywords) keywords = (priorKeywords + ' ' + keywords).trim();
+            }
+        }
         return keywords.indexOf(String(year)) === -1 ? keywords + ' ' + year : keywords;
     },
 
-    getSearchQueries: async function(userMessage, signal) {
-        const baseQuery = this._buildBaseQuery(userMessage);
+    getSearchQueries: async function(userMessage, recentMsgs, signal) {
+        const baseQuery = this._buildBaseQuery(userMessage, recentMsgs);
         try {
             const model = this.currentSession.model;
+            var contextBlock = '';
+            if (recentMsgs && recentMsgs.length > 0) {
+                contextBlock = 'Conversation context:\n' + recentMsgs.map(function(m) {
+                    var text = typeof m.content === 'string' ? m.content : (Array.isArray(m.content) ? m.content.filter(function(p) { return p.type === 'text'; }).map(function(p) { return p.text; }).join(' ') : '');
+                    return (m.role === 'user' ? 'User: ' : 'Assistant: ') + text.slice(0, 300);
+                }).join('\n') + '\n\n';
+            }
             const res = await cloudRoutedFetch(model, '/generate', {
                     model: model,
                     stream: false,
                     think: false,
                     options: { temperature: 0 },
                     prompt:
-                        'Generate 1-2 keyword search queries based on the base query below.\n' +
+                        contextBlock +
+                        'Current request: "' + userMessage + '"\n' +
+                        'Base query: "' + baseQuery + '"\n\n' +
+                        'Generate 1-2 keyword search queries to find current information for the above request.\n' +
                         'Rules:\n' +
                         '- Keyword-style only: NO sentences, NO filler words (für, mit, und, the, de, pour…), NO connectives\n' +
                         '- 4-8 words max per query — same compact style as the base query\n' +
-                        '- Use synonyms for the main topic words only (e.g. Rucksack → Schulranzen, backpack → school bag)\n' +
+                        '- Use synonyms for the main topic words only\n' +
                         '- Keep ALL proper names, brand names, and product names exactly as-is\n' +
                         '- Always include the year ' + new Date().getFullYear() + '\n' +
-                        '- Reply in the SAME language as the base query\n' +
-                        '- Reply with one query per line. No numbering, no explanation.\n\n' +
-                        'Base query: "' + baseQuery + '"\n' +
-                        'Original question: "' + userMessage + '"'
+                        '- Reply in the SAME language as the request\n' +
+                        '- Reply with one query per line. No numbering, no explanation.\n'
                 }, signal);
             const data = await res.json();
             const reply = (data.response || '').trim();
@@ -2693,7 +2727,7 @@ const UIManager = {
         syslog('[SEND] user="' + content.slice(0, 120) + '" needsWebSearch=' + needsWebSearch + ' cleanedQuery="' + cleanedContent + '"');
         if (AppConfig.searxngUrl && needsWebSearch) {
             this.setStatus(t('genKeywords'));
-            const queries = await this.getSearchQueries(cleanedContent, pipelineSignal);
+            const queries = await this.getSearchQueries(cleanedContent, recentMsgs, pipelineSignal);
             if (pipelineSignal.aborted) return;
             syslog('[QUERIES] result="' + (queries ? queries.join(' | ') : 'null') + '"');
             if (queries) {
