@@ -1853,7 +1853,13 @@ const UIManager = {
             ? self._lastUsedModel
             : (hasPool ? recNames[0] : (cloudModelNames.length > 0 ? cloudModelNames[0] : (localModels.length > 0 ? localModels[0].name : '')));
         self._setModelDropdownValue(initial || '');
-        if (initial) document.getElementById('header-model-select').dispatchEvent(new Event('change'));
+        // Update current session model if it differs, but do NOT call switchModel here —
+        // switchModel persists to prefs and would corrupt _lastUsedModel if Settings hasn't loaded yet
+        // (populateModelSelects can be called from applyLanguage before Settings.load completes).
+        if (initial && self.currentSession && self.currentSession.model !== initial) {
+            self.currentSession.model = initial;
+            SessionStore.updateSession(self.currentSession);
+        }
     },
 
     _setModelDropdownValue: function(value) {
@@ -2068,22 +2074,23 @@ const UIManager = {
     },
 
     resizeImage: function(file) {
-        var MAX_PX = 1920;
+        // Keep API payload small — 768px is sufficient for vision models to understand content.
+        // The original full-res file is already stored in user_assets before this is called.
+        var MAX_PX = 768;
         return new Promise(function(resolve) {
             var url = URL.createObjectURL(file);
             var img = new Image();
             img.onload = function() {
                 URL.revokeObjectURL(url);
                 var w = img.naturalWidth, h = img.naturalHeight;
-                if (w <= MAX_PX && h <= MAX_PX) { resolve(file); return; }
-                var scale = MAX_PX / Math.max(w, h);
+                var scale = Math.min(1, MAX_PX / Math.max(w, h));
                 var canvas = document.createElement('canvas');
                 canvas.width = Math.round(w * scale);
                 canvas.height = Math.round(h * scale);
                 canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
                 canvas.toBlob(function(blob) {
                     resolve(new File([blob], file.name, { type: 'image/jpeg' }));
-                }, 'image/jpeg', 0.85);
+                }, 'image/jpeg', 0.82);
             };
             img.src = url;
         });
@@ -2328,6 +2335,7 @@ const UIManager = {
     getDefaultModel: function() {
         const sel = document.getElementById('header-model-select');
         const activeOptions = Array.from(sel.options).map(function(o) { return o.value; }).filter(Boolean);
+        syslog('[MODEL] getDefaultModel _lastUsedModel=' + this._lastUsedModel + ' activeOptions=' + activeOptions.join(','));
         // User's last-selected model takes priority if still available
         if (this._lastUsedModel && activeOptions.indexOf(this._lastUsedModel) !== -1) {
             return this._lastUsedModel;
@@ -2398,11 +2406,12 @@ const UIManager = {
                 I18n.setLang(prefs.lang);
                 applyLanguage();
             }
-            if (prefs.model) this._lastUsedModel = prefs.model;
+            if (prefs.model) { this._lastUsedModel = prefs.model; syslog('[MODEL] loadPrefs model=' + prefs.model); }
         } catch(e) {}
     },
 
     switchModel: function(modelName) {
+        syslog('[MODEL] switchModel=' + modelName + ' session=' + (this.currentSession ? this.currentSession.id : 'null') + ' caller=' + (new Error().stack || '').split('\n')[2]);
         if (this.currentSession) {
             this.currentSession.model = modelName;
             SessionStore.updateSession(this.currentSession);
@@ -2438,7 +2447,7 @@ const UIManager = {
                 stream: false,
                 think: false,
                 options: { temperature: 0, num_predict: 300, think: false },
-                prompt: contextBlock + 'New message: ' + userMessage + '\n\nDoes this new message benefit from a live web search? Answer YES for: current news/events, prices, sports scores, weather, any named software/tool/product/project/company/person (even if the name looks like a common word — e.g. "Arc" could be a browser, "Linear" a project tool, "pi" could be an AI coding assistant, "cursor" a code editor), comparisons between named products or tools, real-world experiences and community opinions ("what did people do", "how do others", "best practices people use"), tips others have shared online, any question about a specific named thing you are not fully confident about, any question where the subject might have changed or been released recently, or any question where up-to-date or crowd-sourced information would improve the answer. When in doubt, answer YES. Answer NO only for: pure math/calculation/logic questions with no named subjects, questions addressed directly to you the AI ("what can you do", "who are you", "help me"), questions about an attached image or file, or simple factual questions fully answered by timeless well-established knowledge (e.g. "what is the capital of France"). Reply in English only with YES or NO.\n\nAnswer:'
+                prompt: contextBlock + 'New message: ' + userMessage + '\n\nDoes answering this message require a live web search to get current or recent information that you cannot reliably know from training data?\n\nAnswer YES if any of these apply:\n- Breaking news, current events, live scores, current prices, stock values, today\'s weather\n- A specific named product, tool, software, or system you are not confident you know well — when in doubt about a specific named thing, answer YES\n- A person\'s current status, recent actions, or latest work\n\nAnswer NO for everything else — including: science and how things work, history, math and logic, geography, general knowledge, explanations of well-known concepts, opinions or debates, coding help, writing help.\n\nKey rule: general topics → NO; specific named things you might not know → YES.\n\nReply with YES or NO only.\n\nAnswer:'
             };
             if (images && images.length > 0) body.images = images;
             syslog('[DETECT] model=' + body.model + ' isCloud=' + isCloudModel(body.model) + ' msg=' + userMessage.slice(0, 80));
@@ -2478,14 +2487,15 @@ const UIManager = {
                     think: false,
                     options: { temperature: 0 },
                     prompt:
-                        'Generate 1-2 search queries that are VARIATIONS of the base query below.\n' +
-                        'Use synonyms or alternative phrasings — keep ALL the same proper names, product names, and topics.\n' +
-                        'Do NOT drop, replace, or reinterpret any word that looks like a name or product.\n' +
+                        'Generate 1-2 keyword search queries based on the base query below.\n' +
                         'Rules:\n' +
-                        '- Do NOT answer the question\n' +
+                        '- Keyword-style only: NO sentences, NO filler words (für, mit, und, the, de, pour…), NO connectives\n' +
+                        '- 4-8 words max per query — same compact style as the base query\n' +
+                        '- Use synonyms for the main topic words only (e.g. Rucksack → Schulranzen, backpack → school bag)\n' +
+                        '- Keep ALL proper names, brand names, and product names exactly as-is\n' +
                         '- Always include the year ' + new Date().getFullYear() + '\n' +
                         '- Reply in the SAME language as the base query\n' +
-                        '- Reply with one search query per line. No numbering, no explanation.\n\n' +
+                        '- Reply with one query per line. No numbering, no explanation.\n\n' +
                         'Base query: "' + baseQuery + '"\n' +
                         'Original question: "' + userMessage + '"'
                 }, signal);
