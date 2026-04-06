@@ -43,7 +43,8 @@ const I18n = {
             searchingWeb: 'Searching the web...',
             fetchingPages: 'Reading web sources...',
             synthesizing: 'Synthesizing results...',
-            thinking: ' is thinking...', answering: ' is answering...',
+            thinking: ' is thinking...', answering: ' is answering...', compacting: 'Compacting conversation...',
+            settingsChatSection: 'Chat', settingsCompactLabel: 'Compact after messages',
             searchUnavail: '⚠ Web search unavailable — answering from model training data, which may be outdated.',
             attaching: 'Preparing attachment...',
             voiceListening: 'Recording... tap to stop',
@@ -79,7 +80,8 @@ const I18n = {
             searchingWeb: 'Đang tìm kiếm web...',
             fetchingPages: 'Đang đọc nguồn web...',
             synthesizing: 'Đang tổng hợp kết quả...',
-            thinking: ' đang suy nghĩ...', answering: ' đang trả lời...',
+            thinking: ' đang suy nghĩ...', answering: ' đang trả lời...', compacting: 'Đang nén hội thoại...',
+            settingsChatSection: 'Chat', settingsCompactLabel: 'Nén sau số tin nhắn',
             searchUnavail: '⚠ Tìm kiếm web không khả dụng — trả lời từ dữ liệu huấn luyện, có thể đã lỗi thời.',
             attaching: 'Đang chuẩn bị tệp đính kèm...',
             voiceListening: 'Đang ghi âm... nhấn để dừng',
@@ -115,7 +117,8 @@ const I18n = {
             searchingWeb: 'Websuche läuft...',
             fetchingPages: 'Web-Quellen werden gelesen...',
             synthesizing: 'Ergebnisse werden zusammengefasst...',
-            thinking: ' denkt nach...', answering: ' antwortet...',
+            thinking: ' denkt nach...', answering: ' antwortet...', compacting: 'Konversation wird komprimiert...',
+            settingsChatSection: 'Chat', settingsCompactLabel: 'Komprimieren nach Nachrichten',
             searchUnavail: '⚠ Websuche nicht verfügbar — Antwort basiert auf Trainingsdaten, möglicherweise veraltet.',
             attaching: 'Anhang wird vorbereitet...',
             voiceListening: 'Aufnahme... tippen zum Stoppen',
@@ -151,7 +154,8 @@ const I18n = {
             searchingWeb: 'Buscando en la web...',
             fetchingPages: 'Leyendo fuentes web...',
             synthesizing: 'Sintetizando resultados...',
-            thinking: ' está pensando...', answering: ' está respondiendo...',
+            thinking: ' está pensando...', answering: ' está respondiendo...', compacting: 'Comprimiendo conversación...',
+            settingsChatSection: 'Chat', settingsCompactLabel: 'Compactar después de mensajes',
             searchUnavail: '⚠ Búsqueda web no disponible — respondiendo con datos de entrenamiento, pueden estar desactualizados.',
             attaching: 'Preparando archivo adjunto...',
             voiceListening: 'Grabando... toca para detener',
@@ -187,7 +191,8 @@ const I18n = {
             searchingWeb: 'Recherche web...',
             fetchingPages: 'Lecture des sources web...',
             synthesizing: 'Synthèse des résultats...',
-            thinking: ' réfléchit...', answering: ' répond...',
+            thinking: ' réfléchit...', answering: ' répond...', compacting: 'Compactage de la conversation...',
+            settingsChatSection: 'Chat', settingsCompactLabel: 'Compacter après messages',
             searchUnavail: '⚠ Recherche web indisponible — réponse basée sur les données d\'entraînement, potentiellement obsolètes.',
             attaching: 'Préparation de la pièce jointe...',
             voiceListening: 'Enregistrement... appuyez pour arrêter',
@@ -328,6 +333,7 @@ const Settings = {
     _accounts: [],
     _cloudModels: [],
     _ollamaEndpoint: '',
+    _compactTurns: 90,
     get accounts() { return this._accounts; },
     get cloudModels() { return this._cloudModels; },
     saveAccounts: function(list) {
@@ -346,7 +352,7 @@ const Settings = {
         apiFetch('/admin/settings', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ accounts: this._accounts, cloudModels: this._cloudModels, ollamaEndpoint: this._ollamaEndpoint })
+            body: JSON.stringify({ accounts: this._accounts, cloudModels: this._cloudModels, ollamaEndpoint: this._ollamaEndpoint, compactTurns: this._compactTurns })
         }).catch(function() {});
     },
     load: async function() {
@@ -361,6 +367,10 @@ const Settings = {
                     AppConfig.saveOllamaEndpoint(this._ollamaEndpoint);
                     OllamaAPI.setEndpoint(this._ollamaEndpoint);
                 }
+                if (d.compactTurns !== undefined) {
+                    this._compactTurns = parseInt(d.compactTurns) || ContextManager.TURN_THRESHOLD;
+                    ContextManager.TURN_THRESHOLD = this._compactTurns;
+                }
             }
         } catch(e) {}
     }
@@ -373,6 +383,7 @@ const SettingsModal = {
         this._renderCloudModels();
         this._updateSubsectionState();
         document.getElementById('settings-ollama-url').value = AppConfig.ollamaEndpoint || '';
+        document.getElementById('settings-compact-turns').value = Settings._compactTurns;
         document.getElementById('settings-overlay').classList.add('open');
     },
     close: function() {
@@ -542,6 +553,14 @@ const SettingsModal = {
         document.getElementById('settings-ollama-url-save').addEventListener('click', function() {
             var url = document.getElementById('settings-ollama-url').value.trim();
             UIManager.updateEndpoint(url);
+        });
+        // Compact turns save
+        document.getElementById('settings-compact-turns-save').addEventListener('click', function() {
+            var val = parseInt(document.getElementById('settings-compact-turns').value);
+            if (!val || val < 10) return;
+            Settings._compactTurns = val;
+            ContextManager.TURN_THRESHOLD = val;
+            Settings._persist();
         });
     }
 };
@@ -1137,8 +1156,19 @@ function prepareForAPI(messages) {
 }
 
 const ContextManager = {
-    COMPACT_THRESHOLD: 0.80,
-    KEEP_RECENT: 6,
+    COMPACT_THRESHOLD: 0.45,
+    TURN_THRESHOLD: 90,
+    KEEP_RECENT: 16, // fallback for unknown model size (8 turns)
+
+    getKeepRecent: function(model) {
+        var m = (model || '').toLowerCase().match(/(\d+(?:\.\d+)?)b/);
+        var params = m ? parseFloat(m[1]) : 0;
+        if (params >= 70) return 12;  // 6 turns
+        if (params >= 20) return 16;  // 8 turns
+        if (params >= 7)  return 20;  // 10 turns
+        if (params > 0)   return 20;  // 10 turns (small local)
+        return 16;                    // 8 turns fallback
+    },
 
     estimateTokens: function(messages) {
         return messages.reduce(function(sum, m) {
@@ -1157,6 +1187,10 @@ const ContextManager = {
     },
 
     shouldCompact: function(session, contextWindow, pendingContent) {
+        var ctx = session.context;
+        var summaryUpTo = ctx ? ctx.summaryUpToIndex : -1;
+        var recentCount = session.messages.length - (summaryUpTo + 1);
+        if (recentCount > this.TURN_THRESHOLD) return true;
         var contextMsgs = this.buildContextMessages(session);
         var pendingTokens = Math.ceil((pendingContent || '').length / 4);
         var total = this.estimateTokens(contextMsgs) + pendingTokens;
@@ -1165,7 +1199,7 @@ const ContextManager = {
 
     compact: async function(session) {
         var ctx = session.context || { summary: null, summaryUpToIndex: -1 };
-        var keepFrom = Math.max(0, session.messages.length - this.KEEP_RECENT);
+        var keepFrom = Math.max(0, session.messages.length - this.getKeepRecent(session.model));
         var startFrom = ctx.summaryUpToIndex + 1;
         var toSummarize = session.messages.slice(startFrom, keepFrom);
         if (toSummarize.length === 0) return;
@@ -1210,6 +1244,8 @@ function applyLanguage() {
     document.getElementById('settings-modal-title').textContent = t('settings');
     var userSettingsLabel = document.getElementById('user-settings-label');
     if (userSettingsLabel) userSettingsLabel.textContent = t('settings');
+    document.getElementById('settings-chat-section-title').textContent = t('settingsChatSection');
+    document.getElementById('settings-compact-turns-label').textContent = t('settingsCompactLabel');
     if (typeof UIManager !== 'undefined' && UIManager.refreshModelSelect) {
         UIManager.refreshModelSelect();
     }
@@ -2697,10 +2733,6 @@ const UIManager = {
             this.currentSession.context = { summary: null, summaryUpToIndex: -1, needsNaming: true };
         }
 
-        const contextWindow = await OllamaAPI.fetchContextWindow(this.currentSession.model);
-        if (ContextManager.shouldCompact(this.currentSession, contextWindow, content)) {
-            await ContextManager.compact(this.currentSession);
-        }
 
         var contentForAPI = content;
         var imagesForAPI = [];
@@ -2865,6 +2897,17 @@ const UIManager = {
                     if (sessionAtSend.context && sessionAtSend.context.needsNaming) {
                         self.autoNameSession(sessionAtSend);
                     }
+                    // Background compaction — runs after response, transparent to user
+                    OllamaAPI.fetchContextWindow(sessionAtSend.model).then(function(contextWindow) {
+                        if (ContextManager.shouldCompact(sessionAtSend, contextWindow, '')) {
+                            if (!self.isStreaming) self.setStatus(t('compacting'));
+                            ContextManager.compact(sessionAtSend).then(function() {
+                                if (!self.isStreaming) self.setStatus('');
+                            }).catch(function() {
+                                if (!self.isStreaming) self.setStatus('');
+                            });
+                        }
+                    }).catch(function() {});
                 },
                 function(err) {
                     if (acct && retryCount < maxRetries) {

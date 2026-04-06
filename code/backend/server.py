@@ -674,7 +674,7 @@ class H(BaseHTTPRequestHandler):
                 self.send_json(403, {'error': 'Forbidden'})
                 return
             d = self.body()
-            allowed = {k: d[k] for k in ('accounts', 'cloudModels', 'ollamaEndpoint') if k in d}
+            allowed = {k: d[k] for k in ('accounts', 'cloudModels', 'ollamaEndpoint', 'compactTurns') if k in d}
             with sqlite3.connect(DB) as c:
                 c.execute('INSERT OR REPLACE INTO settings (key, value) VALUES (?,?)',
                           ('admin_cloud_settings', json.dumps(allowed)))
