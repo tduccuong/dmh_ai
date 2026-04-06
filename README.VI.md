@@ -11,8 +11,9 @@ Cả hai chế độ chạy trong cùng một ứng dụng. Bạn có thể chuy
 
 ## Ảnh chụp màn hình
 
-![Phân tích hình ảnh](image-analysis.png)
-![Tìm kiếm web](web-search.png)
+![Mô hình được cài sẵn](preloaded_models.png)
+![Tự động tìm kiếm web](auto_web_search.png)
+![Xem hình ảnh](see_images.png)
 
 ## Tính năng nổi bật
 
@@ -101,6 +102,7 @@ Xong. Ba mô hình được đề xuất xuất hiện ngay ở đầu danh sác
 **Mô hình được đề xuất (dùng ngay, không cần cài thêm):**
 
 - 👁 **Trả lời nhanh** — phản hồi nhanh cho câu hỏi hằng ngày
+- ✍ **Nhà văn** — xuất sắc về viết lách: email, bài luận, văn học, văn bản sáng tạo
 - 💡 **Suy luận sâu** — chậm hơn nhưng kỹ hơn; tốt cho câu hỏi phức tạp, phân tích hình ảnh
 
 ---
@@ -178,7 +180,7 @@ Thêm một hoặc nhiều tài khoản (nhãn + API key). DMH-AI tự động l
 
 **Ollama Cloud — Mô hình được đề xuất**
 
-Khi có ít nhất một tài khoản, ba mô hình tự động xuất hiện ở đầu danh sách chọn mô hình — không cần cấu hình thêm.
+Khi có ít nhất một tài khoản, ba mô hình tự động xuất hiện ở đầu danh sách chọn mô hình — không cần cấu hình thêm: **Trả lời nhanh**, **Nhà văn** và **Suy luận sâu**.
 
 **Ollama Cloud — Mô hình Cloud**
 

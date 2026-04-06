@@ -54,6 +54,7 @@ const I18n = {
             iosCertHint: 'To avoid the certificate warning: tap here to install the certificate, then go to Settings → General → About → Certificate Trust Settings and enable it.',
             pwWarning: '⚠ You are using the default password. Please change it now.',
             pwWarningBtn: 'Change password',
+            settings: 'Settings',
             recQuickAnswer: '👁 Quick Answer', recDeepThinker: '💡 Deep Thinker', recTechExpert: '🛠 Technical Expert', recWordsmith: '✍ Wordsmith',
             noModelAvail: 'No model available. Please configure a model in Settings first.',
         },
@@ -89,6 +90,7 @@ const I18n = {
             iosCertHint: 'Để bỏ cảnh báo chứng chỉ: nhấn đây để cài chứng chỉ, rồi vào Cài đặt → Cài đặt chung → Giới thiệu → Cài đặt tin cậy chứng chỉ và bật lên.',
             pwWarning: '⚠ Bạn đang dùng mật khẩu mặc định. Hãy đổi mật khẩu ngay.',
             pwWarningBtn: 'Đổi mật khẩu',
+            settings: 'Cài đặt',
             recQuickAnswer: '👁 Trả lời nhanh', recDeepThinker: '💡 Suy nghĩ sâu', recTechExpert: '🛠 Chuyên gia kỹ thuật', recWordsmith: '✍ Nhà văn',
             noModelAvail: 'Không có mô hình nào. Vui lòng cấu hình trong Cài đặt trước.',
         },
@@ -124,6 +126,7 @@ const I18n = {
             iosCertHint: 'Um die Zertifikatwarnung zu vermeiden: hier tippen zum Installieren, dann Einstellungen → Allgemein → Info → Zertifikat-Vertrauenseinstellungen und aktivieren.',
             pwWarning: '⚠ Sie verwenden noch das Standardpasswort. Bitte jetzt ändern.',
             pwWarningBtn: 'Passwort ändern',
+            settings: 'Einstellungen',
             recQuickAnswer: '👁 Schnelle Antwort', recDeepThinker: '💡 Tiefdenker', recTechExpert: '🛠 Technischer Experte', recWordsmith: '✍ Wortschmied',
             noModelAvail: 'Kein Modell verfügbar. Bitte zuerst in den Einstellungen konfigurieren.',
         },
@@ -159,6 +162,7 @@ const I18n = {
             iosCertHint: 'Para evitar la advertencia: toca aquí para instalar el certificado, luego ve a Ajustes → General → Información → Configuración de confianza de certificados y actívalo.',
             pwWarning: '⚠ Está usando la contraseña predeterminada. Cámbiela ahora.',
             pwWarningBtn: 'Cambiar contraseña',
+            settings: 'Configuración',
             recQuickAnswer: '👁 Respuesta rápida', recDeepThinker: '💡 Pensador profundo', recTechExpert: '🛠 Experto técnico', recWordsmith: '✍ Plumista',
             noModelAvail: 'Ningún modelo disponible. Configure uno en Ajustes primero.',
         },
@@ -194,6 +198,7 @@ const I18n = {
             iosCertHint: 'Pour éviter l\'avertissement : appuyez ici pour installer le certificat, puis Réglages → Général → À propos → Réglages de confiance des certificats et activez.',
             pwWarning: '⚠ Vous utilisez le mot de passe par défaut. Veuillez le changer maintenant.',
             pwWarningBtn: 'Changer le mot de passe',
+            settings: 'Paramètres',
             recQuickAnswer: '👁 Réponse rapide', recDeepThinker: '💡 Réflexion profonde', recTechExpert: '🛠 Expert technique', recWordsmith: '✍ Plume',
             noModelAvail: 'Aucun modèle disponible. Veuillez d\'abord en configurer un dans les Paramètres.',
         }
@@ -1186,6 +1191,10 @@ function applyLanguage() {
     document.getElementById('modal-cancel').textContent = t('cancel');
     document.getElementById('pw-warning-text').textContent = t('pwWarning');
     document.getElementById('pw-warning-btn').textContent = t('pwWarningBtn');
+    document.getElementById('sidebar-settings-label').textContent = t('settings');
+    document.getElementById('settings-modal-title').textContent = t('settings');
+    var userSettingsLabel = document.getElementById('user-settings-label');
+    if (userSettingsLabel) userSettingsLabel.textContent = t('settings');
     if (typeof UIManager !== 'undefined' && UIManager.refreshModelSelect) {
         UIManager.refreshModelSelect();
     }

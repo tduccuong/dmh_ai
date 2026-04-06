@@ -11,8 +11,9 @@ Both modes work in the same app. You can even switch between them freely.
 
 ## Screenshots
 
-![Image analysis](image-analysis.png)
-![Web search](web-search.png)
+![Preloaded models](preloaded_models.png)
+![Auto web search](auto_web_search.png)
+![See images](see_images.png)
 
 ## What you get
 
@@ -101,6 +102,7 @@ That's it. Three recommended models appear instantly at the top of the model sel
 **Recommended models (ready to use, no extra setup):**
 
 - 👁 **Quick Answer** (`ministral-3:14b-cloud`) — fast responses for everyday questions
+- ✍ **Wordsmith** (`gemma4:31b-cloud`) — excels at writing: emails, essays, literature, creative text
 - 💡 **Deep Thinker** (`qwen3-vl:235b-instruct-cloud`) — slower but more thorough; great for complex questions, image analysis
 
 ---
@@ -178,7 +180,7 @@ Add one or more accounts (label + API key). DMH-AI rotates through all added acc
 
 **Ollama Cloud — Recommended Models**
 
-When at least one account is added, three models appear automatically at the top of the model dropdown with no extra configuration needed.
+When at least one account is added, three models appear automatically at the top of the model dropdown with no extra configuration needed: **Quick Answer**, **Wordsmith**, and **Deep Thinker**.
 
 **Ollama Cloud — Cloud Models**
 

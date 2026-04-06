@@ -11,8 +11,9 @@ Beide Modi funktionieren in derselben App. Sie können jederzeit frei wechseln.
 
 ## Screenshots
 
-![Bildanalyse](image-analysis.png)
-![Websuche](web-search.png)
+![Vorgeladene Modelle](preloaded_models.png)
+![Automatische Websuche](auto_web_search.png)
+![Bilder ansehen](see_images.png)
 
 ## Was Sie bekommen
 
@@ -101,6 +102,7 @@ Das war's. Drei empfohlene Modelle erscheinen sofort oben in der Modellauswahl �
 **Empfohlene Modelle (sofort nutzbar, keine weitere Einrichtung):**
 
 - 👁 **Schnelle Antwort** — schnelle Reaktionen für alltägliche Fragen
+- ✍ **Wortschmied** — hervorragend beim Schreiben: E-Mails, Essays, Literatur, kreative Texte
 - 💡 **Tiefes Denken** — langsamer, aber gründlicher; ideal für komplexe Fragen und Bildanalyse
 
 ---
@@ -178,7 +180,7 @@ Ein oder mehrere Konten (Bezeichnung + API-Schlüssel) hinzufügen. DMH-AI wechs
 
 **Ollama Cloud — Empfohlene Modelle**
 
-Sobald mindestens ein Konto vorhanden ist, erscheinen drei Modelle automatisch oben in der Modellauswahl — ohne weitere Konfiguration.
+Sobald mindestens ein Konto vorhanden ist, erscheinen drei Modelle automatisch oben in der Modellauswahl — ohne weitere Konfiguration: **Schnelle Antwort**, **Wortschmied** und **Tiefes Denken**.
 
 **Ollama Cloud — Cloud-Modelle**
 
