@@ -1,4 +1,12 @@
-marked.use({ gfm: true, breaks: true });
+marked.use({
+    gfm: true,
+    breaks: true,
+    renderer: {
+        link: function(token) {
+            return '<a href="' + token.href + '" target="_blank" rel="noopener noreferrer">' + token.text + '</a>';
+        }
+    }
+});
 
 function renderWithMath(markdown) {
     if (!window.katex) return marked.parse(markdown);
