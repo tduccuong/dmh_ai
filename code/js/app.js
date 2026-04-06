@@ -43,7 +43,7 @@ const I18n = {
             searchingWeb: 'Searching the web...',
             fetchingPages: 'Reading web sources...',
             synthesizing: 'Synthesizing results...',
-            replying: ' replying...',
+            thinking: ' is thinking...', answering: ' is answering...',
             searchUnavail: '⚠ Web search unavailable — answering from model training data, which may be outdated.',
             attaching: 'Preparing attachment...',
             voiceListening: 'Recording... tap to stop',
@@ -79,7 +79,7 @@ const I18n = {
             searchingWeb: 'Đang tìm kiếm web...',
             fetchingPages: 'Đang đọc nguồn web...',
             synthesizing: 'Đang tổng hợp kết quả...',
-            replying: ' đang trả lời...',
+            thinking: ' đang suy nghĩ...', answering: ' đang trả lời...',
             searchUnavail: '⚠ Tìm kiếm web không khả dụng — trả lời từ dữ liệu huấn luyện, có thể đã lỗi thời.',
             attaching: 'Đang chuẩn bị tệp đính kèm...',
             voiceListening: 'Đang ghi âm... nhấn để dừng',
@@ -115,7 +115,7 @@ const I18n = {
             searchingWeb: 'Websuche läuft...',
             fetchingPages: 'Web-Quellen werden gelesen...',
             synthesizing: 'Ergebnisse werden zusammengefasst...',
-            replying: ' antwortet...',
+            thinking: ' denkt nach...', answering: ' antwortet...',
             searchUnavail: '⚠ Websuche nicht verfügbar — Antwort basiert auf Trainingsdaten, möglicherweise veraltet.',
             attaching: 'Anhang wird vorbereitet...',
             voiceListening: 'Aufnahme... tippen zum Stoppen',
@@ -151,7 +151,7 @@ const I18n = {
             searchingWeb: 'Buscando en la web...',
             fetchingPages: 'Leyendo fuentes web...',
             synthesizing: 'Sintetizando resultados...',
-            replying: ' respondiendo...',
+            thinking: ' está pensando...', answering: ' está respondiendo...',
             searchUnavail: '⚠ Búsqueda web no disponible — respondiendo con datos de entrenamiento, pueden estar desactualizados.',
             attaching: 'Preparando archivo adjunto...',
             voiceListening: 'Grabando... toca para detener',
@@ -187,7 +187,7 @@ const I18n = {
             searchingWeb: 'Recherche web...',
             fetchingPages: 'Lecture des sources web...',
             synthesizing: 'Synthèse des résultats...',
-            replying: ' répond...',
+            thinking: ' réfléchit...', answering: ' répond...',
             searchUnavail: '⚠ Recherche web indisponible — réponse basée sur les données d\'entraînement, potentiellement obsolètes.',
             attaching: 'Préparation de la pièce jointe...',
             voiceListening: 'Enregistrement... appuyez pour arrêter',
@@ -318,6 +318,11 @@ function getRecommendedCloudModels() {
 }
 // Constant names for filtering (language-independent)
 const RECOMMENDED_CLOUD_MODEL_NAMES = ['ministral-3:14b-cloud', 'qwen3-vl:235b-instruct-cloud', 'gemma4:31b-cloud', 'qwen3-vl:235b-cloud'];
+
+function getModelDisplayName(model) {
+    var rec = getRecommendedCloudModels().find(function(r) { return r.name === model; });
+    return rec ? rec.label : model;
+}
 
 const Settings = {
     _accounts: [],
@@ -2761,7 +2766,7 @@ const UIManager = {
         document.getElementById('send-btn').disabled = true;
         document.getElementById('stop-label').textContent = t('stopGen');
         document.getElementById('stop-gen-btn').style.display = '';
-        this.setStatus(this.currentSession.model + t('replying'));
+        this.setStatus(getModelDisplayName(this.currentSession.model) + t('thinking'));
 
         let apiMessages = prepareForAPI(ContextManager.buildContextMessages(this.currentSession));
         apiMessages[apiMessages.length - 1] = userMsgForAPI;
@@ -2812,6 +2817,7 @@ const UIManager = {
             }
         }
         let assistantContent = '';
+        let firstChunk = true;
         const searchWarning = bodyDiv.innerHTML;
         const sessionAtSend = this.currentSession;
         self._pendingSession = sessionAtSend;
@@ -2828,6 +2834,10 @@ const UIManager = {
                 sessionAtSend.model,
                 apiMessages,
                 function(chunk) {
+                    if (firstChunk) {
+                        firstChunk = false;
+                        self.setStatus(getModelDisplayName(sessionAtSend.model) + t('answering'));
+                    }
                     assistantContent += chunk;
                     self._pendingContent = assistantContent;
                     if (self.currentSession === sessionAtSend) {
