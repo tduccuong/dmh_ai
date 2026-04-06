@@ -2650,26 +2650,32 @@ const UIManager = {
                         '- Keep ALL proper names, brand names, and product names exactly as-is\n' +
                         '- Always include the year ' + new Date().getFullYear() + '\n' +
                         '- Reply in the SAME language as the request\n' +
-                        '- Reply with one query per line. No numbering, no explanation.\n'
+                        '- First line: LANG:xx where xx is the ISO 639-1 language code of the request (e.g. en, vi, de, fr, es). Then one query per line. No numbering, no explanation.\n'
                 }, signal);
             const data = await res.json();
             const reply = (data.response || '').trim();
-            const variations = reply.length
-                ? reply.split('\n')
+            var lang = 'auto';
+            var lines = reply.split('\n').map(function(s) { return s.trim(); }).filter(Boolean);
+            if (lines.length > 0 && /^LANG:[a-z]{2}$/i.test(lines[0])) {
+                lang = lines[0].split(':')[1].toLowerCase();
+                lines = lines.slice(1);
+            }
+            const variations = lines.length
+                ? lines
                     .map(function(s) { return s.replace(/^[\d\.\-\*\s]+/, '').replace(/['"*]/g, '').trim(); })
                     .filter(Boolean)
                     .slice(0, 2)
                 : [];
             // Base query always first — guaranteed accurate
-            return [baseQuery].concat(variations);
+            return { queries: [baseQuery].concat(variations), lang: lang };
         } catch (e) {
-            return [baseQuery];
+            return { queries: [baseQuery], lang: 'auto' };
         }
     },
 
-    searchWebRaw: async function(keywords, signal) {
+    searchWebRaw: async function(keywords, lang, signal) {
         try {
-            const url = '/search?q=' + encodeURIComponent(keywords) + '&engine=' + encodeURIComponent(AppConfig.searxngUrl);
+            const url = '/search?q=' + encodeURIComponent(keywords) + '&lang=' + encodeURIComponent(lang || 'auto') + '&engine=' + encodeURIComponent(AppConfig.searxngUrl);
             const res = await apiFetch(url, { signal: signal });
             if (!res.ok) return [];
             const data = await res.json();
@@ -2690,8 +2696,8 @@ const UIManager = {
         }).filter(Boolean).join('\n\n');
     },
 
-    searchWebParallel: async function(queries, signal) {
-        const arrays = await Promise.all(queries.map(function(q) { return this.searchWebRaw(q, signal); }, this));
+    searchWebParallel: async function(queries, lang, signal) {
+        const arrays = await Promise.all(queries.map(function(q) { return this.searchWebRaw(q, lang, signal); }, this));
         const seen = new Set();
         const merged = [];
         arrays.forEach(function(arr) {
@@ -2853,12 +2859,14 @@ const UIManager = {
         syslog('[SEND] user="' + content.slice(0, 120) + '" needsWebSearch=' + needsWebSearch + ' cleanedQuery="' + cleanedContent + '"');
         if (AppConfig.searxngUrl && needsWebSearch) {
             this.setStatus(t('genKeywords'));
-            const queries = await this.getSearchQueries(cleanedContent, recentMsgs, pipelineSignal);
+            const queryResult = await this.getSearchQueries(cleanedContent, recentMsgs, pipelineSignal);
             if (pipelineSignal.aborted) return;
-            syslog('[QUERIES] result="' + (queries ? queries.join(' | ') : 'null') + '"');
+            const queries = queryResult.queries;
+            const queryLang = queryResult.lang;
+            syslog('[QUERIES] lang=' + queryLang + ' result="' + (queries ? queries.join(' | ') : 'null') + '"');
             if (queries) {
                 this.setStatus(t('searchingWeb'));
-                const allRaw = await this.searchWebParallel(queries, pipelineSignal);
+                const allRaw = await this.searchWebParallel(queries, queryLang, pipelineSignal);
                 if (pipelineSignal.aborted) return;
                 syslog('[SEARCH] got ' + allRaw.length + ' results');
 

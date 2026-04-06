@@ -328,12 +328,13 @@ class H(BaseHTTPRequestHandler):
             qs = urllib.parse.parse_qs(urlparse(self.path).query)
             q = qs.get('q', [''])[0]
             engine = qs.get('engine', [''])[0]
+            lang = qs.get('lang', ['auto'])[0] or 'auto'
             if not q or not engine:
                 self.send_json(400, {'error': 'Missing q or engine'})
                 return
             try:
                 search_url = engine.rstrip('/') + '/search?' + urllib.parse.urlencode({
-                    'q': q, 'format': 'json', 'categories': 'general', 'language': 'en'
+                    'q': q, 'format': 'json', 'categories': 'general', 'language': lang
                 })
                 log(f'[SEARCH] query="{q}" url={search_url}')
                 req = urllib.request.Request(search_url, headers={'User-Agent': 'Mozilla/5.0'})
