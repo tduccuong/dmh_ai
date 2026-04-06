@@ -1197,6 +1197,38 @@ const ContextManager = {
         return (total / contextWindow) > this.COMPACT_THRESHOLD;
     },
 
+    retrieveRelevant: function(session, query, topK) {
+        var ctx = session.context;
+        if (!ctx || !ctx.summary || ctx.summaryUpToIndex < 0) return [];
+        var end = ctx.summaryUpToIndex + 1;
+        var oldMessages = session.messages.slice(Math.max(0, end - 2000), end);
+        if (oldMessages.length === 0) return [];
+        var keywords = StopWords.extractKeywords(query).toLowerCase().split(/\s+/).filter(Boolean);
+        if (keywords.length === 0) return [];
+        function getText(msg) {
+            if (typeof msg.content === 'string') return msg.content;
+            if (Array.isArray(msg.content)) {
+                return msg.content.filter(function(p) { return p.type === 'text'; }).map(function(p) { return p.text || ''; }).join(' ');
+            }
+            return '';
+        }
+        var pairs = [];
+        for (var i = 0; i < oldMessages.length; i++) {
+            if (oldMessages[i].role === 'user') {
+                var userText = getText(oldMessages[i]);
+                var assistantText = (oldMessages[i+1] && oldMessages[i+1].role === 'assistant') ? getText(oldMessages[i+1]) : '';
+                var combined = (userText + ' ' + assistantText).toLowerCase();
+                var matches = keywords.filter(function(k) { return combined.indexOf(k) !== -1; });
+                if (matches.length > 0) {
+                    pairs.push({ score: matches.length / keywords.length, user: userText, assistant: assistantText });
+                }
+                if (assistantText) i++;
+            }
+        }
+        pairs.sort(function(a, b) { return b.score - a.score; });
+        return pairs.slice(0, topK).filter(function(p) { return p.score >= 0.25; });
+    },
+
     compact: async function(session) {
         var ctx = session.context || { summary: null, summaryUpToIndex: -1 };
         var keepFrom = Math.max(0, session.messages.length - this.getKeepRecent(session.model));
@@ -2802,6 +2834,16 @@ const UIManager = {
 
         let apiMessages = prepareForAPI(ContextManager.buildContextMessages(this.currentSession));
         apiMessages[apiMessages.length - 1] = userMsgForAPI;
+        var relevant = ContextManager.retrieveRelevant(this.currentSession, content, 4);
+        if (relevant.length > 0) {
+            var snippets = relevant.map(function(p, i) {
+                return (i + 1) + '. User: ' + p.user.slice(0, 600) + (p.assistant ? '\n   Assistant: ' + p.assistant.slice(0, 600) : '');
+            }).join('\n\n');
+            apiMessages.splice(apiMessages.length - 1, 0,
+                { role: 'user', content: '[Potentially relevant excerpts from earlier in this conversation]\n\n' + snippets },
+                { role: 'assistant', content: 'Noted — I have those earlier exchanges in context.' }
+            );
+        }
         const recentMsgs = (this.currentSession.messages || []).filter(function(m) { return m.role === 'user' || m.role === 'assistant'; }).slice(-4);
         const effectiveContent = contentForAPI.trim() || content.trim();
         const needsWebSearch = await this.detectWebSearch(effectiveContent, recentMsgs, pipelineSignal, imagesForAPI);
