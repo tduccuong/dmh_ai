@@ -12,8 +12,17 @@ Cả hai chế độ chạy trong cùng một ứng dụng. Bạn có thể chuy
 ## Ảnh chụp màn hình
 
 ![Mô hình được cài sẵn](preloaded_models.png)
+*Ba mô hình cloud dùng ngay — Trả lời nhanh, Nhà văn, Suy luận sâu — xuất hiện ngay khi bạn thêm API key. Không cần cài thêm gì.*
+
+---
+
 ![Tự động tìm kiếm web](auto_web_search.png)
+*Hỏi về bất kỳ thông tin nào cần cập nhật, DMH-AI tự động tìm kiếm web, lấy dữ liệu thực và trả lời có nguồn dẫn.*
+
+---
+
 ![Xem hình ảnh](see_images.png)
+*Thả ảnh hoặc video bất kỳ vào và đặt câu hỏi.*
 
 ## Tính năng nổi bật
 

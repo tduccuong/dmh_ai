@@ -12,8 +12,17 @@ Both modes work in the same app. You can even switch between them freely.
 ## Screenshots
 
 ![Preloaded models](preloaded_models.png)
+*Three ready-to-use cloud models — Quick Answer, Wordsmith, Deep Thinker — appear the moment you add an API key. No extra setup.*
+
+---
+
 ![Auto web search](auto_web_search.png)
+*Ask about anything time-sensitive and DMH-AI automatically searches the web, fetches live data, and gives you a sourced answer.*
+
+---
+
 ![See images](see_images.png)
+*Drop in any photo/video and ask questions about it.*
 
 ## What you get
 

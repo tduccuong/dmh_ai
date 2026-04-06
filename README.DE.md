@@ -12,8 +12,17 @@ Beide Modi funktionieren in derselben App. Sie können jederzeit frei wechseln.
 ## Screenshots
 
 ![Vorgeladene Modelle](preloaded_models.png)
+*Drei sofort einsatzbereite Cloud-Modelle — Schnelle Antwort, Wortschmied, Tiefes Denken — erscheinen, sobald ein API-Schlüssel hinzugefügt wird. Keine weitere Einrichtung nötig.*
+
+---
+
 ![Automatische Websuche](auto_web_search.png)
+*Bei zeitkritischen Fragen durchsucht DMH-AI automatisch das Web, ruft aktuelle Daten ab und liefert eine belegte Antwort.*
+
+---
+
 ![Bilder ansehen](see_images.png)
+*Beliebiges Foto oder Video einfügen und Fragen dazu stellen.*
 
 ## Was Sie bekommen
 
