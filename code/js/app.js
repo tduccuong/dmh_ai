@@ -2263,6 +2263,22 @@ const UIManager = {
             }
             container.appendChild(div);
         });
+        // Reconnect live streaming content if a response is in-flight for this session
+        if (this._pendingSession && this._pendingSession.id === this.currentSession.id && this._pendingContent) {
+            var streamDiv = document.createElement('div');
+            streamDiv.className = 'message assistant';
+            var streamHdr = document.createElement('div');
+            streamHdr.className = 'msg-header';
+            streamHdr.textContent = buildMsgHeader({ role: 'assistant', ts: Date.now(), model: this._pendingSession.model }, this._pendingSession);
+            streamDiv.appendChild(streamHdr);
+            var streamBody = document.createElement('div');
+            streamBody.className = 'msg-body';
+            streamBody.innerHTML = renderWithMath(this._pendingContent);
+            addCopyButtons(streamBody); wrapTables(streamBody);
+            streamDiv.appendChild(streamBody);
+            container.appendChild(streamDiv);
+            this._activeBodyDiv = streamBody;
+        }
         container.scrollTop = container.scrollHeight;
     },
 
@@ -2472,7 +2488,7 @@ const UIManager = {
     updateSendBtn: function() {
         var hasText = document.getElementById('message-input').value.trim() !== '';
         var hasAttachment = this.attachedFiles.length > 0;
-        document.getElementById('send-btn').disabled = !hasText && !hasAttachment;
+        document.getElementById('send-btn').disabled = this.isStreaming || (!hasText && !hasAttachment);
     },
 
     saveStreamingProgress: function() {
@@ -3039,11 +3055,14 @@ const UIManager = {
                     }
                     assistantContent += chunk;
                     self._pendingContent = assistantContent;
-                    if (self.currentSession === sessionAtSend) {
-                        bodyDiv.innerHTML = searchWarning + renderWithMath(assistantContent);
-                        addCopyButtons(bodyDiv); wrapTables(bodyDiv);
-                        var overflowed = container.scrollHeight > container.scrollTop + container.clientHeight + 40;
-                        document.getElementById('scroll-bottom-btn').style.display = overflowed ? 'flex' : 'none';
+                    if (self.currentSession && self.currentSession.id === sessionAtSend.id) {
+                        var activeBody = self._activeBodyDiv;
+                        if (activeBody && document.contains(activeBody)) {
+                            activeBody.innerHTML = searchWarning + renderWithMath(assistantContent);
+                            addCopyButtons(activeBody); wrapTables(activeBody);
+                            var overflowed = container.scrollHeight > container.scrollTop + container.clientHeight + 40;
+                            document.getElementById('scroll-bottom-btn').style.display = overflowed ? 'flex' : 'none';
+                        }
                     }
                 },
                 function() {
@@ -3061,6 +3080,12 @@ const UIManager = {
                     self.updateSendBtn();
                     self.setStatus('');
                     document.getElementById('stop-gen-btn').style.display = 'none';
+                    // If user is currently viewing this session but bodyDiv was detached
+                    // (switched away and back while streaming), re-render to show the response
+                    if (self.currentSession && self.currentSession.id === sessionAtSend.id && !document.contains(bodyDiv)) {
+                        self.currentSession = sessionAtSend;
+                        self.renderChat();
+                    }
                     if (sessionAtSend.context && sessionAtSend.context.needsNaming) {
                         self.autoNameSession(sessionAtSend);
                     }
