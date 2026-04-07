@@ -426,18 +426,21 @@ const UserProfile = {
     extractAndMerge: async function(userText, assistantText, model) {
         if (!userText || !assistantText) return;
         try {
-            const existing = this._facts ? 'Already known about this user:\n' + this._facts + '\n\n' : '';
+            syslog('[PROFILE] extracting from user="' + userText.slice(0, 80) + '"');
+            const existing = this._facts ? 'Already known:\n' + this._facts + '\n\n' : '';
+            var wordCount = userText.trim().split(/\s+/).length;
+            var assistantContext = wordCount <= 8 ? '' :
+                '\n[ASSISTANT RESPONSE — this was sent AFTER the user message above, as a direct reply to it. It contains NO new facts about the user. Do not extract anything from this section — use it only to understand what the user meant.]\n"' + assistantText.slice(0, 400) + '"\n[END ASSISTANT RESPONSE]\n';
             const prompt =
+                '[USER MESSAGE — sent first, the only source of facts]\n"' + userText.slice(0, 800) + '"\n[END USER MESSAGE]\n' +
+                assistantContext + '\n' +
                 existing +
-                'Last exchange:\nUser: ' + userText.slice(0, 800) + '\nAssistant: ' + assistantText.slice(0, 800) + '\n\n' +
-                'Extract personal facts the user revealed about themselves in this exchange.\n' +
-                'Only include facts in these categories: name, age, gender, occupation, city/country of residence, nationality, ' +
-                'family (spouse, children with names/ages), health conditions, hobbies/interests, past life events (travel, milestones), language preferences.\n' +
-                'Rules:\n' +
-                '- Only record what the user explicitly stated — no inference, no guessing\n' +
-                '- Do not repeat facts already listed above\n' +
-                '- Format: one bullet per fact, e.g. "- Has 2 children: Anna (8), Tom (5)"\n' +
-                '- If nothing new qualifies, reply with exactly: NONE\n';
+                'Task: extract personal facts about the user from the USER MESSAGE only (the first block above).\n' +
+                'The ASSISTANT RESPONSE (second block) is a reply generated after — it reflects back what was said but introduces no new facts about the user.\n' +
+                'Categories: name, age, gender, occupation, city/country, nationality, family (spouse/children with names/ages), health, hobbies, past travel/events.\n' +
+                'Rules: only facts the user explicitly stated. No inference. No duplicates with Already known. Plain text only, no markdown.\n' +
+                'Format: one bullet per fact, e.g. "- Name: Carl" or "- Occupation: software engineer" or "- Visited Greece in 2025".\n' +
+                'If nothing qualifies, reply: NONE';
             const res = await cloudRoutedFetch(model, '/generate', {
                 model: model, stream: false, think: false,
                 options: { temperature: 0, num_predict: 200, think: false },
@@ -446,10 +449,11 @@ const UserProfile = {
             if (!res || !res.ok) return;
             const data = await res.json();
             const reply = (data.response || '').trim();
+            syslog('[PROFILE] extraction result="' + reply.slice(0, 200) + '"');
             if (!reply || reply === 'NONE' || /^none$/i.test(reply)) return;
             // Merge new bullets into existing profile
             var newLines = reply.split('\n')
-                .map(function(l) { return l.trim(); })
+                .map(function(l) { return l.trim().replace(/\*{1,3}([^*]*)\*{1,3}/g, '$1').replace(/_{1,2}([^_]*)_{1,2}/g, '$1'); })
                 .filter(function(l) { return l.startsWith('-'); });
             if (newLines.length === 0) return;
             this._facts = (this._facts ? this._facts + '\n' : '') + newLines.join('\n');
@@ -457,6 +461,7 @@ const UserProfile = {
             var allLines = this._facts.split('\n').filter(function(l) { return l.trim().startsWith('-'); });
             if (allLines.length > 60) allLines = allLines.slice(allLines.length - 60);
             this._facts = allLines.join('\n');
+            syslog('[PROFILE] merged ' + newLines.length + ' new fact(s): ' + newLines.join(' | ').slice(0, 200));
             await this.save();
         } catch(e) {}
     }
@@ -3132,10 +3137,12 @@ const UIManager = {
                 return (m.role === 'user' ? 'User: ' : 'Assistant: ') + text.slice(0, 200);
             }).join('\n');
             if (!excerpt.trim()) return;
+            syslog('[NAMING] model=' + session.model + ' excerpt="' + excerpt.slice(0, 80) + '"');
             var name = await OllamaAPI.summarize(session.model, [{
                 role: 'user',
                 content: 'Give a short title (3-5 words) for this conversation:\n\n' + excerpt + '\n\nReply with only the title, no quotes, no explanation.'
             }], controller.signal);
+            syslog('[NAMING] result="' + (name || '').trim().slice(0, 80) + '"');
             if (controller.signal.aborted) return;
             if (!name || !name.trim()) return;
             name = name.trim()
