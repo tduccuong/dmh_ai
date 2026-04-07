@@ -1789,6 +1789,20 @@ const UIManager = {
                 },
                 function() {
                     if (acct) CloudAccountPool.markRecovered(acct);
+                    if (!assistantContent) {
+                        // Stream ended with no content — connection was cut (proxy timeout, network drop)
+                        var emptyBody = document.getElementById('streaming-body') || self._activeBodyDiv;
+                        if (emptyBody) emptyBody.innerHTML = '<em style="color:#e05060;">⚠ No response received — the connection was interrupted. Please try again.</em>';
+                        self._streamMap.delete(sessionAtSend.id);
+                        self._streamController = null;
+                        self._activeBodyDiv = null;
+                        self.isStreaming = false;
+                        self._releaseWakeLock();
+                        self.updateSendBtn();
+                        self.setStatus('');
+                        document.getElementById('stop-gen-btn').style.display = 'none';
+                        return;
+                    }
                     sessionAtSend.messages.push({ role: 'assistant', content: assistantContent, ts: assistantTs, model: sessionAtSend.model });
                     var userMsg = sessionAtSend.messages[sessionAtSend.messages.length - 2];
                     if (userMsg && userMsg.role === 'user') userMsg._sentToLLM = true;
@@ -1843,10 +1857,12 @@ const UIManager = {
                         }
                     }
                     console.error('Stream error:', err);
+                    var errEntry = self._streamMap.get(sessionAtSend.id);
+                    var errBody = document.getElementById('streaming-body') || self._activeBodyDiv;
                     if (assistantContent) {
-                        var errEntry = self._streamMap.get(sessionAtSend.id);
-                        var errBody = document.getElementById('streaming-body');
                         if (errBody && errEntry) { errBody.innerHTML = errEntry.searchWarning + renderWithMath(assistantContent); addCopyButtons(errBody); wrapTables(errBody); }
+                    } else if (errBody) {
+                        errBody.innerHTML = '<em style="color:#e05060;">⚠ No response received — the connection was interrupted. Please try again.</em>';
                     }
                     self.saveStreamingProgress();
                     self._streamMap.delete(sessionAtSend.id);
