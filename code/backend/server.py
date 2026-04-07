@@ -99,6 +99,10 @@ def init_db():
             c.execute('ALTER TABLE sessions ADD COLUMN updated_at INTEGER DEFAULT 0')
         except sqlite3.OperationalError:
             pass
+        try:
+            c.execute('ALTER TABLE users ADD COLUMN profile TEXT DEFAULT ""')
+        except sqlite3.OperationalError:
+            pass
         # Seed default admin user
         if not c.execute('SELECT id FROM users WHERE email=?', ('admin@dmhai.local',)).fetchone():
             uid = secrets.token_hex(8)
@@ -234,6 +238,12 @@ class H(BaseHTTPRequestHandler):
             with sqlite3.connect(DB) as c:
                 rows = c.execute('SELECT id, email, name, role, created_at FROM users WHERE deleted=0 ORDER BY created_at').fetchall()
             self.send_json(200, [{'id': r[0], 'email': r[1], 'name': r[2], 'role': r[3], 'createdAt': r[4]} for r in rows])
+            return
+
+        if p == '/user/profile':
+            with sqlite3.connect(DB) as c:
+                row = c.execute('SELECT profile FROM users WHERE id=?', (user['id'],)).fetchone()
+            self.send_json(200, {'profile': (row[0] or '') if row else ''})
             return
 
         if p == '/users/prefs':
@@ -650,6 +660,17 @@ class H(BaseHTTPRequestHandler):
                 return
             with sqlite3.connect(DB) as c:
                 c.execute('UPDATE users SET password_hash=?, password_changed=1 WHERE id=?', (hash_password(new_pw), user['id']))
+            self.send_json(200, {'ok': True})
+            return
+
+        if p == '/user/profile':
+            user = self.require_auth()
+            if not user:
+                return
+            d = self.body()
+            profile = str(d.get('profile', ''))[:4000]
+            with sqlite3.connect(DB) as c:
+                c.execute('UPDATE users SET profile=? WHERE id=?', (profile, user['id']))
             self.send_json(200, {'ok': True})
             return
 

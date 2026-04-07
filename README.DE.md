@@ -2,6 +2,10 @@
 
 Eine selbst gehostete KI-Chat-App, die auf Ihrem Computer läuft — wie ChatGPT, aber privat, kostenlos und ganz Ihnen gehörend.
 
+DMH-AI ist mehr als ein Chat-Werkzeug. Es ist ein langlebiger KI-Begleiter, der mit Ihnen wächst — je mehr Sie mit ihm sprechen, desto besser versteht es Sie, und desto mehr wird es zu einem Begleiter, auf den Sie sich wirklich verlassen können.
+
+Da DMH-AI auf Ihrem eigenen Rechner läuft, **haben Sie die vollständige Kontrolle über Ihre Daten**. Gespräche, Nutzerprofil, Dateien — alles verbleibt auf Ihrer Hardware, in Ihrem Zuhause. Kein Dritter kann darauf zugreifen, es analysieren oder verwerten. Wenn Sie lokale Modelle nutzen (Weg B), verlässt kein einziges Byte Ihrer Anfragen oder persönlichen Daten Ihr Netzwerk — das macht DMH-AI zu einem der privatesten KI-Setups, die Sie heute betreiben können.
+
 **Für wen ist das?**
 
 - **Cloud-Nutzer** — Sie möchten schnelles, leistungsstarkes KI-Chatten ohne Sorgen um Nutzungslimits. Sie brauchen keinen leistungsstarken Computer. Sie nutzen Ollamas Cloud-Modelle über Ihren eigenen API-Schlüssel — DMH-AI übernimmt automatisch die Kontoverwaltung und Ratenlimit-Umgehung im Hintergrund, ohne dass Sie sich darum kümmern müssen.
@@ -26,6 +30,7 @@ Beide Modi funktionieren in derselben App. Sie können jederzeit frei wechseln.
 
 ## Was Sie bekommen
 
+- **Begleitergedächtnis** — DMH-AI merkt sich im Hintergrund, was Sie teilen — Familie, Beruf, Wohnort, Reisen, Interessen — und greift in späteren Gesprächen natürlich darauf zurück, ohne dass Sie sich wiederholen müssen. Was DMH-AI über Sie weiß, können Sie jederzeit in den Einstellungen einsehen oder löschen.
 - **Integrierte Websuche** — wie Perplexity, aber selbst gehostet und privat. Stellen Sie eine Frage und DMH-AI entscheidet selbst, ob eine Websuche nötig ist. Falls ja, werden live Ergebnisse über die integrierte Suchmaschine abgerufen und zu einer quellenbasierten, aktuellen Antwort zusammengefasst. Funktioniert in jeder Sprache.
 - **Medienanhänge** — Dokumente (PDF, DOCX, XLSX), Bilder und Videos anhängen. Auf dem Handy ein Foto aufnehmen oder ein Video direkt aufzeichnen und in den Chat einfügen — kein Speichern in der Galerie nötig.
 - **Mehrbenutzerunterstützung** — jede Person hat eigene Anmeldedaten, eigene Chat-Verläufe und eigene Dateien. Ein Admin-Konto wird beim ersten Start automatisch erstellt. Admins können Nutzer direkt in der App hinzufügen und entfernen.

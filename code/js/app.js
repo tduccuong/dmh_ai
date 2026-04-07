@@ -66,6 +66,8 @@ const I18n = {
             settings: 'Settings',
             recQuickAnswer: '👁 Quick Answer', recDeepThinker: '💡 Deep Thinker', recTechExpert: '🛠 Technical Expert', recWordsmith: '✍ Wordsmith', recMathMaster: '🧮 Math Master',
             noModelAvail: 'No model available. Please configure a model in Settings first.',
+            profileSection: 'Companion Memory', profileEmpty: 'No facts remembered yet.',
+            profileClear: 'Clear memory', profileClearConfirm: 'This will reset everything DMH-AI has learned about you. You may notice a different feeling next time — it will understand you again over time, but that takes a while. Are you sure?',
         },
         vi: {
             retry: 'Thử lại', clear: 'Xóa', send: 'Gửi', cancel: 'Hủy', ok: 'OK', stopGen: 'Dừng',
@@ -103,6 +105,8 @@ const I18n = {
             settings: 'Cài đặt',
             recQuickAnswer: '👁 Trả lời nhanh', recDeepThinker: '💡 Suy nghĩ sâu', recTechExpert: '🛠 Chuyên gia kỹ thuật', recWordsmith: '✍ Nhà văn', recMathMaster: '🧮 Toán học',
             noModelAvail: 'Không có mô hình nào. Vui lòng cấu hình trong Cài đặt trước.',
+            profileSection: 'Bộ nhớ đồng hành', profileEmpty: 'Chưa ghi nhớ điều gì.',
+            profileClear: 'Xóa bộ nhớ', profileClearConfirm: 'Thao tác này sẽ xóa toàn bộ những gì DMH-AI đã hiểu về bạn. Lần trò chuyện tiếp theo có thể cảm giác khác đi — DMH-AI sẽ dần hiểu bạn trở lại theo thời gian, nhưng đó là một quá trình lâu dài. Bạn có chắc không?',
         },
         de: {
             retry: 'Wiederholen', clear: 'Löschen', send: 'Senden', cancel: 'Abbrechen', ok: 'OK', stopGen: 'Stopp',
@@ -140,6 +144,8 @@ const I18n = {
             settings: 'Einstellungen',
             recQuickAnswer: '👁 Schnelle Antwort', recDeepThinker: '💡 Tiefdenker', recTechExpert: '🛠 Technischer Experte', recWordsmith: '✍ Wortschmied', recMathMaster: '🧮 Mathe-Meister',
             noModelAvail: 'Kein Modell verfügbar. Bitte zuerst in den Einstellungen konfigurieren.',
+            profileSection: 'Begleitergedächtnis', profileEmpty: 'Noch keine Fakten gespeichert.',
+            profileClear: 'Gedächtnis löschen', profileClearConfirm: 'Damit wird alles zurückgesetzt, was DMH-AI über Sie gelernt hat. Beim nächsten Gespräch kann sich etwas anders anfühlen — es wird Sie mit der Zeit wieder verstehen, aber das ist ein langer Prozess. Sind Sie sicher?',
         },
         es: {
             retry: 'Reintentar', clear: 'Limpiar', send: 'Enviar', cancel: 'Cancelar', ok: 'OK', stopGen: 'Detener',
@@ -177,6 +183,8 @@ const I18n = {
             settings: 'Configuración',
             recQuickAnswer: '👁 Respuesta rápida', recDeepThinker: '💡 Pensador profundo', recTechExpert: '🛠 Experto técnico', recWordsmith: '✍ Plumista', recMathMaster: '🧮 Maestro Matemático',
             noModelAvail: 'Ningún modelo disponible. Configure uno en Ajustes primero.',
+            profileSection: 'Memoria del compañero', profileEmpty: 'Aún no hay hechos recordados.',
+            profileClear: 'Borrar memoria', profileClearConfirm: 'Esto reiniciará todo lo que DMH-AI ha aprendido sobre usted. La próxima vez que chatee puede sentirse diferente — lo entenderá de nuevo con el tiempo, pero es un proceso largo. ¿Está seguro?',
         },
         fr: {
             retry: 'Réessayer', clear: 'Effacer', send: 'Envoyer', cancel: 'Annuler', ok: 'OK', stopGen: 'Arrêter',
@@ -214,6 +222,8 @@ const I18n = {
             settings: 'Paramètres',
             recQuickAnswer: '👁 Réponse rapide', recDeepThinker: '💡 Réflexion profonde', recTechExpert: '🛠 Expert technique', recWordsmith: '✍ Plume', recMathMaster: '🧮 Maître des maths',
             noModelAvail: 'Aucun modèle disponible. Veuillez d\'abord en configurer un dans les Paramètres.',
+            profileSection: 'Mémoire du compagnon', profileEmpty: 'Aucun fait mémorisé pour l\'instant.',
+            profileClear: 'Effacer la mémoire', profileClearConfirm: 'Cela réinitialisera tout ce que DMH-AI a appris sur vous. La prochaine conversation pourrait sembler différente — il vous comprendra à nouveau avec le temps, mais c\'est un long processus. Êtes-vous sûr ?',
         }
     },
     t: function(key) { return (this._strings[this._lang] || this._strings.en)[key] || this._strings.en[key] || key; },
@@ -384,12 +394,81 @@ const Settings = {
     }
 };
 
+const UserProfile = {
+    _facts: '',  // plain text bullet list
+
+    load: async function() {
+        try {
+            const res = await apiFetch('/user/profile');
+            if (res && res.ok) {
+                const d = await res.json();
+                this._facts = d.profile || '';
+            }
+        } catch(e) {}
+    },
+
+    save: async function() {
+        try {
+            await apiFetch('/user/profile', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ profile: this._facts })
+            });
+        } catch(e) {}
+    },
+
+    clear: async function() {
+        this._facts = '';
+        await this.save();
+    },
+
+    // Run after each LLM turn — extract new facts and merge into profile
+    extractAndMerge: async function(userText, assistantText, model) {
+        if (!userText || !assistantText) return;
+        try {
+            const existing = this._facts ? 'Already known about this user:\n' + this._facts + '\n\n' : '';
+            const prompt =
+                existing +
+                'Last exchange:\nUser: ' + userText.slice(0, 800) + '\nAssistant: ' + assistantText.slice(0, 800) + '\n\n' +
+                'Extract personal facts the user revealed about themselves in this exchange.\n' +
+                'Only include facts in these categories: name, age, gender, occupation, city/country of residence, nationality, ' +
+                'family (spouse, children with names/ages), health conditions, hobbies/interests, past life events (travel, milestones), language preferences.\n' +
+                'Rules:\n' +
+                '- Only record what the user explicitly stated — no inference, no guessing\n' +
+                '- Do not repeat facts already listed above\n' +
+                '- Format: one bullet per fact, e.g. "- Has 2 children: Anna (8), Tom (5)"\n' +
+                '- If nothing new qualifies, reply with exactly: NONE\n';
+            const res = await cloudRoutedFetch(model, '/generate', {
+                model: model, stream: false, think: false,
+                options: { temperature: 0, num_predict: 200, think: false },
+                prompt: prompt
+            }, null);
+            if (!res || !res.ok) return;
+            const data = await res.json();
+            const reply = (data.response || '').trim();
+            if (!reply || reply === 'NONE' || /^none$/i.test(reply)) return;
+            // Merge new bullets into existing profile
+            var newLines = reply.split('\n')
+                .map(function(l) { return l.trim(); })
+                .filter(function(l) { return l.startsWith('-'); });
+            if (newLines.length === 0) return;
+            this._facts = (this._facts ? this._facts + '\n' : '') + newLines.join('\n');
+            // Cap profile size — keep last 60 lines
+            var allLines = this._facts.split('\n').filter(function(l) { return l.trim().startsWith('-'); });
+            if (allLines.length > 60) allLines = allLines.slice(allLines.length - 60);
+            this._facts = allLines.join('\n');
+            await this.save();
+        } catch(e) {}
+    }
+};
+
 const SettingsModal = {
     open: async function() {
         await Settings.load();
         this._renderAccounts();
         this._renderCloudModels();
         this._updateSubsectionState();
+        this._renderProfile();
         document.getElementById('settings-ollama-url').value = AppConfig.ollamaEndpoint || '';
         document.getElementById('settings-compact-turns').value = Settings._compactTurns;
         document.getElementById('settings-overlay').classList.add('open');
@@ -441,6 +520,17 @@ const SettingsModal = {
             item.appendChild(del);
             list.appendChild(item);
         });
+    },
+    _renderProfile: function() {
+        var el = document.getElementById('settings-profile-facts');
+        if (!el) return;
+        if (!UserProfile._facts) {
+            el.textContent = t('profileEmpty');
+            el.style.color = 'var(--text-secondary)';
+        } else {
+            el.textContent = UserProfile._facts;
+            el.style.color = 'var(--text-primary)';
+        }
     },
     _updateSubsectionState: function() {
         var sub = document.getElementById('cloud-models-section');
@@ -569,6 +659,11 @@ const SettingsModal = {
             Settings._compactTurns = val;
             ContextManager.TURN_THRESHOLD = val;
             Settings._persist();
+        });
+        document.getElementById('settings-profile-clear-btn').addEventListener('click', async function() {
+            if (!confirm(t('profileClearConfirm'))) return;
+            await UserProfile.clear();
+            SettingsModal._renderProfile();
         });
     }
 };
@@ -1286,6 +1381,9 @@ function applyLanguage() {
     if (userSettingsLabel) userSettingsLabel.textContent = t('settings');
     document.getElementById('settings-chat-section-title').textContent = t('settingsChatSection');
     document.getElementById('settings-compact-turns-label').textContent = t('settingsCompactLabel');
+    document.getElementById('settings-profile-section-title').textContent = t('profileSection');
+    document.getElementById('settings-profile-clear-btn').textContent = t('profileClear');
+    SettingsModal._renderProfile();
     if (typeof UIManager !== 'undefined' && UIManager.refreshModelSelect) {
         UIManager.refreshModelSelect();
     }
@@ -1811,6 +1909,7 @@ const UIManager = {
 
         await this.loadPrefs();
         await Settings.load();
+        await UserProfile.load();
 
         try {
             const models = await OllamaAPI.fetchModels();
@@ -2848,7 +2947,11 @@ const UIManager = {
 
         let apiMessages = prepareForAPI(ContextManager.buildContextMessages(this.currentSession));
         apiMessages[apiMessages.length - 1] = userMsgForAPI;
-        apiMessages.unshift({ role: 'system', content: 'You are DMH-AI, a helpful, knowledgeable, and friendly AI assistant. You are ready to help with anything — answering questions, writing, analysis, coding, math, research, brainstorming, and more. Be clear, concise, and honest. If you don\'t know something, say so. Never claim to be a different AI (such as ChatGPT, Gemini, or Claude).' });
+        var systemPrompt = 'You are DMH-AI, a helpful, knowledgeable, and friendly AI assistant. You are ready to help with anything — answering questions, writing, analysis, coding, math, research, brainstorming, and more. Be clear, concise, and honest. If you don\'t know something, say so. Never claim to be a different AI (such as ChatGPT, Gemini, or Claude).';
+        if (UserProfile._facts) {
+            systemPrompt += '\n\nWhat you know about this user:\n' + UserProfile._facts + '\n\nRefer to these naturally when relevant. Do not recite them unprompted.';
+        }
+        apiMessages.unshift({ role: 'system', content: systemPrompt });
         var relevant = ContextManager.retrieveRelevant(this.currentSession, content, 4);
         if (relevant.length > 0) {
             var snippets = relevant.map(function(p, i) {
@@ -2956,6 +3059,15 @@ const UIManager = {
                     if (sessionAtSend.context && sessionAtSend.context.needsNaming) {
                         self.autoNameSession(sessionAtSend);
                     }
+                    // Background profile extraction — runs after response, non-blocking
+                    (function() {
+                        var lastUser = sessionAtSend.messages[sessionAtSend.messages.length - 2];
+                        var userText = lastUser && lastUser.role === 'user'
+                            ? (typeof lastUser.content === 'string' ? lastUser.content
+                                : (Array.isArray(lastUser.content) ? lastUser.content.filter(function(p){return p.type==='text';}).map(function(p){return p.text||'';}).join(' ') : ''))
+                            : '';
+                        UserProfile.extractAndMerge(userText, assistantContent, sessionAtSend.model);
+                    })();
                     // Background compaction — runs after response, transparent to user
                     OllamaAPI.fetchContextWindow(sessionAtSend.model).then(function(contextWindow) {
                         if (ContextManager.shouldCompact(sessionAtSend, contextWindow, '')) {

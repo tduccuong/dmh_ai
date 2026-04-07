@@ -2,6 +2,10 @@
 
 A self-hosted AI chat app you run on your own computer — like ChatGPT, but private, free, and yours.
 
+DMH-AI is designed to be more than a chat tool. It is a long-lived AI companion that grows with you — the more you talk to it, the more it understands you, and the more it becomes a companion you can truly rely on.
+
+Because DMH-AI runs on your own machine, **you are in full control of your data**. Your conversations, your profile, your files — all of it lives on your hardware, under your roof. No third party can access, analyse, or monetise it. If you choose to run local models (Path B), not a single byte of your queries or personal context ever leaves your network — making it one of the most private AI setups you can run today.
+
 **Who is this for?**
 
 - **Cloud users** — you want fast, powerful AI chat without worrying about usage limits. You don't need a powerful computer. You use Ollama's cloud models via your own API key — DMH-AI automatically manages account rotation and rate limits behind the scenes, so you never have to think about it.
@@ -26,6 +30,7 @@ Both modes work in the same app. You can even switch between them freely.
 
 ## What you get
 
+- **Companion memory** — DMH-AI quietly learns who you are as you chat. It remembers facts you share — your family, occupation, where you live, past travels, interests — and draws on them naturally in future conversations, without you having to repeat yourself. You can review or clear what it knows at any time from Settings.
 - **Built-in web search** — like Perplexity, but self-hosted and private. Ask any question and DMH-AI automatically decides whether to search the web. If it does, it fetches live results through its own bundled search engine and gives you a sourced, up-to-date answer. Works in any language.
 - **Rich media attachments** — attach documents (PDF, DOCX, XLSX), images, and videos. On mobile, you can take a photo or record a video directly and drop it into the chat — no need to save it first.
 - **Multi-user support** — each person has their own login, their own chat history, and their own files. An admin account is created automatically on first run. Admins can add and remove users from within the app.

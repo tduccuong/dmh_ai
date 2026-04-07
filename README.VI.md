@@ -2,6 +2,10 @@
 
 Ứng dụng chat AI tự host chạy trên máy tính của bạn — giống ChatGPT, nhưng riêng tư, miễn phí và hoàn toàn thuộc về bạn.
 
+DMH-AI được thiết kế để trở thành nhiều hơn một công cụ chat. Đây là người bạn đồng hành AI lâu dài, lớn lên cùng bạn — bạn càng trò chuyện nhiều, nó càng hiểu bạn hơn, và càng trở thành người bạn đồng hành mà bạn thực sự có thể tin tưởng.
+
+Vì DMH-AI chạy trên máy của bạn, **bạn hoàn toàn kiểm soát dữ liệu của mình**. Mọi cuộc trò chuyện, hồ sơ cá nhân, tệp đính kèm — tất cả đều lưu trên phần cứng của bạn, trong không gian của bạn. Không bên thứ ba nào có thể truy cập, phân tích hay khai thác dữ liệu đó. Nếu bạn chọn chạy mô hình cục bộ (Con đường B), không một byte nào từ câu hỏi hay thông tin cá nhân của bạn rời khỏi mạng nội bộ — đây là một trong những thiết lập AI riêng tư nhất mà bạn có thể sử dụng hiện nay.
+
 **Dành cho ai?**
 
 - **Người dùng cloud** — bạn muốn chat AI nhanh, mạnh mà không lo vượt hạn mức. Không cần máy tính mạnh. Bạn dùng mô hình cloud của Ollama qua API key cá nhân — DMH-AI tự động quản lý việc luân phiên tài khoản và giới hạn lượt dùng ở hậu trường, bạn không cần lo nghĩ gì cả.
@@ -26,6 +30,7 @@ Cả hai chế độ chạy trong cùng một ứng dụng. Bạn có thể chuy
 
 ## Tính năng nổi bật
 
+- **Bộ nhớ đồng hành** — DMH-AI lặng lẽ ghi nhớ những gì bạn chia sẻ trong các cuộc trò chuyện — gia đình, nghề nghiệp, nơi sống, những chuyến đi, sở thích — và tự nhiên vận dụng những thông tin đó trong các lần chat sau, không cần bạn nhắc lại. Bạn có thể xem hoặc xóa những gì DMH-AI ghi nhớ bất kỳ lúc nào trong Cài đặt.
 - **Tìm kiếm web tích hợp** — tương tự Perplexity, nhưng tự host và riêng tư. Bạn hỏi bình thường, DMH-AI tự quyết định có cần tìm kiếm web không. Nếu cần, kết quả được tổng hợp thành câu trả lời có nguồn, cập nhật. Hoạt động với mọi ngôn ngữ.
 - **Đính kèm đa phương tiện** — đính kèm tài liệu (PDF, DOCX, XLSX), hình ảnh và video. Trên điện thoại, chụp ảnh hoặc quay video trực tiếp và đưa vào chat — không cần lưu vào thư viện trước.
 - **Hỗ trợ nhiều người dùng** — mỗi người có đăng nhập riêng, lịch sử chat riêng và tệp riêng. Tài khoản admin được tạo tự động khi khởi chạy lần đầu. Admin có thể thêm và xóa người dùng ngay trong ứng dụng.
