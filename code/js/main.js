@@ -515,7 +515,65 @@ const UIManager = {
                 var tdRole = document.createElement('td');
                 tdRole.textContent = u.role;
                 var tdAct = document.createElement('td');
+                // Expansion row for setting password (shared by key button below)
+                var expandTr = document.createElement('tr');
+                expandTr.className = 'mgr-pw-expand';
+                var expandTd = document.createElement('td');
+                expandTd.colSpan = 4;
+                expandTd.innerHTML =
+                    '<div class="mgr-pw-form">' +
+                    '<input class="mgr-input mgr-pw-input" type="password" placeholder="New password" autocomplete="new-password">' +
+                    '<button class="mgr-pw-set-btn">Set</button>' +
+                    '<button class="mgr-pw-cancel-btn">Cancel</button>' +
+                    '<span class="mgr-pw-msg"></span>' +
+                    '</div>';
+                expandTr.appendChild(expandTd);
+
+                (function(uid, email, expandTr) {
+                    var pwInput = expandTr.querySelector('.mgr-pw-input');
+                    var msgEl   = expandTr.querySelector('.mgr-pw-msg');
+
+                    expandTr.querySelector('.mgr-pw-set-btn').addEventListener('click', async function() {
+                        var pw = pwInput.value;
+                        msgEl.style.color = '#e94560';
+                        if (!pw) { msgEl.textContent = 'Password required'; return; }
+                        try {
+                            var res = await apiFetch('/users/' + uid, {
+                                method: 'PUT',
+                                headers: {'Content-Type': 'application/json'},
+                                body: JSON.stringify({password: pw})
+                            });
+                            var data = await res.json();
+                            if (!res.ok) { msgEl.textContent = data.error || 'Failed'; return; }
+                            pwInput.value = '';
+                            msgEl.style.color = '#60c080';
+                            msgEl.textContent = 'Password updated';
+                            setTimeout(function() { expandTr.classList.remove('open'); msgEl.textContent = ''; }, 1800);
+                        } catch(e) { msgEl.textContent = e.message; }
+                    });
+
+                    expandTr.querySelector('.mgr-pw-cancel-btn').addEventListener('click', function() {
+                        expandTr.classList.remove('open');
+                        pwInput.value = '';
+                        msgEl.textContent = '';
+                    });
+
+                    pwInput.addEventListener('keydown', function(e) {
+                        if (e.key === 'Enter') expandTr.querySelector('.mgr-pw-set-btn').click();
+                        if (e.key === 'Escape') expandTr.querySelector('.mgr-pw-cancel-btn').click();
+                    });
+                })(u.id, u.email, expandTr);
+
                 if (u.id !== Auth.user.id) {
+                    var keyBtn = document.createElement('button');
+                    keyBtn.className = 'mgr-key-btn';
+                    keyBtn.title = 'Set password';
+                    keyBtn.innerHTML = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="15" r="3"/><path d="M11 15h9"/><path d="M17 15v-2"/><path d="M20 15v-2"/></svg>';
+                    keyBtn.addEventListener('click', function() {
+                        var isOpen = expandTr.classList.toggle('open');
+                        if (isOpen) setTimeout(function() { expandTr.querySelector('.mgr-pw-input').focus(); }, 50);
+                    });
+
                     var del = document.createElement('button');
                     del.className = 'mgr-del-btn';
                     del.title = 'Remove';
@@ -525,10 +583,12 @@ const UIManager = {
                         await apiFetch('/users/' + u.id, { method: 'DELETE' });
                         await self.refreshUserTable();
                     });
+                    tdAct.appendChild(keyBtn);
                     tdAct.appendChild(del);
                 }
                 tr.appendChild(tdEmail); tr.appendChild(tdName); tr.appendChild(tdRole); tr.appendChild(tdAct);
                 tbody.appendChild(tr);
+                tbody.appendChild(expandTr);
             });
         } catch(e) { console.error('Failed to load users:', e); }
     },

@@ -153,6 +153,18 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
 .mgr-table tr:hover td { background: rgba(255,255,255,0.05); }
 .mgr-del-btn { background: none; border: none; color: #fca5a5; cursor: pointer; padding: 4px 6px; border-radius: 4px; line-height: 1; }
 .mgr-del-btn:hover { background: rgba(252,165,165,0.15); }
+.mgr-key-btn { background: none; border: none; color: #90b0d0; cursor: pointer; padding: 4px 6px; border-radius: 4px; line-height: 1; margin-right: 2px; }
+.mgr-key-btn:hover { background: rgba(144,176,208,0.15); }
+.mgr-pw-expand { display: none; }
+.mgr-pw-expand.open { display: table-row; }
+.mgr-pw-expand td { padding: 0 8px 12px; border-bottom: 1px solid #382850; }
+.mgr-pw-form { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; padding-top: 4px; }
+.mgr-pw-form .mgr-pw-input { flex: 1; min-width: 140px; }
+.mgr-pw-set-btn { padding: 8px 14px; background: #c87830; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500; white-space: nowrap; }
+.mgr-pw-set-btn:hover { background: #a86020; }
+.mgr-pw-cancel-btn { padding: 8px 14px; background: transparent; color: #b098b8; border: 1px solid #382850; border-radius: 6px; cursor: pointer; font-size: 13px; white-space: nowrap; }
+.mgr-pw-cancel-btn:hover { color: #eee; border-color: #605070; }
+.mgr-pw-msg { font-size: 12px; min-width: 0; }
 @media (max-width: 480px) {
     .mgr-table thead { display: none; }
     .mgr-table tr { display: flex; flex-wrap: wrap; align-items: center; padding: 8px 4px; border-bottom: 1px solid #382850; gap: 4px; }
@@ -161,6 +173,12 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
     .mgr-table td:nth-child(2) { flex: 1; color: #b098b8; font-size: 12px; }
     .mgr-table td:nth-child(3) { color: #b098b8; font-size: 12px; }
     .mgr-table td:last-child { margin-left: auto; padding: 0; }
+    .mgr-pw-expand.open { display: flex; flex-direction: column; }
+    .mgr-pw-expand td { padding: 4px 4px 12px; width: 100%; box-sizing: border-box; }
+    .mgr-pw-form { flex-direction: column; align-items: stretch; }
+    .mgr-pw-form .mgr-pw-input,
+    .mgr-pw-set-btn,
+    .mgr-pw-cancel-btn { width: 100%; box-sizing: border-box; }
 }
 .mgr-add-title { font-size: 14px; font-weight: 500; color: #b098b8; margin-bottom: 10px; }
 .mgr-row { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }

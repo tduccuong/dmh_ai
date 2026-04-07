@@ -741,12 +741,13 @@ class H(BaseHTTPRequestHandler):
                 return
             d = self.body()
             uid = m_user.group(1)
-            name = (d.get('name') or '').strip() or None
-            role = d.get('role') or 'user'
             with sqlite3.connect(DB) as c:
-                c.execute('UPDATE users SET name=?, role=? WHERE id=?', (name, role, uid))
+                if 'name' in d or 'role' in d:
+                    name = (d.get('name') or '').strip() or None
+                    role = d.get('role') or 'user'
+                    c.execute('UPDATE users SET name=?, role=? WHERE id=?', (name, role, uid))
                 if d.get('password'):
-                    c.execute('UPDATE users SET password_hash=? WHERE id=?', (hash_password(d['password']), uid))
+                    c.execute('UPDATE users SET password_hash=?, password_changed=1 WHERE id=?', (hash_password(d['password']), uid))
             self.send_json(200, {'ok': True})
             return
 
