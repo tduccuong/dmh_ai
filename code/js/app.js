@@ -403,8 +403,9 @@ const UserProfile = {
             if (res && res.ok) {
                 const d = await res.json();
                 this._facts = d.profile || '';
+                syslog('[PROFILE] loaded ' + this._facts.split('\n').filter(function(l){return l.trim();}).length + ' fact(s)');
             }
-        } catch(e) {}
+        } catch(e) { syslog('[PROFILE] load error: ' + e); }
     },
 
     save: async function() {
@@ -435,11 +436,29 @@ const UserProfile = {
                 '[USER MESSAGE — sent first, the only source of facts]\n"' + userText.slice(0, 800) + '"\n[END USER MESSAGE]\n' +
                 assistantContext + '\n' +
                 existing +
-                'Task: extract personal facts about the user from the USER MESSAGE only (the first block above).\n' +
-                'The ASSISTANT RESPONSE (second block) is a reply generated after — it reflects back what was said but introduces no new facts about the user.\n' +
-                'Categories: name, age, gender, occupation, city/country, nationality, family (spouse/children with names/ages), health, hobbies, past travel/events.\n' +
-                'Rules: only facts the user explicitly stated. No inference. No duplicates with Already known. Plain text only, no markdown.\n' +
+                'Task: Extract personal facts the user stated about themselves directly in the USER MESSAGE.\n' +
+                'Only extract from explicit self-descriptions: "I am...", "I have...", "My X is/are...", "I live in...", "I work as...", etc.\n' +
+                '\n' +
+                'Valid categories (only if explicitly stated by the user):\n' +
+                '- Name, age, gender\n' +
+                '- Occupation / job title\n' +
+                '- City or country of residence — ONLY if user says "I live in X" or "I am from X". Searching for things in a city is NOT a location fact.\n' +
+                '- Nationality\n' +
+                '- Family: spouse, children with names/ages\n' +
+                '- Health conditions they mentioned about themselves\n' +
+                '- Hobbies or activities they regularly do\n' +
+                '- Significant personal events (past trips, milestones) they described\n' +
+                '\n' +
+                'NEVER extract:\n' +
+                '- Anything inferred or assumed (e.g. "likely lives in X", "probably interested in...")\n' +
+                '- Things they are searching for, shopping for, or asking about\n' +
+                '- Preferences inferred from requests (e.g. user asks about bike shops → do NOT extract bike preferences)\n' +
+                '- Anything from the ASSISTANT RESPONSE section\n' +
+                '- Duplicates of Already known facts\n' +
+                '\n' +
+                'The user message may be in any language. Extract facts regardless of language and always write the output in English.\n' +
                 'Format: one bullet per fact, e.g. "- Name: Carl" or "- Occupation: software engineer" or "- Visited Greece in 2025".\n' +
+                'Plain text only, no markdown formatting.\n' +
                 'If nothing qualifies, reply: NONE';
             const res = await cloudRoutedFetch(model, '/generate', {
                 model: model, stream: false, think: false,
@@ -1406,8 +1425,7 @@ const UIManager = {
     attachedFiles: [],
     _streamController: null,
     _lastUsedModel: null,
-    _pendingContent: '',
-    _pendingSession: null,
+    _streamMap: new Map(),  // sessionId -> { content, searchWarning, session } — only 1 entry at a time
     _wakeLock: null,
     _activeBodyDiv: null,
     _streamingWhenHidden: false,
@@ -1441,7 +1459,8 @@ const UIManager = {
                     retryBtn.style.cssText = 'padding:4px 12px;background:#c87830;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;flex-shrink:0;';
                     retryBtn.onclick = function() { self.retryLastMessage(); };
                     notice.appendChild(retryBtn);
-                    self._activeBodyDiv.appendChild(notice);
+                    var wlBody = document.getElementById('streaming-body') || self._activeBodyDiv;
+                    if (wlBody) wlBody.appendChild(notice);
                 }
                 self._streamingWhenHidden = false;
                 if (self.isStreaming) self._acquireWakeLock();
@@ -1473,7 +1492,6 @@ const UIManager = {
         applyLanguage();
 
         document.getElementById('stop-gen-btn').addEventListener('click', function() {
-            var pendingSession = self._pendingSession;
             if (self._streamController) { self._streamController.abort(); self._streamController = null; }
             self.saveStreamingProgress();
             self.isStreaming = false;
@@ -2263,21 +2281,22 @@ const UIManager = {
             }
             container.appendChild(div);
         });
-        // Reconnect live streaming content if a response is in-flight for this session
-        if (this._pendingSession && this._pendingSession.id === this.currentSession.id && this._pendingContent) {
+        // If there's an active stream for this session, render a live placeholder
+        var streamEntry = this._streamMap.get(this.currentSession.id);
+        if (streamEntry) {
             var streamDiv = document.createElement('div');
             streamDiv.className = 'message assistant';
             var streamHdr = document.createElement('div');
             streamHdr.className = 'msg-header';
-            streamHdr.textContent = buildMsgHeader({ role: 'assistant', ts: Date.now(), model: this._pendingSession.model }, this._pendingSession);
+            streamHdr.textContent = buildMsgHeader({ role: 'assistant', ts: Date.now(), model: streamEntry.session.model }, streamEntry.session);
             streamDiv.appendChild(streamHdr);
             var streamBody = document.createElement('div');
             streamBody.className = 'msg-body';
-            streamBody.innerHTML = renderWithMath(this._pendingContent);
+            streamBody.id = 'streaming-body';
+            streamBody.innerHTML = streamEntry.searchWarning + renderWithMath(streamEntry.content);
             addCopyButtons(streamBody); wrapTables(streamBody);
             streamDiv.appendChild(streamBody);
             container.appendChild(streamDiv);
-            this._activeBodyDiv = streamBody;
         }
         container.scrollTop = container.scrollHeight;
     },
@@ -2492,15 +2511,17 @@ const UIManager = {
     },
 
     saveStreamingProgress: function() {
-        if (!this._pendingContent || !this._pendingSession) return;
-        var last = this._pendingSession.messages[this._pendingSession.messages.length - 1];
+        if (this._streamMap.size === 0) return;
+        var entry = Array.from(this._streamMap.values())[0];
+        if (!entry.content || !entry.session) return;
+        var session = entry.session;
+        var last = session.messages[session.messages.length - 1];
         if (last && last.role === 'assistant') return;
-        this._pendingSession.messages.push({ role: 'assistant', content: this._pendingContent });
-        var prev = this._pendingSession.messages[this._pendingSession.messages.length - 2];
+        session.messages.push({ role: 'assistant', content: entry.content });
+        var prev = session.messages[session.messages.length - 2];
         if (prev && prev.role === 'user') prev._sentToLLM = true;
-        SessionStore.updateSession(this._pendingSession);
-        this._pendingContent = '';
-        this._pendingSession = null;
+        SessionStore.updateSession(session);
+        this._streamMap.clear();
     },
 
     updateEndpoint: async function(url) {
@@ -2926,11 +2947,12 @@ const UIManager = {
         var userMsgForAPI = { role: 'user', content: contentForAPI };
         if (imagesForAPI.length > 0) userMsgForAPI.images = imagesForAPI;
 
-        this.currentSession.messages.push(userMsgForStorage);
+        const sessionAtSend = this.currentSession;
+        sessionAtSend.messages.push(userMsgForStorage);
         localStorage.setItem('lastActivityAt', Date.now().toString());
         this.attachedFiles = [];
         this.renderAttachments();
-        await SessionStore.updateSession(this.currentSession);
+        await SessionStore.updateSession(sessionAtSend);
         this.renderChat();
         input.value = '';
         input.style.height = 'auto';
@@ -2951,13 +2973,14 @@ const UIManager = {
         assistantDiv.appendChild(assistantHdr);
         const bodyDiv = document.createElement('div');
         bodyDiv.className = 'msg-body';
+        bodyDiv.id = 'streaming-body';
         assistantDiv.appendChild(bodyDiv);
         container.appendChild(assistantDiv);
 
         this.isStreaming = true;
         this._acquireWakeLock();
-        this._pendingContent = '';
-        this._pendingSession = null;
+        self._streamMap.clear();
+        self._streamMap.set(sessionAtSend.id, { content: '', searchWarning: '', session: sessionAtSend });
         const pipelineController = new AbortController();
         const pipelineSignal = pipelineController.signal;
         self._streamController = pipelineController;
@@ -3027,15 +3050,14 @@ const UIManager = {
                     syslog('[INJECT] results injected into context');
                 } else {
                     syslog('[SEARCH] fallback: all rounds returned no results');
-                    bodyDiv.innerHTML = '<em style="color:#d0a050;">' + t('searchUnavail') + '</em><br><br>';
+                    var warnHtml = '<em style="color:#d0a050;">' + t('searchUnavail') + '</em><br><br>';
+                    bodyDiv.innerHTML = warnHtml;
+                    self._streamMap.get(sessionAtSend.id).searchWarning = warnHtml;
                 }
             }
         }
         let assistantContent = '';
         let firstChunk = true;
-        const searchWarning = bodyDiv.innerHTML;
-        const sessionAtSend = this.currentSession;
-        self._pendingSession = sessionAtSend;
         const usePool = isCloudModel(sessionAtSend.model) && Settings.accounts.length > 0;
         const maxRetries = usePool ? Settings.accounts.length : 0;
 
@@ -3054,14 +3076,17 @@ const UIManager = {
                         self.setStatus(getModelDisplayName(sessionAtSend.model) + t('answering'));
                     }
                     assistantContent += chunk;
-                    self._pendingContent = assistantContent;
-                    if (self.currentSession && self.currentSession.id === sessionAtSend.id) {
-                        var activeBody = self._activeBodyDiv;
-                        if (activeBody && document.contains(activeBody)) {
-                            activeBody.innerHTML = searchWarning + renderWithMath(assistantContent);
-                            addCopyButtons(activeBody); wrapTables(activeBody);
-                            var overflowed = container.scrollHeight > container.scrollTop + container.clientHeight + 40;
-                            document.getElementById('scroll-bottom-btn').style.display = overflowed ? 'flex' : 'none';
+                    var mapEntry = self._streamMap.get(sessionAtSend.id);
+                    if (mapEntry) {
+                        mapEntry.content = assistantContent;
+                        if (self.currentSession && self.currentSession.id === sessionAtSend.id) {
+                            var activeBody = document.getElementById('streaming-body');
+                            if (activeBody) {
+                                activeBody.innerHTML = mapEntry.searchWarning + renderWithMath(assistantContent);
+                                addCopyButtons(activeBody); wrapTables(activeBody);
+                                var overflowed = container.scrollHeight > container.scrollTop + container.clientHeight + 40;
+                                document.getElementById('scroll-bottom-btn').style.display = overflowed ? 'flex' : 'none';
+                            }
                         }
                     }
                 },
@@ -3070,9 +3095,8 @@ const UIManager = {
                     sessionAtSend.messages.push({ role: 'assistant', content: assistantContent, ts: assistantTs, model: sessionAtSend.model });
                     var userMsg = sessionAtSend.messages[sessionAtSend.messages.length - 2];
                     if (userMsg && userMsg.role === 'user') userMsg._sentToLLM = true;
+                    self._streamMap.delete(sessionAtSend.id);
                     SessionStore.updateSession(sessionAtSend);
-                    self._pendingContent = '';
-                    self._pendingSession = null;
                     self._streamController = null;
                     self._activeBodyDiv = null;
                     self.isStreaming = false;
@@ -3080,9 +3104,7 @@ const UIManager = {
                     self.updateSendBtn();
                     self.setStatus('');
                     document.getElementById('stop-gen-btn').style.display = 'none';
-                    // If user is currently viewing this session but bodyDiv was detached
-                    // (switched away and back while streaming), re-render to show the response
-                    if (self.currentSession && self.currentSession.id === sessionAtSend.id && !document.contains(bodyDiv)) {
+                    if (self.currentSession && self.currentSession.id === sessionAtSend.id) {
                         self.currentSession = sessionAtSend;
                         self.renderChat();
                     }
@@ -3124,11 +3146,13 @@ const UIManager = {
                         }
                     }
                     console.error('Stream error:', err);
-                    if (self.currentSession === sessionAtSend && assistantContent) {
-                        bodyDiv.innerHTML = searchWarning + renderWithMath(assistantContent);
-                        addCopyButtons(bodyDiv); wrapTables(bodyDiv);
+                    if (assistantContent) {
+                        var errEntry = self._streamMap.get(sessionAtSend.id);
+                        var errBody = document.getElementById('streaming-body');
+                        if (errBody && errEntry) { errBody.innerHTML = errEntry.searchWarning + renderWithMath(assistantContent); addCopyButtons(errBody); wrapTables(errBody); }
                     }
                     self.saveStreamingProgress();
+                    self._streamMap.delete(sessionAtSend.id);
                     self._streamController = null;
                     self.isStreaming = false;
                     self._releaseWakeLock();
@@ -3142,7 +3166,6 @@ const UIManager = {
             );
         }
 
-        self._activeBodyDiv = bodyDiv;
         doStream(usePool ? CloudAccountPool.getNext() : null, 0);
     },
 
