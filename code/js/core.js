@@ -1,0 +1,363 @@
+marked.use({
+    gfm: true,
+    breaks: true,
+    renderer: {
+        link: function(token) {
+            return '<a href="' + token.href + '" target="_blank" rel="noopener noreferrer">' + token.text + '</a>';
+        }
+    }
+});
+
+function renderWithMath(markdown) {
+    if (!window.katex) return marked.parse(markdown);
+    var blocks = [];
+    var n = 0;
+    var ph = function(i) { return 'KATEXBLOCK' + i + 'END'; };
+    // Extract math blocks before marked sees them (longest delimiters first)
+    var safe = markdown
+        .replace(/\$\$([\s\S]*?)\$\$/g, function(_, m) { blocks.push({d: true, m: m}); return ph(n++); })
+        .replace(/\\\[([\s\S]*?)\\\]/g, function(_, m) { blocks.push({d: true, m: m}); return ph(n++); })
+        .replace(/\\\(([\s\S]*?)\\\)/g, function(_, m) { blocks.push({d: false, m: m}); return ph(n++); })
+        .replace(/\$([^\$\n]{1,400}?)\$/g, function(_, m) { blocks.push({d: false, m: m}); return ph(n++); });
+    var html = marked.parse(safe);
+    blocks.forEach(function(b, i) {
+        var rendered = katex.renderToString(b.m, { displayMode: b.d, throwOnError: false, output: 'html' });
+        html = html.split(ph(i)).join(rendered);
+    });
+    return html;
+}
+
+const I18n = {
+    _lang: localStorage.getItem('lang') || 'en',
+    _strings: {
+        en: {
+            retry: 'Retry', clear: 'Clear', send: 'Send', cancel: 'Cancel', ok: 'OK', stopGen: 'Stop',
+            update: 'Update', rename: 'Rename', delete_: 'Delete', download: '⬇ Download',
+            newSession: '+ New Session', newChat: 'New chat',
+            typePlaceholder: 'Type a message...', attachFile: 'Attach file',
+            ollamaEndpoint: 'Ollama Endpoint',
+            cannotConnect: 'Cannot connect to Ollama',
+            cannotConnectFull: 'Cannot connect to Ollama. Please correct Ollama URL endpoint.',
+            cannotConnectTo: 'Cannot connect to ',
+            renameSession: 'Rename session', newSessionName: 'New session name',
+            deleteSession: 'Delete session',
+            deleteConfirm1: 'Delete "', deleteConfirm2: '"? This cannot be undone.',
+            clearSession: 'Clear session',
+            clearConfirm1: 'Clear all history in "', clearConfirm2: '"? This cannot be undone.',
+            confirm: 'Confirm', updating: 'Updating...',
+            unsupported1: 'Unsupported file: ', unsupported2: '. Supported: PDF, DOCX, XLSX, plain text, ',
+            noVision1: '⚠ ', noVision2: ' does not support images. Switch to a vision-capable model and send again.',
+            genKeywords: 'Generating search keywords...',
+            searchingWeb: 'Searching the web...',
+            fetchingPages: 'Reading web sources...',
+            synthesizing: 'Synthesizing results...',
+            thinking: ' is thinking...', answering: ' is answering...', compacting: 'Compacting conversation...',
+            settingsChatSection: 'Chat', settingsCompactLabel: 'Compact after messages', settingsKeepRecentLabel: 'Keep recent messages',
+            settingsNavModel: 'Models', settingsNavConversation: 'Conversation',
+            searchUnavail: '⚠ Web search unavailable — answering from model training data, which may be outdated.',
+            attaching: 'Preparing attachment...',
+            voiceListening: 'Recording... tap to stop',
+            voiceNotSupported: 'Voice input not supported in this browser',
+            voiceHttpError: 'Voice input requires HTTPS. Access the app on port 8443 to enable it.',
+            voiceEmpty: 'Nothing was recognized. To record in a different language, tap the flag button to switch language first. Currently listening in ',
+            iosChromeHint: 'To add DMH-AI to your home screen, open this page in Safari, tap the Share button (⎙), then "Add to Home Screen".',
+            iosCertHint: 'To avoid the certificate warning: tap here to install the certificate, then go to Settings → General → About → Certificate Trust Settings and enable it.',
+            pwWarning: '⚠ You are using the default password. Please change it now.',
+            pwWarningBtn: 'Change password',
+            settings: 'Settings', sysSettings: 'System Settings',
+            recQuickAnswer: '👁 Quick Answer', recDeepThinker: '💡 Deep Thinker', recTechExpert: '🛠 Technical Expert', recWordsmith: '✍ Wordsmith', recMathMaster: '🧮 Math Master',
+            noModelAvail: 'No model available. Please configure a model in Settings first.',
+            profileSection: 'Companion Memory', profileEmpty: 'No facts remembered yet.',
+            profileClear: 'Clear memory', profileClearConfirm: 'This will reset everything DMH-AI has learned about you. You may notice a different feeling next time — it will understand you again over time, but that takes a while. You can always rebuild it from Conversation Settings. Are you sure?',
+            profileCondenseLabel: 'Condense after facts',
+            convSettings: 'Conversation Settings',
+        },
+        vi: {
+            retry: 'Thử lại', clear: 'Xóa', send: 'Gửi', cancel: 'Hủy', ok: 'OK', stopGen: 'Dừng',
+            update: 'Cập nhật', rename: 'Đổi tên', delete_: 'Xóa', download: '⬇ Tải về',
+            newSession: '+ Phiên mới', newChat: 'Cuộc trò chuyện mới',
+            typePlaceholder: 'Nhập tin nhắn...', attachFile: 'Đính kèm tệp',
+            ollamaEndpoint: 'Điểm cuối Ollama',
+            cannotConnect: 'Không thể kết nối Ollama',
+            cannotConnectFull: 'Không thể kết nối Ollama. Vui lòng kiểm tra lại URL endpoint của Ollama.',
+            cannotConnectTo: 'Không thể kết nối ',
+            renameSession: 'Đổi tên phiên', newSessionName: 'Tên phiên mới',
+            deleteSession: 'Xóa phiên',
+            deleteConfirm1: 'Xóa "', deleteConfirm2: '"? Không thể hoàn tác.',
+            clearSession: 'Xóa phiên',
+            clearConfirm1: 'Xóa toàn bộ lịch sử trong "', clearConfirm2: '"? Không thể hoàn tác.',
+            confirm: 'Xác nhận', updating: 'Đang cập nhật...',
+            unsupported1: 'Tệp không hỗ trợ: ', unsupported2: '. Hỗ trợ: PDF, DOCX, XLSX, văn bản, ',
+            noVision1: '⚠ ', noVision2: ' không hỗ trợ hình ảnh. Hãy chọn mô hình hỗ trợ hình ảnh và gửi lại.',
+            genKeywords: 'Đang tạo từ khóa tìm kiếm...',
+            searchingWeb: 'Đang tìm kiếm web...',
+            fetchingPages: 'Đang đọc nguồn web...',
+            synthesizing: 'Đang tổng hợp kết quả...',
+            thinking: ' đang suy nghĩ...', answering: ' đang trả lời...', compacting: 'Đang nén hội thoại...',
+            settingsChatSection: 'Chat', settingsCompactLabel: 'Nén sau số tin nhắn', settingsKeepRecentLabel: 'Giữ tin nhắn gần đây',
+            settingsNavModel: 'Mô hình', settingsNavConversation: 'Hội thoại',
+            searchUnavail: '⚠ Tìm kiếm web không khả dụng — trả lời từ dữ liệu huấn luyện, có thể đã lỗi thời.',
+            attaching: 'Đang chuẩn bị tệp đính kèm...',
+            voiceListening: 'Đang ghi âm... nhấn để dừng',
+            voiceNotSupported: 'Trình duyệt này không hỗ trợ nhập giọng nói',
+            voiceHttpError: 'Nhập giọng nói yêu cầu HTTPS. Truy cập ứng dụng qua cổng 8443 để sử dụng.',
+            voiceEmpty: 'Không nhận ra giọng nói. Để ghi âm bằng ngôn ngữ khác, nhấn nút cờ để chọn ngôn ngữ trước. Hiện đang nghe bằng ',
+            iosChromeHint: 'Để thêm DMH-AI vào màn hình chính, mở trang này trong Safari, nhấn nút Chia sẻ (⎙), rồi chọn "Thêm vào Màn hình chính".',
+            iosCertHint: 'Để bỏ cảnh báo chứng chỉ: nhấn đây để cài chứng chỉ, rồi vào Cài đặt → Cài đặt chung → Giới thiệu → Cài đặt tin cậy chứng chỉ và bật lên.',
+            pwWarning: '⚠ Bạn đang dùng mật khẩu mặc định. Hãy đổi mật khẩu ngay.',
+            pwWarningBtn: 'Đổi mật khẩu',
+            settings: 'Cài đặt', sysSettings: 'Cài đặt hệ thống',
+            recQuickAnswer: '👁 Trả lời nhanh', recDeepThinker: '💡 Suy nghĩ sâu', recTechExpert: '🛠 Chuyên gia kỹ thuật', recWordsmith: '✍ Nhà văn', recMathMaster: '🧮 Toán học',
+            noModelAvail: 'Không có mô hình nào. Vui lòng cấu hình trong Cài đặt trước.',
+            profileSection: 'Bộ nhớ đồng hành', profileEmpty: 'Chưa ghi nhớ điều gì.',
+            profileClear: 'Xóa bộ nhớ', profileClearConfirm: 'Thao tác này sẽ xóa toàn bộ những gì DMH-AI đã hiểu về bạn. Lần trò chuyện tiếp theo có thể cảm giác khác đi — DMH-AI sẽ dần hiểu bạn trở lại theo thời gian. Bạn có thể xây dựng lại bất cứ lúc nào trong Cài đặt hội thoại. Bạn có chắc không?',
+            profileCondenseLabel: 'Cô đọng sau số sự kiện',
+            convSettings: 'Cài đặt hội thoại',
+        },
+        de: {
+            retry: 'Wiederholen', clear: 'Löschen', send: 'Senden', cancel: 'Abbrechen', ok: 'OK', stopGen: 'Stopp',
+            update: 'Aktualisieren', rename: 'Umbenennen', delete_: 'Löschen', download: '⬇ Herunterladen',
+            newSession: '+ Neue Sitzung', newChat: 'Neuer Chat',
+            typePlaceholder: 'Nachricht eingeben...', attachFile: 'Datei anhängen',
+            ollamaEndpoint: 'Ollama-Endpunkt',
+            cannotConnect: 'Verbindung zu Ollama fehlgeschlagen',
+            cannotConnectFull: 'Verbindung zu Ollama fehlgeschlagen. Bitte überprüfen Sie die Ollama-URL-Endpunkt.',
+            cannotConnectTo: 'Verbindung fehlgeschlagen: ',
+            renameSession: 'Sitzung umbenennen', newSessionName: 'Neuer Sitzungsname',
+            deleteSession: 'Sitzung löschen',
+            deleteConfirm1: '"', deleteConfirm2: '" löschen? Dies kann nicht rückgängig gemacht werden.',
+            clearSession: 'Sitzung leeren',
+            clearConfirm1: 'Gesamten Verlauf in "', clearConfirm2: '" löschen? Dies kann nicht rückgängig gemacht werden.',
+            confirm: 'Bestätigen', updating: 'Aktualisierung...',
+            unsupported1: 'Nicht unterstützte Datei: ', unsupported2: '. Unterstützt: PDF, DOCX, XLSX, Text, ',
+            noVision1: '⚠ ', noVision2: ' unterstützt keine Bilder. Wählen Sie ein bildtaugliches Modell und senden Sie erneut.',
+            genKeywords: 'Suchbegriffe werden generiert...',
+            searchingWeb: 'Websuche läuft...',
+            fetchingPages: 'Web-Quellen werden gelesen...',
+            synthesizing: 'Ergebnisse werden zusammengefasst...',
+            thinking: ' denkt nach...', answering: ' antwortet...', compacting: 'Konversation wird komprimiert...',
+            settingsChatSection: 'Chat', settingsCompactLabel: 'Komprimieren nach Nachrichten', settingsKeepRecentLabel: 'Neueste Nachrichten behalten',
+            settingsNavModel: 'Modelle', settingsNavConversation: 'Gespräch',
+            searchUnavail: '⚠ Websuche nicht verfügbar — Antwort basiert auf Trainingsdaten, möglicherweise veraltet.',
+            attaching: 'Anhang wird vorbereitet...',
+            voiceListening: 'Aufnahme... tippen zum Stoppen',
+            voiceNotSupported: 'Spracheingabe in diesem Browser nicht unterstützt',
+            voiceHttpError: 'Spracheingabe erfordert HTTPS. Öffnen Sie die App über Port 8443.',
+            voiceEmpty: 'Nichts erkannt. Um in einer anderen Sprache aufzunehmen, tippen Sie zuerst auf die Flagge. Aktuell wird gehört auf ',
+            iosChromeHint: 'Um DMH-AI zum Home-Bildschirm hinzuzufügen, öffnen Sie die Seite in Safari, tippen auf Teilen (⎙) und wählen „Zum Home-Bildschirm".',
+            iosCertHint: 'Um die Zertifikatwarnung zu vermeiden: hier tippen zum Installieren, dann Einstellungen → Allgemein → Info → Zertifikat-Vertrauenseinstellungen und aktivieren.',
+            pwWarning: '⚠ Sie verwenden noch das Standardpasswort. Bitte jetzt ändern.',
+            pwWarningBtn: 'Passwort ändern',
+            settings: 'Einstellungen', sysSettings: 'Systemeinstellungen',
+            recQuickAnswer: '👁 Schnelle Antwort', recDeepThinker: '💡 Tiefdenker', recTechExpert: '🛠 Technischer Experte', recWordsmith: '✍ Wortschmied', recMathMaster: '🧮 Mathe-Meister',
+            noModelAvail: 'Kein Modell verfügbar. Bitte zuerst in den Einstellungen konfigurieren.',
+            profileSection: 'Begleitergedächtnis', profileEmpty: 'Noch keine Fakten gespeichert.',
+            profileClear: 'Gedächtnis löschen', profileClearConfirm: 'Damit wird alles zurückgesetzt, was DMH-AI über Sie gelernt hat. Beim nächsten Gespräch kann sich etwas anders anfühlen — es wird Sie mit der Zeit wieder verstehen. Sie können es jederzeit über die Gesprächseinstellungen neu aufbauen. Sind Sie sicher?',
+            profileCondenseLabel: 'Verdichten nach Fakten',
+            convSettings: 'Gesprächseinstellungen',
+        },
+        es: {
+            retry: 'Reintentar', clear: 'Limpiar', send: 'Enviar', cancel: 'Cancelar', ok: 'OK', stopGen: 'Detener',
+            update: 'Actualizar', rename: 'Renombrar', delete_: 'Eliminar', download: '⬇ Descargar',
+            newSession: '+ Nueva sesión', newChat: 'Nueva conversación',
+            typePlaceholder: 'Escribe un mensaje...', attachFile: 'Adjuntar archivo',
+            ollamaEndpoint: 'Punto de acceso Ollama',
+            cannotConnect: 'No se puede conectar a Ollama',
+            cannotConnectFull: 'No se puede conectar a Ollama. Verifique la URL del endpoint de Ollama.',
+            cannotConnectTo: 'No se puede conectar a ',
+            renameSession: 'Renombrar sesión', newSessionName: 'Nombre de nueva sesión',
+            deleteSession: 'Eliminar sesión',
+            deleteConfirm1: '¿Eliminar "', deleteConfirm2: '"? Esto no se puede deshacer.',
+            clearSession: 'Limpiar sesión',
+            clearConfirm1: '¿Borrar todo el historial en "', clearConfirm2: '"? Esto no se puede deshacer.',
+            confirm: 'Confirmar', updating: 'Actualizando...',
+            unsupported1: 'Archivo no compatible: ', unsupported2: '. Compatible: PDF, DOCX, XLSX, texto, ',
+            noVision1: '⚠ ', noVision2: ' no admite imágenes. Seleccione un modelo con visión y envíe de nuevo.',
+            genKeywords: 'Generando palabras clave...',
+            searchingWeb: 'Buscando en la web...',
+            fetchingPages: 'Leyendo fuentes web...',
+            synthesizing: 'Sintetizando resultados...',
+            thinking: ' está pensando...', answering: ' está respondiendo...', compacting: 'Comprimiendo conversación...',
+            settingsChatSection: 'Chat', settingsCompactLabel: 'Compactar después de mensajes', settingsKeepRecentLabel: 'Mantener mensajes recientes',
+            settingsNavModel: 'Modelos', settingsNavConversation: 'Conversación',
+            searchUnavail: '⚠ Búsqueda web no disponible — respondiendo con datos de entrenamiento, pueden estar desactualizados.',
+            attaching: 'Preparando archivo adjunto...',
+            voiceListening: 'Grabando... toca para detener',
+            voiceNotSupported: 'Entrada de voz no compatible con este navegador',
+            voiceHttpError: 'La entrada de voz requiere HTTPS. Acceda a la aplicación por el puerto 8443.',
+            voiceEmpty: 'No se reconoció nada. Para grabar en otro idioma, toca el botón de bandera primero. Actualmente escuchando en ',
+            iosChromeHint: 'Para agregar DMH-AI a la pantalla de inicio, abre la página en Safari, toca Compartir (⎙) y selecciona "Agregar a inicio".',
+            iosCertHint: 'Para evitar la advertencia: toca aquí para instalar el certificado, luego ve a Ajustes → General → Información → Configuración de confianza de certificados y actívalo.',
+            pwWarning: '⚠ Está usando la contraseña predeterminada. Cámbiela ahora.',
+            pwWarningBtn: 'Cambiar contraseña',
+            settings: 'Configuración', sysSettings: 'Configuración del sistema',
+            recQuickAnswer: '👁 Respuesta rápida', recDeepThinker: '💡 Pensador profundo', recTechExpert: '🛠 Experto técnico', recWordsmith: '✍ Plumista', recMathMaster: '🧮 Maestro Matemático',
+            noModelAvail: 'Ningún modelo disponible. Configure uno en Ajustes primero.',
+            profileSection: 'Memoria del compañero', profileEmpty: 'Aún no hay hechos recordados.',
+            profileClear: 'Borrar memoria', profileClearConfirm: 'Esto reiniciará todo lo que DMH-AI ha aprendido sobre usted. La próxima vez que chatee puede sentirse diferente — lo entenderá de nuevo con el tiempo. Siempre puede reconstruirlo desde Configuración de conversación. ¿Está seguro?',
+            profileCondenseLabel: 'Condensar después de hechos',
+            convSettings: 'Configuración de conversación',
+        },
+        fr: {
+            retry: 'Réessayer', clear: 'Effacer', send: 'Envoyer', cancel: 'Annuler', ok: 'OK', stopGen: 'Arrêter',
+            update: 'Mettre à jour', rename: 'Renommer', delete_: 'Supprimer', download: '⬇ Télécharger',
+            newSession: '+ Nouvelle session', newChat: 'Nouvelle conversation',
+            typePlaceholder: 'Tapez un message...', attachFile: 'Joindre un fichier',
+            ollamaEndpoint: 'Point d\'accès Ollama',
+            cannotConnect: 'Connexion à Ollama impossible',
+            cannotConnectFull: 'Connexion à Ollama impossible. Veuillez vérifier l\'URL du endpoint Ollama.',
+            cannotConnectTo: 'Connexion impossible à ',
+            renameSession: 'Renommer la session', newSessionName: 'Nom de la nouvelle session',
+            deleteSession: 'Supprimer la session',
+            deleteConfirm1: 'Supprimer "', deleteConfirm2: '" ? Cette action est irréversible.',
+            clearSession: 'Effacer la session',
+            clearConfirm1: 'Effacer tout l\'historique de "', clearConfirm2: '" ? Cette action est irréversible.',
+            confirm: 'Confirmer', updating: 'Mise à jour...',
+            unsupported1: 'Fichier non pris en charge : ', unsupported2: '. Pris en charge : PDF, DOCX, XLSX, texte, ',
+            noVision1: '⚠ ', noVision2: ' ne prend pas en charge les images. Sélectionnez un modèle compatible et réessayez.',
+            genKeywords: 'Génération des mots-clés...',
+            searchingWeb: 'Recherche web...',
+            fetchingPages: 'Lecture des sources web...',
+            synthesizing: 'Synthèse des résultats...',
+            thinking: ' réfléchit...', answering: ' répond...', compacting: 'Compactage de la conversation...',
+            settingsChatSection: 'Chat', settingsCompactLabel: 'Compacter après messages', settingsKeepRecentLabel: 'Garder les messages récents',
+            settingsNavModel: 'Modèles', settingsNavConversation: 'Conversation',
+            searchUnavail: '⚠ Recherche web indisponible — réponse basée sur les données d\'entraînement, potentiellement obsolètes.',
+            attaching: 'Préparation de la pièce jointe...',
+            voiceListening: 'Enregistrement... appuyez pour arrêter',
+            voiceNotSupported: 'Saisie vocale non prise en charge par ce navigateur',
+            voiceHttpError: 'La saisie vocale nécessite HTTPS. Accédez à l\'application via le port 8443.',
+            voiceEmpty: 'Rien reconnu. Pour enregistrer dans une autre langue, appuyez d\'abord sur le drapeau. Langue actuelle : ',
+            iosChromeHint: 'Pour ajouter DMH-AI à l\'écran d\'accueil, ouvrez la page dans Safari, appuyez sur Partager (⎙) puis « Sur l\'écran d\'accueil ».',
+            iosCertHint: 'Pour éviter l\'avertissement : appuyez ici pour installer le certificat, puis Réglages → Général → À propos → Réglages de confiance des certificats et activez.',
+            pwWarning: '⚠ Vous utilisez le mot de passe par défaut. Veuillez le changer maintenant.',
+            pwWarningBtn: 'Changer le mot de passe',
+            settings: 'Paramètres', sysSettings: 'Paramètres système',
+            recQuickAnswer: '👁 Réponse rapide', recDeepThinker: '💡 Réflexion profonde', recTechExpert: '🛠 Expert technique', recWordsmith: '✍ Plume', recMathMaster: '🧮 Maître des maths',
+            noModelAvail: 'Aucun modèle disponible. Veuillez d\'abord en configurer un dans les Paramètres.',
+            profileSection: 'Mémoire du compagnon', profileEmpty: 'Aucun fait mémorisé pour l\'instant.',
+            profileClear: 'Effacer la mémoire', profileClearConfirm: 'Cela réinitialisera tout ce que DMH-AI a appris sur vous. La prochaine conversation pourrait sembler différente — il vous comprendra à nouveau avec le temps. Vous pouvez toujours le reconstruire depuis Paramètres de conversation. Êtes-vous sûr ?',
+            profileCondenseLabel: 'Condenser après faits',
+            convSettings: 'Paramètres de conversation',
+        }
+    },
+    t: function(key) { return (this._strings[this._lang] || this._strings.en)[key] || this._strings.en[key] || key; },
+    setLang: function(lang) { this._lang = lang; localStorage.setItem('lang', lang); },
+    get lang() { return this._lang; },
+    flags: { en: '🇬🇧', vi: '🇻🇳', de: '🇩🇪', es: '🇪🇸', fr: '🇫🇷' },
+    names: { en: 'English', vi: 'Tiếng Việt', de: 'Deutsch', es: 'Español', fr: 'Français' }
+};
+function t(key) { return I18n.t(key); }
+
+const Auth = {
+    _token: localStorage.getItem('auth_token'),
+    _user: (function() { try { return JSON.parse(localStorage.getItem('auth_user')); } catch(e) { return null; } })(),
+    get token() { return this._token; },
+    get user() { return this._user; },
+    get isLoggedIn() { return !!this._token && !!this._user; },
+    async login(email, password) {
+        let res;
+        try {
+            res = await fetch('/auth/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email: email, password: password }),
+                signal: AbortSignal.timeout(10000)
+            });
+        } catch(e) {
+            // On iOS/Android with an untrusted self-signed certificate, fetch hangs or
+            // fails immediately with a network error. Give the user actionable guidance.
+            if (location.protocol === 'https:') {
+                throw new Error('Cannot connect. On mobile, you may need to install the self-signed certificate first — see the README or try the HTTP endpoint (port 8080).');
+            }
+            throw new Error('Cannot connect to server. Is the app running?');
+        }
+        if (!res.ok) throw new Error('Invalid username or password');
+        const data = await res.json();
+        this._token = data.token;
+        this._user = data.user;
+        localStorage.setItem('auth_token', data.token);
+        localStorage.setItem('auth_user', JSON.stringify(data.user));
+        return data.user;
+    },
+    async logout() {
+        if (this._token) {
+            fetch('/auth/logout', { method: 'POST', headers: { 'Authorization': 'Bearer ' + this._token } }).catch(function() {});
+        }
+        this._token = null;
+        this._user = null;
+        localStorage.removeItem('auth_token');
+        localStorage.removeItem('auth_user');
+    },
+    async validate() {
+        if (!this._token) return null;
+        const res = await fetch('/auth/me', { headers: { 'Authorization': 'Bearer ' + this._token } });
+        if (!res.ok) {
+            this._token = null; this._user = null;
+            localStorage.removeItem('auth_token'); localStorage.removeItem('auth_user');
+            return null;
+        }
+        const user = await res.json();
+        this._user = user;
+        localStorage.setItem('auth_user', JSON.stringify(user));
+        return user;
+    }
+};
+
+function apiFetch(url, options) {
+    options = options || {};
+    if (Auth.token) {
+        options.headers = options.headers || {};
+        options.headers['Authorization'] = 'Bearer ' + Auth.token;
+    }
+    return fetch(url, options);
+}
+
+function isCloudModel(model) {
+    return RECOMMENDED_CLOUD_MODEL_NAMES.indexOf(model) !== -1 ||
+           Settings.cloudModels.indexOf(model) !== -1;
+}
+
+function cloudRoutedFetch(model, path, body, signal) {
+    var acct = isCloudModel(model) ? CloudAccountPool.getNext() : null;
+    var url = acct ? '/cloud-api' + path : OllamaAPI.BASE_URL + path;
+    var headers = { 'Content-Type': 'application/json' };
+    if (acct) {
+        headers['Authorization'] = 'Bearer ' + (Auth.token || '');
+        headers['X-Cloud-Key'] = acct.apiKey;
+    }
+    return fetch(url, { method: 'POST', headers: headers, body: JSON.stringify(body), signal: signal });
+}
+
+function syslog(msg) {
+    apiFetch('/log', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({msg}) }).catch(function(){});
+}
+
+const AppConfig = {
+    get searxngUrl() { return localStorage.getItem('searxng-url') || 'http://localhost:8888'; },
+    saveSearxng: function(url) {
+        if (url) localStorage.setItem('searxng-url', url);
+        else localStorage.removeItem('searxng-url');
+    },
+    get ollamaEndpoint() { return localStorage.getItem('ollama-endpoint') || ''; },
+    saveOllamaEndpoint: function(url) {
+        if (url) localStorage.setItem('ollama-endpoint', url);
+        else localStorage.removeItem('ollama-endpoint');
+    }
+};
+
+function getRecommendedCloudModels() {
+    return [
+        { name: 'ministral-3:14b-cloud',          label: t('recQuickAnswer') },
+        { name: 'gemma4:31b-cloud',               label: t('recWordsmith') },
+        { name: 'qwen3-vl:235b-instruct-cloud',   label: t('recDeepThinker') },
+        { name: 'qwen3-vl:235b-cloud',            label: t('recMathMaster') },
+    ];
+}
+// Constant names for filtering (language-independent)
+const RECOMMENDED_CLOUD_MODEL_NAMES = ['ministral-3:14b-cloud', 'qwen3-vl:235b-instruct-cloud', 'gemma4:31b-cloud', 'qwen3-vl:235b-cloud'];
+
+function getModelDisplayName(model) {
+    var rec = getRecommendedCloudModels().find(function(r) { return r.name === model; });
+    return rec ? rec.label : model;
+}
