@@ -30,7 +30,7 @@ Cả hai chế độ chạy trong cùng một ứng dụng. Bạn có thể chuy
 
 ## Tính năng nổi bật
 
-- **Bộ nhớ đồng hành** — DMH-AI là người bạn đồng hành thực sự của bạn. Theo thời gian, DMH-AI hiểu bạn hơn và mang sự hiểu biết đó vào các cuộc trò chuyện sau với sự quan tâm chân thành — để bạn không bao giờ phải nhắc lại. Bạn có thể xem hoặc xóa bất kỳ lúc nào trong Cài đặt hội thoại.
+- **Bộ nhớ đồng hành** — DMH-AI hiểu bạn hơn theo thời gian và dùng sự hiểu biết đó để đưa ra câu trả lời phù hợp, cá nhân hóa hơn — để bạn không bao giờ phải nhắc lại. Điểm giúp DMH-AI nổi bật so với các chatbot phổ biến như ChatGPT hay Gemini: hồ sơ của bạn không bao giờ rời khỏi máy tính của bạn. Các chatbot AI phổ biến cũng xây dựng hồ sơ về bạn, nhưng lưu trữ trên máy chủ của họ, ngoài tầm kiểm soát của bạn, và sử dụng theo điều khoản của riêng họ. Với DMH-AI, mọi thứ đều nằm trên phần cứng của bạn. Bạn có thể xem hoặc xóa bất kỳ lúc nào trong Cài đặt hội thoại.
 - **Tìm kiếm web tích hợp** — tương tự Perplexity, nhưng tự host và riêng tư. Bạn hỏi bình thường, DMH-AI tự quyết định có cần tìm kiếm web không. Nếu cần, kết quả được tổng hợp thành câu trả lời có nguồn, cập nhật. Hoạt động với mọi ngôn ngữ.
 - **Đính kèm đa phương tiện** — đính kèm tài liệu (PDF, DOCX, XLSX), hình ảnh và video. Trên điện thoại, chụp ảnh hoặc quay video trực tiếp và đưa vào chat — không cần lưu vào thư viện trước.
 - **Hỗ trợ nhiều người dùng** — mỗi người có đăng nhập riêng, lịch sử chat riêng và tệp riêng. Tài khoản admin được tạo tự động khi khởi chạy lần đầu. Admin có thể thêm và xóa người dùng ngay trong ứng dụng.
