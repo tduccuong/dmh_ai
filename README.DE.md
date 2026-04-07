@@ -30,7 +30,7 @@ Beide Modi funktionieren in derselben App. Sie können jederzeit frei wechseln.
 
 ## Was Sie bekommen
 
-- **Begleitergedächtnis** — DMH-AI merkt sich im Hintergrund, was Sie teilen — Familie, Beruf, Wohnort, Reisen, Interessen — und greift in späteren Gesprächen natürlich darauf zurück, ohne dass Sie sich wiederholen müssen. Was DMH-AI über Sie weiß, können Sie jederzeit in den Einstellungen einsehen oder löschen.
+- **Begleitergedächtnis** — DMH-AI ist Ihr echter Begleiter. Es versteht Sie mit der Zeit und bringt dieses Verständnis mit Sorgfalt in künftige Gespräche ein — damit Sie sich nie wiederholen müssen. Was DMH-AI über Sie weiß, können Sie jederzeit in den Gesprächseinstellungen einsehen oder löschen.
 - **Integrierte Websuche** — wie Perplexity, aber selbst gehostet und privat. Stellen Sie eine Frage und DMH-AI entscheidet selbst, ob eine Websuche nötig ist. Falls ja, werden live Ergebnisse über die integrierte Suchmaschine abgerufen und zu einer quellenbasierten, aktuellen Antwort zusammengefasst. Funktioniert in jeder Sprache.
 - **Medienanhänge** — Dokumente (PDF, DOCX, XLSX), Bilder und Videos anhängen. Auf dem Handy ein Foto aufnehmen oder ein Video direkt aufzeichnen und in den Chat einfügen — kein Speichern in der Galerie nötig.
 - **Mehrbenutzerunterstützung** — jede Person hat eigene Anmeldedaten, eigene Chat-Verläufe und eigene Dateien. Ein Admin-Konto wird beim ersten Start automatisch erstellt. Admins können Nutzer direkt in der App hinzufügen und entfernen.

@@ -30,7 +30,7 @@ Both modes work in the same app. You can even switch between them freely.
 
 ## What you get
 
-- **Companion memory** — DMH-AI quietly learns who you are as you chat. It remembers facts you share — your family, occupation, where you live, past travels, interests — and draws on them naturally in future conversations, without you having to repeat yourself. You can review or clear what it knows at any time from Settings.
+- **Companion memory** — DMH-AI is your true companion. It understands you over time and brings that understanding into future conversations with care — so you never have to repeat yourself. You can review or clear what it knows at any time from Conversation Settings.
 - **Built-in web search** — like Perplexity, but self-hosted and private. Ask any question and DMH-AI automatically decides whether to search the web. If it does, it fetches live results through its own bundled search engine and gives you a sourced, up-to-date answer. Works in any language.
 - **Rich media attachments** — attach documents (PDF, DOCX, XLSX), images, and videos. On mobile, you can take a photo or record a video directly and drop it into the chat — no need to save it first.
 - **Multi-user support** — each person has their own login, their own chat history, and their own files. An admin account is created automatically on first run. Admins can add and remove users from within the app.

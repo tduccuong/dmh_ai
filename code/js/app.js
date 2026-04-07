@@ -52,7 +52,8 @@ const I18n = {
             fetchingPages: 'Reading web sources...',
             synthesizing: 'Synthesizing results...',
             thinking: ' is thinking...', answering: ' is answering...', compacting: 'Compacting conversation...',
-            settingsChatSection: 'Chat', settingsCompactLabel: 'Compact after messages',
+            settingsChatSection: 'Chat', settingsCompactLabel: 'Compact after messages', settingsKeepRecentLabel: 'Keep recent messages',
+            settingsNavModel: 'Models', settingsNavConversation: 'Conversation',
             searchUnavail: '⚠ Web search unavailable — answering from model training data, which may be outdated.',
             attaching: 'Preparing attachment...',
             voiceListening: 'Recording... tap to stop',
@@ -63,11 +64,13 @@ const I18n = {
             iosCertHint: 'To avoid the certificate warning: tap here to install the certificate, then go to Settings → General → About → Certificate Trust Settings and enable it.',
             pwWarning: '⚠ You are using the default password. Please change it now.',
             pwWarningBtn: 'Change password',
-            settings: 'Settings',
+            settings: 'Settings', sysSettings: 'System Settings',
             recQuickAnswer: '👁 Quick Answer', recDeepThinker: '💡 Deep Thinker', recTechExpert: '🛠 Technical Expert', recWordsmith: '✍ Wordsmith', recMathMaster: '🧮 Math Master',
             noModelAvail: 'No model available. Please configure a model in Settings first.',
             profileSection: 'Companion Memory', profileEmpty: 'No facts remembered yet.',
-            profileClear: 'Clear memory', profileClearConfirm: 'This will reset everything DMH-AI has learned about you. You may notice a different feeling next time — it will understand you again over time, but that takes a while. Are you sure?',
+            profileClear: 'Clear memory', profileClearConfirm: 'This will reset everything DMH-AI has learned about you. You may notice a different feeling next time — it will understand you again over time, but that takes a while. You can always rebuild it from Conversation Settings. Are you sure?',
+            profileCondenseLabel: 'Condense after facts',
+            convSettings: 'Conversation Settings',
         },
         vi: {
             retry: 'Thử lại', clear: 'Xóa', send: 'Gửi', cancel: 'Hủy', ok: 'OK', stopGen: 'Dừng',
@@ -91,7 +94,8 @@ const I18n = {
             fetchingPages: 'Đang đọc nguồn web...',
             synthesizing: 'Đang tổng hợp kết quả...',
             thinking: ' đang suy nghĩ...', answering: ' đang trả lời...', compacting: 'Đang nén hội thoại...',
-            settingsChatSection: 'Chat', settingsCompactLabel: 'Nén sau số tin nhắn',
+            settingsChatSection: 'Chat', settingsCompactLabel: 'Nén sau số tin nhắn', settingsKeepRecentLabel: 'Giữ tin nhắn gần đây',
+            settingsNavModel: 'Mô hình', settingsNavConversation: 'Hội thoại',
             searchUnavail: '⚠ Tìm kiếm web không khả dụng — trả lời từ dữ liệu huấn luyện, có thể đã lỗi thời.',
             attaching: 'Đang chuẩn bị tệp đính kèm...',
             voiceListening: 'Đang ghi âm... nhấn để dừng',
@@ -102,11 +106,13 @@ const I18n = {
             iosCertHint: 'Để bỏ cảnh báo chứng chỉ: nhấn đây để cài chứng chỉ, rồi vào Cài đặt → Cài đặt chung → Giới thiệu → Cài đặt tin cậy chứng chỉ và bật lên.',
             pwWarning: '⚠ Bạn đang dùng mật khẩu mặc định. Hãy đổi mật khẩu ngay.',
             pwWarningBtn: 'Đổi mật khẩu',
-            settings: 'Cài đặt',
+            settings: 'Cài đặt', sysSettings: 'Cài đặt hệ thống',
             recQuickAnswer: '👁 Trả lời nhanh', recDeepThinker: '💡 Suy nghĩ sâu', recTechExpert: '🛠 Chuyên gia kỹ thuật', recWordsmith: '✍ Nhà văn', recMathMaster: '🧮 Toán học',
             noModelAvail: 'Không có mô hình nào. Vui lòng cấu hình trong Cài đặt trước.',
             profileSection: 'Bộ nhớ đồng hành', profileEmpty: 'Chưa ghi nhớ điều gì.',
-            profileClear: 'Xóa bộ nhớ', profileClearConfirm: 'Thao tác này sẽ xóa toàn bộ những gì DMH-AI đã hiểu về bạn. Lần trò chuyện tiếp theo có thể cảm giác khác đi — DMH-AI sẽ dần hiểu bạn trở lại theo thời gian, nhưng đó là một quá trình lâu dài. Bạn có chắc không?',
+            profileClear: 'Xóa bộ nhớ', profileClearConfirm: 'Thao tác này sẽ xóa toàn bộ những gì DMH-AI đã hiểu về bạn. Lần trò chuyện tiếp theo có thể cảm giác khác đi — DMH-AI sẽ dần hiểu bạn trở lại theo thời gian. Bạn có thể xây dựng lại bất cứ lúc nào trong Cài đặt hội thoại. Bạn có chắc không?',
+            profileCondenseLabel: 'Cô đọng sau số sự kiện',
+            convSettings: 'Cài đặt hội thoại',
         },
         de: {
             retry: 'Wiederholen', clear: 'Löschen', send: 'Senden', cancel: 'Abbrechen', ok: 'OK', stopGen: 'Stopp',
@@ -130,7 +136,8 @@ const I18n = {
             fetchingPages: 'Web-Quellen werden gelesen...',
             synthesizing: 'Ergebnisse werden zusammengefasst...',
             thinking: ' denkt nach...', answering: ' antwortet...', compacting: 'Konversation wird komprimiert...',
-            settingsChatSection: 'Chat', settingsCompactLabel: 'Komprimieren nach Nachrichten',
+            settingsChatSection: 'Chat', settingsCompactLabel: 'Komprimieren nach Nachrichten', settingsKeepRecentLabel: 'Neueste Nachrichten behalten',
+            settingsNavModel: 'Modelle', settingsNavConversation: 'Gespräch',
             searchUnavail: '⚠ Websuche nicht verfügbar — Antwort basiert auf Trainingsdaten, möglicherweise veraltet.',
             attaching: 'Anhang wird vorbereitet...',
             voiceListening: 'Aufnahme... tippen zum Stoppen',
@@ -141,11 +148,13 @@ const I18n = {
             iosCertHint: 'Um die Zertifikatwarnung zu vermeiden: hier tippen zum Installieren, dann Einstellungen → Allgemein → Info → Zertifikat-Vertrauenseinstellungen und aktivieren.',
             pwWarning: '⚠ Sie verwenden noch das Standardpasswort. Bitte jetzt ändern.',
             pwWarningBtn: 'Passwort ändern',
-            settings: 'Einstellungen',
+            settings: 'Einstellungen', sysSettings: 'Systemeinstellungen',
             recQuickAnswer: '👁 Schnelle Antwort', recDeepThinker: '💡 Tiefdenker', recTechExpert: '🛠 Technischer Experte', recWordsmith: '✍ Wortschmied', recMathMaster: '🧮 Mathe-Meister',
             noModelAvail: 'Kein Modell verfügbar. Bitte zuerst in den Einstellungen konfigurieren.',
             profileSection: 'Begleitergedächtnis', profileEmpty: 'Noch keine Fakten gespeichert.',
-            profileClear: 'Gedächtnis löschen', profileClearConfirm: 'Damit wird alles zurückgesetzt, was DMH-AI über Sie gelernt hat. Beim nächsten Gespräch kann sich etwas anders anfühlen — es wird Sie mit der Zeit wieder verstehen, aber das ist ein langer Prozess. Sind Sie sicher?',
+            profileClear: 'Gedächtnis löschen', profileClearConfirm: 'Damit wird alles zurückgesetzt, was DMH-AI über Sie gelernt hat. Beim nächsten Gespräch kann sich etwas anders anfühlen — es wird Sie mit der Zeit wieder verstehen. Sie können es jederzeit über die Gesprächseinstellungen neu aufbauen. Sind Sie sicher?',
+            profileCondenseLabel: 'Verdichten nach Fakten',
+            convSettings: 'Gesprächseinstellungen',
         },
         es: {
             retry: 'Reintentar', clear: 'Limpiar', send: 'Enviar', cancel: 'Cancelar', ok: 'OK', stopGen: 'Detener',
@@ -169,7 +178,8 @@ const I18n = {
             fetchingPages: 'Leyendo fuentes web...',
             synthesizing: 'Sintetizando resultados...',
             thinking: ' está pensando...', answering: ' está respondiendo...', compacting: 'Comprimiendo conversación...',
-            settingsChatSection: 'Chat', settingsCompactLabel: 'Compactar después de mensajes',
+            settingsChatSection: 'Chat', settingsCompactLabel: 'Compactar después de mensajes', settingsKeepRecentLabel: 'Mantener mensajes recientes',
+            settingsNavModel: 'Modelos', settingsNavConversation: 'Conversación',
             searchUnavail: '⚠ Búsqueda web no disponible — respondiendo con datos de entrenamiento, pueden estar desactualizados.',
             attaching: 'Preparando archivo adjunto...',
             voiceListening: 'Grabando... toca para detener',
@@ -180,11 +190,13 @@ const I18n = {
             iosCertHint: 'Para evitar la advertencia: toca aquí para instalar el certificado, luego ve a Ajustes → General → Información → Configuración de confianza de certificados y actívalo.',
             pwWarning: '⚠ Está usando la contraseña predeterminada. Cámbiela ahora.',
             pwWarningBtn: 'Cambiar contraseña',
-            settings: 'Configuración',
+            settings: 'Configuración', sysSettings: 'Configuración del sistema',
             recQuickAnswer: '👁 Respuesta rápida', recDeepThinker: '💡 Pensador profundo', recTechExpert: '🛠 Experto técnico', recWordsmith: '✍ Plumista', recMathMaster: '🧮 Maestro Matemático',
             noModelAvail: 'Ningún modelo disponible. Configure uno en Ajustes primero.',
             profileSection: 'Memoria del compañero', profileEmpty: 'Aún no hay hechos recordados.',
-            profileClear: 'Borrar memoria', profileClearConfirm: 'Esto reiniciará todo lo que DMH-AI ha aprendido sobre usted. La próxima vez que chatee puede sentirse diferente — lo entenderá de nuevo con el tiempo, pero es un proceso largo. ¿Está seguro?',
+            profileClear: 'Borrar memoria', profileClearConfirm: 'Esto reiniciará todo lo que DMH-AI ha aprendido sobre usted. La próxima vez que chatee puede sentirse diferente — lo entenderá de nuevo con el tiempo. Siempre puede reconstruirlo desde Configuración de conversación. ¿Está seguro?',
+            profileCondenseLabel: 'Condensar después de hechos',
+            convSettings: 'Configuración de conversación',
         },
         fr: {
             retry: 'Réessayer', clear: 'Effacer', send: 'Envoyer', cancel: 'Annuler', ok: 'OK', stopGen: 'Arrêter',
@@ -208,7 +220,8 @@ const I18n = {
             fetchingPages: 'Lecture des sources web...',
             synthesizing: 'Synthèse des résultats...',
             thinking: ' réfléchit...', answering: ' répond...', compacting: 'Compactage de la conversation...',
-            settingsChatSection: 'Chat', settingsCompactLabel: 'Compacter après messages',
+            settingsChatSection: 'Chat', settingsCompactLabel: 'Compacter après messages', settingsKeepRecentLabel: 'Garder les messages récents',
+            settingsNavModel: 'Modèles', settingsNavConversation: 'Conversation',
             searchUnavail: '⚠ Recherche web indisponible — réponse basée sur les données d\'entraînement, potentiellement obsolètes.',
             attaching: 'Préparation de la pièce jointe...',
             voiceListening: 'Enregistrement... appuyez pour arrêter',
@@ -219,11 +232,13 @@ const I18n = {
             iosCertHint: 'Pour éviter l\'avertissement : appuyez ici pour installer le certificat, puis Réglages → Général → À propos → Réglages de confiance des certificats et activez.',
             pwWarning: '⚠ Vous utilisez le mot de passe par défaut. Veuillez le changer maintenant.',
             pwWarningBtn: 'Changer le mot de passe',
-            settings: 'Paramètres',
+            settings: 'Paramètres', sysSettings: 'Paramètres système',
             recQuickAnswer: '👁 Réponse rapide', recDeepThinker: '💡 Réflexion profonde', recTechExpert: '🛠 Expert technique', recWordsmith: '✍ Plume', recMathMaster: '🧮 Maître des maths',
             noModelAvail: 'Aucun modèle disponible. Veuillez d\'abord en configurer un dans les Paramètres.',
             profileSection: 'Mémoire du compagnon', profileEmpty: 'Aucun fait mémorisé pour l\'instant.',
-            profileClear: 'Effacer la mémoire', profileClearConfirm: 'Cela réinitialisera tout ce que DMH-AI a appris sur vous. La prochaine conversation pourrait sembler différente — il vous comprendra à nouveau avec le temps, mais c\'est un long processus. Êtes-vous sûr ?',
+            profileClear: 'Effacer la mémoire', profileClearConfirm: 'Cela réinitialisera tout ce que DMH-AI a appris sur vous. La prochaine conversation pourrait sembler différente — il vous comprendra à nouveau avec le temps. Vous pouvez toujours le reconstruire depuis Paramètres de conversation. Êtes-vous sûr ?',
+            profileCondenseLabel: 'Condenser après faits',
+            convSettings: 'Paramètres de conversation',
         }
     },
     t: function(key) { return (this._strings[this._lang] || this._strings.en)[key] || this._strings.en[key] || key; },
@@ -352,6 +367,8 @@ const Settings = {
     _cloudModels: [],
     _ollamaEndpoint: '',
     _compactTurns: 90,
+    _keepRecent: 0,
+    _condenseFacts: 50,
     get accounts() { return this._accounts; },
     get cloudModels() { return this._cloudModels; },
     saveAccounts: function(list) {
@@ -367,10 +384,10 @@ const Settings = {
         AppConfig.saveOllamaEndpoint(url);
     },
     _persist: function() {
-        apiFetch('/admin/settings', {
+        return apiFetch('/admin/settings', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ accounts: this._accounts, cloudModels: this._cloudModels, ollamaEndpoint: this._ollamaEndpoint, compactTurns: this._compactTurns })
+            body: JSON.stringify({ accounts: this._accounts, cloudModels: this._cloudModels, ollamaEndpoint: this._ollamaEndpoint, compactTurns: this._compactTurns, keepRecent: this._keepRecent, condenseFacts: this._condenseFacts })
         }).catch(function() {});
     },
     load: async function() {
@@ -388,6 +405,13 @@ const Settings = {
                 if (d.compactTurns !== undefined) {
                     this._compactTurns = parseInt(d.compactTurns) || ContextManager.TURN_THRESHOLD;
                     ContextManager.TURN_THRESHOLD = this._compactTurns;
+                }
+                if (d.keepRecent !== undefined) {
+                    this._keepRecent = parseInt(d.keepRecent) || 0;
+                    ContextManager.KEEP_RECENT_OVERRIDE = this._keepRecent;
+                }
+                if (d.condenseFacts !== undefined) {
+                    this._condenseFacts = parseInt(d.condenseFacts) || 50;
                 }
             }
         } catch(e) {}
@@ -429,12 +453,8 @@ const UserProfile = {
         try {
             syslog('[PROFILE] extracting from user="' + userText.slice(0, 80) + '"');
             const existing = this._facts ? 'Already known:\n' + this._facts + '\n\n' : '';
-            var wordCount = userText.trim().split(/\s+/).length;
-            var assistantContext = wordCount <= 8 ? '' :
-                '\n[ASSISTANT RESPONSE — this was sent AFTER the user message above, as a direct reply to it. It contains NO new facts about the user. Do not extract anything from this section — use it only to understand what the user meant.]\n"' + assistantText.slice(0, 400) + '"\n[END ASSISTANT RESPONSE]\n';
             const prompt =
-                '[USER MESSAGE — sent first, the only source of facts]\n"' + userText.slice(0, 800) + '"\n[END USER MESSAGE]\n' +
-                assistantContext + '\n' +
+                '[USER MESSAGE]\n"' + userText.slice(0, 800) + '"\n[END USER MESSAGE]\n\n' +
                 existing +
                 'Task: Extract personal facts the user stated about themselves directly in the USER MESSAGE.\n' +
                 'Only extract from explicit self-descriptions: "I am...", "I have...", "My X is/are...", "I live in...", "I work as...", etc.\n' +
@@ -446,7 +466,7 @@ const UserProfile = {
                 '- Nationality\n' +
                 '- Family: spouse, children with names/ages\n' +
                 '- Health conditions they mentioned about themselves\n' +
-                '- Hobbies or activities they regularly do\n' +
+                '- Hobbies, interests, and things they enjoy or like (e.g. "I like X", "I enjoy X", "I love X", "I prefer X")\n' +
                 '- Significant personal events (past trips, milestones) they described\n' +
                 '\n' +
                 'NEVER extract:\n' +
@@ -476,29 +496,87 @@ const UserProfile = {
                 .filter(function(l) { return l.startsWith('-'); });
             if (newLines.length === 0) return;
             this._facts = (this._facts ? this._facts + '\n' : '') + newLines.join('\n');
-            // Cap profile size — keep last 60 lines
             var allLines = this._facts.split('\n').filter(function(l) { return l.trim().startsWith('-'); });
-            if (allLines.length > 60) allLines = allLines.slice(allLines.length - 60);
             this._facts = allLines.join('\n');
             syslog('[PROFILE] merged ' + newLines.length + ' new fact(s): ' + newLines.join(' | ').slice(0, 200));
-            await this.save();
+            // Condense if over threshold
+            var condenseThreshold = (typeof Settings !== 'undefined' && Settings._condenseFacts) || 50;
+            if (allLines.length >= condenseThreshold) {
+                await this._condense(model, allLines);
+            } else {
+                await this.save();
+            }
         } catch(e) {}
+    },
+
+    _condense: async function(model, allLines) {
+        try {
+            var targetCount = Math.ceil((typeof Settings !== 'undefined' && Settings._condenseFacts || 50) / 2);
+            syslog('[PROFILE] condensing ' + allLines.length + ' facts → target ~' + targetCount);
+            var condensePrompt =
+                'Below is a list of personal facts about a user, accumulated over many conversations.\n\n' +
+                allLines.join('\n') + '\n\n' +
+                'Task: Condense this list to the ' + targetCount + ' most important, distinct facts.\n' +
+                'Rules:\n' +
+                '- Merge near-duplicates into one line (e.g. two lines about the same city → one)\n' +
+                '- If a fact has been superseded by a newer one (e.g. old job vs new job), keep only the newer one\n' +
+                '- Merge closely related facts into a single line where natural\n' +
+                '- Drop trivial or very low-signal facts if over the limit\n' +
+                '- Keep all facts in English\n' +
+                'Output: one bullet per fact, same format as input (e.g. "- Name: Carl").\n' +
+                'Plain text only, no extra commentary.';
+            var res = await cloudRoutedFetch(model, '/generate', {
+                model: model, stream: false, think: false,
+                options: { temperature: 0, num_predict: 600, think: false },
+                prompt: condensePrompt
+            }, null);
+            if (!res || !res.ok) { await this.save(); return; }
+            var data = await res.json();
+            var condensed = (data.response || '').trim();
+            var condensedLines = condensed.split('\n')
+                .map(function(l) { return l.trim().replace(/\*{1,3}([^*]*)\*{1,3}/g, '$1').replace(/_{1,2}([^_]*)_{1,2}/g, '$1'); })
+                .filter(function(l) { return l.startsWith('-'); });
+            if (condensedLines.length > 0) {
+                this._facts = condensedLines.join('\n');
+                syslog('[PROFILE] condensed to ' + condensedLines.length + ' fact(s)');
+            }
+            await this.save();
+        } catch(e) { await this.save(); }
     }
 };
 
 const SettingsModal = {
-    open: async function() {
+    open: async function(page) {
         await Settings.load();
         this._renderAccounts();
         this._renderCloudModels();
         this._updateSubsectionState();
-        this._renderProfile();
         document.getElementById('settings-ollama-url').value = AppConfig.ollamaEndpoint || '';
         document.getElementById('settings-compact-turns').value = Settings._compactTurns;
+        document.getElementById('settings-keep-recent').value = Settings._keepRecent > 0 ? Settings._keepRecent : '';
+        document.getElementById('settings-condense-facts').value = Settings._condenseFacts;
+        var targetPage = page || 'page-model';
+        document.querySelectorAll('.settings-page').forEach(function(p) { p.classList.remove('active'); });
+        document.getElementById(targetPage).classList.add('active');
+        document.getElementById('settings-modal-title').textContent = t(targetPage === 'page-conversation' ? 'convSettings' : 'sysSettings');
         document.getElementById('settings-overlay').classList.add('open');
     },
     close: function() {
         document.getElementById('settings-overlay').classList.remove('open');
+    },
+    _normalizeOllamaUrl: function(raw) {
+        var s = raw.trim().replace(/\/+$/, ''); // strip trailing slashes
+        var hasScheme = /^https?:\/\//i.test(s);
+        var scheme = 'http://';
+        var host = s;
+        if (hasScheme) {
+            var m = s.match(/^(https?:\/\/)(.*)/i);
+            scheme = m[1].toLowerCase();
+            host = m[2];
+        }
+        // Add default port if none specified (ignore IPv6 brackets)
+        if (!/:\d+$/.test(host)) host = host + ':11434';
+        return scheme + host;
     },
     _trashBtn: function() {
         var btn = document.createElement('button');
@@ -544,17 +622,6 @@ const SettingsModal = {
             item.appendChild(del);
             list.appendChild(item);
         });
-    },
-    _renderProfile: function() {
-        var el = document.getElementById('settings-profile-facts');
-        if (!el) return;
-        if (!UserProfile._facts) {
-            el.textContent = t('profileEmpty');
-            el.style.color = 'var(--text-secondary)';
-        } else {
-            el.textContent = UserProfile._facts;
-            el.style.color = 'var(--text-primary)';
-        }
     },
     _updateSubsectionState: function() {
         var sub = document.getElementById('cloud-models-section');
@@ -673,7 +740,9 @@ const SettingsModal = {
         });
         // Local Ollama URL save
         document.getElementById('settings-ollama-url-save').addEventListener('click', function() {
-            var url = document.getElementById('settings-ollama-url').value.trim();
+            var raw = document.getElementById('settings-ollama-url').value.trim();
+            var url = raw ? SettingsModal._normalizeOllamaUrl(raw) : '';
+            document.getElementById('settings-ollama-url').value = url;
             UIManager.updateEndpoint(url);
         });
         // Compact turns save
@@ -684,10 +753,25 @@ const SettingsModal = {
             ContextManager.TURN_THRESHOLD = val;
             Settings._persist();
         });
+        // Keep recent save
+        document.getElementById('settings-keep-recent-save').addEventListener('click', function() {
+            var raw = document.getElementById('settings-keep-recent').value.trim();
+            var val = raw === '' ? 0 : parseInt(raw);
+            if (isNaN(val) || val < 0) return;
+            Settings._keepRecent = val;
+            ContextManager.KEEP_RECENT_OVERRIDE = val;
+            Settings._persist();
+        });
+        // Condense facts threshold save
+        document.getElementById('settings-condense-facts-save').addEventListener('click', function() {
+            var val = parseInt(document.getElementById('settings-condense-facts').value);
+            if (!val || val < 10) return;
+            Settings._condenseFacts = val;
+            Settings._persist();
+        });
         document.getElementById('settings-profile-clear-btn').addEventListener('click', async function() {
             if (!confirm(t('profileClearConfirm'))) return;
             await UserProfile.clear();
-            SettingsModal._renderProfile();
         });
     }
 };
@@ -1286,8 +1370,10 @@ const ContextManager = {
     COMPACT_THRESHOLD: 0.45,
     TURN_THRESHOLD: 90,
     KEEP_RECENT: 16, // fallback for unknown model size (8 turns)
+    KEEP_RECENT_OVERRIDE: 0, // 0 = auto (model-based), >0 = user override
 
     getKeepRecent: function(model) {
+        if (this.KEEP_RECENT_OVERRIDE > 0) return this.KEEP_RECENT_OVERRIDE;
         var m = (model || '').toLowerCase().match(/(\d+(?:\.\d+)?)b/);
         var params = m ? parseFloat(m[1]) : 0;
         if (params >= 70) return 12;  // 6 turns
@@ -1399,15 +1485,18 @@ function applyLanguage() {
     document.getElementById('modal-cancel').textContent = t('cancel');
     document.getElementById('pw-warning-text').textContent = t('pwWarning');
     document.getElementById('pw-warning-btn').textContent = t('pwWarningBtn');
-    document.getElementById('sidebar-settings-label').textContent = t('settings');
-    document.getElementById('settings-modal-title').textContent = t('settings');
+    document.getElementById('sidebar-settings-label').textContent = t('sysSettings');
+    document.getElementById('settings-modal-title').textContent = t('sysSettings');
     var userSettingsLabel = document.getElementById('user-settings-label');
-    if (userSettingsLabel) userSettingsLabel.textContent = t('settings');
+    if (userSettingsLabel) userSettingsLabel.textContent = t('sysSettings');
     document.getElementById('settings-chat-section-title').textContent = t('settingsChatSection');
     document.getElementById('settings-compact-turns-label').textContent = t('settingsCompactLabel');
+    document.getElementById('settings-keep-recent-label').textContent = t('settingsKeepRecentLabel');
     document.getElementById('settings-profile-section-title').textContent = t('profileSection');
+    document.getElementById('settings-condense-facts-label').textContent = t('profileCondenseLabel');
     document.getElementById('settings-profile-clear-btn').textContent = t('profileClear');
-    SettingsModal._renderProfile();
+    var convSettingsLabel = document.getElementById('user-conv-settings-label');
+    if (convSettingsLabel) convSettingsLabel.textContent = t('convSettings');
     if (typeof UIManager !== 'undefined' && UIManager.refreshModelSelect) {
         UIManager.refreshModelSelect();
     }
@@ -1779,6 +1868,10 @@ const UIManager = {
             document.getElementById('user-dropdown').classList.remove('open');
             SettingsModal.open();
         });
+        document.getElementById('user-conv-settings-btn').addEventListener('click', function() {
+            document.getElementById('user-dropdown').classList.remove('open');
+            SettingsModal.open('page-conversation');
+        });
 
         // Manage users close
         document.getElementById('mgr-close').addEventListener('click', function() {
@@ -1808,6 +1901,7 @@ const UIManager = {
             document.getElementById('user-manage-btn').style.display = isAdmin ? '' : 'none';
             document.getElementById('user-manage-sep').style.display = isAdmin ? '' : 'none';
             document.getElementById('user-settings-btn').style.display = isAdmin ? '' : 'none';
+            document.getElementById('user-conv-settings-btn').style.display = isAdmin ? '' : 'none';
             document.getElementById('user-settings-sep').style.display = isAdmin ? '' : 'none';
         }
         this.updatePwWarning();
@@ -2525,12 +2619,14 @@ const UIManager = {
     },
 
     updateEndpoint: async function(url) {
+        var prevEndpoint = Settings._ollamaEndpoint;
+        // Write new endpoint to DB first so the backend proxy uses it when we test
+        Settings._ollamaEndpoint = url;
         OllamaAPI.setEndpoint(url);
         AppConfig.saveOllamaEndpoint(url);
+        await Settings._persist();
         if (!url) {
-            // Cleared: wipe from DB and refresh using /api
-            Settings._ollamaEndpoint = '';
-            Settings._persist();
+            // Cleared — just reload models via default /api path
             try {
                 var models = await OllamaAPI.fetchModels();
                 this.populateModelSelects(models);
@@ -2538,10 +2634,7 @@ const UIManager = {
             return;
         }
         try {
-            const models = await OllamaAPI.fetchModels();
-            // Connection succeeded: persist to DB
-            Settings._ollamaEndpoint = url;
-            Settings._persist();
+            var models = await OllamaAPI.fetchModels();
             const currentModel = this.currentSession ? this.currentSession.model : null;
             this.populateModelSelects(models);
             const names = models.map(function(m) { return m.name; });
@@ -2550,13 +2643,26 @@ const UIManager = {
             } else if (models.length > 0) {
                 this.switchModel(models[0].name);
             }
+            UIManager._showOllamaUrlMsg('Successfully connected to the Ollama instance at ' + url + '.', false);
         } catch (e) {
-            // Connection failed: revert and do NOT save to DB
-            var prevEndpoint = Settings._ollamaEndpoint;
+            // Revert to previous endpoint
+            Settings._ollamaEndpoint = prevEndpoint;
             OllamaAPI.setEndpoint(prevEndpoint);
             AppConfig.saveOllamaEndpoint(prevEndpoint);
-            this.showError(t('cannotConnectTo') + url);
+            await Settings._persist();
+            document.getElementById('settings-ollama-url').value = prevEndpoint;
+            UIManager._showOllamaUrlMsg('There is no Ollama instance at ' + url + '. I auto-reverted the URL to the previous value. Please modify and save again.', true);
         }
+    },
+
+    _showOllamaUrlMsg: function(text, isError) {
+        var el = document.getElementById('settings-ollama-url-msg');
+        if (!el) return;
+        el.textContent = text;
+        el.style.color = isError ? '#e05060' : '#60c080';
+        el.style.display = 'block';
+        clearTimeout(el._hideTimer);
+        el._hideTimer = setTimeout(function() { el.style.display = 'none'; }, isError ? 8000 : 5000);
     },
 
     clearSession: async function() {
@@ -2993,7 +3099,7 @@ const UIManager = {
         apiMessages[apiMessages.length - 1] = userMsgForAPI;
         var systemPrompt = 'You are DMH-AI, a helpful, knowledgeable, and friendly AI assistant. You are ready to help with anything — answering questions, writing, analysis, coding, math, research, brainstorming, and more. Be clear, concise, and honest. If you don\'t know something, say so. Never claim to be a different AI (such as ChatGPT, Gemini, or Claude).';
         if (UserProfile._facts) {
-            systemPrompt += '\n\nWhat you know about this user:\n' + UserProfile._facts + '\n\nRefer to these naturally when relevant. Do not recite them unprompted.';
+            systemPrompt += '\n\nWhat you know about this user:\n' + UserProfile._facts + '\n\nRefer to these naturally when relevant. If the user asks what you know about them, share these facts directly.';
         }
         apiMessages.unshift({ role: 'system', content: systemPrompt });
         var relevant = ContextManager.retrieveRelevant(this.currentSession, content, 4);

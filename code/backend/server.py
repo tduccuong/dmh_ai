@@ -260,6 +260,34 @@ class H(BaseHTTPRequestHandler):
             self.send_json(200, data)
             return
 
+        if p == '/admin/test-endpoint':
+            user = self.get_auth_user()
+            if not user or user['role'] != 'admin':
+                self.send_json(403, {'error': 'Forbidden'})
+                return
+            qs = urllib.parse.parse_qs(urlparse(self.path).query)
+            url = (qs.get('url', [''])[0] or '').strip().rstrip('/')
+            if not url:
+                self.send_json(400, {'error': 'Missing url'})
+                return
+            parsed = urlparse(url)
+            host = parsed.hostname
+            port = parsed.port or (443 if parsed.scheme == 'https' else 80)
+            try:
+                ConnClass = http.client.HTTPSConnection if parsed.scheme == 'https' else http.client.HTTPConnection
+                conn = ConnClass(host, port, timeout=5)
+                conn.request('GET', '/api/tags')
+                resp = conn.getresponse()
+                body = resp.read()
+                conn.close()
+                if resp.status != 200:
+                    self.send_json(502, {'error': 'Ollama returned ' + str(resp.status)})
+                    return
+                self.send_json(200, json.loads(body))
+            except Exception as e:
+                self.send_json(502, {'error': str(e)})
+            return
+
         if p.startswith('/cloud-api/'):
             cloud_key = self.headers.get('X-Cloud-Key', '').strip()
             sub = p[len('/cloud-api/'):]
@@ -696,7 +724,7 @@ class H(BaseHTTPRequestHandler):
                 self.send_json(403, {'error': 'Forbidden'})
                 return
             d = self.body()
-            allowed = {k: d[k] for k in ('accounts', 'cloudModels', 'ollamaEndpoint', 'compactTurns') if k in d}
+            allowed = {k: d[k] for k in ('accounts', 'cloudModels', 'ollamaEndpoint', 'compactTurns', 'keepRecent', 'condenseFacts') if k in d}
             with sqlite3.connect(DB) as c:
                 c.execute('INSERT OR REPLACE INTO settings (key, value) VALUES (?,?)',
                           ('admin_cloud_settings', json.dumps(allowed)))
