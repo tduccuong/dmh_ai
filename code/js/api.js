@@ -267,7 +267,7 @@ const ContextManager = {
         var summary = await OllamaAPI.summarize(session.model, summarizeInput);
         if (!summary) return;
 
-        session.context = { summary: summary, summaryUpToIndex: keepFrom - 1, needsNaming: ctx.needsNaming };
+        session.context = { summary: summary, summaryUpToIndex: keepFrom - 1 };
         await SessionStore.updateSession(session);
     }
 };

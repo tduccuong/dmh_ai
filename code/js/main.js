@@ -120,7 +120,7 @@ const UIManager = {
             self.setStatus('');
             document.getElementById('stop-gen-btn').style.display = 'none';
             document.getElementById('scroll-bottom-btn').style.display = 'none';
-            if (pendingSession && pendingSession.context && pendingSession.context.needsNaming) {
+            if (pendingSession && (pendingSession.messages.length - 2) % 8 === 0) {
                 self.autoNameSession(pendingSession);
             }
         });
@@ -1261,7 +1261,7 @@ const UIManager = {
         const ok = await Modal.confirm(t('clearSession'), t('clearConfirm1') + this.currentSession.name + t('clearConfirm2'), t('clear'));
         if (!ok) return;
         this.currentSession.messages = [];
-        this.currentSession.context = { summary: null, summaryUpToIndex: -1, needsNaming: true };
+        this.currentSession.context = { summary: null, summaryUpToIndex: -1 };
         await SessionStore.updateSession(this.currentSession);
         this.attachedFiles = [];
         this.renderAttachments();
@@ -1614,7 +1614,7 @@ const UIManager = {
         if (!content && this.attachedFiles.length === 0) return;
 
         if (!this.currentSession.context) {
-            this.currentSession.context = { summary: null, summaryUpToIndex: -1, needsNaming: true };
+            this.currentSession.context = { summary: null, summaryUpToIndex: -1 };
         }
 
 
@@ -1690,7 +1690,7 @@ const UIManager = {
         apiMessages[apiMessages.length - 1] = userMsgForAPI;
         var systemPrompt = 'You are DMH-AI — a close, trusted friend who happens to know a lot. Be warm, understanding, and genuinely present. Listen with empathy. No formalities, no "Certainly!", no filler — just speak like a friend who cares and truly gets it. Be honest and direct. Don\'t crack jokes or get excited about the topic — just be calm, attentive, and helpful.\n\nBe concise. When a topic has angles, give a quick overview with bullet points or options and ask which to dig into — let the user steer depth, not you.\n\nNever claim to be ChatGPT, Gemini, Claude, or any other AI.';
         if (UserProfile._facts) {
-            systemPrompt += '\n\nWhat you know about this person:\n' + UserProfile._facts + '\n\nUse this to make every answer more personal and useful — weave it in naturally. If they\'re in Berlin and asking about house prices, assume Berlin. If they love hiking and ask for a weekend plan, suggest trails. Don\'t announce that you\'re using their info — just use it. Only ignore it for purely technical/factual topics where it\'s irrelevant. If they ask what you know about them, tell them directly.';
+            systemPrompt += '\n\nWhat you know about this person:\n' + UserProfile._facts + '\n\nUse this silently to sharpen your answers — factor in their facts, such as location, background, or interests, where relevant, but never quote, reference, or mention this profile in your response. Never say things like "given your love for X" or "since you enjoy Y". Just use it invisibly. If they explicitly ask what you know about them, then list it directly.';
         }
         apiMessages.unshift({ role: 'system', content: systemPrompt });
         var relevant = ContextManager.retrieveRelevant(this.currentSession, content, 4);
@@ -1819,7 +1819,7 @@ const UIManager = {
                         self.currentSession = sessionAtSend;
                         self.renderChat();
                     }
-                    if (sessionAtSend.context && sessionAtSend.context.needsNaming) {
+                    if ((sessionAtSend.messages.length - 2) % 8 === 0) {
                         self.autoNameSession(sessionAtSend);
                     }
                     // Background profile extraction — runs after response, non-blocking
@@ -1898,8 +1898,8 @@ const UIManager = {
                 return (m.role === 'user' ? 'User: ' : 'Assistant: ') + text.slice(0, 200);
             }).join('\n');
             if (!excerpt.trim()) return;
-            syslog('[NAMING] model=' + session.model + ' excerpt="' + excerpt.slice(0, 80) + '"');
-            var name = await OllamaAPI.summarize(session.model, [{
+            syslog('[NAMING] model=ministral-3:8b-cloud excerpt="' + excerpt.slice(0, 80) + '"');
+            var name = await OllamaAPI.summarize('ministral-3:8b-cloud', [{
                 role: 'user',
                 content: 'Give a short title (3-5 words) for this conversation:\n\n' + excerpt + '\n\nReply with only the title, no quotes, no explanation.'
             }], controller.signal);
@@ -1915,10 +1915,9 @@ const UIManager = {
                 .trim();
             if (!name) return;
             session.name = name;
-            session.context.needsNaming = false;
             await SessionStore.updateSession(session);
             await this.renderSessions();
-        } catch(e) {}
+        } catch(e) { syslog('[NAMING] error=' + e.message); }
         finally {
             this._namingInProgress.delete(session.id);
             if (this._namingController === controller) this._namingController = null;

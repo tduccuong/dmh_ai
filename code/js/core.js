@@ -314,7 +314,8 @@ function apiFetch(url, options) {
 }
 
 function isCloudModel(model) {
-    return RECOMMENDED_CLOUD_MODEL_NAMES.indexOf(model) !== -1 ||
+    return (model || '').endsWith('-cloud') ||
+           RECOMMENDED_CLOUD_MODEL_NAMES.indexOf(model) !== -1 ||
            Settings.cloudModels.indexOf(model) !== -1;
 }
 
