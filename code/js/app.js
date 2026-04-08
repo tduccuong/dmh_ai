@@ -1681,6 +1681,7 @@ const UIManager = {
             userDropdown.classList.remove('open');
             self.clearSession();
         });
+        document.getElementById('clear-session-btn').addEventListener('click', function() { self.clearSession(); });
         document.getElementById('user-change-pw-btn').addEventListener('click', function() {
             userDropdown.classList.remove('open');
             self.showChangePassword();
@@ -2193,8 +2194,7 @@ const UIManager = {
         var select = document.getElementById('header-model-select');
         var label = document.getElementById('model-dropdown-label');
         select.value = value;
-        var rec = value && getRecommendedCloudModels().find(function(r) { return r.name === value; });
-        label.textContent = rec ? (rec.label + ' - ' + value) : (value || 'Select model...');
+        label.textContent = value ? getModelDisplayName(value) : 'Select model...';
         // Update selected highlight
         document.getElementById('model-dropdown-menu').querySelectorAll('.model-dropdown-item').forEach(function(el) {
             el.classList.toggle('selected', el.dataset.value === value);
@@ -2797,6 +2797,38 @@ const UIManager = {
     setStatus: function(text) {
         document.getElementById('status-text').textContent = text;
         document.getElementById('status-bar').classList.toggle('visible', !!text);
+        if (!text) this.setStatusDetail(null);
+    },
+
+    setStatusDetail: function(items) {
+        var el = document.getElementById('status-detail');
+        if (!items || !items.length) { el.innerHTML = ''; return; }
+        var show = items.length > 2 ? items.slice(0, 2).concat(['...']) : items.slice();
+        el.innerHTML = show.map(function(line) {
+            var safe = line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            return '<span class="status-detail-line">' + safe + '</span>';
+        }).join('');
+    },
+
+    startStatusDetailSlider: function(items) {
+        var self = this;
+        this.stopStatusDetailSlider();
+        if (!items || !items.length) { this.setStatusDetail(null); return; }
+        var n = items.length;
+        var idx = 0;
+        var tick = function() {
+            var a = items[idx % n];
+            var b = n > 1 ? items[(idx + 1) % n] : null;
+            var display = b ? [a, b] : [a];
+            self.setStatusDetail(n > 2 ? display.concat(['...']) : display);
+            idx++;
+        };
+        tick();
+        if (n > 1) this._statusDetailTimer = setInterval(tick, 1000);
+    },
+
+    stopStatusDetailSlider: function() {
+        if (this._statusDetailTimer) { clearInterval(this._statusDetailTimer); this._statusDetailTimer = null; }
     },
 
     detectWebSearch: async function(userMessage, recentMsgs, signal, images) {
@@ -2969,6 +3001,11 @@ const UIManager = {
             catch(e) { return false; }
         });
         var toFetch = fetchable.slice(0, MAX_FETCH_PAGES);
+        var displayUrls = toFetch.map(function(r) {
+            try { var u = new URL(r.url); return u.hostname + u.pathname.replace(/\/$/, ''); }
+            catch(e) { return r.url; }
+        });
+        this.startStatusDetailSlider(displayUrls);
         var fetches = toFetch.map(function(r) {
             var tc = new AbortController();
             var timer = setTimeout(function() { tc.abort(); }, FETCH_TIMEOUT_MS);
@@ -2978,6 +3015,7 @@ const UIManager = {
                 .catch(function() { clearTimeout(timer); return null; });
         });
         var texts = await Promise.all(fetches);
+        this.stopStatusDetailSlider();
         // First pass: collect pages that have enough content
         var pagesWithContent = [];
         texts.forEach(function(data, i) {
@@ -3134,6 +3172,7 @@ const UIManager = {
             syslog('[QUERIES] lang=' + queryLang + ' result="' + (queries ? queries.join(' | ') : 'null') + '"');
             if (queries) {
                 this.setStatus(t('searchingWeb'));
+                this.setStatusDetail(queries);
                 const allRaw = await this.searchWebParallel(queries, queryLang, pipelineSignal);
                 if (pipelineSignal.aborted) return;
                 syslog('[SEARCH] got ' + allRaw.length + ' results');
@@ -3161,7 +3200,7 @@ const UIManager = {
                     }
                     var injectedMsg = {
                         role: 'user',
-                        content: 'User request: ' + cleanedContent + '\n\nWeb search results (retrieved ' + today + '):\n' + injectedResults + '\n\nUsing the user request and the web search results above, compile a complete and accurate answer. Ignore any content that is clearly unrelated to the user request (e.g. off-topic pages that ended up in the results); focus only on relevant facts.'
+                        content: 'User request: ' + cleanedContent + '\n\nWeb search results (retrieved ' + today + '):\n' + injectedResults + '\n\nUsing the user request and the web search results above, answer the user. Draw on the sources — include specific facts, figures, and names rather than vague generalities. Ignore content that is clearly unrelated to the user request; focus only on relevant facts.'
                     };
                     if (imagesForAPI.length > 0) injectedMsg.images = imagesForAPI;
                     apiMessages = apiMessages.slice(0, -1).concat([injectedMsg]);
@@ -3192,6 +3231,7 @@ const UIManager = {
                     if (firstChunk) {
                         firstChunk = false;
                         self.setStatus(getModelDisplayName(sessionAtSend.model) + t('answering'));
+                        self.setStatusDetail(null);
                     }
                     assistantContent += chunk;
                     var mapEntry = self._streamMap.get(sessionAtSend.id);
@@ -3210,6 +3250,10 @@ const UIManager = {
                 },
                 function() {
                     if (acct) CloudAccountPool.markRecovered(acct);
+                    assistantContent = assistantContent
+                        .replace(/(\d)([A-Za-z])/g, '$1 $2')
+                        .replace(/([A-Za-z])(\d)/g, '$1 $2')
+                        .replace(/([a-z])([A-Z])/g, '$1 $2');
                     sessionAtSend.messages.push({ role: 'assistant', content: assistantContent, ts: assistantTs, model: sessionAtSend.model });
                     var userMsg = sessionAtSend.messages[sessionAtSend.messages.length - 2];
                     if (userMsg && userMsg.role === 'user') userMsg._sentToLLM = true;
