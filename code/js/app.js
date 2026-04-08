@@ -2305,7 +2305,8 @@ const UIManager = {
                 div.appendChild(body);
                 addCopyButtons(body); wrapTables(body);
             } else {
-                body.textContent = msg.content || '';
+                body.innerHTML = renderWithMath(msg.content || '');
+                wrapTables(body);
                 if (msg.images && msg.images.length > 0) {
                     msg.images.forEach(function(img) {
                         var wrap = document.createElement('div');
