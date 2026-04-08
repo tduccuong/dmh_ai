@@ -720,8 +720,9 @@ const UIManager = {
         recHdr.className = 'model-dropdown-section-hdr recommended' + (hasPool ? '' : ' inactive');
         recHdr.innerHTML = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg> Recommended';
         recSection.appendChild(recHdr);
+        var isAdmin = Auth.user && Auth.user.role === 'admin';
         recModels.forEach(function(rec) {
-            var displayText = rec.label + ' - ' + rec.name;
+            var displayText = isAdmin ? rec.label + ' — ' + rec.name : rec.label;
             if (hasPool) makeOption(rec.name, displayText);
             recSection.appendChild(makeItem(rec.name, displayText, !hasPool));
         });
@@ -737,7 +738,6 @@ const UIManager = {
         cloudHdr.className = 'model-dropdown-section-hdr cloud';
         cloudHdr.innerHTML = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg> Cloud Models';
         cloudSection.appendChild(cloudHdr);
-        var isAdmin = Auth.user && Auth.user.role === 'admin';
         if (cloudModelNames.length === 0) {
             cloudSection.appendChild(makeItem('', 'No cloud models configured', true));
         } else {
