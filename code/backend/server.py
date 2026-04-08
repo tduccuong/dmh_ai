@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
-import base64, hashlib, http.client, json, mimetypes, os, re, secrets, shutil, socket, sqlite3, ssl, time, urllib.request, urllib.parse
+import base64, hashlib, http.client, json, mimetypes, os, re, secrets, shutil, socket, sqlite3, ssl, threading, time, urllib.request, urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from html.parser import HTMLParser
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
+from blocked_domains import BLOCKED_DOMAINS as _BLOCKED_DOMAINS
+from constants import (    SEARCH_PAGE2_THRESHOLD, MAX_PAGE_CHARS, MIN_USEFUL_PAGE_CHARS,
+    DIRECT_FETCH_SIZE_BYTES, JINA_FETCH_SIZE_BYTES,
+    OLLAMA_API_TIMEOUT_SECS, ENDPOINT_TEST_TIMEOUT_SECS, REGISTRY_TIMEOUT_SECS,
+    SEARXNG_TIMEOUT_SECS, DIRECT_FETCH_TIMEOUT_SECS, JINA_TIMEOUT_SECS,
+    PASSWORD_HASH_ITERATIONS, DOMAIN_TIMEOUT_BLOCK_THRESHOLD,
+)
 
 class _TextExtractor(HTMLParser):
     _SKIP = {'script','style','nav','header','footer','aside','noscript','iframe','svg','button','form','meta','link'}
@@ -30,11 +37,87 @@ def _html_to_text(raw_bytes):
         p.feed(html)
     except Exception:
         pass
-    return re.sub(r'\s+', ' ', ' '.join(p._parts)).strip()
+    text = re.sub(r'\s+', ' ', ' '.join(p._parts)).strip()
+    # Fix common scraping artifacts: missing spaces between digits and letters
+    text = re.sub(r'(\d)([A-Za-z])', r'\1 \2', text)
+    text = re.sub(r'([A-Za-z])(\d)', r'\1 \2', text)
+    text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)
+    return text
 
 DB = '/data/db/chat.db'
 ASSETS_DIR = '/data/user_assets'
 LOG_FILE = '/data/system_logs/system.log'
+
+# ─── Dynamic blocked-domain registry ────────────────────────────────────────
+# Combines the static list from blocked_domains.py with domains auto-blocked at
+# runtime after repeated fetch timeouts.  Stored as a set for O(1) lookup.
+_blocked_lock = threading.Lock()
+_blocked_set: set = set()          # root domains, e.g. "immowelt.de"
+_timeout_counts: dict = {}         # root domain -> timeout count (in-memory only)
+
+def _root_domain(hostname: str) -> str:
+    """Return the registrable domain (last two labels) from a hostname."""
+    parts = hostname.lower().split('.')
+    return '.'.join(parts[-2:]) if len(parts) >= 2 else hostname.lower()
+
+def is_domain_blocked(url: str) -> bool:
+    """O(1) blocked-domain check used by both /search and /fetch-page."""
+    try:
+        h = urlparse(url).hostname or ''
+        rd = _root_domain(h)
+        with _blocked_lock:
+            return rd in _blocked_set
+    except Exception:
+        return False
+
+def _record_fetch_timeout(url: str):
+    """Increment timeout counter for the domain; auto-block if threshold reached."""
+    try:
+        h = urlparse(url).hostname or ''
+        rd = _root_domain(h)
+        if not rd:
+            return
+        should_persist = False
+        final_count = 0
+        with _blocked_lock:
+            if rd in _blocked_set:
+                return  # already blocked, nothing to do
+            cnt = _timeout_counts.get(rd, 0) + 1
+            _timeout_counts[rd] = cnt
+            if cnt >= DOMAIN_TIMEOUT_BLOCK_THRESHOLD:
+                _blocked_set.add(rd)
+                should_persist = True
+                final_count = cnt
+        if should_persist:
+            try:
+                with sqlite3.connect(DB) as c:
+                    c.execute(
+                        'INSERT OR REPLACE INTO blocked_domains (domain, reason, timeout_count, added_at) VALUES (?,?,?,?)',
+                        (rd, 'auto:timeout', final_count, int(time.time()))
+                    )
+            except Exception as e:
+                log(f'[BLOCKED] failed to persist {rd}: {e}')
+            log(f'[BLOCKED] auto-blocked {rd} after {final_count} timeouts')
+    except Exception:
+        pass
+
+def _load_blocked_set():
+    """Populate _blocked_set from DB at startup, seeding static list if DB is new."""
+    try:
+        with sqlite3.connect(DB) as c:
+            # Seed static domains into DB on first run (INSERT OR IGNORE = no-op if already present).
+            c.executemany(
+                'INSERT OR IGNORE INTO blocked_domains (domain, reason, timeout_count, added_at) VALUES (?,?,?,?)',
+                [(d, 'static', 0, 0) for d in _BLOCKED_DOMAINS]
+            )
+            rows = c.execute('SELECT domain FROM blocked_domains').fetchall()
+            all_domains = {r[0] for r in rows}
+    except Exception:
+        all_domains = set(_BLOCKED_DOMAINS)
+    with _blocked_lock:
+        _blocked_set.clear()
+        _blocked_set.update(all_domains)
+    log(f'[BLOCKED] loaded {len(_blocked_set)} domains')
 
 def log(msg):
     os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
@@ -47,13 +130,13 @@ IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'}
 
 def hash_password(password):
     salt = secrets.token_hex(16)
-    h = hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 100000).hex()
+    h = hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), PASSWORD_HASH_ITERATIONS).hex()
     return f'{salt}:{h}'
 
 def verify_password(password, stored):
     try:
         salt, h = stored.split(':', 1)
-        return hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 100000).hex() == h
+        return hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), PASSWORD_HASH_ITERATIONS).hex() == h
     except Exception:
         return False
 
@@ -103,6 +186,11 @@ def init_db():
             c.execute('ALTER TABLE users ADD COLUMN profile TEXT DEFAULT ""')
         except sqlite3.OperationalError:
             pass
+        c.execute('''CREATE TABLE IF NOT EXISTS blocked_domains (
+            domain TEXT PRIMARY KEY,
+            reason TEXT,
+            timeout_count INTEGER DEFAULT 0,
+            added_at INTEGER)''')
         # Seed default admin user
         if not c.execute('SELECT id FROM users WHERE email=?', ('admin@dmhai.local',)).fetchone():
             uid = secrets.token_hex(8)
@@ -205,7 +293,7 @@ class H(BaseHTTPRequestHandler):
             port = parsed.port or (443 if parsed.scheme == 'https' else 80)
             try:
                 ConnClass = http.client.HTTPSConnection if parsed.scheme == 'https' else http.client.HTTPConnection
-                conn = ConnClass(host, port, timeout=10)
+                conn = ConnClass(host, port, timeout=OLLAMA_API_TIMEOUT_SECS)
                 conn.request('GET', '/api/' + sub)
                 resp = conn.getresponse()
                 body = resp.read()
@@ -282,7 +370,7 @@ class H(BaseHTTPRequestHandler):
             port = parsed.port or (443 if parsed.scheme == 'https' else 80)
             try:
                 ConnClass = http.client.HTTPSConnection if parsed.scheme == 'https' else http.client.HTTPConnection
-                conn = ConnClass(host, port, timeout=5)
+                conn = ConnClass(host, port, timeout=ENDPOINT_TEST_TIMEOUT_SECS)
                 conn.request('GET', '/api/tags')
                 resp = conn.getresponse()
                 body = resp.read()
@@ -300,7 +388,7 @@ class H(BaseHTTPRequestHandler):
             sub = p[len('/cloud-api/'):]
             try:
                 ctx = ssl.create_default_context()
-                conn = http.client.HTTPSConnection('ollama.com', context=ctx, timeout=10)
+                conn = http.client.HTTPSConnection('ollama.com', context=ctx, timeout=OLLAMA_API_TIMEOUT_SECS)
                 conn.request('GET', '/api/' + sub, headers={'Authorization': 'Bearer ' + cloud_key})
                 resp = conn.getresponse()
                 body = resp.read()
@@ -325,7 +413,7 @@ class H(BaseHTTPRequestHandler):
                 _ua = 'Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/115.0'
                 url = 'https://ollama.com/search?' + urllib.parse.urlencode({'q': q})
                 req = urllib.request.Request(url, headers={'User-Agent': _ua, 'Accept': 'text/html'})
-                with urllib.request.urlopen(req, timeout=10) as resp:
+                with urllib.request.urlopen(req, timeout=REGISTRY_TIMEOUT_SECS) as resp:
                     body = resp.read().decode('utf-8', errors='replace')
                 model_names = []
                 seen_names = set()
@@ -339,7 +427,7 @@ class H(BaseHTTPRequestHandler):
                     try:
                         murl = 'https://ollama.com/library/' + model_name
                         mreq = urllib.request.Request(murl, headers={'User-Agent': _ua, 'Accept': 'text/html'})
-                        with urllib.request.urlopen(mreq, timeout=6) as r:
+                        with urllib.request.urlopen(mreq, timeout=REGISTRY_TIMEOUT_SECS) as r:
                             mb = r.read().decode('utf-8', errors='replace')
                         tags = set()
                         # href="/library/model:tag" patterns that contain "cloud"
@@ -360,7 +448,7 @@ class H(BaseHTTPRequestHandler):
 
                 cloud_results = []
                 with ThreadPoolExecutor(max_workers=6) as ex:
-                    for tags in ex.map(get_cloud_tags, model_names[:8], timeout=10):
+                    for tags in ex.map(get_cloud_tags, model_names[:8], timeout=REGISTRY_TIMEOUT_SECS):
                         cloud_results.extend(tags)
 
                 self.send_json(200, {'models': [{'name': m} for m in cloud_results[:20]]})
@@ -378,16 +466,33 @@ class H(BaseHTTPRequestHandler):
                 self.send_json(400, {'error': 'Missing q or engine'})
                 return
             try:
-                search_url = engine.rstrip('/') + '/search?' + urllib.parse.urlencode({
-                    'q': q, 'format': 'json', 'categories': 'general', 'language': lang
-                })
-                log(f'[SEARCH] query="{q}" url={search_url}')
-                req = urllib.request.Request(search_url, headers={'User-Agent': 'Mozilla/5.0'})
-                with urllib.request.urlopen(req, timeout=20) as resp:
-                    data = json.loads(resp.read())
+                def _fetch_page(pageno):
+                    url = engine.rstrip('/') + '/search?' + urllib.parse.urlencode({
+                        'q': q, 'format': 'json', 'categories': 'general', 'language': lang, 'pageno': pageno
+                    })
+                    try:
+                        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                        with urllib.request.urlopen(req, timeout=SEARXNG_TIMEOUT_SECS) as resp:
+                            return json.loads(resp.read()).get('results', [])
+                    except Exception:
+                        return []
+                log(f'[SEARCH] query="{q}" engine={engine}')
+                page1 = _fetch_page(1)
+                unblocked_count = sum(1 for r in page1 if not is_domain_blocked(r.get('url', '')))
+                page2 = _fetch_page(2) if unblocked_count < SEARCH_PAGE2_THRESHOLD else []
+                seen_urls = set()
+                all_results = []
+                for page in [page1, page2]:
+                    for r in page:
+                        u = r.get('url', '')
+                        if u not in seen_urls:
+                            seen_urls.add(u)
+                            all_results.append(r)
+                # Keep all results — blocked domains still contribute their SearXNG snippet.
+                # The frontend skips fetching their full pages via enrichResults.
                 results = [{'title': r.get('title',''), 'url': r.get('url',''), 'content': r.get('content','')}
-                           for r in data.get('results', [])[:8]]
-                log(f'[SEARCH] returned {len(results)} results: {[r["url"] for r in results]}')
+                           for r in all_results][:10]
+                log(f'[SEARCH] pool={len(all_results)} returned {len(results)} results: {[r["url"] for r in results]}')
                 self.send_json(200, {'results': results})
             except Exception as e:
                 log(f'[SEARCH] ERROR: {e}')
@@ -404,33 +509,40 @@ class H(BaseHTTPRequestHandler):
             try:
                 ua = 'Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/115.0'
                 req = urllib.request.Request(url, headers={'User-Agent': ua, 'Accept': 'text/html,text/plain'})
-                with urllib.request.urlopen(req, timeout=6) as resp:
+                with urllib.request.urlopen(req, timeout=DIRECT_FETCH_TIMEOUT_SECS) as resp:
                     ct = resp.headers.get('Content-Type', '')
                     if 'html' not in ct and 'text/plain' not in ct:
                         log(f'[FETCH-PAGE] skip non-html: {url[:80]} ct={ct}')
                     else:
-                        body = resp.read(120000)
+                        body = resp.read(DIRECT_FETCH_SIZE_BYTES)
                         text = _html_to_text(body)
                         log(f'[FETCH-PAGE] direct ok url={url[:80]} chars={len(text)}')
             except Exception as e:
                 log(f'[FETCH-PAGE] direct err url={url[:80]} err={e}')
+                if isinstance(e, (socket.timeout, TimeoutError)) or 'timed out' in str(e).lower():
+                    _record_fetch_timeout(url)
             # Fallback to Jina Reader for JS-rendered pages
-            if len(text) < 500:
+            if len(text) < MIN_USEFUL_PAGE_CHARS:
                 try:
                     jina_req = urllib.request.Request(
                         'https://r.jina.ai/' + url,
                         headers={'User-Agent': 'Mozilla/5.0', 'Accept': 'text/plain', 'X-No-Cache': 'true'}
                     )
-                    with urllib.request.urlopen(jina_req, timeout=5) as resp:
-                        jina_text = resp.read(200000).decode('utf-8', errors='replace')
-                        if len(jina_text) >= 500:
+                    with urllib.request.urlopen(jina_req, timeout=JINA_TIMEOUT_SECS) as resp:
+                        jina_text = resp.read(JINA_FETCH_SIZE_BYTES).decode('utf-8', errors='replace')
+                        if len(jina_text) >= MIN_USEFUL_PAGE_CHARS:
+                            jina_text = re.sub(r'(\d)([A-Za-z])', r'\1 \2', jina_text)
+                            jina_text = re.sub(r'([A-Za-z])(\d)', r'\1 \2', jina_text)
+                            jina_text = re.sub(r'([a-z])([A-Z])', r'\1 \2', jina_text)
                             text = jina_text
                             log(f'[FETCH-PAGE] jina ok url={url[:80]} chars={len(text)}')
                         else:
                             log(f'[FETCH-PAGE] jina empty url={url[:80]} chars={len(jina_text)}')
                 except Exception as e:
                     log(f'[FETCH-PAGE] jina err url={url[:80]} err={e}')
-            self.send_json(200, {'text': text[:3000]})
+                    if isinstance(e, (socket.timeout, TimeoutError)) or 'timed out' in str(e).lower():
+                        _record_fetch_timeout(url)
+            self.send_json(200, {'text': text[:MAX_PAGE_CHARS]})
             return
 
         m = re.match(r'^/assets/([^/]+)/([^/]+)$', p)
@@ -817,5 +929,6 @@ class H(BaseHTTPRequestHandler):
 
 if __name__ == '__main__':
     init_db()
+    _load_blocked_set()
     print('Sessions API on :3000')
     ThreadingHTTPServer(('127.0.0.1', 3000), H).serve_forever()

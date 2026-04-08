@@ -317,7 +317,7 @@ const UIManager = {
                     .then(function(r) { return r.json(); })
                     .then(function(data) {
                         var lines = text.split('\n');
-                        var snippet = lines.slice(0, 5).join('\n') + (lines.length > 5 ? '\n…' : '');
+                        var snippet = lines.slice(0, FILE_SNIPPET_MAX_LINES).join('\n') + (lines.length > FILE_SNIPPET_MAX_LINES ? '\n…' : '');
                         self.attachedFiles.push({ id: data.id, name: '🎤 recorded-audio.txt', type: 'text', snippet: snippet, fullContent: text });
                         self.renderAttachments();
                         self.setStatus('');
@@ -1006,7 +1006,7 @@ const UIManager = {
         return new Promise(function(resolve) {
             var img = new Image();
             img.onload = function() {
-                var scale = Math.min(1, 500 / img.naturalWidth);
+                var scale = Math.min(1, IMAGE_SEND_MAX_PX / img.naturalWidth);
                 var canvas = document.createElement('canvas');
                 canvas.width = Math.round(img.naturalWidth * scale);
                 canvas.height = Math.round(img.naturalHeight * scale);
@@ -1018,9 +1018,8 @@ const UIManager = {
     },
 
     resizeImage: function(file) {
-        // Keep API payload small — 768px is sufficient for vision models to understand content.
-        // The original full-res file is already stored in user_assets before this is called.
-        var MAX_PX = 768;
+        // Keep API payload small; the original full-res file is stored in user_assets before this.
+        var MAX_PX = IMAGE_VISION_MAX_PX;
         return new Promise(function(resolve) {
             var url = URL.createObjectURL(file);
             var img = new Image();
@@ -1034,7 +1033,7 @@ const UIManager = {
                 canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
                 canvas.toBlob(function(blob) {
                     resolve(new File([blob], file.name, { type: 'image/jpeg' }));
-                }, 'image/jpeg', 0.82);
+                }, 'image/jpeg', IMAGE_JPEG_QUALITY);
             };
             img.src = url;
         });
@@ -1153,7 +1152,7 @@ const UIManager = {
                     });
                 } else {
                     var lines = (data.content || '').split('\n');
-                    var snippet = lines.slice(0, 5).join('\n') + (lines.length > 5 ? '\n…' : '');
+                    var snippet = lines.slice(0, FILE_SNIPPET_MAX_LINES).join('\n') + (lines.length > FILE_SNIPPET_MAX_LINES ? '\n…' : '');
                     self.attachedFiles.push({
                         id: data.id, name: file.name, type: 'text',
                         snippet: snippet,
@@ -1413,14 +1412,14 @@ const UIManager = {
             if (recentMsgs && recentMsgs.length > 0) {
                 contextBlock = 'Conversation so far:\n' + recentMsgs.map(function(m) {
                     var text = typeof m.content === 'string' ? m.content : (Array.isArray(m.content) ? m.content.filter(function(p) { return p.type === 'text'; }).map(function(p) { return p.text; }).join(' ') : '');
-                    return (m.role === 'user' ? 'User: ' : 'Assistant: ') + text.slice(0, 400);
+                    return (m.role === 'user' ? 'User: ' : 'Assistant: ') + text.slice(0, DETECT_CONTEXT_CHARS);
                 }).join('\n') + '\n\n';
             }
             var body = {
-                model: this.currentSession.model,
+                model: ASSISTANT_MODEL,
                 stream: false,
                 think: false,
-                options: { temperature: 0, num_predict: 300, think: false },
+                options: { temperature: 0, num_predict: UTILITY_NUM_PREDICT, think: false },
                 prompt: contextBlock +
                     'New message: ' + userMessage + '\n\n' +
                     'Should this message be answered with a live web search?\n\n' +
@@ -1479,12 +1478,12 @@ const UIManager = {
     getSearchQueries: async function(userMessage, recentMsgs, signal) {
         const baseQuery = this._buildBaseQuery(userMessage, recentMsgs);
         try {
-            const model = this.currentSession.model;
+            const model = ASSISTANT_MODEL;
             var contextBlock = '';
             if (recentMsgs && recentMsgs.length > 0) {
                 contextBlock = 'Conversation context:\n' + recentMsgs.map(function(m) {
                     var text = typeof m.content === 'string' ? m.content : (Array.isArray(m.content) ? m.content.filter(function(p) { return p.type === 'text'; }).map(function(p) { return p.text; }).join(' ') : '');
-                    return (m.role === 'user' ? 'User: ' : 'Assistant: ') + text.slice(0, 300);
+                    return (m.role === 'user' ? 'User: ' : 'Assistant: ') + text.slice(0, SEARCH_CONTEXT_CHARS);
                 }).join('\n') + '\n\n';
             }
             const res = await cloudRoutedFetch(model, '/generate', {
@@ -1496,15 +1495,16 @@ const UIManager = {
                         contextBlock +
                         'Current request: "' + userMessage + '"\n' +
                         'Base query: "' + baseQuery + '"\n\n' +
-                        'Generate 1-2 keyword search queries to find current information for the above request.\n' +
-                        'Rules:\n' +
+                        'Task: produce web search queries for the request above.\n' +
+                        'Step 1 — detect the language BEST SUITED for this web search (based on the topic and likely sources, not just the language the user wrote in).\n' +
+                        'Step 2 — translate the base query into that language, keeping its compact keyword style.\n' +
+                        'Step 3 — generate 1-2 additional keyword query variations in the same language using synonyms for the main topic words.\n' +
+                        'Rules for all queries:\n' +
                         '- Keyword-style only: NO sentences, NO filler words (für, mit, und, the, de, pour…), NO connectives\n' +
-                        '- 4-8 words max per query — same compact style as the base query\n' +
-                        '- Use synonyms for the main topic words only\n' +
+                        '- 4-8 words max per query\n' +
                         '- Keep ALL proper names, brand names, and product names exactly as-is\n' +
                         '- Always include the year ' + new Date().getFullYear() + '\n' +
-                        '- Reply in the SAME language as the request\n' +
-                        '- First line: LANG:xx where xx is the ISO 639-1 language code of the request (e.g. en, vi, de, fr, es). Then one query per line. No numbering, no explanation.\n'
+                        'Output format — first line: LANG:xx (ISO 639-1 code of the chosen language). Then one query per line: translated base query first, then variations. No numbering, no explanation.\n'
                 }, signal);
             const data = await res.json();
             const reply = (data.response || '').trim();
@@ -1518,10 +1518,11 @@ const UIManager = {
                 ? lines
                     .map(function(s) { return s.replace(/^[\d\.\-\*\s]+/, '').replace(/['"*]/g, '').trim(); })
                     .filter(Boolean)
-                    .slice(0, 2)
+                    .slice(0, 3)
                 : [];
-            // Base query always first — guaranteed accurate
-            return { queries: [baseQuery].concat(variations), lang: lang };
+            // LLM queries are domain-aware; baseQuery is generic keyword soup.
+            // Use LLM queries alone when available; fall back to baseQuery only if LLM returned nothing.
+            return { queries: variations.length ? variations : [baseQuery], lang: lang };
         } catch (e) {
             return { queries: [baseQuery], lang: 'auto' };
         }
@@ -1545,7 +1546,7 @@ const UIManager = {
             if (r.fetchedContent) {
                 return n + '. ' + r.title + '\n' + r.fetchedContent;
             } else {
-                return n + '. ' + r.title + '\n' + r.content.slice(0, 300);
+                return n + '. ' + r.title + '\n' + r.content.slice(0, SEARCH_CONTEXT_CHARS);
             }
         }).filter(Boolean).join('\n\n');
     },
@@ -1563,27 +1564,28 @@ const UIManager = {
     },
 
     enrichResults: async function(results, signal) {
-        var SKIP_DOMAINS = ['facebook.com', 'instagram.com', 'twitter.com', 'x.com', 'youtube.com', 'youtu.be', 'tiktok.com', 'linkedin.com', 'reddit.com'];
         var fetchable = results.filter(function(r) {
-            try { var h = new URL(r.url).hostname; return !SKIP_DOMAINS.some(function(d) { return h === d || h.endsWith('.' + d); }); }
+            try { var h = new URL(r.url).hostname; return !BLOCKED_DOMAINS.some(function(d) { return h === d || h.endsWith('.' + d); }); }
             catch(e) { return false; }
         });
-        var toFetch = fetchable.slice(0, 8);
+        var toFetch = fetchable.slice(0, MAX_FETCH_PAGES);
         var fetches = toFetch.map(function(r) {
-            return apiFetch('/fetch-page?url=' + encodeURIComponent(r.url), { signal: signal })
-                .then(function(res) { return res.ok ? res.json() : null; })
-                .catch(function() { return null; });
+            var tc = new AbortController();
+            var timer = setTimeout(function() { tc.abort(); }, FETCH_TIMEOUT_MS);
+            if (signal) signal.addEventListener('abort', function() { tc.abort(); });
+            return apiFetch('/fetch-page?url=' + encodeURIComponent(r.url), { signal: tc.signal })
+                .then(function(res) { clearTimeout(timer); return res.ok ? res.json() : null; })
+                .catch(function() { clearTimeout(timer); return null; });
         });
         var texts = await Promise.all(fetches);
         // First pass: collect pages that have enough content
         var pagesWithContent = [];
         texts.forEach(function(data, i) {
-            if (data && data.text && data.text.length >= 500) {
+            if (data && data.text && data.text.length >= MIN_PAGE_CONTENT_CHARS) {
                 pagesWithContent.push({ result: toFetch[i], text: data.text });
             }
         });
         // Distribute content budget proportionally by page size
-        var TOTAL_CONTENT_BUDGET = 8000;
         var totalSize = pagesWithContent.reduce(function(sum, p) { return sum + p.text.length; }, 0);
         pagesWithContent.forEach(function(p) {
             var budget = totalSize <= TOTAL_CONTENT_BUDGET
@@ -1596,16 +1598,22 @@ const UIManager = {
 
     synthesizeResults: async function(question, keywords, results, today, signal) {
         try {
-            const model = this.currentSession.model;
-            const res = await cloudRoutedFetch(model, '/generate', {
-                    model: model,
+            const res = await cloudRoutedFetch(SYNTHESIZER_MODEL, '/generate', {
+                    model: SYNTHESIZER_MODEL,
                     stream: false,
                     think: false,
-                    options: { temperature: 0 },
-                    prompt: 'Today is ' + today + '. Extract the key facts from these web search results to answer the question. Be concise and factual. Use only what the results say.\n\nQuestion: ' + question + '\n\nSearch results:\n' + results + '\n\nKey facts from results:'
+                    options: { temperature: 0, num_predict: SYNTHESIZER_NUM_PREDICT },
+                    prompt: 'Today is ' + today + '. You are a neutral information extractor. Rewrite the following raw web search results into one coherent, compact text. Rules:\n- Preserve as much information as possible — do not drop facts\n- Highlight key facts as bullet points\n- Be concise: remove ads, navigation text, duplicates, and boilerplate\n- Fix any garbled text: insert missing spaces between words, numbers, and letters where clearly needed\n- Do NOT interpret, conclude, or answer any question — just present the facts as found\n- Do NOT reference any question or topic — treat the content as standalone\n\nRaw web results:\n' + results + '\n\nExtracted facts:'
                 }, signal);
             const data = await res.json();
-            return (data.response || '').trim() || null;
+            var synthesis = (data.response || '').trim();
+            if (synthesis) {
+                synthesis = synthesis
+                    .replace(/(\d)([A-Za-z])/g, '$1 $2')
+                    .replace(/([A-Za-z])(\d)/g, '$1 $2')
+                    .replace(/([a-z])([A-Z])/g, '$1 $2');
+            }
+            return synthesis || null;
         } catch (e) { return null; }
     },
 
@@ -1696,22 +1704,22 @@ const UIManager = {
 
         let apiMessages = prepareForAPI(ContextManager.buildContextMessages(this.currentSession));
         apiMessages[apiMessages.length - 1] = userMsgForAPI;
-        var systemPrompt = 'You are DMH-AI — a close, trusted friend who happens to know a lot. Be warm, understanding, and genuinely present. Listen with empathy. No formalities, no "Certainly!", no filler — just speak like a friend who cares and truly gets it. Be honest and direct. Don\'t crack jokes or get excited about the topic — just be calm, attentive, and helpful.\n\nBe concise. When a topic has angles, give a quick overview with bullet points or options and ask which to dig into — let the user steer depth, not you.\n\nNever claim to be ChatGPT, Gemini, Claude, or any other AI.';
+        var systemPrompt = 'You are DMH-AI — a close, trusted friend who happens to know a lot. Be warm, understanding, and genuinely present. Listen with empathy. No formalities, no "Certainly!", no filler — just speak like a friend who cares and truly gets it. Be honest and direct. Don\'t crack jokes or get excited about the topic — just be calm, attentive, and helpful.\n\nBe concise. When a topic has angles, give a quick overview with bullet points or options and ask which to dig into — let the user steer depth, not you.\n\nNever claim to be ChatGPT, Gemini, Claude, or any other AI. Never sign off with closings like "Take care", "Your friend", "Best", "Cheers", or any other valediction — this is a chat, not an email.';
         if (UserProfile._facts) {
-            systemPrompt += '\n\nWhat you know about this person:\n' + UserProfile._facts + '\n\nUse this silently to sharpen your answers — factor in their facts, such as location, background, or interests, where relevant, but never quote, reference, or mention this profile in your response. Never say things like "given your love for X" or "since you enjoy Y". Just use it invisibly. If they explicitly ask what you know about them, then list it directly.';
+            systemPrompt += '\n\nWhat you know about this person:\n' + UserProfile._facts + '\n\nUse this silently to sharpen your answers — factor in their facts, such as location, background, or interests, where relevant, but never quote, reference, or mention this profile in your response. Never say things like "given your love for X" or "since you enjoy Y". No postscripts, side notes, or personal asides referencing their details. Just use it invisibly. If they explicitly ask what you know about them, then list it directly.';
         }
         apiMessages.unshift({ role: 'system', content: systemPrompt });
-        var relevant = ContextManager.retrieveRelevant(this.currentSession, content, 4);
+        var relevant = ContextManager.retrieveRelevant(this.currentSession, content, RELEVANT_CONTEXT_TOP_K);
         if (relevant.length > 0) {
             var snippets = relevant.map(function(p, i) {
-                return (i + 1) + '. User: ' + p.user.slice(0, 600) + (p.assistant ? '\n   Assistant: ' + p.assistant.slice(0, 600) : '');
+                return (i + 1) + '. User: ' + p.user.slice(0, CONTEXT_PAIR_PREVIEW_CHARS) + (p.assistant ? '\n   Assistant: ' + p.assistant.slice(0, CONTEXT_PAIR_PREVIEW_CHARS) : '');
             }).join('\n\n');
             apiMessages.splice(apiMessages.length - 1, 0,
                 { role: 'user', content: '[Potentially relevant excerpts from earlier in this conversation]\n\n' + snippets },
                 { role: 'assistant', content: 'Noted — I have those earlier exchanges in context.' }
             );
         }
-        const recentMsgs = (this.currentSession.messages || []).filter(function(m) { return m.role === 'user' || m.role === 'assistant'; }).slice(-4);
+        const recentMsgs = (this.currentSession.messages || []).filter(function(m) { return m.role === 'user' || m.role === 'assistant'; }).slice(-RECENT_MESSAGES_COUNT);
         const effectiveContent = contentForAPI.trim() || content.trim();
         const needsWebSearch = await this.detectWebSearch(effectiveContent, recentMsgs, pipelineSignal, imagesForAPI);
         if (pipelineSignal.aborted) return;
@@ -1736,19 +1744,25 @@ const UIManager = {
                     if (pipelineSignal.aborted) return;
                 }
                 // Cap to top 10 results to keep synthesis prompt bounded
-                const topResults = allRaw.slice(0, 10);
+                const topResults = allRaw.slice(0, MAX_SEARCH_RESULTS);
                 const allFormatted = topResults.length ? this.formatSearchResults(topResults) : null;
                 if (allFormatted) {
-                    this.setStatus(t('synthesizing'));
+                    syslog('[RAW] pages=' + topResults.filter(function(r){return r.fetchedContent;}).length + ' raw_len=' + allFormatted.length + ' sample="' + allFormatted.slice(0, 200).replace(/\n/g, ' ') + '"');
                     const today = new Date().toDateString();
-                    const synthesis = await this.synthesizeResults(cleanedContent, queries.join(' '), allFormatted, today, pipelineSignal);
-                    if (pipelineSignal.aborted) return;
-                    // Use synthesis if available, otherwise fall back to truncated raw results
-                    const injectedResults = synthesis || allFormatted.slice(0, 8000);
-                    syslog('[SYNTHESIS] ' + (synthesis ? 'ok' : 'failed, using raw') + ' len=' + injectedResults.length);
+                    let injectedResults;
+                    if (allFormatted.length > SYNTHESIS_THRESHOLD_CHARS) {
+                        this.setStatus(t('synthesizing'));
+                        const synthesis = await this.synthesizeResults(cleanedContent, queries.join(' '), allFormatted, today, pipelineSignal);
+                        if (pipelineSignal.aborted) return;
+                        injectedResults = synthesis || allFormatted.slice(0, SEARCH_FALLBACK_CHARS);
+                        syslog('[SYNTHESIS] ' + (synthesis ? 'ok' : 'failed, using raw') + ' len=' + injectedResults.length + ' sample="' + injectedResults.slice(0, 200).replace(/\n/g, ' ') + '"');
+                    } else {
+                        injectedResults = allFormatted;
+                        syslog('[SYNTHESIS] skipped raw_len=' + allFormatted.length + ' <= threshold=' + SYNTHESIS_THRESHOLD_CHARS);
+                    }
                     var injectedMsg = {
                         role: 'user',
-                        content: 'User request: ' + cleanedContent + '\n\nWeb search results (retrieved ' + today + '):\n' + injectedResults + '\n\nUsing the user request and the web search results above, compile a complete and accurate answer.'
+                        content: 'User request: ' + cleanedContent + '\n\nWeb search results (retrieved ' + today + '):\n' + injectedResults + '\n\nUsing the user request and the web search results above, compile a complete and accurate answer. Ignore any content that is clearly unrelated to the user request (e.g. off-topic pages that ended up in the results); focus only on relevant facts.'
                     };
                     if (imagesForAPI.length > 0) injectedMsg.images = imagesForAPI;
                     apiMessages = apiMessages.slice(0, -1).concat([injectedMsg]);
@@ -1897,7 +1911,7 @@ const UIManager = {
         const controller = new AbortController();
         this._namingController = controller;
         try {
-            var msgs = (session.messages || []).slice(-4);
+            var msgs = (session.messages || []).slice(-RECENT_MESSAGES_COUNT);
             if (!msgs.length) return;
             var excerpt = msgs.map(function(m) {
                 var text = typeof m.content === 'string' ? m.content : '';
@@ -1906,8 +1920,8 @@ const UIManager = {
                 return (m.role === 'user' ? 'User: ' : 'Assistant: ') + text.slice(0, 200);
             }).join('\n');
             if (!excerpt.trim()) return;
-            syslog('[NAMING] model=ministral-3:8b-cloud excerpt="' + excerpt.slice(0, 80) + '"');
-            var name = await OllamaAPI.summarize('ministral-3:8b-cloud', [{
+            syslog('[NAMING] model=' + ASSISTANT_MODEL + ' excerpt="' + excerpt.slice(0, 80) + '"');
+            var name = await OllamaAPI.summarize(ASSISTANT_MODEL, [{
                 role: 'user',
                 content: 'Give a short title (3-5 words) for this conversation:\n\n' + excerpt + '\n\nReply with only the title, no quotes, no explanation.'
             }], controller.signal);

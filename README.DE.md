@@ -16,7 +16,7 @@ Beide Modi funktionieren in derselben App. Sie können jederzeit frei wechseln.
 ## Screenshots
 
 ![Vorgeladene Modelle](preloaded_models.png)
-*Drei sofort einsatzbereite Cloud-Modelle — Schnelle Antwort, Wortschmied, Tiefes Denken — erscheinen, sobald ein API-Schlüssel hinzugefügt wird. Keine weitere Einrichtung nötig.*
+*Drei sofort einsatzbereite Cloud-Modelle — Quick-Wit, Lexicon, Tiefes Denken — erscheinen, sobald ein API-Schlüssel hinzugefügt wird. Keine weitere Einrichtung nötig.*
 
 ---
 
@@ -115,8 +115,8 @@ Das war's. Drei empfohlene Modelle erscheinen sofort oben in der Modellauswahl �
 
 **Empfohlene Modelle (sofort nutzbar, keine weitere Einrichtung):**
 
-- 👁 **Schnelle Antwort** — schnelle Reaktionen für alltägliche Fragen
-- ✍ **Wortschmied** — hervorragend beim Schreiben: E-Mails, Essays, Literatur, kreative Texte
+- 👁 **Quick-Wit** — schnelle Reaktionen für alltägliche Fragen
+- ✍ **Lexicon** — hervorragend beim Schreiben: E-Mails, Essays, Literatur, kreative Texte
 - 💡 **Tiefes Denken** — langsamer, aber gründlicher; ideal für komplexe Fragen und Bildanalyse
 - 🧮 **Mathe-Meister** — optimiert für Mathematik, Logik und Schlussfolgerungen
 
@@ -195,7 +195,7 @@ Ein oder mehrere Konten (Bezeichnung + API-Schlüssel) hinzufügen. DMH-AI wechs
 
 **Ollama Cloud — Empfohlene Modelle**
 
-Sobald mindestens ein Konto vorhanden ist, erscheinen vier Modelle automatisch oben in der Modellauswahl — ohne weitere Konfiguration: **Schnelle Antwort**, **Wortschmied**, **Tiefes Denken** und **Mathe-Meister**.
+Sobald mindestens ein Konto vorhanden ist, erscheinen vier Modelle automatisch oben in der Modellauswahl — ohne weitere Konfiguration: **Quick-Wit**, **Lexicon**, **Tiefes Denken** und **Mathe-Meister**.
 
 **Ollama Cloud — Cloud-Modelle**
 

@@ -20,6 +20,8 @@ RUN apk add --no-cache python3 su-exec openssl imagemagick && \
 RUN adduser -D -u 1000 appuser && \
     mkdir -p /data /app && chown appuser:appuser /data /app
 COPY backend/server.py /app/server.py
+COPY backend/blocked_domains.py /app/blocked_domains.py
+COPY backend/constants.py /app/constants.py
 COPY index.html /usr/share/nginx/html/
 COPY css/ /usr/share/nginx/html/css/
 COPY js/ /usr/share/nginx/html/js/

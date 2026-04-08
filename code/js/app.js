@@ -65,7 +65,7 @@ const I18n = {
             pwWarning: '⚠ You are using the default password. Please change it now.',
             pwWarningBtn: 'Change password',
             settings: 'Settings', sysSettings: 'System Settings',
-            recQuickAnswer: '👁 Quick Answer', recDeepThinker: '💡 Deep Thinker', recTechExpert: '🛠 Technical Expert', recWordsmith: '✍ Wordsmith', recMathMaster: '🧮 Math Master',
+            recQuickAnswer: '👁 Quick-Wit', recDeepThinker: '💡 Deep Thinker', recTechExpert: '🛠 Technical Expert', recWordsmith: '✍ Lexicon', recMathMaster: '🧮 Math Master',
             noModelAvail: 'No model available. Please configure a model in Settings first.',
             profileSection: 'Companion Memory', profileEmpty: 'No facts remembered yet.',
             profileClear: 'Clear memory', profileClearConfirm: 'This will reset everything DMH-AI has learned about you. You may notice a different feeling next time — it will understand you again over time, but that takes a while. You can always rebuild it from Conversation Settings. Are you sure?',
@@ -107,7 +107,7 @@ const I18n = {
             pwWarning: '⚠ Bạn đang dùng mật khẩu mặc định. Hãy đổi mật khẩu ngay.',
             pwWarningBtn: 'Đổi mật khẩu',
             settings: 'Cài đặt', sysSettings: 'Cài đặt hệ thống',
-            recQuickAnswer: '👁 Trả lời nhanh', recDeepThinker: '💡 Suy nghĩ sâu', recTechExpert: '🛠 Chuyên gia kỹ thuật', recWordsmith: '✍ Nhà văn', recMathMaster: '🧮 Toán học',
+            recQuickAnswer: '👁 Trả lời nhanh', recDeepThinker: '💡 Suy nghĩ sâu', recTechExpert: '🛠 Chuyên gia kỹ thuật', recWordsmith: '✍ Lexicon', recMathMaster: '🧮 Toán học',
             noModelAvail: 'Không có mô hình nào. Vui lòng cấu hình trong Cài đặt trước.',
             profileSection: 'Bộ nhớ đồng hành', profileEmpty: 'Chưa ghi nhớ điều gì.',
             profileClear: 'Xóa bộ nhớ', profileClearConfirm: 'Thao tác này sẽ xóa toàn bộ những gì DMH-AI đã hiểu về bạn. Lần trò chuyện tiếp theo có thể cảm giác khác đi — DMH-AI sẽ dần hiểu bạn trở lại theo thời gian. Bạn có thể xây dựng lại bất cứ lúc nào trong Cài đặt hội thoại. Bạn có chắc không?',
@@ -149,7 +149,7 @@ const I18n = {
             pwWarning: '⚠ Sie verwenden noch das Standardpasswort. Bitte jetzt ändern.',
             pwWarningBtn: 'Passwort ändern',
             settings: 'Einstellungen', sysSettings: 'Systemeinstellungen',
-            recQuickAnswer: '👁 Schnelle Antwort', recDeepThinker: '💡 Tiefdenker', recTechExpert: '🛠 Technischer Experte', recWordsmith: '✍ Wortschmied', recMathMaster: '🧮 Mathe-Meister',
+            recQuickAnswer: '👁 Schnelle Antwort', recDeepThinker: '💡 Tiefdenker', recTechExpert: '🛠 Technischer Experte', recWordsmith: '✍ Lexicon', recMathMaster: '🧮 Mathe-Meister',
             noModelAvail: 'Kein Modell verfügbar. Bitte zuerst in den Einstellungen konfigurieren.',
             profileSection: 'Begleitergedächtnis', profileEmpty: 'Noch keine Fakten gespeichert.',
             profileClear: 'Gedächtnis löschen', profileClearConfirm: 'Damit wird alles zurückgesetzt, was DMH-AI über Sie gelernt hat. Beim nächsten Gespräch kann sich etwas anders anfühlen — es wird Sie mit der Zeit wieder verstehen. Sie können es jederzeit über die Gesprächseinstellungen neu aufbauen. Sind Sie sicher?',
@@ -191,7 +191,7 @@ const I18n = {
             pwWarning: '⚠ Está usando la contraseña predeterminada. Cámbiela ahora.',
             pwWarningBtn: 'Cambiar contraseña',
             settings: 'Configuración', sysSettings: 'Configuración del sistema',
-            recQuickAnswer: '👁 Respuesta rápida', recDeepThinker: '💡 Pensador profundo', recTechExpert: '🛠 Experto técnico', recWordsmith: '✍ Plumista', recMathMaster: '🧮 Maestro Matemático',
+            recQuickAnswer: '👁 Respuesta rápida', recDeepThinker: '💡 Pensador profundo', recTechExpert: '🛠 Experto técnico', recWordsmith: '✍ Lexicon', recMathMaster: '🧮 Maestro Matemático',
             noModelAvail: 'Ningún modelo disponible. Configure uno en Ajustes primero.',
             profileSection: 'Memoria del compañero', profileEmpty: 'Aún no hay hechos recordados.',
             profileClear: 'Borrar memoria', profileClearConfirm: 'Esto reiniciará todo lo que DMH-AI ha aprendido sobre usted. La próxima vez que chatee puede sentirse diferente — lo entenderá de nuevo con el tiempo. Siempre puede reconstruirlo desde Configuración de conversación. ¿Está seguro?',
@@ -233,7 +233,7 @@ const I18n = {
             pwWarning: '⚠ Vous utilisez le mot de passe par défaut. Veuillez le changer maintenant.',
             pwWarningBtn: 'Changer le mot de passe',
             settings: 'Paramètres', sysSettings: 'Paramètres système',
-            recQuickAnswer: '👁 Réponse rapide', recDeepThinker: '💡 Réflexion profonde', recTechExpert: '🛠 Expert technique', recWordsmith: '✍ Plume', recMathMaster: '🧮 Maître des maths',
+            recQuickAnswer: '👁 Réponse rapide', recDeepThinker: '💡 Réflexion profonde', recTechExpert: '🛠 Expert technique', recWordsmith: '✍ Lexicon', recMathMaster: '🧮 Maître des maths',
             noModelAvail: 'Aucun modèle disponible. Veuillez d\'abord en configurer un dans les Paramètres.',
             profileSection: 'Mémoire du compagnon', profileEmpty: 'Aucun fait mémorisé pour l\'instant.',
             profileClear: 'Effacer la mémoire', profileClearConfirm: 'Cela réinitialisera tout ce que DMH-AI a appris sur vous. La prochaine conversation pourrait sembler différente — il vous comprendra à nouveau avec le temps. Vous pouvez toujours le reconstruire depuis Paramètres de conversation. Êtes-vous sûr ?',
@@ -262,7 +262,7 @@ const Auth = {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ email: email, password: password }),
-                signal: AbortSignal.timeout(10000)
+                signal: AbortSignal.timeout(LOGIN_TIMEOUT_MS)
             });
         } catch(e) {
             // On iOS/Android with an untrusted self-signed certificate, fetch hangs or
@@ -727,7 +727,7 @@ const SettingsModal = {
                     suggestions.appendChild(item);
                 });
                 suggestions.classList.add('open');
-            }, 350);
+            }, MODEL_SEARCH_DEBOUNCE_MS);
         });
         searchInput.addEventListener('blur', function() {
             setTimeout(function() { suggestions.classList.remove('open'); }, 150);
@@ -787,7 +787,7 @@ const CloudAccountPool = {
                     'Authorization': 'Bearer ' + (Auth.token || ''),
                     'X-Cloud-Key': acct.apiKey
                 },
-                signal: AbortSignal.timeout(8000)
+                signal: AbortSignal.timeout(CLOUD_PROBE_TIMEOUT_MS)
             });
             return res.ok;
         } catch(e) {
@@ -819,13 +819,12 @@ const CloudAccountPool = {
 
     markFailed: function(acct) {
         if (!acct) return;
-        const MIN_BACKOFF = 30000;
-        const state = this._state[acct.name] || { backoffMs: MIN_BACKOFF };
-        if (!this._state[acct.name]) state.backoffMs = MIN_BACKOFF;
+        const state = this._state[acct.name] || { backoffMs: MIN_CLOUD_BACKOFF_MS };
+        if (!this._state[acct.name]) state.backoffMs = MIN_CLOUD_BACKOFF_MS;
         state.unreachableUntil = Date.now() + state.backoffMs;
         this._state[acct.name] = state;
         this._scheduleProbe(acct, state.backoffMs);
-        state.backoffMs = Math.min(state.backoffMs * 2, 30 * 60 * 1000);
+        state.backoffMs = Math.min(state.backoffMs * 2, MAX_CLOUD_BACKOFF_MS);
     },
 
     markRecovered: function(acct) {
@@ -1093,8 +1092,8 @@ const Lightbox = {
         lb.addEventListener('wheel', function(e) {
             if (!self._open) return;
             e.preventDefault();
-            var factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
-            var newScale = Math.max(0.5, Math.min(10, self._scale * factor));
+            var factor = e.deltaY < 0 ? IMAGE_ZOOM_STEP : 1 / IMAGE_ZOOM_STEP;
+            var newScale = Math.max(LIGHTBOX_MIN_ZOOM, Math.min(LIGHTBOX_MAX_ZOOM, self._scale * factor));
             // Zoom toward mouse pointer
             var rect = img.getBoundingClientRect();
             var mx = e.clientX - (rect.left + rect.width / 2);
@@ -1117,7 +1116,7 @@ const Lightbox = {
                 mouseMoved = false;
                 // Double-tap to reset zoom
                 var now = Date.now();
-                if (now - lastTap < 300) {
+                if (now - lastTap < DOUBLE_TAP_MS) {
                     self._scale = 1; self._tx = 0; self._ty = 0;
                     self._applyTransform();
                 }
@@ -1150,7 +1149,7 @@ const Lightbox = {
                 var ddy = e.touches[1].clientY - e.touches[0].clientY;
                 var dist = Math.hypot(ddx, ddy);
                 var factor = dist / self._lastDist;
-                var newScale = Math.max(0.5, Math.min(10, self._scale * factor));
+                var newScale = Math.max(LIGHTBOX_MIN_ZOOM, Math.min(LIGHTBOX_MAX_ZOOM, self._scale * factor));
                 // Zoom toward pinch midpoint
                 var midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
                 var midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
@@ -1439,7 +1438,7 @@ const ContextManager = {
             }
         }
         pairs.sort(function(a, b) { return b.score - a.score; });
-        return pairs.slice(0, topK).filter(function(p) { return p.score >= 0.25; });
+        return pairs.slice(0, topK).filter(function(p) { return p.score >= MIN_RELEVANCE_SCORE; });
     },
 
     compact: async function(session) {
@@ -1786,7 +1785,7 @@ const UIManager = {
                     .then(function(r) { return r.json(); })
                     .then(function(data) {
                         var lines = text.split('\n');
-                        var snippet = lines.slice(0, 5).join('\n') + (lines.length > 5 ? '\n…' : '');
+                        var snippet = lines.slice(0, FILE_SNIPPET_MAX_LINES).join('\n') + (lines.length > FILE_SNIPPET_MAX_LINES ? '\n…' : '');
                         self.attachedFiles.push({ id: data.id, name: '🎤 recorded-audio.txt', type: 'text', snippet: snippet, fullContent: text });
                         self.renderAttachments();
                         self.setStatus('');
@@ -2407,7 +2406,7 @@ const UIManager = {
         return new Promise(function(resolve) {
             var img = new Image();
             img.onload = function() {
-                var scale = Math.min(1, 500 / img.naturalWidth);
+                var scale = Math.min(1, IMAGE_SEND_MAX_PX / img.naturalWidth);
                 var canvas = document.createElement('canvas');
                 canvas.width = Math.round(img.naturalWidth * scale);
                 canvas.height = Math.round(img.naturalHeight * scale);
@@ -2419,9 +2418,8 @@ const UIManager = {
     },
 
     resizeImage: function(file) {
-        // Keep API payload small — 768px is sufficient for vision models to understand content.
-        // The original full-res file is already stored in user_assets before this is called.
-        var MAX_PX = 768;
+        // Keep API payload small; the original full-res file is stored in user_assets before this.
+        var MAX_PX = IMAGE_VISION_MAX_PX;
         return new Promise(function(resolve) {
             var url = URL.createObjectURL(file);
             var img = new Image();
@@ -2435,7 +2433,7 @@ const UIManager = {
                 canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
                 canvas.toBlob(function(blob) {
                     resolve(new File([blob], file.name, { type: 'image/jpeg' }));
-                }, 'image/jpeg', 0.82);
+                }, 'image/jpeg', IMAGE_JPEG_QUALITY);
             };
             img.src = url;
         });
@@ -2554,7 +2552,7 @@ const UIManager = {
                     });
                 } else {
                     var lines = (data.content || '').split('\n');
-                    var snippet = lines.slice(0, 5).join('\n') + (lines.length > 5 ? '\n…' : '');
+                    var snippet = lines.slice(0, FILE_SNIPPET_MAX_LINES).join('\n') + (lines.length > FILE_SNIPPET_MAX_LINES ? '\n…' : '');
                     self.attachedFiles.push({
                         id: data.id, name: file.name, type: 'text',
                         snippet: snippet,
@@ -2814,14 +2812,14 @@ const UIManager = {
             if (recentMsgs && recentMsgs.length > 0) {
                 contextBlock = 'Conversation so far:\n' + recentMsgs.map(function(m) {
                     var text = typeof m.content === 'string' ? m.content : (Array.isArray(m.content) ? m.content.filter(function(p) { return p.type === 'text'; }).map(function(p) { return p.text; }).join(' ') : '');
-                    return (m.role === 'user' ? 'User: ' : 'Assistant: ') + text.slice(0, 400);
+                    return (m.role === 'user' ? 'User: ' : 'Assistant: ') + text.slice(0, DETECT_CONTEXT_CHARS);
                 }).join('\n') + '\n\n';
             }
             var body = {
-                model: this.currentSession.model,
+                model: ASSISTANT_MODEL,
                 stream: false,
                 think: false,
-                options: { temperature: 0, num_predict: 300, think: false },
+                options: { temperature: 0, num_predict: UTILITY_NUM_PREDICT, think: false },
                 prompt: contextBlock +
                     'New message: ' + userMessage + '\n\n' +
                     'Should this message be answered with a live web search?\n\n' +
@@ -2880,12 +2878,12 @@ const UIManager = {
     getSearchQueries: async function(userMessage, recentMsgs, signal) {
         const baseQuery = this._buildBaseQuery(userMessage, recentMsgs);
         try {
-            const model = this.currentSession.model;
+            const model = ASSISTANT_MODEL;
             var contextBlock = '';
             if (recentMsgs && recentMsgs.length > 0) {
                 contextBlock = 'Conversation context:\n' + recentMsgs.map(function(m) {
                     var text = typeof m.content === 'string' ? m.content : (Array.isArray(m.content) ? m.content.filter(function(p) { return p.type === 'text'; }).map(function(p) { return p.text; }).join(' ') : '');
-                    return (m.role === 'user' ? 'User: ' : 'Assistant: ') + text.slice(0, 300);
+                    return (m.role === 'user' ? 'User: ' : 'Assistant: ') + text.slice(0, SEARCH_CONTEXT_CHARS);
                 }).join('\n') + '\n\n';
             }
             const res = await cloudRoutedFetch(model, '/generate', {
@@ -2897,15 +2895,16 @@ const UIManager = {
                         contextBlock +
                         'Current request: "' + userMessage + '"\n' +
                         'Base query: "' + baseQuery + '"\n\n' +
-                        'Generate 1-2 keyword search queries to find current information for the above request.\n' +
-                        'Rules:\n' +
+                        'Task: produce web search queries for the request above.\n' +
+                        'Step 1 — detect the language BEST SUITED for this web search (based on the topic and likely sources, not just the language the user wrote in).\n' +
+                        'Step 2 — translate the base query into that language, keeping its compact keyword style.\n' +
+                        'Step 3 — generate 1-2 additional keyword query variations in the same language using synonyms for the main topic words.\n' +
+                        'Rules for all queries:\n' +
                         '- Keyword-style only: NO sentences, NO filler words (für, mit, und, the, de, pour…), NO connectives\n' +
-                        '- 4-8 words max per query — same compact style as the base query\n' +
-                        '- Use synonyms for the main topic words only\n' +
+                        '- 4-8 words max per query\n' +
                         '- Keep ALL proper names, brand names, and product names exactly as-is\n' +
                         '- Always include the year ' + new Date().getFullYear() + '\n' +
-                        '- Reply in the SAME language as the request\n' +
-                        '- First line: LANG:xx where xx is the ISO 639-1 language code of the request (e.g. en, vi, de, fr, es). Then one query per line. No numbering, no explanation.\n'
+                        'Output format — first line: LANG:xx (ISO 639-1 code of the chosen language). Then one query per line: translated base query first, then variations. No numbering, no explanation.\n'
                 }, signal);
             const data = await res.json();
             const reply = (data.response || '').trim();
@@ -2919,10 +2918,11 @@ const UIManager = {
                 ? lines
                     .map(function(s) { return s.replace(/^[\d\.\-\*\s]+/, '').replace(/['"*]/g, '').trim(); })
                     .filter(Boolean)
-                    .slice(0, 2)
+                    .slice(0, 3)
                 : [];
-            // Base query always first — guaranteed accurate
-            return { queries: [baseQuery].concat(variations), lang: lang };
+            // Use LLM queries when available — they include a translated base query + variations.
+            // Fall back to baseQuery only when the LLM returns nothing.
+            return { queries: variations.length ? variations : [baseQuery], lang: lang };
         } catch (e) {
             return { queries: [baseQuery], lang: 'auto' };
         }
@@ -2946,7 +2946,7 @@ const UIManager = {
             if (r.fetchedContent) {
                 return n + '. ' + r.title + '\n' + r.fetchedContent;
             } else {
-                return n + '. ' + r.title + '\n' + r.content.slice(0, 300);
+                return n + '. ' + r.title + '\n' + r.content.slice(0, SEARCH_CONTEXT_CHARS);
             }
         }).filter(Boolean).join('\n\n');
     },
@@ -2964,27 +2964,28 @@ const UIManager = {
     },
 
     enrichResults: async function(results, signal) {
-        var SKIP_DOMAINS = ['facebook.com', 'instagram.com', 'twitter.com', 'x.com', 'youtube.com', 'youtu.be', 'tiktok.com', 'linkedin.com', 'reddit.com'];
         var fetchable = results.filter(function(r) {
-            try { var h = new URL(r.url).hostname; return !SKIP_DOMAINS.some(function(d) { return h === d || h.endsWith('.' + d); }); }
+            try { var h = new URL(r.url).hostname; return !BLOCKED_DOMAINS.some(function(d) { return h === d || h.endsWith('.' + d); }); }
             catch(e) { return false; }
         });
-        var toFetch = fetchable.slice(0, 8);
+        var toFetch = fetchable.slice(0, MAX_FETCH_PAGES);
         var fetches = toFetch.map(function(r) {
-            return apiFetch('/fetch-page?url=' + encodeURIComponent(r.url), { signal: signal })
-                .then(function(res) { return res.ok ? res.json() : null; })
-                .catch(function() { return null; });
+            var tc = new AbortController();
+            var timer = setTimeout(function() { tc.abort(); }, FETCH_TIMEOUT_MS);
+            if (signal) signal.addEventListener('abort', function() { tc.abort(); });
+            return apiFetch('/fetch-page?url=' + encodeURIComponent(r.url), { signal: tc.signal })
+                .then(function(res) { clearTimeout(timer); return res.ok ? res.json() : null; })
+                .catch(function() { clearTimeout(timer); return null; });
         });
         var texts = await Promise.all(fetches);
         // First pass: collect pages that have enough content
         var pagesWithContent = [];
         texts.forEach(function(data, i) {
-            if (data && data.text && data.text.length >= 500) {
+            if (data && data.text && data.text.length >= MIN_PAGE_CONTENT_CHARS) {
                 pagesWithContent.push({ result: toFetch[i], text: data.text });
             }
         });
         // Distribute content budget proportionally by page size
-        var TOTAL_CONTENT_BUDGET = 8000;
         var totalSize = pagesWithContent.reduce(function(sum, p) { return sum + p.text.length; }, 0);
         pagesWithContent.forEach(function(p) {
             var budget = totalSize <= TOTAL_CONTENT_BUDGET
@@ -2997,16 +2998,22 @@ const UIManager = {
 
     synthesizeResults: async function(question, keywords, results, today, signal) {
         try {
-            const model = this.currentSession.model;
-            const res = await cloudRoutedFetch(model, '/generate', {
-                    model: model,
+            const res = await cloudRoutedFetch(SYNTHESIZER_MODEL, '/generate', {
+                    model: SYNTHESIZER_MODEL,
                     stream: false,
                     think: false,
-                    options: { temperature: 0 },
-                    prompt: 'Today is ' + today + '. Extract the key facts from these web search results to answer the question. Be concise and factual. Use only what the results say.\n\nQuestion: ' + question + '\n\nSearch results:\n' + results + '\n\nKey facts from results:'
+                    options: { temperature: 0, num_predict: SYNTHESIZER_NUM_PREDICT },
+                    prompt: 'Today is ' + today + '. You are a neutral information extractor. Rewrite the following raw web search results into one coherent, compact text. Rules:\n- Preserve as much information as possible — do not drop facts\n- Highlight key facts as bullet points\n- Be concise: remove ads, navigation text, duplicates, and boilerplate\n- Fix any garbled text: insert missing spaces between words, numbers, and letters where clearly needed\n- Do NOT interpret, conclude, or answer any question — just present the facts as found\n- Do NOT reference any question or topic — treat the content as standalone\n\nRaw web results:\n' + results + '\n\nExtracted facts:'
                 }, signal);
             const data = await res.json();
-            return (data.response || '').trim() || null;
+            var synthesis = (data.response || '').trim();
+            if (synthesis) {
+                synthesis = synthesis
+                    .replace(/(\d)([A-Za-z])/g, '$1 $2')
+                    .replace(/([A-Za-z])(\d)/g, '$1 $2')
+                    .replace(/([a-z])([A-Z])/g, '$1 $2');
+            }
+            return synthesis || null;
         } catch (e) { return null; }
     },
 
@@ -3102,17 +3109,17 @@ const UIManager = {
             systemPrompt += '\n\nWhat you know about this user:\n' + UserProfile._facts + '\n\nBefore every response, think: given what you know about this user and what they are asking right now, what is the most helpful answer you can give? Use these facts only when they directly improve your answer — for example, their location when asked for local recommendations, or their interests when asked for suggestions. Never bring them up as asides, postscripts, or small talk. In technical, factual, or task-focused conversations, ignore these facts entirely. If the user explicitly asks what you know about them, list these facts directly.';
         }
         apiMessages.unshift({ role: 'system', content: systemPrompt });
-        var relevant = ContextManager.retrieveRelevant(this.currentSession, content, 4);
+        var relevant = ContextManager.retrieveRelevant(this.currentSession, content, RELEVANT_CONTEXT_TOP_K);
         if (relevant.length > 0) {
             var snippets = relevant.map(function(p, i) {
-                return (i + 1) + '. User: ' + p.user.slice(0, 600) + (p.assistant ? '\n   Assistant: ' + p.assistant.slice(0, 600) : '');
+                return (i + 1) + '. User: ' + p.user.slice(0, CONTEXT_PAIR_PREVIEW_CHARS) + (p.assistant ? '\n   Assistant: ' + p.assistant.slice(0, CONTEXT_PAIR_PREVIEW_CHARS) : '');
             }).join('\n\n');
             apiMessages.splice(apiMessages.length - 1, 0,
                 { role: 'user', content: '[Potentially relevant excerpts from earlier in this conversation]\n\n' + snippets },
                 { role: 'assistant', content: 'Noted — I have those earlier exchanges in context.' }
             );
         }
-        const recentMsgs = (this.currentSession.messages || []).filter(function(m) { return m.role === 'user' || m.role === 'assistant'; }).slice(-4);
+        const recentMsgs = (this.currentSession.messages || []).filter(function(m) { return m.role === 'user' || m.role === 'assistant'; }).slice(-RECENT_MESSAGES_COUNT);
         const effectiveContent = contentForAPI.trim() || content.trim();
         const needsWebSearch = await this.detectWebSearch(effectiveContent, recentMsgs, pipelineSignal, imagesForAPI);
         if (pipelineSignal.aborted) return;
@@ -3137,19 +3144,24 @@ const UIManager = {
                     if (pipelineSignal.aborted) return;
                 }
                 // Cap to top 10 results to keep synthesis prompt bounded
-                const topResults = allRaw.slice(0, 10);
+                const topResults = allRaw.slice(0, MAX_SEARCH_RESULTS);
                 const allFormatted = topResults.length ? this.formatSearchResults(topResults) : null;
                 if (allFormatted) {
-                    this.setStatus(t('synthesizing'));
                     const today = new Date().toDateString();
-                    const synthesis = await this.synthesizeResults(cleanedContent, queries.join(' '), allFormatted, today, pipelineSignal);
-                    if (pipelineSignal.aborted) return;
-                    // Use synthesis if available, otherwise fall back to truncated raw results
-                    const injectedResults = synthesis || allFormatted.slice(0, 8000);
-                    syslog('[SYNTHESIS] ' + (synthesis ? 'ok' : 'failed, using raw') + ' len=' + injectedResults.length);
+                    let injectedResults;
+                    if (allFormatted.length > SYNTHESIS_THRESHOLD_CHARS) {
+                        this.setStatus(t('synthesizing'));
+                        const synthesis = await this.synthesizeResults(cleanedContent, queries.join(' '), allFormatted, today, pipelineSignal);
+                        if (pipelineSignal.aborted) return;
+                        injectedResults = synthesis || allFormatted.slice(0, SEARCH_FALLBACK_CHARS);
+                        syslog('[SYNTHESIS] ' + (synthesis ? 'ok' : 'failed, using raw') + ' len=' + injectedResults.length);
+                    } else {
+                        injectedResults = allFormatted;
+                        syslog('[SYNTHESIS] skipped raw_len=' + allFormatted.length + ' <= threshold=' + SYNTHESIS_THRESHOLD_CHARS);
+                    }
                     var injectedMsg = {
                         role: 'user',
-                        content: 'User request: ' + cleanedContent + '\n\nWeb search results (retrieved ' + today + '):\n' + injectedResults + '\n\nUsing the user request and the web search results above, compile a complete and accurate answer.'
+                        content: 'User request: ' + cleanedContent + '\n\nWeb search results (retrieved ' + today + '):\n' + injectedResults + '\n\nUsing the user request and the web search results above, compile a complete and accurate answer. Ignore any content that is clearly unrelated to the user request (e.g. off-topic pages that ended up in the results); focus only on relevant facts.'
                     };
                     if (imagesForAPI.length > 0) injectedMsg.images = imagesForAPI;
                     apiMessages = apiMessages.slice(0, -1).concat([injectedMsg]);
@@ -3282,7 +3294,7 @@ const UIManager = {
         const controller = new AbortController();
         this._namingController = controller;
         try {
-            var msgs = (session.messages || []).slice(-4);
+            var msgs = (session.messages || []).slice(-RECENT_MESSAGES_COUNT);
             if (!msgs.length) return;
             var excerpt = msgs.map(function(m) {
                 var text = typeof m.content === 'string' ? m.content : '';

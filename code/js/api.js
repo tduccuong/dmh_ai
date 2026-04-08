@@ -244,7 +244,7 @@ const ContextManager = {
             }
         }
         pairs.sort(function(a, b) { return b.score - a.score; });
-        return pairs.slice(0, topK).filter(function(p) { return p.score >= 0.25; });
+        return pairs.slice(0, topK).filter(function(p) { return p.score >= MIN_RELEVANCE_SCORE; });
     },
 
     compact: async function(session) {

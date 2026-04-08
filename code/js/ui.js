@@ -189,8 +189,8 @@ const Lightbox = {
         lb.addEventListener('wheel', function(e) {
             if (!self._open) return;
             e.preventDefault();
-            var factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
-            var newScale = Math.max(0.5, Math.min(10, self._scale * factor));
+            var factor = e.deltaY < 0 ? IMAGE_ZOOM_STEP : 1 / IMAGE_ZOOM_STEP;
+            var newScale = Math.max(LIGHTBOX_MIN_ZOOM, Math.min(LIGHTBOX_MAX_ZOOM, self._scale * factor));
             // Zoom toward mouse pointer
             var rect = img.getBoundingClientRect();
             var mx = e.clientX - (rect.left + rect.width / 2);
@@ -213,7 +213,7 @@ const Lightbox = {
                 mouseMoved = false;
                 // Double-tap to reset zoom
                 var now = Date.now();
-                if (now - lastTap < 300) {
+                if (now - lastTap < DOUBLE_TAP_MS) {
                     self._scale = 1; self._tx = 0; self._ty = 0;
                     self._applyTransform();
                 }
@@ -246,7 +246,7 @@ const Lightbox = {
                 var ddy = e.touches[1].clientY - e.touches[0].clientY;
                 var dist = Math.hypot(ddx, ddy);
                 var factor = dist / self._lastDist;
-                var newScale = Math.max(0.5, Math.min(10, self._scale * factor));
+                var newScale = Math.max(LIGHTBOX_MIN_ZOOM, Math.min(LIGHTBOX_MAX_ZOOM, self._scale * factor));
                 // Zoom toward pinch midpoint
                 var midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
                 var midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
@@ -323,7 +323,7 @@ function buildMsgHeader(msg, session) {
         return prefix + displayName + ':';
     }
     var model = msg.model || (session && session.model) || '';
-    return prefix + (model || 'Assistant') + ':';
+    return prefix + (model ? getModelDisplayName(model) : 'Assistant') + ':';
 }
 
 function prepareForAPI(messages) {

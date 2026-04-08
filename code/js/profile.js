@@ -137,7 +137,7 @@ const UserProfile = {
                 'If nothing qualifies, reply: NONE';
             const res = await cloudRoutedFetch(model, '/generate', {
                 model: model, stream: false, think: false,
-                options: { temperature: 0, num_predict: 200, think: false },
+                options: { temperature: 0, num_predict: PROFILE_EXTRACT_NUM_PREDICT, think: false },
                 prompt: prompt
             }, null);
             if (!res || !res.ok) return;
@@ -182,7 +182,7 @@ const UserProfile = {
                 'Plain text only, no extra commentary.';
             var res = await cloudRoutedFetch(model, '/generate', {
                 model: model, stream: false, think: false,
-                options: { temperature: 0, num_predict: 600, think: false },
+                options: { temperature: 0, num_predict: PROFILE_CONDENSE_NUM_PREDICT, think: false },
                 prompt: condensePrompt
             }, null);
             if (!res || !res.ok) { await this.save(); return; }

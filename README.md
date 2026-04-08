@@ -16,7 +16,7 @@ Both modes work in the same app. You can even switch between them freely.
 ## Screenshots
 
 ![Preloaded models](preloaded_models.png)
-*Three ready-to-use cloud models — Quick Answer, Wordsmith, Deep Thinker — appear the moment you add an API key. No extra setup.*
+*Three ready-to-use cloud models — Quick-Wit, Lexicon, Deep Thinker — appear the moment you add an API key. No extra setup.*
 
 ---
 
@@ -115,8 +115,8 @@ That's it. Three recommended models appear instantly at the top of the model sel
 
 **Recommended models (ready to use, no extra setup):**
 
-- 👁 **Quick Answer** (`ministral-3:14b-cloud`) — fast responses for everyday questions
-- ✍ **Wordsmith** (`gemma4:31b-cloud`) — excels at writing: emails, essays, literature, creative text
+- 👁 **Quick-Wit** (`ministral-3:14b-cloud`) — fast responses for everyday questions
+- ✍ **Lexicon** (`gemma4:31b-cloud`) — excels at writing: emails, essays, literature, creative text
 - 💡 **Deep Thinker** (`qwen3-vl:235b-instruct-cloud`) — slower but more thorough; great for complex questions, image analysis
 - 🧮 **Math Master** (`qwen3-vl:235b-cloud`) — optimized for math, logic, and reasoning
 
@@ -195,7 +195,7 @@ Add one or more accounts (label + API key). DMH-AI rotates through all added acc
 
 **Ollama Cloud — Recommended Models**
 
-When at least one account is added, four models appear automatically at the top of the model dropdown with no extra configuration needed: **Quick Answer**, **Wordsmith**, **Deep Thinker**, and **Math Master**.
+When at least one account is added, four models appear automatically at the top of the model dropdown with no extra configuration needed: **Quick-Wit**, **Lexicon**, **Deep Thinker**, and **Math Master**.
 
 **Ollama Cloud — Cloud Models**
 
