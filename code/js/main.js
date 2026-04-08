@@ -617,6 +617,9 @@ const UIManager = {
 
         await this.loadPrefs();
         await Settings.load();
+        if (!Auth.user || Auth.user.role !== 'admin') {
+            await Settings.loadPublicLabels();
+        }
         await UserProfile.load();
 
         try {
@@ -734,12 +737,15 @@ const UIManager = {
         cloudHdr.className = 'model-dropdown-section-hdr cloud';
         cloudHdr.innerHTML = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg> Cloud Models';
         cloudSection.appendChild(cloudHdr);
+        var isAdmin = Auth.user && Auth.user.role === 'admin';
         if (cloudModelNames.length === 0) {
             cloudSection.appendChild(makeItem('', 'No cloud models configured', true));
         } else {
             cloudModelNames.forEach(function(name) {
-                makeOption(name, name);
-                cloudSection.appendChild(makeItem(name, name, false));
+                var label = getModelDisplayName(name);
+                var displayText = isAdmin ? label + ' — ' + name : label;
+                makeOption(name, displayText);
+                cloudSection.appendChild(makeItem(name, displayText, false));
             });
         }
         menu.appendChild(cloudSection);
@@ -760,8 +766,10 @@ const UIManager = {
             localSection.appendChild(makeItem('', 'No local models configured', true));
         } else {
             localModels.forEach(function(model) {
-                makeOption(model.name, model.name + OllamaAPI.formatSize(model.size));
-                localSection.appendChild(makeItem(model.name, model.name + OllamaAPI.formatSize(model.size), false));
+                var label = getModelDisplayName(model.name);
+                var displayText = isAdmin ? label + ' — ' + model.name + OllamaAPI.formatSize(model.size) : label;
+                makeOption(model.name, displayText);
+                localSection.appendChild(makeItem(model.name, displayText, false));
             });
         }
         menu.appendChild(localSection);

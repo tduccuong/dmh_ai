@@ -6,8 +6,10 @@ const Settings = {
     _compactTurns: 90,
     _keepRecent: 0,
     _condenseFacts: 50,
+    _modelLabels: {},
     get accounts() { return this._accounts; },
     get cloudModels() { return this._cloudModels; },
+    get modelLabels() { return this._modelLabels; },
     saveAccounts: function(list) {
         this._accounts = list;
         this._persist();
@@ -15,6 +17,19 @@ const Settings = {
     saveCloudModels: function(list) {
         this._cloudModels = list;
         this._persist();
+    },
+    saveModelLabels: function(labels) {
+        this._modelLabels = labels;
+        this._persist();
+    },
+    loadPublicLabels: async function() {
+        try {
+            var res = await apiFetch('/model-labels');
+            if (res && res.ok) {
+                var d = await res.json();
+                this._modelLabels = d.modelLabels || {};
+            }
+        } catch(e) {}
     },
     saveOllamaEndpoint: function(url) {
         this._ollamaEndpoint = url || '';
@@ -24,7 +39,7 @@ const Settings = {
         return apiFetch('/admin/settings', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ accounts: this._accounts, cloudModels: this._cloudModels, ollamaEndpoint: this._ollamaEndpoint, compactTurns: this._compactTurns, keepRecent: this._keepRecent, condenseFacts: this._condenseFacts })
+            body: JSON.stringify({ accounts: this._accounts, cloudModels: this._cloudModels, ollamaEndpoint: this._ollamaEndpoint, compactTurns: this._compactTurns, keepRecent: this._keepRecent, condenseFacts: this._condenseFacts, modelLabels: this._modelLabels })
         }).catch(function() {});
     },
     load: async function() {
@@ -49,6 +64,9 @@ const Settings = {
                 }
                 if (d.condenseFacts !== undefined) {
                     this._condenseFacts = parseInt(d.condenseFacts) || 50;
+                }
+                if (d.modelLabels && typeof d.modelLabels === 'object') {
+                    this._modelLabels = d.modelLabels;
                 }
             }
         } catch(e) {}
@@ -187,6 +205,7 @@ const SettingsModal = {
         await Settings.load();
         this._renderAccounts();
         this._renderCloudModels();
+        this._renderLocalModelNames();
         this._updateSubsectionState();
         document.getElementById('settings-ollama-url').value = AppConfig.ollamaEndpoint || '';
         document.getElementById('settings-compact-turns').value = Settings._compactTurns;
@@ -247,18 +266,77 @@ const SettingsModal = {
         Settings.cloudModels.forEach(function(name, i) {
             var item = document.createElement('div');
             item.className = 'settings-list-item';
-            item.innerHTML = '<span class="settings-list-item-label">' + name + '</span>';
+            var labelInput = document.createElement('input');
+            labelInput.className = 'settings-label-input';
+            labelInput.placeholder = name;
+            labelInput.value = Settings.modelLabels[name] || '';
+            labelInput.title = 'Display name';
+            labelInput.addEventListener('change', function() {
+                var labels = Object.assign({}, Settings.modelLabels);
+                var val = labelInput.value.trim();
+                if (val) labels[name] = val; else delete labels[name];
+                Settings.saveModelLabels(labels);
+                UIManager.refreshModelSelect();
+            });
+            var nameSpan = document.createElement('span');
+            nameSpan.className = 'settings-list-item-sub';
+            nameSpan.textContent = name;
             var del = SettingsModal._trashBtn();
             del.addEventListener('click', function() {
                 var models = Settings.cloudModels;
                 models.splice(i, 1);
+                var labels = Object.assign({}, Settings.modelLabels);
+                delete labels[name];
+                Settings._modelLabels = labels;
                 Settings.saveCloudModels(models);
                 SettingsModal._renderCloudModels();
                 UIManager.refreshModelSelect();
             });
+            item.appendChild(labelInput);
+            item.appendChild(nameSpan);
             item.appendChild(del);
             list.appendChild(item);
         });
+    },
+    _renderLocalModelNames: async function() {
+        var list = document.getElementById('local-model-names-list');
+        if (!list) return;
+        list.innerHTML = '';
+        try {
+            var models = await OllamaAPI.fetchModels();
+            var localModels = models.filter(function(m) {
+                return RECOMMENDED_CLOUD_MODEL_NAMES.indexOf(m.name) === -1 &&
+                       Settings.cloudModels.indexOf(m.name) === -1;
+            }).sort(function(a, b) { return (a.size || 0) - (b.size || 0); });
+            if (localModels.length === 0) {
+                list.innerHTML = '<div style="color:#786888;font-size:12px;padding:4px 0;">No local models found</div>';
+                return;
+            }
+            localModels.forEach(function(model) {
+                var item = document.createElement('div');
+                item.className = 'settings-list-item';
+                var labelInput = document.createElement('input');
+                labelInput.className = 'settings-label-input';
+                labelInput.placeholder = model.name;
+                labelInput.value = Settings.modelLabels[model.name] || '';
+                labelInput.title = 'Display name';
+                labelInput.addEventListener('change', function() {
+                    var labels = Object.assign({}, Settings.modelLabels);
+                    var val = labelInput.value.trim();
+                    if (val) labels[model.name] = val; else delete labels[model.name];
+                    Settings.saveModelLabels(labels);
+                    UIManager.refreshModelSelect();
+                });
+                var nameSpan = document.createElement('span');
+                nameSpan.className = 'settings-list-item-sub';
+                nameSpan.textContent = model.name + OllamaAPI.formatSize(model.size);
+                item.appendChild(labelInput);
+                item.appendChild(nameSpan);
+                list.appendChild(item);
+            });
+        } catch(e) {
+            list.innerHTML = '<div style="color:#786888;font-size:12px;padding:4px 0;">Could not load local models</div>';
+        }
     },
     _updateSubsectionState: function() {
         var sub = document.getElementById('cloud-models-section');

@@ -51,7 +51,7 @@ const I18n = {
             searchingWeb: 'Searching the web...',
             fetchingPages: 'Reading web sources...',
             synthesizing: 'Synthesizing results...',
-            thinking: ' is thinking...', answering: ' is answering...', compacting: 'Compacting conversation...',
+            thinking: ' is thinking...', answering: ' is responding...', compacting: 'Compacting conversation...',
             settingsChatSection: 'Chat', settingsCompactLabel: 'Compact after messages', settingsKeepRecentLabel: 'Keep recent messages',
             settingsNavModel: 'Models', settingsNavConversation: 'Conversation',
             searchUnavail: '⚠ Web search unavailable — answering from model training data, which may be outdated.',
@@ -358,7 +358,33 @@ function getRecommendedCloudModels() {
 // Constant names for filtering (language-independent)
 const RECOMMENDED_CLOUD_MODEL_NAMES = ['ministral-3:14b-cloud', 'qwen3-vl:235b-instruct-cloud', 'gemma4:31b-cloud', 'qwen3-vl:235b-cloud'];
 
+var _MODEL_ACRONYMS = { vl: 'VL', rnj: 'RNJ', gpt: 'GPT', oss: 'OSS', glm: 'GLM' };
+function normalizeModelLabel(model) {
+    var s = model.replace(/-cloud$/, '');
+    var ci = s.indexOf(':');
+    var base = ci >= 0 ? s.slice(0, ci) : s;
+    var tag  = ci >= 0 ? s.slice(ci + 1) : '';
+    // strip namespace prefix (e.g. "ns/model")
+    var si = base.indexOf('/');
+    if (si >= 0) base = base.slice(si + 1);
+    // split base on '-', then insert space at letter→digit boundary
+    var words = [];
+    base.split('-').forEach(function(seg) {
+        seg.replace(/([a-zA-Z])([0-9])/g, '$1 $2').split(' ').forEach(function(t) {
+            if (t) words.push(t);
+        });
+    });
+    var baseStr = words.map(function(t) {
+        var lo = t.toLowerCase();
+        return _MODEL_ACRONYMS[lo] || (t.charAt(0).toUpperCase() + t.slice(1));
+    }).join(' ');
+    // tag: skip if it is just 'cloud'; replace '-' with space
+    var tagStr = (tag && tag !== 'cloud') ? '(' + tag.replace(/-/g, ' ') + ')' : '';
+    return tagStr ? baseStr + ' ' + tagStr : baseStr;
+}
 function getModelDisplayName(model) {
+    if (Settings.modelLabels && Settings.modelLabels[model]) return Settings.modelLabels[model];
     var rec = getRecommendedCloudModels().find(function(r) { return r.name === model; });
-    return rec ? rec.label : model;
+    if (rec) return rec.label;
+    return normalizeModelLabel(model);
 }

@@ -260,6 +260,13 @@ class H(BaseHTTPRequestHandler):
             self.send_json(200, data)
             return
 
+        if p == '/model-labels':
+            with sqlite3.connect(DB) as c:
+                row = c.execute('SELECT value FROM settings WHERE key=?', ('admin_cloud_settings',)).fetchone()
+            data = json.loads(row[0]) if row else {}
+            self.send_json(200, {'modelLabels': data.get('modelLabels', {})})
+            return
+
         if p == '/admin/test-endpoint':
             user = self.get_auth_user()
             if not user or user['role'] != 'admin':
@@ -724,7 +731,7 @@ class H(BaseHTTPRequestHandler):
                 self.send_json(403, {'error': 'Forbidden'})
                 return
             d = self.body()
-            allowed = {k: d[k] for k in ('accounts', 'cloudModels', 'ollamaEndpoint', 'compactTurns', 'keepRecent', 'condenseFacts') if k in d}
+            allowed = {k: d[k] for k in ('accounts', 'cloudModels', 'ollamaEndpoint', 'compactTurns', 'keepRecent', 'condenseFacts', 'modelLabels') if k in d}
             with sqlite3.connect(DB) as c:
                 c.execute('INSERT OR REPLACE INTO settings (key, value) VALUES (?,?)',
                           ('admin_cloud_settings', json.dumps(allowed)))
