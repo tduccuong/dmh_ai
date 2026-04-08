@@ -128,6 +128,22 @@ const UIManager = {
             var c = document.getElementById('chat-container');
             c.scrollTop = c.scrollHeight;
         });
+        (function() {
+            var scrollBtn = document.getElementById('scroll-bottom-btn');
+            var inputArea = document.querySelector('.input-area');
+            function updateScrollBtnPos() {
+                scrollBtn.style.bottom = (inputArea.offsetHeight + 50) + 'px';
+                var c = document.getElementById('chat-container');
+                var atBottom = c.scrollHeight - c.scrollTop - c.clientHeight < 40;
+                if (!atBottom && c.scrollHeight > c.clientHeight) {
+                    scrollBtn.style.display = 'flex';
+                } else {
+                    scrollBtn.style.display = 'none';
+                }
+            }
+            updateScrollBtnPos();
+            new ResizeObserver(updateScrollBtnPos).observe(inputArea);
+        })();
         document.getElementById('chat-container').addEventListener('scroll', function() {
             var c = this;
             var atBottom = c.scrollHeight - c.scrollTop - c.clientHeight < 40;
@@ -1764,21 +1780,21 @@ const UIManager = {
         const cleanedContent = effectiveContent;
         syslog('[SEND] user="' + content.slice(0, 120) + '" needsWebSearch=' + needsWebSearch + ' cleanedQuery="' + cleanedContent + '"');
         if (AppConfig.searxngUrl && needsWebSearch) {
-            this.setStatus(t('genKeywords'));
+            this.setStatus(getModelDisplayName(this.currentSession.model) + t('genKeywords'));
             const queryResult = await this.getSearchQueries(cleanedContent, recentMsgs, pipelineSignal);
             if (pipelineSignal.aborted) return;
             const queries = queryResult.queries;
             const queryLang = queryResult.lang;
             syslog('[QUERIES] lang=' + queryLang + ' result="' + (queries ? queries.join(' | ') : 'null') + '"');
             if (queries) {
-                this.setStatus(t('searchingWeb'));
+                this.setStatus(getModelDisplayName(this.currentSession.model) + t('searchingWeb'));
                 this.setStatusDetail(queries);
                 const allRaw = await this.searchWebParallel(queries, queryLang, pipelineSignal);
                 if (pipelineSignal.aborted) return;
                 syslog('[SEARCH] got ' + allRaw.length + ' results');
 
                 if (allRaw.length > 0) {
-                    this.setStatus(t('fetchingPages'));
+                    this.setStatus(getModelDisplayName(this.currentSession.model) + t('fetchingPages'));
                     await this.enrichResults(allRaw, pipelineSignal);
                     if (pipelineSignal.aborted) return;
                 }
@@ -1790,7 +1806,7 @@ const UIManager = {
                     const today = new Date().toDateString();
                     let injectedResults;
                     if (allFormatted.length > SYNTHESIS_THRESHOLD_CHARS) {
-                        this.setStatus(t('synthesizing'));
+                        this.setStatus(getModelDisplayName(this.currentSession.model) + t('synthesizing'));
                         const synthesis = await this.synthesizeResults(cleanedContent, queries.join(' '), allFormatted, today, pipelineSignal);
                         if (pipelineSignal.aborted) return;
                         injectedResults = synthesis || allFormatted.slice(0, SEARCH_FALLBACK_CHARS);
@@ -1814,6 +1830,9 @@ const UIManager = {
                 }
             }
         }
+        this.setStatus(getModelDisplayName(this.currentSession.model) + (needsWebSearch && AppConfig.searxngUrl
+            ? t('synthesizing')
+            : t('thinking')));
         let assistantContent = '';
         let firstChunk = true;
         const usePool = isCloudModel(sessionAtSend.model) && Settings.accounts.length > 0;

@@ -54,8 +54,8 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
 .send-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 @media (max-width: 600px) { .send-label { display: none; } .stop-label { display: none; } }
 .stop-label:not(:empty) { margin-left: 5px; }
-#scroll-bottom-btn { opacity: 0.92; }
-#scroll-bottom-btn:hover { background: rgba(90,60,130,0.9) !important; opacity: 1; }
+#scroll-bottom-btn { opacity: 0.95; box-shadow: 0 2px 8px rgba(0,0,0,0.5); }
+#scroll-bottom-btn:hover { background: rgba(110,70,170,0.98) !important; opacity: 1; }
 .status-bar { padding: 6px 20px 4px; color: #b098b8; font-size: 13px; display: none; align-items: flex-start; gap: 8px; }
 .status-bar.visible { display: flex; }
 .status-bar.visible + .input-row { padding-top: 6px; }
