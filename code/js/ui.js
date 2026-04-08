@@ -308,10 +308,10 @@ function formatTs(ts) {
     var time = pad(d.getHours()) + ':' + pad(d.getMinutes());
     if (d.toDateString() === now.toDateString()) return time;
     var yesterday = new Date(now); yesterday.setDate(now.getDate() - 1);
-    if (d.toDateString() === yesterday.toDateString()) return 'Yesterday ' + time;
+    if (d.toDateString() === yesterday.toDateString()) return 'Yesterday,' + time;
     var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
     var sameYear = d.getFullYear() === now.getFullYear();
-    return months[d.getMonth()] + ' ' + d.getDate() + (sameYear ? '' : ' ' + d.getFullYear()) + ' ' + time;
+    return months[d.getMonth()] + ' ' + d.getDate() + (sameYear ? '' : ' ' + d.getFullYear()) + ',' + time;
 }
 
 function buildMsgHeader(msg, session) {
