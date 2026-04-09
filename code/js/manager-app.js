@@ -293,14 +293,12 @@ UIManager.createNewSession = async function() {
 };
 
 UIManager.switchSession = async function(id) {
-    // Immediately highlight the clicked item before any async work
     document.querySelectorAll('.session-item').forEach(function(el) {
         el.classList.toggle('active', el.dataset.id === id);
     });
     this.currentSession = await SessionStore.getSession(id);
     await SessionStore.setCurrentSessionId(id);
     this._setModelDropdownValue(this.currentSession.model);
-    await this.renderSessions();
     this.renderChat();
 };
 
