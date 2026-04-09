@@ -1715,7 +1715,7 @@ const UIManager = {
             self.showChangePassword();
         });
         var attachMenu = document.getElementById('attach-menu');
-        var isMobileDevice = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+        var isMobileDevice = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || navigator.maxTouchPoints > 1;
         document.getElementById('attach-btn').addEventListener('click', function(e) {
             e.stopPropagation();
             if (isMobileDevice) {
