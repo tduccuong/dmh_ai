@@ -314,8 +314,8 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
     .input-row { padding: 10px 5px; gap: 7px; box-sizing: border-box; }
     .send-btn { padding: 12px 14px; }
     .attachments-bar { flex-shrink: 0; }
-    .model-dropdown-menu.open { position: fixed; left: 0; right: 0; width: 100vw; }
-    .lang-flag { padding: 0 4px; }
+    .model-dropdown-menu { top: 100%; width: max(67vw, 100%); right: 0; left: auto; }
+    .sidebar-toggle, .new-chat-btn, .clear-session-btn, .lang-flag { width: 38px; padding: 0; }
 }
 
 @media (max-width: 768px) and (orientation: landscape) {

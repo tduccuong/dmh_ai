@@ -117,7 +117,11 @@ UIManager.populateModelSelects = function(models) {
                 document.getElementById('header-model-select').dispatchEvent(new Event('change'));
                 var menu = document.getElementById('model-dropdown-menu');
                 menu.classList.remove('open');
+                menu.style.position = '';
                 menu.style.top = '';
+                menu.style.left = '';
+                menu.style.right = '';
+                menu.style.width = '';
                 document.getElementById('model-dropdown-trigger').classList.remove('open');
             });
         }

@@ -223,17 +223,32 @@ const UIManager = {
             var isOpen = menu.classList.toggle('open');
             trigger.classList.toggle('open', isOpen);
             if (isOpen && window.innerWidth <= 768) {
-                var rect = trigger.getBoundingClientRect();
-                menu.style.top = (rect.bottom + 4) + 'px';
+                var isAdmin = Auth.user && Auth.user.role === 'admin';
+                if (isAdmin) {
+                    var rect = trigger.getBoundingClientRect();
+                    menu.style.position = 'fixed';
+                    menu.style.top = rect.bottom + 'px';
+                    menu.style.left = 'auto';
+                    menu.style.right = '0';
+                    menu.style.width = Math.min(Math.round(window.innerWidth * 0.84), window.innerWidth) + 'px';
+                }
             } else {
+                menu.style.position = '';
                 menu.style.top = '';
+                menu.style.left = '';
+                menu.style.right = '';
+                menu.style.width = '';
             }
         });
         document.addEventListener('click', function(e) {
             if (!document.getElementById('model-dropdown-wrap').contains(e.target)) {
                 var menu = document.getElementById('model-dropdown-menu');
                 menu.classList.remove('open');
+                menu.style.position = '';
                 menu.style.top = '';
+                menu.style.left = '';
+                menu.style.right = '';
+                menu.style.width = '';
                 document.getElementById('model-dropdown-trigger').classList.remove('open');
             }
         });
