@@ -9,6 +9,10 @@ build/
 *.so
 *.dll
 
+# Python
+__pycache__/
+*.py[cod]
+
 # IDE
 .idea/
 .vscode/
@@ -23,6 +27,9 @@ Thumbs.db
 # Logs
 *.log
 logs/
+code/system_logs/
+code/user_assets/
+code/db/
 
 # Environment
 .env

@@ -31,9 +31,9 @@ fi
 
 echo "Assembling deployment package..."
 rm -f "$DIST_DIR/searxng-settings.yml"
-cp "$SCRIPT_DIR/code/searxng-settings.yml" "$DIST_DIR/searxng-settings.yml"
-cp "$SCRIPT_DIR/code/docker-compose.yml"   "$DIST_DIR/docker-compose.yml"
-cp "$SCRIPT_DIR/code/run.sh"               "$DIST_DIR/run.sh"
+cp "$SCRIPT_DIR/deploy/searxng-settings.yml" "$DIST_DIR/searxng-settings.yml"
+cp "$SCRIPT_DIR/deploy/docker-compose.yml"   "$DIST_DIR/docker-compose.yml"
+cp "$SCRIPT_DIR/deploy/run.sh"               "$DIST_DIR/run.sh"
 chmod +x "$DIST_DIR/run.sh"
 mkdir -p "$DIST_DIR/db"
 mkdir -p "$DIST_DIR/user_assets"
