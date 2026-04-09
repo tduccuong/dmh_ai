@@ -271,6 +271,9 @@ const UIManager = {
             await Auth.logout();
             self.showLoginScreen();
         });
+        document.getElementById('user-refresh-btn').addEventListener('click', function() {
+            location.reload(true);
+        });
         document.getElementById('pw-warning-btn').addEventListener('click', function() {
             self.showChangePassword();
         });

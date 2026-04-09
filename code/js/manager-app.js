@@ -237,20 +237,6 @@ UIManager.renderSessions = async function() {
         const actions = document.createElement('div');
         actions.className = 'session-actions';
 
-        const editBtn = document.createElement('button');
-        editBtn.className = 'session-btn session-btn-edit';
-        editBtn.title = t('rename');
-        editBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>';
-        editBtn.addEventListener('click', async function(e) {
-            e.stopPropagation();
-            const newName = await Modal.prompt(t('renameSession'), s.name);
-            if (!newName || !newName.trim() || newName === s.name) return;
-            s.name = newName;
-            await SessionStore.updateSession(s);
-            if (self.currentSession.id === s.id) self.currentSession.name = newName;
-            await self.renderSessions();
-        });
-
         const delBtn = document.createElement('button');
         delBtn.className = 'session-btn session-btn-delete';
         delBtn.title = t('delete_');
@@ -271,7 +257,6 @@ UIManager.renderSessions = async function() {
             await self.renderSessions();
         });
 
-        actions.appendChild(editBtn);
         actions.appendChild(delBtn);
         item.appendChild(nameSpan);
         item.appendChild(actions);
