@@ -87,7 +87,22 @@ const UIManager = {
             }
         });
         document.getElementById('message-input').addEventListener('focus', function() { if (isMobile()) closeSidebar(); });
-        if (window.innerWidth <= 768 && window.innerHeight > window.innerWidth) closeSidebar();
+        var _isTouchDevice = navigator.maxTouchPoints > 1 || /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+        if (_isTouchDevice) closeSidebar();
+        var _lastHiddenAt = 0;
+        function _triggerHamburgerGlow() {
+            if (sidebar.classList.contains('collapsed')) {
+                toggle.classList.remove('glow');
+                void toggle.offsetWidth; // force reflow to restart animation
+                toggle.classList.add('glow');
+                setTimeout(function() { toggle.classList.remove('glow'); }, 5000);
+            }
+        }
+        if (_isTouchDevice) setTimeout(_triggerHamburgerGlow, 600);
+        document.addEventListener('visibilitychange', function() {
+            if (document.visibilityState === 'hidden') { _lastHiddenAt = Date.now(); }
+            else if (Date.now() - _lastHiddenAt >= 30 * 60 * 1000) { _triggerHamburgerGlow(); }
+        });
 
         // Language switcher
         var langDropdown = document.getElementById('lang-dropdown');
@@ -283,6 +298,7 @@ const UIManager = {
             document.getElementById('voice-bar').classList.remove('visible');
         }
         document.getElementById('voice-bar').addEventListener('click', stopVoice);
+        document.getElementById('voice-bar').addEventListener('touchend', function(e) { e.preventDefault(); stopVoice(); });
         document.getElementById('attach-voice').addEventListener('click', function() {
             attachMenu.classList.remove('open');
             var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -300,7 +316,7 @@ const UIManager = {
             rec.interimResults = false;
             var bar = document.getElementById('voice-bar');
             var barText = document.getElementById('voice-bar-text');
-            barText.textContent = t('voiceListening');
+            barText.innerHTML = t('voiceListening') + ' <svg style="vertical-align:middle;margin-left:4px" width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>';
             bar.classList.add('visible');
             rec.onresult = function(e) {
                 var cur = '';
