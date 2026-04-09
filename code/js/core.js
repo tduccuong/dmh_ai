@@ -1,3 +1,10 @@
+/*
+ * Copyright (c) 2026 Cuong Truong
+ * This project is licensed under the AGPL v3.
+ * See the LICENSE file in the repository root for full details.
+ * For commercial inquiries, contact: tduccuong@gmail.com
+ */
+
 marked.use({
     gfm: true,
     breaks: true,
@@ -244,7 +251,7 @@ const I18n = {
     t: function(key) { return (this._strings[this._lang] || this._strings.en)[key] || this._strings.en[key] || key; },
     setLang: function(lang) { this._lang = lang; localStorage.setItem('lang', lang); },
     get lang() { return this._lang; },
-    flags: { en: '🇬🇧', vi: '🇻🇳', de: '🇩🇪', es: '🇪🇸', fr: '🇫🇷' },
+    flags: { en: 'EN', vi: 'VI', de: 'DE', es: 'ES', fr: 'FR' },
     names: { en: 'English', vi: 'Tiếng Việt', de: 'Deutsch', es: 'Español', fr: 'Français' }
 };
 function t(key) { return I18n.t(key); }

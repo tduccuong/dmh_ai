@@ -1,3 +1,8 @@
+# Copyright (c) 2026 Cuong Truong
+# This project is licensed under the AGPL v3.
+# See the LICENSE file in the repository root for full details.
+# For commercial inquiries, contact: tduccuong@gmail.com
+
 # ─── Web search pipeline ────────────────────────────────────────────────────
 # Fetch a second SearXNG result page only when page 1 yields fewer than this
 # many unblocked results. Avoids doubling upstream search engine requests when

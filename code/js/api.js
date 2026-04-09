@@ -1,7 +1,15 @@
+/*
+ * Copyright (c) 2026 Cuong Truong
+ * This project is licensed under the AGPL v3.
+ * See the LICENSE file in the repository root for full details.
+ * For commercial inquiries, contact: tduccuong@gmail.com
+ */
+
 const SessionStore = {
     BASE: '/sessions',
     getSessions: async function() {
         const res = await apiFetch(this.BASE);
+        if (!res.ok) return [];
         return res.json();
     },
     createSession: async function(name, model) {
@@ -37,6 +45,7 @@ const SessionStore = {
     },
     getCurrentSessionId: async function() {
         const res = await apiFetch(this.BASE + '/current');
+        if (!res.ok) return null;
         const data = await res.json();
         return data.id;
     },

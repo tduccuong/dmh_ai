@@ -1,3 +1,10 @@
+<!--
+ * Copyright (c) 2026 Cuong Truong
+ * This project is licensed under the AGPL v3.
+ * See the LICENSE file in the repository root for full details.
+ * For commercial inquiries, contact: tduccuong@gmail.com
+-->
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -75,9 +82,9 @@
                 <div class="user-dropdown" id="user-dropdown">
                     <div class="user-dropdown-identity" id="user-dropdown-identity"></div>
                     <div class="user-dropdown-sep"></div>
-                    <button class="user-dropdown-item user-dropdown-item-danger" id="user-clear-btn">
-                        <svg width="15" height="15" viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="9.5" stroke-linecap="round" stroke-linejoin="round"><line x1="78" y1="5" x2="44" y2="52"/><path d="M38 47 L50 57"/><path d="M40 50 Q18 62 8 85"/><path d="M43 53 Q26 65 20 88"/><path d="M46 56 Q34 67 34 90"/><path d="M49 59 Q42 70 47 90"/><line x1="5" y1="95" x2="52" y2="95"/><path d="M8 82 Q20 76 32 80"/><path d="M11 88 Q24 83 36 86"/></svg>
-                        Clear current chat thread
+                    <button class="user-dropdown-item" id="user-about-btn">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                        About
                     </button>
                     <div class="user-dropdown-sep" id="user-settings-sep" style="display:none"></div>
                     <button class="user-dropdown-item" id="user-settings-btn" style="display:none">
@@ -181,6 +188,25 @@
         <div class="mgr-error" id="mgr-error"></div>
     </div>
 </div>
+<div class="modal-overlay" id="about-overlay">
+    <div class="modal about-modal">
+        <div class="modal-title" style="font-size:1.3em;margin-bottom:4px;">DMH-AI</div>
+        <div style="font-size:13px;color:#786888;margin-bottom:20px;">Version 1.0.0</div>
+        <div class="modal-message" style="margin-bottom:20px;line-height:1.7;">A self-hosted, multi-user AI chat platform supporting local and cloud LLMs, real-time web search with answer synthesis, voice input, and rich document and image attachments — designed for private deployment.</div>
+        <div style="border-top:1px solid #281e38;padding-top:16px;margin-bottom:20px;">
+            <div style="font-size:13px;font-weight:600;color:#c8b8e8;margin-bottom:12px;">Legal &amp; License</div>
+            <div style="font-size:13px;color:#a898b8;line-height:1.8;">
+                <div style="margin-bottom:10px;"><strong style="color:#c8b8e8;">License:</strong> Licensed under the GNU Affero General Public License v3 (AGPL-3.0).</div>
+                <div style="margin-bottom:10px;">Pursuant to the Additional Terms (Section 7b), any redistribution or derivative of this software must maintain this attribution and link to the original source.</div>
+                <div style="margin-bottom:10px;"><strong style="color:#c8b8e8;">Source Code:</strong> <a href="https://github.com/tduccuong/dmh_ai" target="_blank" rel="noopener noreferrer" style="color:#b098d8;">GitHub Repository</a></div>
+                <div><strong style="color:#c8b8e8;">Commercial Licensing:</strong> For inquiries regarding commercial use or proprietary licensing, please contact Cuong Truong at tduccuong@gmail.com.</div>
+            </div>
+        </div>
+        <div class="modal-actions">
+            <button class="modal-btn modal-btn-ok" id="about-close">Close</button>
+        </div>
+    </div>
+</div>
 <div class="modal-overlay" id="cpw-overlay">
     <div class="modal">
         <div class="modal-title">Change password</div>
@@ -215,6 +241,9 @@
 <script src="/js/profile.js" defer></script>
 <script src="/js/ui.js" defer></script>
 <script src="/js/main.js" defer></script>
+<script src="/js/manager-app.js" defer></script>
+<script src="/js/manager-chat.js" defer></script>
+<script src="/js/manager-search.js" defer></script>
 <script>if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');</script>
     <div class="settings-overlay" id="settings-overlay">
         <div class="settings-modal">

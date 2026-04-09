@@ -1,3 +1,10 @@
+/*
+ * Copyright (c) 2026 Cuong Truong
+ * This project is licensed under the AGPL v3.
+ * See the LICENSE file in the repository root for full details.
+ * For commercial inquiries, contact: tduccuong@gmail.com
+ */
+
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html { height: 100%; }
 body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #141018; color: #eee; height: 100%; height: 100dvh; display: flex; overflow: hidden; }
@@ -219,6 +226,8 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
 .modal-input { width: 100%; padding: 10px 12px; border-radius: 6px; border: 1px solid #382850; background: #141018; color: #eee; font-size: 14px; margin-bottom: 20px; outline: none; box-sizing: border-box; }
 .modal-input:focus { border-color: #c87830; }
 .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.about-modal { width: 50vw; max-width: 50vw; }
+@media (max-width: 600px) { .about-modal { width: 100vw; max-width: 100vw; border-radius: 10px 10px 0 0; align-self: flex-end; } }
 .modal-btn { padding: 8px 20px; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500; }
 .modal-btn-cancel { background: #281e38; color: #ccc; }
 .modal-btn-cancel:hover { background: #342848; }
@@ -278,7 +287,7 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
 .new-chat-btn { display: flex; padding: 0 10px; height: 38px; background: #141018; color: #b098b8; border: 1px solid #281e38; border-radius: 8px; cursor: pointer; font-size: 19px; flex-shrink: 0; align-items: center; justify-content: center; }
 .new-chat-btn:hover { color: #eee; }
 .lang-wrap { position: relative; flex-shrink: 0; }
-.lang-flag { padding: 0 10px; height: 38px; background: #141018; color: #b098b8; border: 1px solid #281e38; border-radius: 8px; cursor: pointer; font-size: 18px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+.lang-flag { padding: 0 10px; height: 38px; background: #141018; color: #c0a8e0; border: 1px solid #281e38; border-radius: 8px; cursor: pointer; font-size: 12px; font-weight: 700; letter-spacing: 0.5px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
 .clear-session-btn { padding: 0 10px; height: 38px; background: #141018; color: #c0392b; border: 1px solid #281e38; border-radius: 8px; cursor: pointer; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
 .clear-session-btn:hover { color: #e74c3c; }
 .lang-dropdown { display: none; position: absolute; top: 100%; left: 0; background: #1c1628; border: 1px solid #382850; border-radius: 6px; margin-top: 4px; z-index: 200; min-width: 150px; box-shadow: 0 8px 24px rgba(0,0,0,0.5); }
