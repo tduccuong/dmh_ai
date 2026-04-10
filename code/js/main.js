@@ -35,6 +35,14 @@ function applyLanguage() {
     document.getElementById('settings-profile-clear-btn').textContent = t('profileClear');
     var convSettingsLabel = document.getElementById('user-conv-settings-label');
     if (convSettingsLabel) convSettingsLabel.textContent = t('convSettings');
+    document.getElementById('user-about-btn').lastChild.textContent = t('aboutBtn');
+    document.getElementById('about-desc').textContent = t('aboutDesc');
+    document.getElementById('about-legal-title').textContent = t('aboutLegalTitle');
+    document.getElementById('about-license-line').innerHTML = '<strong style="color:#c8b8e8;">' + t('aboutLicenseLabel') + '</strong> ' + t('aboutLicenseBody');
+    document.getElementById('about-attrib-line').textContent = t('aboutAttrib');
+    document.getElementById('about-source-line').innerHTML = '<strong style="color:#c8b8e8;">' + t('aboutSourceLabel') + '</strong> <a href="https://github.com/tduccuong/dmh_ai" target="_blank" rel="noopener noreferrer" style="color:#b098d8;">GitHub Repository</a>';
+    document.getElementById('about-commercial-line').innerHTML = '<strong style="color:#c8b8e8;">' + t('aboutCommercialLabel') + '</strong> ' + t('aboutCommercialBody');
+    document.getElementById('about-close').textContent = t('aboutClose');
     if (typeof UIManager !== 'undefined' && UIManager.refreshModelSelect) {
         UIManager.refreshModelSelect();
     }

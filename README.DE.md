@@ -64,21 +64,57 @@ Docker führt DMH-AI in einem eigenständigen Container aus. Für beide Wege erf
 curl -fsSL https://get.docker.com | sh
 ```
 
-**Windows:** Laden Sie **Docker Desktop** herunter und führen Sie es aus: [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop/). Nach der Installation öffnen Sie Docker Desktop und warten Sie, bis das Wal-Symbol in der Taskleiste aufhört zu animieren — dann ist es bereit.
+**macOS / Windows:** Laden Sie **Docker Desktop** herunter und führen Sie es aus: [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop/). Nach der Installation öffnen Sie Docker Desktop und warten Sie, bis das Wal-Symbol in der Menüleiste (macOS) bzw. Taskleiste (Windows) aufhört zu animieren — dann ist es bereit.
 
-## Schritt 2 — DMH-AI starten
+## Schritt 2 — DMH-AI bauen und installieren
 
-**Linux:**
+**Linux / macOS:**
 ```bash
-./build.sh && ./dist/run.sh
+./build.sh        # Docker-Image bauen und dist/ zusammenstellen
+./install.sh      # nach ~/.dmhai/ installieren und dmhai-Befehl registrieren
+dmhai start       # App starten
 ```
 
 **Windows** — Eingabeaufforderung öffnen und ausführen:
 ```
-build.bat && dist\run.bat
+build.bat
+install.bat
+dmhai start
 ```
 
 Öffnen Sie [http://localhost:8080](http://localhost:8080) im Browser.
+
+### App verwalten (Linux / macOS)
+
+```bash
+dmhai start      # starten
+dmhai stop       # stoppen
+dmhai restart    # neu starten (nimmt neuen Build automatisch auf)
+dmhai status     # laufende Container anzeigen
+```
+
+Nach einer Code-Aktualisierung neu bauen und neu installieren:
+```bash
+./build.sh --no-export   # Image neu bauen ohne Tars zu exportieren (schneller)
+./install.sh             # installierte Konfiguration aktualisieren; Benutzerdaten bleiben erhalten
+dmhai restart
+```
+
+### App verwalten (Windows)
+
+```
+dmhai start      # starten
+dmhai stop       # stoppen
+dmhai restart    # neu starten (nimmt neuen Build automatisch auf)
+dmhai status     # laufende Container anzeigen
+```
+
+Nach einer Code-Aktualisierung neu bauen und neu installieren:
+```
+build.bat
+install.bat
+dmhai restart
+```
 
 ### Erste Anmeldung
 
@@ -135,7 +171,7 @@ Ollama führt das KI-Modell lokal auf Ihrem Computer aus.
 curl -fsSL https://ollama.com/install.sh | sh
 ```
 
-**Windows:** Installationsprogramm herunterladen und ausführen von [ollama.com/download](https://ollama.com/download). Ollama startet nach der Installation automatisch im Hintergrund.
+**macOS / Windows:** Installationsprogramm herunterladen und ausführen von [ollama.com/download](https://ollama.com/download). Ollama startet nach der Installation automatisch im Hintergrund.
 
 Installation überprüfen:
 ```bash
@@ -169,7 +205,7 @@ Unter Linux Ollama starten, falls nicht bereits als Dienst aktiv:
 ```bash
 ollama serve
 ```
-Unter Windows startet Ollama automatisch — `ollama serve` ist nicht nötig.
+Unter macOS und Windows startet Ollama automatisch — `ollama serve` ist nicht nötig.
 
 Ihre lokal laufenden Modelle erscheinen in der Modellauswahl. Eines auswählen und loschatten.
 
@@ -224,13 +260,15 @@ Sie müssen nichts anders machen — stellen Sie einfach Ihre Frage. Suchanfrage
 
 ## Ihre Daten
 
-Alle Daten werden im Ordner `dist/` neben der App gespeichert:
+Nach dem Ausführen von `install.sh` werden alle Live-Daten in `~/.dmhai/` gespeichert:
 
-- `dist/db/` — Chat-Verlauf (SQLite-Datenbank)
-- `dist/user_assets/` — hochgeladene Dateien, nach Sitzung organisiert
-- `dist/system_logs/system.log` — Websuche- und System-Protokoll
+- `~/.dmhai/db/` — Chat-Verlauf (SQLite-Datenbank)
+- `~/.dmhai/user_assets/` — hochgeladene Dateien, nach Sitzung organisiert
+- `~/.dmhai/system_logs/system.log` — Websuche- und System-Protokoll
 
-Um DMH-AI auf einen anderen Rechner zu übertragen, kopieren Sie den gesamten `dist/`-Ordner. Alle Daten kommen mit.
+`install.sh` erneut auszuführen ist sicher — vorhandene Datendateien werden nie überschrieben. Jede Datei wird nur dann aus `dist/` kopiert, wenn sie in `~/.dmhai/` noch nicht vorhanden ist.
+
+Zum Sichern oder Übertragen auf einen anderen Rechner kopieren Sie `~/.dmhai/` und führen Sie `install.sh` auf dem neuen Rechner aus.
 
 Weitere Nutzer hinzufügen: Benutzersymbol → **Benutzer verwalten**.
 
@@ -252,6 +290,16 @@ Browser
 
 Das gesamte Frontend ist eine einzige `code/index.html`-Datei — Vanilla JS, kein Framework, kein Build-Schritt. Das Backend ist `code/backend/server.py` und nutzt ausschließlich die Python-Standardbibliothek.
 
+**Echtes SSL-Zertifikat verwenden (optional)**
+
+Wenn Sie eine Domain mit gültigem SSL-Zertifikat haben, richten Sie einen Reverse-Proxy (nginx, Caddy o. ä.) auf Port `8080` ein. Mit echtem HTTPS funktioniert die Spracheingabe ohne Zertifikatswarnung, und Port `8443` wird nicht mehr benötigt.
+
+Ein gültiger HTTPS-Ursprung ermöglicht außerdem die Installation von DMH-AI als eigenständige App auf dem Smartphone — ohne App-Store:
+- **Android (Chrome):** Seite öffnen → Drei-Punkte-Menü → **Zum Startbildschirm hinzufügen**
+- **iOS (Safari):** Seite öffnen → Teilen-Symbol → **Zum Home-Bildschirm**
+
+Die App startet dann im Vollbild und ist von einer nativen App nicht zu unterscheiden.
+
 ## Projektstruktur
 
 ```
@@ -261,11 +309,15 @@ code/
   nginx.conf              # Reverse-Proxy-Konfiguration
   Dockerfile              # nginx:alpine + python3
   start.sh                # Entrypoint: startet Python-Backend dann nginx
-  docker-compose.yml      # Compose-Quelldatei
+deploy/
+  docker-compose.yml      # Deployment-Compose-Datei (maßgebliche Quelle)
   searxng-settings.yml    # SearXNG-Konfiguration (aktiviert JSON-API auf Port 8888)
-  run.sh                  # Linux-Startskript (wird nach dist/ kopiert von build.sh)
-  run.bat                 # Windows-Startskript (wird nach dist/ kopiert von build.bat)
-build.sh                  # Linux: baut Images und erstellt dist/
-build.bat                 # Windows: baut Images und erstellt dist/
-dist/                     # erzeugt von build.sh / build.bat — nicht manuell bearbeiten
+  run.sh                  # Legacy-Direktstart-Skript (wird nach dist/ kopiert von build.sh)
+build.sh                  # Linux/macOS: baut Docker-Image und erstellt dist/
+build.bat                 # Windows: baut Docker-Image und erstellt dist/
+install.sh                # Linux/macOS: installiert dist/ → ~/.dmhai/, registriert dmhai-Befehl
+install.bat               # Windows: installiert dist/ → %USERPROFILE%\.dmhai\, fügt dmhai zum PATH hinzu
+dmhai.bat                 # Windows: Verwaltungsskript (start/stop/restart/status)
+dist/                     # erzeugt von build.sh — nicht manuell bearbeiten
+~/.dmhai/                 # Live-Installation — alle Benutzerdaten befinden sich hier
 ```

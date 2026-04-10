@@ -64,21 +64,57 @@ Docker chạy DMH-AI trong một container độc lập. Bắt buộc cho cả h
 curl -fsSL https://get.docker.com | sh
 ```
 
-**Windows:** Tải và chạy **Docker Desktop** từ [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop/). Sau khi cài, mở Docker Desktop và đợi biểu tượng cá voi trên thanh tác vụ ngừng chuyển động — khi đó là sẵn sàng.
+**macOS / Windows:** Tải và chạy **Docker Desktop** từ [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop/). Sau khi cài, mở Docker Desktop và đợi biểu tượng cá voi trên thanh menu (macOS) hoặc thanh tác vụ (Windows) ngừng chuyển động — khi đó là sẵn sàng.
 
-## Bước 2 — Khởi động DMH-AI
+## Bước 2 — Build và cài đặt DMH-AI
 
-**Linux:**
+**Linux / macOS:**
 ```bash
-./build.sh && ./dist/run.sh
+./build.sh        # build Docker image và tạo dist/
+./install.sh      # cài vào ~/.dmhai/ và đăng ký lệnh dmhai
+dmhai start       # khởi động ứng dụng
 ```
 
 **Windows** — mở Command Prompt và chạy:
 ```
-build.bat && dist\run.bat
+build.bat
+install.bat
+dmhai start
 ```
 
 Mở [http://localhost:8080](http://localhost:8080) trong trình duyệt.
+
+### Quản lý ứng dụng (Linux / macOS)
+
+```bash
+dmhai start      # khởi động
+dmhai stop       # dừng
+dmhai restart    # khởi động lại (tự nhận bản build mới)
+dmhai status     # xem trạng thái container
+```
+
+Sau khi cập nhật code, build lại và cài lại:
+```bash
+./build.sh --no-export   # build lại image, không xuất tar (nhanh hơn)
+./install.sh             # cập nhật cấu hình đã cài; giữ nguyên toàn bộ dữ liệu
+dmhai restart
+```
+
+### Quản lý ứng dụng (Windows)
+
+```
+dmhai start      # khởi động
+dmhai stop       # dừng
+dmhai restart    # khởi động lại (tự nhận bản build mới)
+dmhai status     # xem trạng thái container
+```
+
+Sau khi cập nhật code, build lại và cài lại:
+```
+build.bat
+install.bat
+dmhai restart
+```
 
 ### Đăng nhập lần đầu
 
@@ -135,7 +171,7 @@ Ollama chạy mô hình AI cục bộ trên máy tính của bạn.
 curl -fsSL https://ollama.com/install.sh | sh
 ```
 
-**Windows:** Tải và chạy trình cài đặt từ [ollama.com/download](https://ollama.com/download). Ollama tự khởi động ở nền sau khi cài xong.
+**macOS / Windows:** Tải và chạy trình cài đặt từ [ollama.com/download](https://ollama.com/download). Ollama tự khởi động ở nền sau khi cài xong.
 
 Kiểm tra cài đặt:
 ```bash
@@ -169,7 +205,7 @@ Trên Linux, nếu Ollama chưa chạy dưới dạng dịch vụ:
 ```bash
 ollama serve
 ```
-Trên Windows, Ollama tự khởi động — không cần chạy `ollama serve`.
+Trên macOS và Windows, Ollama tự khởi động — không cần chạy `ollama serve`.
 
 Các mô hình local đang chạy sẽ xuất hiện trong danh sách chọn mô hình. Chọn một cái và bắt đầu chat.
 
@@ -224,13 +260,15 @@ Bạn không cần làm gì khác — chỉ cần hỏi. Truy vấn tìm kiếm 
 
 ## Dữ liệu của bạn
 
-Toàn bộ dữ liệu được lưu trong thư mục `dist/`:
+Sau khi chạy `install.sh`, toàn bộ dữ liệu được lưu trong `~/.dmhai/`:
 
-- `dist/db/` — lịch sử chat (cơ sở dữ liệu SQLite)
-- `dist/user_assets/` — tệp đã tải lên, theo phiên
-- `dist/system_logs/system.log` — nhật ký tìm kiếm web và hệ thống
+- `~/.dmhai/db/` — lịch sử chat (cơ sở dữ liệu SQLite)
+- `~/.dmhai/user_assets/` — tệp đã tải lên, theo phiên
+- `~/.dmhai/system_logs/system.log` — nhật ký tìm kiếm web và hệ thống
 
-Để chuyển DMH-AI sang máy khác, sao chép toàn bộ thư mục `dist/`. Mọi dữ liệu đi theo.
+Chạy lại `install.sh` là an toàn — không bao giờ ghi đè dữ liệu hiện có. Mỗi tệp chỉ được copy từ `dist/` nếu chưa tồn tại trong `~/.dmhai/`.
+
+Để sao lưu hoặc chuyển DMH-AI sang máy khác, sao chép thư mục `~/.dmhai/` và chạy `install.sh` trên máy mới.
 
 Để thêm người dùng: biểu tượng người dùng → **Quản lý người dùng**.
 
@@ -252,6 +290,16 @@ Trình duyệt
 
 Toàn bộ frontend là một tệp `code/index.html` duy nhất — vanilla JS, không framework, không cần build. Backend là `code/backend/server.py` chỉ dùng thư viện chuẩn Python.
 
+**Dùng chứng chỉ SSL thật (tùy chọn)**
+
+Nếu bạn có tên miền với chứng chỉ SSL hợp lệ, hãy cấu hình reverse proxy (nginx, Caddy, v.v.) trỏ vào cổng `8080`. Với HTTPS thật, nhập giọng nói hoạt động mà không cần chấp nhận cảnh báo chứng chỉ, và cổng `8443` không còn cần thiết nữa.
+
+HTTPS hợp lệ còn cho phép cài DMH-AI như một ứng dụng độc lập trên điện thoại — không cần app store:
+- **Android (Chrome):** mở trang → menu ba chấm → **Thêm vào màn hình chính**
+- **iOS (Safari):** mở trang → biểu tượng chia sẻ → **Thêm vào màn hình chính**
+
+Ứng dụng sẽ chạy toàn màn hình, không khác gì ứng dụng native.
+
 ## Cấu trúc dự án
 
 ```
@@ -261,11 +309,15 @@ code/
   nginx.conf              # cấu hình reverse proxy
   Dockerfile              # nginx:alpine + python3
   start.sh                # entrypoint: khởi động python backend rồi nginx
-  docker-compose.yml      # tệp compose gốc
+deploy/
+  docker-compose.yml      # tệp compose triển khai (nguồn gốc)
   searxng-settings.yml    # cấu hình SearXNG (bật JSON API trên cổng 8888)
-  run.sh                  # script chạy Linux (copy vào dist/ bởi build.sh)
-  run.bat                 # script chạy Windows (copy vào dist/ bởi build.bat)
-build.sh                  # Linux: build image và tạo dist/
-build.bat                 # Windows: build image và tạo dist/
-dist/                     # tạo bởi build.sh / build.bat — không chỉnh sửa thủ công
+  run.sh                  # script chạy trực tiếp (copy vào dist/ bởi build.sh)
+build.sh                  # Linux/macOS: build Docker image và tạo dist/
+build.bat                 # Windows: build Docker image và tạo dist/
+install.sh                # Linux/macOS: cài dist/ → ~/.dmhai/, đăng ký lệnh dmhai
+install.bat               # Windows: cài dist/ → %USERPROFILE%\.dmhai\, thêm dmhai vào PATH
+dmhai.bat                 # Windows: script quản lý (start/stop/restart/status)
+dist/                     # tạo bởi build.sh — không chỉnh sửa thủ công
+~/.dmhai/                 # bản cài đặt thực tế — toàn bộ dữ liệu người dùng ở đây
 ```

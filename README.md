@@ -64,21 +64,57 @@ Docker runs DMH-AI in a self-contained container. Required for both paths.
 curl -fsSL https://get.docker.com | sh
 ```
 
-**Windows:** Download and run **Docker Desktop** from [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop/). After installing, open Docker Desktop and wait for the whale icon in the taskbar to stop animating — it's ready when it's still.
+**macOS / Windows:** Download and run **Docker Desktop** from [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop/). After installing, open Docker Desktop and wait for the whale icon in the menu bar (macOS) or taskbar (Windows) to stop animating — it's ready when it's still.
 
-## Step 2 — Start DMH-AI
+## Step 2 — Build and Install DMH-AI
 
-**Linux:**
+**Linux / macOS:**
 ```bash
-./build.sh && ./dist/run.sh
+./build.sh        # builds the Docker image and assembles dist/
+./install.sh      # installs to ~/.dmhai/ and registers the dmhai command
+dmhai start       # start the app
 ```
 
 **Windows** — open Command Prompt and run:
 ```
-build.bat && dist\run.bat
+build.bat
+install.bat
+dmhai start
 ```
 
 Open [http://localhost:8080](http://localhost:8080) in your browser.
+
+### Managing the app (Linux / macOS)
+
+```bash
+dmhai start      # start
+dmhai stop       # stop
+dmhai restart    # restart (picks up new build automatically)
+dmhai status     # show running containers
+```
+
+After a code update, rebuild and reinstall:
+```bash
+./build.sh --no-export   # rebuild image without re-exporting tars (faster)
+./install.sh             # update installed config; preserves all user data
+dmhai restart
+```
+
+### Managing the app (Windows)
+
+```
+dmhai start      # start
+dmhai stop       # stop
+dmhai restart    # restart (picks up new build automatically)
+dmhai status     # show running containers
+```
+
+After a code update, rebuild and reinstall:
+```
+build.bat
+install.bat
+dmhai restart
+```
 
 ### First login
 
@@ -135,7 +171,7 @@ Ollama runs the AI model locally on your computer.
 curl -fsSL https://ollama.com/install.sh | sh
 ```
 
-**Windows:** Download and run the installer from [ollama.com/download](https://ollama.com/download). Ollama starts automatically in the background after installation.
+**macOS / Windows:** Download and run the installer from [ollama.com/download](https://ollama.com/download). Ollama starts automatically in the background after installation.
 
 Verify it works:
 ```bash
@@ -169,7 +205,7 @@ On Linux, if Ollama isn't already running as a service:
 ```bash
 ollama serve
 ```
-On Windows, Ollama starts automatically — no need to run `ollama serve`.
+On macOS and Windows, Ollama starts automatically — no need to run `ollama serve`.
 
 Your locally running models will appear in the model dropdown. Select one and start chatting.
 
@@ -224,13 +260,15 @@ You don't need to do anything differently — just ask your question. Search que
 
 ## Your data
 
-All data is stored in the `dist/` folder next to the app:
+After running `install.sh`, all live data is stored in `~/.dmhai/`:
 
-- `dist/db/` — chat history (SQLite database)
-- `dist/user_assets/` — uploaded files, organized by session
-- `dist/system_logs/system.log` — web search and system log
+- `~/.dmhai/db/` — chat history (SQLite database)
+- `~/.dmhai/user_assets/` — uploaded files, organized by session
+- `~/.dmhai/system_logs/system.log` — web search and system log
 
-To move DMH-AI to another machine, copy the entire `dist/` folder. All your data comes with it.
+Running `install.sh` again is safe — it never overwrites existing data files. Each file is only copied from `dist/` if it does not yet exist in `~/.dmhai/`.
+
+To back up or move DMH-AI to another machine, copy `~/.dmhai/` and run `install.sh` on the new machine.
 
 To add more users: user icon → **Manage users**.
 
@@ -252,6 +290,16 @@ Browser
 
 The entire frontend is a single `code/index.html` file — vanilla JS, no framework, no build step. The backend is `code/backend/server.py` using only Python stdlib.
 
+**Using a real SSL certificate (optional)**
+
+If you have a domain with a valid SSL certificate, point a reverse proxy (nginx, Caddy, etc.) at port `8080`. With proper HTTPS in place, voice input works without the self-signed certificate warning, and you no longer need port `8443` at all.
+
+A valid HTTPS origin also lets you install DMH-AI as a standalone app on mobile — no app store needed:
+- **Android (Chrome):** open the site → three-dot menu → **Add to Home screen**
+- **iOS (Safari):** open the site → share icon → **Add to Home Screen**
+
+The app then launches full-screen, indistinguishable from a native app.
+
 ## Project Structure
 
 ```
@@ -261,11 +309,15 @@ code/
   nginx.conf              # reverse proxy config
   Dockerfile              # nginx:alpine + python3
   start.sh                # entrypoint: starts python backend then nginx
-  docker-compose.yml      # source compose file
+deploy/
+  docker-compose.yml      # deployment compose file (source of truth)
   searxng-settings.yml    # SearXNG config (enables JSON API on port 8888)
-  run.sh                  # Linux deployment script (copied to dist/ by build.sh)
-  run.bat                 # Windows deployment script (copied to dist/ by build.bat)
-build.sh                  # Linux: builds images and assembles dist/
-build.bat                 # Windows: builds images and assembles dist/
-dist/                     # generated by build.sh / build.bat — do not edit manually
+  run.sh                  # legacy direct-run script (copied to dist/ by build.sh)
+build.sh                  # Linux/macOS: builds Docker image and assembles dist/
+build.bat                 # Windows: builds Docker image and assembles dist/
+install.sh                # Linux/macOS: installs dist/ → ~/.dmhai/, registers dmhai command
+install.bat               # Windows: installs dist/ → %USERPROFILE%\.dmhai\, adds dmhai to PATH
+dmhai.bat                 # Windows: management script (start/stop/restart/status)
+dist/                     # generated by build.sh — do not edit manually
+~/.dmhai/                 # live installation — all user data lives here
 ```
