@@ -274,7 +274,7 @@ const SettingsModal = {
             item.className = 'settings-list-item';
             var labelInput = document.createElement('input');
             labelInput.className = 'settings-label-input';
-            labelInput.placeholder = name;
+            labelInput.placeholder = normalizeModelLabel(name);
             labelInput.value = Settings.modelLabels[name] || '';
             labelInput.title = 'Display name';
             labelInput.addEventListener('change', function() {
@@ -323,7 +323,7 @@ const SettingsModal = {
                 item.className = 'settings-list-item';
                 var labelInput = document.createElement('input');
                 labelInput.className = 'settings-label-input';
-                labelInput.placeholder = model.name;
+                labelInput.placeholder = normalizeModelLabel(model.name);
                 labelInput.value = Settings.modelLabels[model.name] || '';
                 labelInput.title = 'Display name';
                 labelInput.addEventListener('change', function() {
