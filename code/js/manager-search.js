@@ -62,7 +62,8 @@ UIManager.detectWebSearch = async function(userMessage, recentMsgs, signal, imag
 };
 
 UIManager._buildBaseQuery = function(userMessage, allUserMsgs) {
-    var year = new Date().getFullYear();
+    var _now = new Date();
+    var _year = _now.getFullYear();
 
     // Words not in StopWords that pollute search queries:
     // web-meta directives and common expletives across all supported languages.
@@ -101,7 +102,7 @@ UIManager._buildBaseQuery = function(userMessage, allUserMsgs) {
     var keywords = combined.join(' ').trim();
     // Absolute fallback: if all messages were noise, use raw stopword-stripped current message
     if (!keywords) keywords = StopWords.extractKeywords(userMessage) || userMessage;
-    return keywords.indexOf(String(year)) === -1 ? keywords + ' ' + year : keywords;
+    return keywords.indexOf(String(_year)) === -1 ? keywords + ' ' + _year : keywords;
 };
 
 UIManager.getSearchQueries = async function(userMessage, recentMsgs, allUserMsgs, signal) {
@@ -135,7 +136,12 @@ UIManager.getSearchQueries = async function(userMessage, recentMsgs, allUserMsgs
                     '- Keyword-style only: NO sentences, NO filler words (für, mit, und, the, de, pour…), NO connectives\n' +
                     '- 4-8 words max per query\n' +
                     '- Keep ALL proper names, brand names, and product names exactly as-is\n' +
-                    '- Always include the year ' + new Date().getFullYear() + '\n' +
+                    '- Include a time keyword that matches how fresh the information needs to be:\n' +
+                    '    "today" for breaking news, live scores, real-time prices\n' +
+                    '    "this week" or "last week" for recent events and releases\n' +
+                    '    the current month name (' + new Date().toLocaleString('en', {month: 'long'}) + ') for monthly topics\n' +
+                    '    the year (' + new Date().getFullYear() + ') for annual stats, laws, or general recency\n' +
+                    '    no time keyword for timeless topics (history, science, concepts)\n' +
                     'Output format — first line: LANG:xx (ISO 639-1 code of the chosen language). Then one query per line: translated base query first, then variations. No numbering, no explanation.\n'
             }, signal);
         const data = await res.json();
@@ -152,8 +158,6 @@ UIManager.getSearchQueries = async function(userMessage, recentMsgs, allUserMsgs
                 .filter(Boolean)
                 .slice(0, 3)
             : [];
-        // LLM queries are domain-aware; baseQuery is generic keyword soup.
-        // Use LLM queries alone when available; fall back to baseQuery only if LLM returned nothing.
         return { queries: variations.length ? variations : [baseQuery], lang: lang };
     } catch (e) {
         return { queries: [baseQuery], lang: 'auto' };
@@ -162,7 +166,7 @@ UIManager.getSearchQueries = async function(userMessage, recentMsgs, allUserMsgs
 
 UIManager.searchWebRaw = async function(keywords, lang, signal) {
     try {
-        const url = '/search?q=' + encodeURIComponent(keywords) + '&lang=' + encodeURIComponent(lang || 'auto') + '&engine=' + encodeURIComponent(AppConfig.searxngUrl);
+        var url = '/search?q=' + encodeURIComponent(keywords) + '&lang=' + encodeURIComponent(lang || 'auto') + '&engine=' + encodeURIComponent(AppConfig.searxngUrl);
         const res = await apiFetch(url, { signal: signal });
         if (!res.ok) return [];
         const data = await res.json();
@@ -521,7 +525,7 @@ UIManager.sendMessage = async function() {
                 if (acct && retryCount < maxRetries) {
                     var statusMatch = err.message && err.message.match(/\((\d+)\)/);
                     var status = statusMatch ? parseInt(statusMatch[1]) : 0;
-                    if (status === 429 || status === 503 || status === 401 || status === 403) {
+                    if (status === 429 || status === 500 || status === 503 || status === 401 || status === 403) {
                         CloudAccountPool.markFailed(acct);
                         var nextAcct = CloudAccountPool.getNext();
                         if (nextAcct && nextAcct.name !== acct.name) {

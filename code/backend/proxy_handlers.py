@@ -169,9 +169,8 @@ class ProxySearchMixin:
                 return True
             try:
                 def _fetch_page(pageno):
-                    url = engine.rstrip('/') + '/search?' + urllib.parse.urlencode({
-                        'q': q, 'format': 'json', 'categories': 'general', 'language': lang, 'pageno': pageno
-                    })
+                    params = {'q': q, 'format': 'json', 'categories': 'general', 'language': lang, 'pageno': pageno}
+                    url = engine.rstrip('/') + '/search?' + urllib.parse.urlencode(params)
                     try:
                         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
                         with urllib.request.urlopen(req, timeout=SEARXNG_TIMEOUT_SECS) as resp:

@@ -94,10 +94,22 @@ engines:
     weight: 1
     timeout: 10.0         # Mojeek can be slow; give it extra time since you don't mind waiting
 
+  - name: bing
+    disabled: false
+    weight: 2
+
+  - name: qwant
+    disabled: false
+    weight: 1
+
   - name: google
     disabled: false
     weight: 1
     timeout: 6.0
+
+  - name: google news
+    disabled: false
+    weight: 2
 
   - name: brave news
     disabled: false

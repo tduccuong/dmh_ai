@@ -136,7 +136,9 @@ const UIManager = {
         });
         document.getElementById('lang-flag').addEventListener('click', function(e) {
             e.stopPropagation();
-            langDropdown.classList.toggle('open');
+            var wasOpen = langDropdown.classList.contains('open');
+            closeAllDropdowns();
+            if (!wasOpen) langDropdown.classList.add('open');
         });
         document.addEventListener('click', function() { langDropdown.classList.remove('open'); });
         applyLanguage();
@@ -224,12 +226,32 @@ const UIManager = {
             }
         });
         document.getElementById('header-model-select').addEventListener('change', function(e) { self.switchModel(e.target.value); });
+        function closeAllDropdowns() {
+            var menu = document.getElementById('model-dropdown-menu');
+            menu.classList.remove('open');
+            menu.style.position = '';
+            menu.style.top = '';
+            menu.style.left = '';
+            menu.style.right = '';
+            menu.style.width = '';
+            document.getElementById('model-dropdown-trigger').classList.remove('open');
+            document.getElementById('user-dropdown').classList.remove('open');
+            document.getElementById('lang-dropdown').classList.remove('open');
+            document.getElementById('attach-menu').classList.remove('open');
+        }
+
         // Custom model dropdown open/close
-        document.getElementById('model-dropdown-trigger').addEventListener('click', function() {
+        document.getElementById('model-dropdown-trigger').addEventListener('click', function(e) {
+            e.stopPropagation();
             var menu = document.getElementById('model-dropdown-menu');
             var trigger = this;
-            var isOpen = menu.classList.toggle('open');
-            trigger.classList.toggle('open', isOpen);
+            var wasOpen = menu.classList.contains('open');
+            closeAllDropdowns();
+            var isOpen = !wasOpen;
+            if (isOpen) {
+                menu.classList.add('open');
+                trigger.classList.add('open');
+            }
             if (isOpen && window.innerWidth <= 768) {
                 var isAdmin = Auth.user && Auth.user.role === 'admin';
                 if (isAdmin) {
@@ -266,7 +288,9 @@ const UIManager = {
         var userDropdown = document.getElementById('user-dropdown');
         userMenuBtn.addEventListener('click', function(e) {
             e.stopPropagation();
-            userDropdown.classList.toggle('open');
+            var wasOpen = userDropdown.classList.contains('open');
+            closeAllDropdowns();
+            if (!wasOpen) userDropdown.classList.add('open');
         });
         document.addEventListener('click', function() { userDropdown.classList.remove('open'); });
         userDropdown.addEventListener('click', function(e) { e.stopPropagation(); });
