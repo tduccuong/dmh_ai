@@ -337,8 +337,7 @@ const UIManager = {
         }
         document.getElementById('voice-bar').addEventListener('click', stopVoice);
         document.getElementById('voice-bar').addEventListener('touchend', function(e) { e.preventDefault(); stopVoice(); });
-        document.getElementById('attach-voice').addEventListener('click', function() {
-            attachMenu.classList.remove('open');
+        function _startVoice() {
             var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
             if (!SR) {
                 self.setStatus(t('voiceNotSupported'));
@@ -349,7 +348,8 @@ const UIManager = {
             _voiceRecognition = rec;
             _voiceTranscript = '';
             _voiceAccum = '';
-            rec.lang = '';
+            var _langMap = { en: 'en-US', vi: 'vi-VN', de: 'de-DE', es: 'es-ES', fr: 'fr-FR' };
+            rec.lang = _langMap[I18n._lang] || navigator.language || 'en-US';
             rec.continuous = true;
             rec.interimResults = false;
             var bar = document.getElementById('voice-bar');
@@ -403,6 +403,23 @@ const UIManager = {
                 setTimeout(function() { self.setStatus(''); }, 5000);
             };
             rec.start();
+        }
+
+        document.getElementById('attach-voice').addEventListener('click', function() {
+            attachMenu.classList.remove('open');
+            var overlay = document.getElementById('voicelang-overlay');
+            document.getElementById('voicelang-title').textContent = t('voiceLangTitle');
+            document.getElementById('voicelang-msg').innerHTML = t('voiceLangMsg').replace('{lang}', I18n.names[I18n._lang]);
+            document.getElementById('voicelang-cancel').textContent = t('voiceLangCancel');
+            document.getElementById('voicelang-ok').textContent = t('voiceLangOk');
+            overlay.classList.add('visible');
+        });
+        document.getElementById('voicelang-ok').addEventListener('click', function() {
+            document.getElementById('voicelang-overlay').classList.remove('visible');
+            _startVoice();
+        });
+        document.getElementById('voicelang-cancel').addEventListener('click', function() {
+            document.getElementById('voicelang-overlay').classList.remove('visible');
         });
 
         // Login screen
