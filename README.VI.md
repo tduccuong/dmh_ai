@@ -16,7 +16,7 @@ Cả hai chế độ chạy trong cùng một ứng dụng. Bạn có thể chuy
 ## Ảnh chụp màn hình
 
 ![Mô hình được cài sẵn](preloaded_models.png)
-*Ba mô hình cloud dùng ngay — Quick-Wit, Lexicon, Suy luận sâu — xuất hiện ngay khi bạn thêm API key. Không cần cài thêm gì.*
+*Ba mô hình cloud dùng ngay — Nhanh Trí, Ngòi Bút, Triết Gia — xuất hiện ngay khi bạn thêm API key. Không cần cài thêm gì.*
 
 ---
 
@@ -151,10 +151,10 @@ Xong. Ba mô hình được đề xuất xuất hiện ngay ở đầu danh sác
 
 **Mô hình được đề xuất (dùng ngay, không cần cài thêm):**
 
-- 👁 **Quick-Wit** — phản hồi nhanh cho câu hỏi hằng ngày
-- ✍ **Lexicon** — xuất sắc về viết lách: email, bài luận, văn học, văn bản sáng tạo
-- 💡 **Suy luận sâu** — chậm hơn nhưng kỹ hơn; tốt cho câu hỏi phức tạp, phân tích hình ảnh
-- 🧮 **Toán học** — tối ưu cho toán học, logic và suy luận
+- 👁 **Nhanh Trí** — phản hồi nhanh cho câu hỏi hằng ngày
+- ✍ **Ngòi Bút** — xuất sắc về viết lách: email, bài luận, văn học, văn bản sáng tạo
+- 💡 **Triết Gia** — chậm hơn nhưng kỹ hơn; tốt cho câu hỏi phức tạp, phân tích hình ảnh
+- 🧮 **Thầy Toán** — tối ưu cho toán học, logic và suy luận
 
 ---
 
@@ -231,7 +231,7 @@ Thêm một hoặc nhiều tài khoản (nhãn + API key). DMH-AI tự động l
 
 **Ollama Cloud — Mô hình được đề xuất**
 
-Khi có ít nhất một tài khoản, bốn mô hình tự động xuất hiện ở đầu danh sách chọn mô hình — không cần cấu hình thêm: **Quick-Wit**, **Lexicon**, **Suy luận sâu** và **Toán học**.
+Khi có ít nhất một tài khoản, bốn mô hình tự động xuất hiện ở đầu danh sách chọn mô hình — không cần cấu hình thêm: **Nhanh Trí**, **Ngòi Bút**, **Triết Gia** và **Thầy Toán**.
 
 **Ollama Cloud — Mô hình Cloud**
 
