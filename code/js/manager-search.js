@@ -30,13 +30,15 @@ UIManager.detectWebSearch = async function(userMessage, recentMsgs, signal, imag
                 'New message: ' + userMessage + '\n\n' +
                 'Should this message be answered with a live web search?\n\n' +
                 'Answer YES if any of these apply:\n' +
-                '- The user explicitly asks for "current", "latest", "up-to-date", "this year" information — in any language (aktuell, dieses Jahr, derzeit, actuel, cette année, actualmente, hiện tại, năm nay, etc.)\n' +
-                '- The topic involves figures that change year-to-year: tax rates, salary tables, laws, regulations, prices, statistics\n' +
-                '- Breaking news, live scores, current prices, stock values, today\'s weather\n' +
-                '- A specific named product, tool, software, or system the assistant may not know well or that may have been released recently\n' +
+                '- The user uses time words implying now or recent: "today", "this week", "this month", "this year", "now", "currently", "right now", "at the moment" — or equivalents in any language (heute, diese Woche, diesen Monat, dieses Jahr, jetzt, derzeit / aujourd\'hui, cette semaine, ce mois-ci, cette année, maintenant, actuellement / hoy, esta semana, este mes, este año, ahora, actualmente / hôm nay, tuần này, tháng này, năm nay, hiện tại, bây giờ)\n' +
+                '- The user asks about "current", "latest", "up-to-date", "recent" information — in any language (aktuell, actuel, actualmente, hiện tại, etc.)\n' +
+                '- The topic involves figures that change over time: tax rates, salary tables, laws, regulations, prices, statistics\n' +
+                '- Breaking news, live scores, current prices, stock values, weather\n' +
+                '- Current status, outages, errors, incidents, or availability of a website, service, or platform\n' +
+                '- A specific named product, tool, software, or system that may have been released or updated recently\n' +
                 '- The user implies the previous answer was outdated or asks for fresher data\n' +
                 '- A person\'s current status, recent actions, or latest work\n\n' +
-                'Answer NO for: science/how things work, history, math/logic, geography, well-known concepts, opinions/debates, coding help, writing help — anything well-covered by training data where the user is not asking for current figures.\n\n' +
+                'Answer NO for: science/how things work, history, math/logic, geography, well-known concepts, opinions/debates, coding help, writing help — anything well-covered by training data where the user is not asking for current information.\n\n' +
                 'Reply with YES or NO only.\n\nAnswer:'
         };
         if (images && images.length > 0) body.images = images;

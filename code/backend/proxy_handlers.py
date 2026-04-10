@@ -189,8 +189,6 @@ class ProxySearchMixin:
                         if u not in seen_urls:
                             seen_urls.add(u)
                             all_results.append(r)
-                # Keep all results — blocked domains still contribute their SearXNG snippet.
-                # The frontend skips fetching their full pages via enrichResults.
                 results = [{'title': r.get('title',''), 'url': r.get('url',''), 'content': r.get('content','')}
                            for r in all_results][:10]
                 log(f'[SEARCH] pool={len(all_results)} returned {len(results)} results: {[r["url"] for r in results]}')
