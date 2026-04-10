@@ -249,7 +249,9 @@ UIManager.synthesizeResults = async function(question, keywords, results, today,
             synthesis = synthesis
                 .replace(/(\d)([A-Za-z])/g, '$1 $2')
                 .replace(/([A-Za-z])(\d)/g, '$1 $2')
-                .replace(/([a-z])([A-Z])/g, '$1 $2');
+                .replace(/([a-z])([A-Z])/g, '$1 $2')
+                .replace(/(\w)\*\*([^*\w])/g, '$1 $2')
+                .replace(/([^*\w])\*\*(\w)/g, '$1 $2');
         }
         return synthesis || null;
     } catch (e) { return null; }
@@ -472,7 +474,9 @@ UIManager.sendMessage = async function() {
                 assistantContent = assistantContent
                     .replace(/(\d)([A-Za-z])/g, '$1 $2')
                     .replace(/([A-Za-z])(\d)/g, '$1 $2')
-                    .replace(/([a-z])([A-Z])/g, '$1 $2');
+                    .replace(/([a-z])([A-Z])/g, '$1 $2')
+                    .replace(/(\w)\*\*([^*\w])/g, '$1 $2')
+                    .replace(/([^*\w])\*\*(\w)/g, '$1 $2');
                 sessionAtSend.messages.push({ role: 'assistant', content: assistantContent, ts: assistantTs, model: sessionAtSend.model });
                 var userMsg = sessionAtSend.messages[sessionAtSend.messages.length - 2];
                 if (userMsg && userMsg.role === 'user') userMsg._sentToLLM = true;
