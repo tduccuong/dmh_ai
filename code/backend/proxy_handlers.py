@@ -164,12 +164,13 @@ class ProxySearchMixin:
             q = qs.get('q', [''])[0]
             engine = qs.get('engine', [''])[0]
             lang = qs.get('lang', ['auto'])[0] or 'auto'
+            category = qs.get('category', ['news,general'])[0] or 'news,general'
             if not q or not engine:
                 self.send_json(400, {'error': 'Missing q or engine'})
                 return True
             try:
                 def _fetch_page(pageno):
-                    params = {'q': q, 'format': 'json', 'categories': 'general', 'language': lang, 'pageno': pageno}
+                    params = {'q': q, 'format': 'json', 'categories': category, 'language': lang, 'pageno': pageno}
                     url = engine.rstrip('/') + '/search?' + urllib.parse.urlencode(params)
                     try:
                         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})

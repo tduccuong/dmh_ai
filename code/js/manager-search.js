@@ -5,13 +5,14 @@
  * For commercial inquiries, contact: tduccuong@gmail.com
  */
 
-UIManager.detectWebSearch = async function(userMessage, recentMsgs, signal, images) {
+// Returns null (no search), 'news', 'it', or 'news,general'
+UIManager.detectSearchCategory = async function(userMessage, recentMsgs, signal, images) {
     // Explicit user instruction always wins — skip LLM check.
     // Match: any search-intent word + any web/internet/online word (covers all 5 UI languages).
     var _hasSearchVerb = /\b(search|find|look up|google|tìm\s*ki[eế]m|tìm|such[et]?|googlen|busca[r]?|busque|cherche[rz]?|recherche[rz]?)\b/i;
     var _hasWebMedium = /\b(web|online|internet|en\s+ligne|en\s+l[ií]nea|trên\s+(web|m[aạ]ng|internet)|im\s+(web|internet|netz)|sur\s+(le\s+)?web|sur\s+internet)\b/i;
     if (_hasSearchVerb.test(userMessage) && _hasWebMedium.test(userMessage)) {
-        return true;
+        return 'news,general';
     }
     try {
         var contextBlock = '';
@@ -28,39 +29,44 @@ UIManager.detectWebSearch = async function(userMessage, recentMsgs, signal, imag
             options: { temperature: 0, num_predict: UTILITY_NUM_PREDICT, think: false },
             prompt: contextBlock +
                 'New message: ' + userMessage + '\n\n' +
-                'Should this message be answered with a live web search?\n\n' +
-                'Answer YES if any of these apply:\n' +
-                '- The user uses time words implying now or recent: "today", "this week", "this month", "this year", "now", "currently", "right now", "at the moment" — or equivalents in any language (heute, diese Woche, diesen Monat, dieses Jahr, jetzt, derzeit / aujourd\'hui, cette semaine, ce mois-ci, cette année, maintenant, actuellement / hoy, esta semana, este mes, este año, ahora, actualmente / hôm nay, tuần này, tháng này, năm nay, hiện tại, bây giờ)\n' +
-                '- The user asks about "current", "latest", "up-to-date", "recent" information — in any language (aktuell, actuel, actualmente, hiện tại, etc.)\n' +
-                '- The topic involves figures that change over time: tax rates, salary tables, laws, regulations, prices, statistics\n' +
-                '- Breaking news, live scores, current prices, stock values, weather\n' +
-                '- Current status, outages, errors, incidents, or availability of a website, service, or platform\n' +
-                '- A specific named product, tool, software, or system that may have been released or updated recently\n' +
-                '- The user implies the previous answer was outdated or asks for fresher data\n' +
-                '- A person\'s current status, recent actions, or latest work\n\n' +
-                'Answer NO for: science/how things work, history, math/logic, geography, well-known concepts, opinions/debates, coding help, writing help — anything well-covered by training data where the user is not asking for current information.\n\n' +
-                'Reply with YES or NO only.\n\nAnswer:'
+                'Does this message need a live web search? If yes, which category?\n\n' +
+                'Reply with exactly one word — NO, NEWS, IT, or WEB:\n\n' +
+                'NEWS — breaking news, sports scores, stock/crypto prices, weather, "what happened", headlines\n' +
+                'IT — code questions, programming errors, library/framework docs, GitHub repos, StackOverflow-style questions\n' +
+                'WEB — everything else that needs fresh or current data:\n' +
+                '  - Time words: "today", "this week", "this month", "this year", "now", "currently" — or equivalents in any language\n' +
+                '    (heute, diese Woche, diesen Monat, dieses Jahr, jetzt, derzeit / aujourd\'hui, cette semaine, ce mois-ci, cette année, maintenant / hoy, esta semana, este mes, este año, ahora / hôm nay, tuần này, tháng này, năm nay, hiện tại)\n' +
+                '  - "current", "latest", "up-to-date", "recent" information — in any language\n' +
+                '  - Figures that change over time: tax rates, salary tables, laws, regulations, prices, statistics\n' +
+                '  - Current status, outages, errors, incidents, or availability of a website, service, or platform\n' +
+                '  - A specific named product, tool, software, or system that may have been released or updated recently\n' +
+                '  - The user implies the previous answer was outdated or asks for fresher data\n' +
+                '  - A person\'s current status, recent actions, or latest work\n\n' +
+                'NO — science/how things work, history, math/logic, geography, well-known concepts, opinions/debates, writing help — anything well-covered by training data where the user is not asking for current information.\n\n' +
+                'Reply with NO, NEWS, IT, or WEB only.\n\nAnswer:'
         };
         if (images && images.length > 0) body.images = images;
         syslog('[DETECT] model=' + body.model + ' isCloud=' + isCloudModel(body.model) + ' msg=' + userMessage.slice(0, 80));
         const res = await cloudRoutedFetch(body.model, '/generate', body, signal);
-        if (!res.ok) { syslog('[DETECT] fetch failed status=' + res.status); return false; }
+        if (!res.ok) { syslog('[DETECT] fetch failed status=' + res.status); return null; }
         const text = await res.text();
         syslog('[DETECT] raw response=' + text.slice(0, 200));
         var responseText = '';
         try {
             var parsed = JSON.parse(text);
-            // response field first; fall back to thinking field (some models put answer there)
             responseText = parsed.response || parsed.thinking || '';
         } catch(e) {
-            // NDJSON: accumulate response fields across lines
             text.trim().split('\n').forEach(function(line) {
                 try { var obj = JSON.parse(line); if (obj.response) responseText += obj.response; } catch(_) {}
             });
         }
-        syslog('[DETECT] responseText=' + responseText.trim().slice(0, 40));
-        return /^(yes|ja|oui|s[ií]|да)/i.test(responseText.trim());
-    } catch (e) { syslog('[DETECT] error=' + e.message); return false; }
+        var answer = responseText.trim().toUpperCase().split(/\s/)[0];
+        syslog('[DETECT] answer=' + answer);
+        if (answer === 'NEWS') return 'news';
+        if (answer === 'IT') return 'it';
+        if (answer === 'WEB') return 'news,general';
+        return null;
+    } catch (e) { syslog('[DETECT] error=' + e.message); return null; }
 };
 
 UIManager._buildBaseQuery = function(userMessage, allUserMsgs) {
@@ -166,9 +172,12 @@ UIManager.getSearchQueries = async function(userMessage, recentMsgs, allUserMsgs
     }
 };
 
-UIManager.searchWebRaw = async function(keywords, lang, signal) {
+UIManager.searchWebRaw = async function(keywords, lang, category, signal) {
     try {
-        var url = '/search?q=' + encodeURIComponent(keywords) + '&lang=' + encodeURIComponent(lang || 'auto') + '&engine=' + encodeURIComponent(AppConfig.searxngUrl);
+        var url = '/search?q=' + encodeURIComponent(keywords)
+            + '&lang=' + encodeURIComponent(lang || 'auto')
+            + '&category=' + encodeURIComponent(category || 'news,general')
+            + '&engine=' + encodeURIComponent(AppConfig.searxngUrl);
         const res = await apiFetch(url, { signal: signal });
         if (!res.ok) return [];
         const data = await res.json();
@@ -176,8 +185,8 @@ UIManager.searchWebRaw = async function(keywords, lang, signal) {
     } catch (e) { return []; }
 };
 
-UIManager.searchWebParallel = async function(queries, lang, signal) {
-    const arrays = await Promise.all(queries.map(function(q) { return this.searchWebRaw(q, lang, signal); }, this));
+UIManager.searchWebParallel = async function(queries, lang, category, signal) {
+    const arrays = await Promise.all(queries.map(function(q) { return this.searchWebRaw(q, lang, category, signal); }, this));
     const seen = new Set();
     const merged = [];
     arrays.forEach(function(arr) {
@@ -367,11 +376,11 @@ UIManager.sendMessage = async function() {
     }
     const recentMsgs = (this.currentSession.messages || []).filter(function(m) { return m.role === 'user' || m.role === 'assistant'; }).slice(-RECENT_MESSAGES_COUNT);
     const effectiveContent = contentForAPI.trim() || content.trim();
-    const needsWebSearch = await this.detectWebSearch(effectiveContent, recentMsgs, pipelineSignal, imagesForAPI);
+    const searchCategory = await this.detectSearchCategory(effectiveContent, recentMsgs, pipelineSignal, imagesForAPI);
     if (pipelineSignal.aborted) return;
     const cleanedContent = effectiveContent;
-    syslog('[SEND] user="' + content.slice(0, 120) + '" needsWebSearch=' + needsWebSearch + ' cleanedQuery="' + cleanedContent + '"');
-    if (AppConfig.searxngUrl && needsWebSearch) {
+    syslog('[SEND] user="' + content.slice(0, 120) + '" searchCategory=' + searchCategory + ' cleanedQuery="' + cleanedContent + '"');
+    if (AppConfig.searxngUrl && searchCategory) {
         this.setStatus(getModelDisplayName(this.currentSession.model) + t('genKeywords'));
         var allUserMsgs = (sessionAtSend.messages || []).filter(function(m) { return m.role === 'user'; });
         const queryResult = await this.getSearchQueries(cleanedContent, recentMsgs, allUserMsgs, pipelineSignal);
@@ -382,7 +391,7 @@ UIManager.sendMessage = async function() {
         if (queries) {
             this.setStatus(getModelDisplayName(this.currentSession.model) + t('searchingWeb'));
             this.setStatusDetail(queries);
-            const allRaw = await this.searchWebParallel(queries, queryLang, pipelineSignal);
+            const allRaw = await this.searchWebParallel(queries, queryLang, searchCategory, pipelineSignal);
             if (pipelineSignal.aborted) return;
             syslog('[SEARCH] got ' + allRaw.length + ' results');
 
@@ -423,7 +432,7 @@ UIManager.sendMessage = async function() {
             }
         }
     }
-    this.setStatus(getModelDisplayName(this.currentSession.model) + (needsWebSearch && AppConfig.searxngUrl
+    this.setStatus(getModelDisplayName(this.currentSession.model) + (searchCategory && AppConfig.searxngUrl
         ? t('synthesizing')
         : t('thinking')));
     let assistantContent = '';
