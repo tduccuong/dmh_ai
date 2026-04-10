@@ -227,7 +227,9 @@ Benutzersymbol → **Einstellungen** (nur Admins).
 
 **Ollama Cloud — API-Konten**
 
-Ein oder mehrere Konten (Bezeichnung + API-Schlüssel) hinzufügen. DMH-AI wechselt automatisch zwischen allen hinzugefügten Konten — wenn eines sein Ratenlimit erreicht, übernimmt das nächste nahtlos. Sie können Schlüssel von mehreren Ollama-Konten hinzufügen, um Ihr Kontingent effektiv zu vervielfachen.
+Ein oder mehrere Konten (Bezeichnung + API-Schlüssel) hinzufügen. DMH-AI wechselt automatisch zwischen allen hinzugefügten Konten — wenn eines sein Ratenlimit erreicht, übernimmt das nächste nahtlos.
+
+**Beispiel:** Eine vierköpfige Familie legt je ein kostenloses Ollama-Konto an und trägt alle vier Schlüssel hier ein. DMH-AI verteilt die Last automatisch und transparent — kein Familienmitglied muss sich darum kümmern, welches Konto gerade genutzt wird oder ob ein Limit erreicht wurde. Das ist vollkommen legitim: Jedes Ollama-Konto verfügt über ein eigenes kostenloses Kontingent, und jede Person nutzt lediglich das ihr zustehende.
 
 **Ollama Cloud — Empfohlene Modelle**
 

@@ -227,7 +227,9 @@ Click the user icon → **Settings** (admin only).
 
 **Ollama Cloud — API Accounts**
 
-Add one or more accounts (label + API key). DMH-AI rotates through all added accounts automatically — if one hits its rate limit, the next one takes over without any interruption. You can add keys from multiple Ollama accounts to effectively multiply your quota.
+Add one or more accounts (label + API key). DMH-AI rotates through all added accounts automatically — if one hits its rate limit, the next one takes over without any interruption.
+
+**Example:** a family of four each creates a free Ollama account and adds all four keys here. DMH-AI distributes the load across them transparently — no family member needs to think about which account is being used or whether a limit has been hit. This is perfectly fine: each Ollama account comes with its own free quota, and each person is simply using the quota they are entitled to.
 
 **Ollama Cloud — Recommended Models**
 

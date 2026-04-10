@@ -227,7 +227,9 @@ Nhấn biểu tượng người dùng → **Cài đặt** (chỉ admin).
 
 **Ollama Cloud — Tài khoản API**
 
-Thêm một hoặc nhiều tài khoản (nhãn + API key). DMH-AI tự động luân phiên qua tất cả tài khoản đã thêm — nếu một tài khoản bị giới hạn lượt dùng, tài khoản tiếp theo tiếp quản mà không bị gián đoạn. Bạn có thể thêm key từ nhiều tài khoản Ollama để nhân đôi hạn mức.
+Thêm một hoặc nhiều tài khoản (nhãn + API key). DMH-AI tự động luân phiên qua tất cả tài khoản đã thêm — nếu một tài khoản bị giới hạn lượt dùng, tài khoản tiếp theo tiếp quản mà không bị gián đoạn.
+
+**Ví dụ:** Một gia đình bốn người, mỗi người tạo một tài khoản Ollama miễn phí rồi thêm cả bốn key vào đây. DMH-AI tự động phân phối tải một cách minh bạch — không ai trong gia đình cần quan tâm tài khoản nào đang được dùng hay hạn mức có bị vượt không. Điều này hoàn toàn hợp lệ: mỗi tài khoản Ollama có hạn mức miễn phí riêng, và mỗi người chỉ dùng đúng phần hạn mức của mình.
 
 **Ollama Cloud — Mô hình được đề xuất**
 
