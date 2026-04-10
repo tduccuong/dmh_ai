@@ -35,7 +35,15 @@ function renderWithMath(markdown) {
 }
 
 const I18n = {
-    _lang: localStorage.getItem('lang') || 'en',
+    _lang: localStorage.getItem('lang') || (function() {
+        var supported = { en: 1, vi: 1, de: 1, es: 1, fr: 1 };
+        var langs = navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language || 'en'];
+        for (var i = 0; i < langs.length; i++) {
+            var code = langs[i].split('-')[0].toLowerCase();
+            if (supported[code]) return code;
+        }
+        return 'en';
+    })(),
     _strings: {
         en: {
             retry: 'Retry', clear: 'Clear', send: 'Send', cancel: 'Cancel', ok: 'OK', stopGen: 'Stop',

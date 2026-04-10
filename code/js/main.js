@@ -331,7 +331,6 @@ const UIManager = {
         var _voiceRecognition = null;
         var _voiceTranscript = '';
         var _voiceAccum = '';
-        var _langMap = { en: 'en-US', vi: 'vi-VN', de: 'de-DE', es: 'es-ES', fr: 'fr-FR' };
         function stopVoice() {
             if (_voiceRecognition) { _voiceRecognition.stop(); _voiceRecognition = null; }
             document.getElementById('voice-bar').classList.remove('visible');
@@ -350,7 +349,7 @@ const UIManager = {
             _voiceRecognition = rec;
             _voiceTranscript = '';
             _voiceAccum = '';
-            rec.lang = _langMap[I18n._lang] || 'en-US';
+            rec.lang = '';
             rec.continuous = true;
             rec.interimResults = false;
             var bar = document.getElementById('voice-bar');
