@@ -61,35 +61,59 @@ UIManager.detectWebSearch = async function(userMessage, recentMsgs, signal, imag
     } catch (e) { syslog('[DETECT] error=' + e.message); return false; }
 };
 
-UIManager._buildBaseQuery = function(userMessage, recentMsgs) {
+UIManager._buildBaseQuery = function(userMessage, allUserMsgs) {
     var year = new Date().getFullYear();
-    var keywords = StopWords.extractKeywords(userMessage);
-    // If the current message is too short to be a useful query (< 3 keywords),
-    // augment with keywords from the most recent prior user message for context.
-    if (keywords.split(/\s+/).filter(Boolean).length < 3 && recentMsgs && recentMsgs.length > 0) {
-        var priorUser = null;
-        for (var i = recentMsgs.length - 1; i >= 0; i--) {
-            if (recentMsgs[i].role === 'user') { priorUser = recentMsgs[i]; break; }
-        }
-        if (priorUser) {
-            var priorText = typeof priorUser.content === 'string' ? priorUser.content
-                : (Array.isArray(priorUser.content) ? priorUser.content.filter(function(p) { return p.type === 'text'; }).map(function(p) { return p.text; }).join(' ') : '');
-            var priorKeywords = StopWords.extractKeywords(priorText);
-            if (priorKeywords) keywords = (priorKeywords + ' ' + keywords).trim();
-        }
+
+    // Words not in StopWords that pollute search queries:
+    // web-meta directives and common expletives across all supported languages.
+    var _noise = new Set([
+        'web','online','internet','google','bing',
+        'shit','fuck','fucking','fucker','damn','damned','hell','crap','ass','asshole',
+        'bitch','bastard','wtf','omg','ugh','argh','dammit','goddamn',
+        'mẹ','đm','vcl','vl','đéo','lồn','cặc',
+        'scheiße','scheiß','verdammt','mist',
+        'merde','putain','foutu','bordel',
+        'mierda','joder','coño','hostia','puta'
+    ]);
+
+    function _clean(msgText) {
+        return StopWords.extractKeywords(msgText)
+            .split(/\s+/)
+            .filter(function(w) { return w.length > 1 && !_noise.has(w.toLowerCase()); })
+            .join(' ')
+            .trim();
     }
+
+    // Use the last min(10, N) user messages; allUserMsgs already includes the current message last.
+    // Deduplicate across messages so the LLM gets a compact, non-repetitive keyword set.
+    var msgs = (allUserMsgs || []).slice(-10);
+    var seen = new Set();
+    var combined = [];
+    msgs.forEach(function(m) {
+        var msgText = typeof m.content === 'string' ? m.content
+            : (Array.isArray(m.content) ? m.content.filter(function(p) { return p.type === 'text'; }).map(function(p) { return p.text; }).join(' ') : '');
+        _clean(msgText).split(/\s+/).filter(Boolean).forEach(function(w) {
+            var lw = w.toLowerCase();
+            if (!seen.has(lw)) { seen.add(lw); combined.push(w); }
+        });
+    });
+
+    var keywords = combined.join(' ').trim();
+    // Absolute fallback: if all messages were noise, use raw stopword-stripped current message
+    if (!keywords) keywords = StopWords.extractKeywords(userMessage) || userMessage;
     return keywords.indexOf(String(year)) === -1 ? keywords + ' ' + year : keywords;
 };
 
-UIManager.getSearchQueries = async function(userMessage, recentMsgs, signal) {
-    const baseQuery = this._buildBaseQuery(userMessage, recentMsgs);
+UIManager.getSearchQueries = async function(userMessage, recentMsgs, allUserMsgs, signal) {
+    const baseQuery = this._buildBaseQuery(userMessage, allUserMsgs);
     try {
         const model = ASSISTANT_MODEL;
         var contextBlock = '';
-        if (recentMsgs && recentMsgs.length > 0) {
-            contextBlock = 'Conversation context:\n' + recentMsgs.map(function(m) {
+        var contextUserMsgs = (allUserMsgs || []).slice(-10);
+        if (contextUserMsgs.length > 0) {
+            contextBlock = 'Recent user messages (oldest to newest):\n' + contextUserMsgs.map(function(m) {
                 var text = typeof m.content === 'string' ? m.content : (Array.isArray(m.content) ? m.content.filter(function(p) { return p.type === 'text'; }).map(function(p) { return p.text; }).join(' ') : '');
-                return (m.role === 'user' ? 'User: ' : 'Assistant: ') + text.slice(0, SEARCH_CONTEXT_CHARS);
+                return '- ' + text.slice(0, SEARCH_CONTEXT_CHARS);
             }).join('\n') + '\n\n';
         }
         const res = await cloudRoutedFetch(model, '/generate', {
@@ -101,7 +125,9 @@ UIManager.getSearchQueries = async function(userMessage, recentMsgs, signal) {
                     contextBlock +
                     'Current request: "' + userMessage + '"\n' +
                     'Base query: "' + baseQuery + '"\n\n' +
-                    'Task: produce web search queries for the request above.\n' +
+                    'Task: produce web search queries that best capture what the user wants to know.\n' +
+                    'The base query is extracted from the last several user messages — it reflects the conversation topic, not just the latest message (which may be a short command like "search this" or contain expletives with no useful keywords).\n' +
+                    'If the base query looks vague or off-topic, infer the actual search intent from the conversation context above.\n' +
                     'Step 1 — detect the language BEST SUITED for this web search (based on the topic and likely sources, not just the language the user wrote in).\n' +
                     'Step 2 — translate the base query into that language, keeping its compact keyword style.\n' +
                     'Step 3 — generate 1-2 additional keyword query variations in the same language using synonyms for the main topic words.\n' +
@@ -339,7 +365,8 @@ UIManager.sendMessage = async function() {
     syslog('[SEND] user="' + content.slice(0, 120) + '" needsWebSearch=' + needsWebSearch + ' cleanedQuery="' + cleanedContent + '"');
     if (AppConfig.searxngUrl && needsWebSearch) {
         this.setStatus(getModelDisplayName(this.currentSession.model) + t('genKeywords'));
-        const queryResult = await this.getSearchQueries(cleanedContent, recentMsgs, pipelineSignal);
+        var allUserMsgs = (sessionAtSend.messages || []).filter(function(m) { return m.role === 'user'; });
+        const queryResult = await this.getSearchQueries(cleanedContent, recentMsgs, allUserMsgs, pipelineSignal);
         if (pipelineSignal.aborted) return;
         const queries = queryResult.queries;
         const queryLang = queryResult.lang;
