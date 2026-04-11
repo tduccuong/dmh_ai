@@ -6,9 +6,9 @@
  */
 
 // ─── Model assignments ──────────────────────────────────────────────────────
-// Lightweight cloud model for background utility tasks:
+// Cloud model for background utility tasks:
 // auto-naming, web search detection, search query building.
-const ASSISTANT_MODEL = 'ministral-3:8b-cloud';
+const ASSISTANT_MODEL = 'ministral-3:14b-cloud';
 
 // Mid-tier cloud model for search result synthesis.
 // Needs enough capacity to compress multiple web pages into coherent facts.

@@ -433,7 +433,7 @@ UIManager.autoNameSession = async function(session) {
         syslog('[NAMING] model=' + ASSISTANT_MODEL + ' excerpt="' + excerpt.slice(0, 80) + '"');
         var name = await OllamaAPI.summarize(ASSISTANT_MODEL, [{
             role: 'user',
-            content: 'Give a short title (3-5 words) for this conversation:\n\n' + excerpt + '\n\nReply with only the title, no quotes, no explanation.'
+            content: 'Give a short title (3-5 words) for this conversation:\n\n' + excerpt + '\n\nUse the language that dominates the conversation. Reply with only the title, no quotes, no explanation.'
         }], controller.signal);
         syslog('[NAMING] result="' + (name || '').trim().slice(0, 80) + '"');
         if (controller.signal.aborted) return;

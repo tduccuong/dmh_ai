@@ -276,6 +276,9 @@ const ContextManager = {
         var summary = await OllamaAPI.summarize(session.model, summarizeInput);
         if (!summary) return;
 
+        // If the session was cleared while we were summarizing, discard the result
+        if (session.messages.length === 0) return;
+
         session.context = { summary: summary, summaryUpToIndex: keepFrom - 1 };
         await SessionStore.updateSession(session);
     }
