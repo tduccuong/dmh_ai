@@ -164,9 +164,10 @@ const OllamaAPI = {
                     if (line) {
                         try {
                             var json = JSON.parse(line);
-                            if (json.message && json.message.content) {
-                                onChunk(json.message.content);
-                            }
+                            var content = json.message && json.message.content;
+                            var thinking = json.message && json.message.thinking;
+                            if (content) onChunk(content, false);
+                            else if (thinking) onChunk(thinking, true);
                         } catch (e) {}
                     }
                 }

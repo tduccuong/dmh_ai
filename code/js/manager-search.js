@@ -424,6 +424,7 @@ UIManager.sendMessage = async function() {
         ? t('synthesizing')
         : t('thinking')));
     let assistantContent = '';
+    let thinkingContent = '';
     let firstChunk = true;
     const usePool = isCloudModel(sessionAtSend.model) && Settings.accounts.length > 0;
     const maxRetries = usePool ? Settings.accounts.length : 0;
@@ -437,15 +438,22 @@ UIManager.sendMessage = async function() {
         OllamaAPI.streamChat(
             sessionAtSend.model,
             apiMessages,
-            function(chunk) {
+            function(chunk, isThinking) {
                 if (firstChunk) {
                     firstChunk = false;
-                    self.setStatus(getModelDisplayName(sessionAtSend.model) + t('answering'));
+                    self.setStatus(getModelDisplayName(sessionAtSend.model) + (isThinking ? t('thinking') : t('answering')));
                     self.setStatusDetail(null);
                 }
-                assistantContent += chunk;
                 var mapEntry = self._streamMap.get(sessionAtSend.id);
-                if (mapEntry) {
+                if (!mapEntry) return;
+                if (isThinking) {
+                    thinkingContent += chunk;
+                } else {
+                    if (thinkingContent && !assistantContent) {
+                        // First content chunk after thinking — switch status
+                        self.setStatus(getModelDisplayName(sessionAtSend.model) + t('answering'));
+                    }
+                    assistantContent += chunk;
                     mapEntry.content = assistantContent;
                     if (self.currentSession && self.currentSession.id === sessionAtSend.id) {
                         var activeBody = document.getElementById('streaming-body');
@@ -474,12 +482,6 @@ UIManager.sendMessage = async function() {
                     document.getElementById('stop-gen-btn').style.display = 'none';
                     return;
                 }
-                assistantContent = assistantContent
-                    .replace(/(\d)([A-Za-z])/g, '$1 $2')
-                    .replace(/([A-Za-z])(\d)/g, '$1 $2')
-                    .replace(/([a-z])([A-Z])/g, '$1 $2')
-                    .replace(/(\w)\*\*([^*\w])/g, '$1 $2')
-                    .replace(/([^*\w])\*\*(\w)/g, '$1 $2');
                 sessionAtSend.messages.push({ role: 'assistant', content: assistantContent, ts: assistantTs, model: sessionAtSend.model });
                 var userMsg = sessionAtSend.messages[sessionAtSend.messages.length - 2];
                 if (userMsg && userMsg.role === 'user') userMsg._sentToLLM = true;

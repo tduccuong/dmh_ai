@@ -154,7 +154,6 @@ Das war's. Drei empfohlene Modelle erscheinen sofort oben in der Modellauswahl �
 - 👁 **Schlagfertig** — schnelle Reaktionen für alltägliche Fragen
 - ✍ **Lexicon** — hervorragend beim Schreiben: E-Mails, Essays, Literatur, kreative Texte
 - 💡 **Tiefdenker** — langsamer, aber gründlicher; ideal für komplexe Fragen und Bildanalyse
-- 🧮 **Mathe-Meister** — optimiert für Mathematik, Logik und Schlussfolgerungen
 
 ---
 
@@ -233,7 +232,7 @@ Ein oder mehrere Konten (Bezeichnung + API-Schlüssel) hinzufügen. DMH-AI wechs
 
 **Ollama Cloud — Empfohlene Modelle**
 
-Sobald mindestens ein Konto vorhanden ist, erscheinen vier Modelle automatisch oben in der Modellauswahl — ohne weitere Konfiguration: **Schlagfertig**, **Lexicon**, **Tiefdenker** und **Mathe-Meister**.
+Sobald mindestens ein Konto vorhanden ist, erscheinen drei Modelle automatisch oben in der Modellauswahl — ohne weitere Konfiguration: **Schlagfertig**, **Lexicon** und **Tiefdenker**.
 
 **Ollama Cloud — Cloud-Modelle**
 

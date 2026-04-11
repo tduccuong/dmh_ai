@@ -154,7 +154,6 @@ Xong. Ba mô hình được đề xuất xuất hiện ngay ở đầu danh sác
 - 👁 **Nhanh Trí** — phản hồi nhanh cho câu hỏi hằng ngày
 - ✍ **Ngòi Bút** — xuất sắc về viết lách: email, bài luận, văn học, văn bản sáng tạo
 - 💡 **Triết Gia** — chậm hơn nhưng kỹ hơn; tốt cho câu hỏi phức tạp, phân tích hình ảnh
-- 🧮 **Thầy Toán** — tối ưu cho toán học, logic và suy luận
 
 ---
 
@@ -233,7 +232,7 @@ Thêm một hoặc nhiều tài khoản (nhãn + API key). DMH-AI tự động l
 
 **Ollama Cloud — Mô hình được đề xuất**
 
-Khi có ít nhất một tài khoản, bốn mô hình tự động xuất hiện ở đầu danh sách chọn mô hình — không cần cấu hình thêm: **Nhanh Trí**, **Ngòi Bút**, **Triết Gia** và **Thầy Toán**.
+Khi có ít nhất một tài khoản, ba mô hình tự động xuất hiện ở đầu danh sách chọn mô hình — không cần cấu hình thêm: **Nhanh Trí**, **Ngòi Bút** và **Triết Gia**.
 
 **Ollama Cloud — Mô hình Cloud**
 
