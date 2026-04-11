@@ -455,14 +455,19 @@ UIManager.sendMessage = async function() {
                     }
                     assistantContent += chunk;
                     mapEntry.content = assistantContent;
-                    if (self.currentSession && self.currentSession.id === sessionAtSend.id) {
-                        var activeBody = document.getElementById('streaming-body');
-                        if (activeBody) {
-                            activeBody.innerHTML = mapEntry.searchWarning + renderWithMath(assistantContent);
-                            addCopyButtons(activeBody); wrapTables(activeBody);
-                            var overflowed = container.scrollHeight > container.scrollTop + container.clientHeight + 40;
-                            document.getElementById('scroll-bottom-btn').style.display = overflowed ? 'flex' : 'none';
-                        }
+                    if (!self._renderPending && self.currentSession && self.currentSession.id === sessionAtSend.id) {
+                        self._renderPending = true;
+                        requestAnimationFrame(function() {
+                            self._renderPending = false;
+                            var activeBody = document.getElementById('streaming-body');
+                            if (activeBody) {
+                                var entry = self._streamMap.get(sessionAtSend.id);
+                                activeBody.innerHTML = (entry ? entry.searchWarning : '') + renderWithMath(assistantContent);
+                                addCopyButtons(activeBody); wrapTables(activeBody);
+                                var overflowed = container.scrollHeight > container.scrollTop + container.clientHeight + 40;
+                                document.getElementById('scroll-bottom-btn').style.display = overflowed ? 'flex' : 'none';
+                            }
+                        });
                     }
                 }
             },
@@ -489,6 +494,7 @@ UIManager.sendMessage = async function() {
                 SessionStore.updateSession(sessionAtSend);
                 self._streamController = null;
                 self._activeBodyDiv = null;
+                self._renderPending = false;
                 self.isStreaming = false;
                 self._releaseWakeLock();
                 self.updateSendBtn();

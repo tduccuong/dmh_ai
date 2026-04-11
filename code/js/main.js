@@ -14,7 +14,7 @@ function applyLanguage() {
         el.classList.toggle('active', el.dataset.lang === I18n.lang);
     });
     document.getElementById('new-session-btn').textContent = t('newSession');
-    document.getElementById('message-input').placeholder = t('typePlaceholder');
+    document.getElementById('message-input').placeholder = t(window.innerWidth <= 768 ? 'typePlaceholderShort' : 'typePlaceholder');
     document.getElementById('send-label').textContent = t('send');
     document.getElementById('stop-label').textContent = t('stopGen');
     document.getElementById('attach-btn').title = t('attachFile');
