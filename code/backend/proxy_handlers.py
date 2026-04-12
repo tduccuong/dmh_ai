@@ -265,6 +265,8 @@ class ProxySearchMixin:
                 resp = conn.getresponse()
                 self.send_response(resp.status)
                 self.send_header('Content-Type', resp.getheader('Content-Type', 'application/x-ndjson'))
+                self.send_header('X-Accel-Buffering', 'no')
+                self.send_header('Cache-Control', 'no-cache')
                 self.end_headers()
                 try:
                     while True:
@@ -314,6 +316,8 @@ class ProxySearchMixin:
                     return True
                 self.send_response(resp.status)
                 self.send_header('Content-Type', resp.getheader('Content-Type', 'application/x-ndjson'))
+                self.send_header('X-Accel-Buffering', 'no')
+                self.send_header('Cache-Control', 'no-cache')
                 self.end_headers()
                 try:
                     while True:
