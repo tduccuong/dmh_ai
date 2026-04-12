@@ -21,6 +21,29 @@ UIManager.renderChat = function() {
         var body = document.createElement('div');
         body.className = 'msg-body';
         if (msg.role === 'assistant') {
+            if (msg.thinking) {
+                var thinkBlock = document.createElement('details');
+                thinkBlock.className = 'think-block';
+                var thinkSummary = document.createElement('summary');
+                var thinkTitleSpan = document.createElement('span');
+                thinkTitleSpan.className = 'think-title';
+                thinkTitleSpan.textContent = 'Generated chain of thoughts from ' + (msg.model ? getModelDisplayName(msg.model) : 'model');
+                var thinkArrowSpan = document.createElement('span');
+                thinkArrowSpan.className = 'think-arrow';
+                thinkArrowSpan.textContent = '\u25ba';
+                thinkSummary.appendChild(thinkTitleSpan);
+                thinkSummary.appendChild(thinkArrowSpan);
+                var thinkBody = document.createElement('div');
+                thinkBody.className = 'think-body';
+                thinkBody.textContent = digestThinking(msg.thinking);
+                thinkBlock.appendChild(thinkSummary);
+                thinkBlock.appendChild(thinkBody);
+                thinkBlock.addEventListener('toggle', function() {
+                    var arr = thinkBlock.querySelector('.think-arrow');
+                    if (arr) arr.textContent = thinkBlock.open ? '\u25b2' : '\u25ba';
+                });
+                div.appendChild(thinkBlock);
+            }
             body.innerHTML = renderWithMath(msg.content || '');
             div.appendChild(body);
             addCopyButtons(body); wrapTables(body);
