@@ -33,6 +33,7 @@ UIManager.initializeApp = async function() {
         await Settings.loadPublicLabels();
     }
     await UserProfile.load();
+    await UserFactTracker.load();
 
     try {
         const models = await OllamaAPI.fetchModels();

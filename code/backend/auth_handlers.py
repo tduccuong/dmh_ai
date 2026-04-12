@@ -49,11 +49,26 @@ class AuthMixin:
             self.send_json(200, {'profile': (row[0] or '') if row else ''})
             return True
 
+        if p == '/admin/user-profiles':
+            if user['role'] != 'admin':
+                self.send_json(403, {'error': 'Forbidden'})
+                return True
+            with sqlite3.connect(DB) as c:
+                rows = c.execute('SELECT id, email, name, role, profile FROM users WHERE deleted=0 ORDER BY created_at').fetchall()
+            self.send_json(200, [{'id': r[0], 'email': r[1], 'name': r[2], 'role': r[3], 'profile': r[4] or ''} for r in rows])
+            return True
+
         if p == '/users/prefs':
             with sqlite3.connect(DB) as c:
                 row = c.execute('SELECT value FROM settings WHERE key=?', (f'prefs_{user["id"]}',)).fetchone()
             prefs = json.loads(row[0]) if row else {}
             self.send_json(200, prefs)
+            return True
+
+        if p == '/user/fact-counts':
+            with sqlite3.connect(DB) as c:
+                rows = c.execute('SELECT topic, count FROM user_fact_counts WHERE user_id=?', (user['id'],)).fetchall()
+            self.send_json(200, {r[0]: r[1] for r in rows})
             return True
 
         return False
@@ -157,6 +172,23 @@ class AuthMixin:
                 prefs.update({k: v for k, v in d.items() if k in ('lang', 'model')})
                 c.execute('INSERT OR REPLACE INTO settings (key, value) VALUES (?,?)', (key, json.dumps(prefs)))
             self.send_json(200, prefs)
+            return True
+
+        if p == '/user/fact-counts':
+            d = self.body()  # { topic: delta, ... }
+            if not isinstance(d, dict):
+                self.send_json(400, {'error': 'Expected object'})
+                return True
+            with sqlite3.connect(DB) as c:
+                for topic, delta in d.items():
+                    if not isinstance(topic, str) or not topic.strip(): continue
+                    c.execute(
+                        'INSERT INTO user_fact_counts (user_id, topic, count) VALUES (?,?,?) '
+                        'ON CONFLICT(user_id, topic) DO UPDATE SET count = count + excluded.count',
+                        (user['id'], topic.strip().lower(), int(delta))
+                    )
+                rows = c.execute('SELECT topic, count FROM user_fact_counts WHERE user_id=?', (user['id'],)).fetchall()
+            self.send_json(200, {r[0]: r[1] for r in rows})
             return True
 
         m_user = re.match(r'^/users/([^/]+)$', p)

@@ -79,6 +79,74 @@ const Settings = {
     }
 };
 
+const UserFactTracker = {
+    _counts: {},       // topic (lowercase) → count (in-memory mirror of DB)
+    THRESHOLD: 3,
+
+    load: async function() {
+        try {
+            var res = await apiFetch('/user/fact-counts');
+            if (res && res.ok) {
+                var d = await res.json();
+                this._counts = d || {};
+                syslog('[FACT-TRACKER] loaded ' + Object.keys(this._counts).length + ' topic(s)');
+            }
+        } catch(e) {}
+    },
+
+    // Receive candidate topic labels from LLM, increment counts, promote to profile when threshold hit
+    track: async function(candidates, model) {
+        if (!candidates || !candidates.length) return;
+        var self = this;
+        var deltas = {};
+        var promoted = [];
+        candidates.forEach(function(topic) {
+            var t = topic.trim().toLowerCase();
+            if (!t) return;
+            // Normalize: find the most similar existing key using word-level Jaccard similarity
+            // jaccard(a,b) = |intersection of words| / |union of words|
+            var tWords = t.split(/\s+/).filter(function(w) { return w.length > 3; });
+            var bestKey = null, bestScore = 0;
+            // Include promoted keys in Jaccard search (for normalization only — they won't be incremented)
+            Object.keys(self._counts).forEach(function(key) {
+                var kWords = key.split(/\s+/).filter(function(w) { return w.length > 3; });
+                var intersection = tWords.filter(function(w) { return kWords.indexOf(w) >= 0; }).length;
+                if (!intersection) return;
+                var union = tWords.concat(kWords.filter(function(w) { return tWords.indexOf(w) < 0; })).length;
+                var score = union > 0 ? intersection / union : 0;
+                var cnt = self._counts[key] < 0 ? 0 : self._counts[key]; // treat promoted as 0 for tie-breaking
+                if (score > bestScore || (score === bestScore && cnt > (self._counts[bestKey] || 0))) {
+                    bestScore = score;
+                    bestKey = key;
+                }
+            });
+            if (bestScore >= 0.4 && bestKey) t = bestKey;
+            // Already promoted to profile — skip incrementing
+            if (self._counts[t] < 0) return;
+            self._counts[t] = (self._counts[t] || 0) + 1;
+            deltas[t] = 1;
+            if (self._counts[t] >= self.THRESHOLD) {
+                promoted.push(topic.trim());
+                self._counts[t] = -1; // sentinel: promoted, stop counting
+                deltas[t] = -((self.THRESHOLD - 1) + 1); // write -THRESHOLD so DB also goes negative
+            }
+        });
+        if (!Object.keys(deltas).length) return;
+        // Persist count deltas to backend (fire and forget)
+        apiFetch('/user/fact-counts', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(deltas)
+        }).catch(function() {});
+        // Promote reached-threshold topics into UserProfile._facts under Interests
+        if (promoted.length) {
+            syslog('[FACT-TRACKER] promoting to Interests: ' + promoted.join(', '));
+            UserProfile.mergeInterests(promoted);
+            await UserProfile.save();
+        }
+    }
+};
+
 const UserProfile = {
     _facts: '',  // plain text bullet list
 
@@ -108,6 +176,41 @@ const UserProfile = {
         await this.save();
     },
 
+    // Merge a list of promoted interest labels into _facts under the "Interests" key
+    mergeInterests: function(topics) {
+        var self = this;
+        var keyMap = {}, keyOrder = [];
+        (this._facts ? this._facts.split('\n') : [])
+            .filter(function(l) { return l.trim().startsWith('-'); })
+            .forEach(function(l) {
+                var i = l.indexOf(':');
+                var k = i >= 0 ? l.slice(1, i).trim() : l.slice(1).trim();
+                var vStr = i >= 0 ? l.slice(i + 1).trim() : '';
+                var kl = k.toLowerCase();
+                if (!keyMap[kl]) { keyMap[kl] = { origKey: k, values: [] }; keyOrder.push(kl); }
+                vStr.split(',').map(function(v) { return v.trim(); }).filter(Boolean).forEach(function(v) {
+                    if (keyMap[kl].values.indexOf(v.toLowerCase()) < 0) keyMap[kl].values.push(v.toLowerCase());
+                });
+            });
+        var kl = 'interests';
+        if (!keyMap[kl]) { keyMap[kl] = { origKey: 'Interests', values: [] }; keyOrder.push(kl); }
+        topics.forEach(function(t) {
+            var tl = t.toLowerCase();
+            if (keyMap[kl].values.indexOf(tl) < 0) keyMap[kl].values.push(tl);
+        });
+        // Final dedup pass — guards against race conditions where _facts was stale at read time
+        this._facts = keyOrder.map(function(kl) {
+            var e = keyMap[kl];
+            var seen = {};
+            var deduped = e.values.filter(function(v) {
+                if (seen[v]) return false;
+                seen[v] = true;
+                return true;
+            });
+            return '- ' + e.origKey + ': ' + deduped.join(', ');
+        }).join('\n');
+    },
+
     // Run after each LLM turn — extract new facts and merge into profile
     extractAndMerge: async function(userText, assistantText, model) {
         if (!userText || !assistantText) return;
@@ -117,30 +220,29 @@ const UserProfile = {
             const prompt =
                 '[USER MESSAGE]\n"' + userText.slice(0, 800) + '"\n[END USER MESSAGE]\n\n' +
                 existing +
-                'Task: Extract personal facts the user stated about themselves directly in the USER MESSAGE.\n' +
-                'Only extract from explicit self-descriptions: "I am...", "I have...", "My X is/are...", "I live in...", "I work as...", etc.\n' +
+                'Task: Analyse the USER MESSAGE and output TWO sections.\n' +
                 '\n' +
-                'Valid categories (only if explicitly stated by the user):\n' +
-                '- Name, age, gender\n' +
-                '- Occupation / job title\n' +
-                '- City or country of residence — ONLY if user says "I live in X" or "I am from X". Searching for things in a city is NOT a location fact.\n' +
-                '- Nationality\n' +
-                '- Family: spouse, children with names/ages\n' +
-                '- Health conditions they mentioned about themselves\n' +
-                '- Hobbies, interests, and things they enjoy or like (e.g. "I like X", "I enjoy X", "I love X", "I prefer X")\n' +
-                '- Significant personal events (past trips, milestones) they described\n' +
+                '[FACTS]\n' +
+                'Explicit personal facts the user stated about themselves (name, job, family, hobbies declared, preferences stated, health, location, events).\n' +
+                'Only extract from explicit self-descriptions: "I am...", "I have...", "I like...", "I live in...", etc.\n' +
+                'One bullet per category, comma-separated values. e.g. "- Name: Carl", "- Hobbies: hiking, reading"\n' +
+                'Never repeat a category key. Keep values short (a few words each).\n' +
+                'Do not duplicate anything already in "Already known".\n' +
+                'Write NONE if nothing qualifies.\n' +
                 '\n' +
-                'NEVER extract:\n' +
-                '- Anything inferred or assumed (e.g. "likely lives in X", "probably interested in...")\n' +
-                '- Things they are searching for, shopping for, or asking about\n' +
-                '- Preferences inferred from requests (e.g. user asks about bike shops → do NOT extract bike preferences)\n' +
-                '- Anything from the ASSISTANT RESPONSE section\n' +
-                '- Duplicates of Already known facts\n' +
+                '[CANDIDATES]\n' +
+                'Topics or subjects the user is asking about or showing curiosity in — even without explicit "I like X" statements.\n' +
+                'Rules:\n' +
+                '- Use the broadest, most general label possible: prefer "gardening" over "indoor tomato cultivation", "blockchain" over "blockchain immutability"\n' +
+                '- 1–2 words maximum. No qualifiers, adjectives, or specifics.\n' +
+                '- If the topic is already tracked below, reuse that exact label word-for-word.\n' +
+                '- If the message covers multiple aspects of the same broad topic, output only ONE label for it.\n' +
+                (Object.keys(UserFactTracker._counts).filter(function(k) { return UserFactTracker._counts[k] > 0; }).length
+                    ? 'Already tracked topics (reuse these labels if applicable): ' + Object.keys(UserFactTracker._counts).filter(function(k) { return UserFactTracker._counts[k] > 0; }).join(', ') + '\n'
+                    : '') +
+                'Write NONE if nothing qualifies.\n' +
                 '\n' +
-                'The user message may be in any language. Extract facts regardless of language and always write the output in English.\n' +
-                'Format: one bullet per fact, e.g. "- Name: Carl" or "- Occupation: software engineer" or "- Visited Greece in 2025".\n' +
-                'Plain text only, no markdown formatting.\n' +
-                'If nothing qualifies, reply: NONE';
+                'The user message may be in any language. Always write output in English. Plain text only, no markdown.';
             const res = await cloudRoutedFetch(model, '/generate', {
                 model: model, stream: false, think: false,
                 options: { temperature: 0, num_predict: PROFILE_EXTRACT_NUM_PREDICT, think: false },
@@ -151,13 +253,57 @@ const UserProfile = {
             const reply = (data.response || '').trim();
             syslog('[PROFILE] extraction result="' + reply.slice(0, 200) + '"');
             if (!reply || reply === 'NONE' || /^none$/i.test(reply)) return;
-            // Merge new bullets into existing profile
-            var newLines = reply.split('\n')
+            // Split output into [FACTS] and [CANDIDATES] sections
+            var factsText = '', candidatesText = '';
+            var factsMatch = reply.match(/\[FACTS\]([\s\S]*?)(?=\[CANDIDATES\]|$)/i);
+            var candidatesMatch = reply.match(/\[CANDIDATES\]([\s\S]*?)$/i);
+            if (factsMatch) factsText = factsMatch[1];
+            if (candidatesMatch) candidatesText = candidatesMatch[1];
+            // Parse CANDIDATES and feed to UserFactTracker
+            var candidates = candidatesText.split('\n')
+                .map(function(l) { return l.trim().replace(/^-\s*/, '').replace(/\*{1,3}([^*]*)\*{1,3}/g, '$1'); })
+                .filter(function(l) { return l && !/^none$/i.test(l); });
+            if (candidates.length) UserFactTracker.track(candidates, model);
+            // Parse FACTS bullets
+            var newLines = (factsText || reply).split('\n')
                 .map(function(l) { return l.trim().replace(/\*{1,3}([^*]*)\*{1,3}/g, '$1').replace(/_{1,2}([^_]*)_{1,2}/g, '$1'); })
                 .filter(function(l) { return l.startsWith('-'); });
             if (newLines.length === 0) return;
-            this._facts = (this._facts ? this._facts + '\n' : '') + newLines.join('\n');
-            var allLines = this._facts.split('\n').filter(function(l) { return l.trim().startsWith('-'); });
+            // Key-based merge: build a map of key → [values] from existing facts
+            var keyMap = {}; // lowercase key → { origKey, values: [lowercase vals] }
+            var keyOrder = []; // preserve insertion order
+            (this._facts ? this._facts.split('\n') : [])
+                .filter(function(l) { return l.trim().startsWith('-'); })
+                .forEach(function(l) {
+                    var i = l.indexOf(':');
+                    var k = i >= 0 ? l.slice(1, i).trim() : l.slice(1).trim();
+                    var vStr = i >= 0 ? l.slice(i + 1).trim() : '';
+                    var kl = k.toLowerCase();
+                    if (!keyMap[kl]) { keyMap[kl] = { origKey: k, values: [] }; keyOrder.push(kl); }
+                    vStr.split(',').map(function(v) { return v.trim(); }).filter(Boolean).forEach(function(v) {
+                        var vl = v.toLowerCase();
+                        if (keyMap[kl].values.indexOf(vl) < 0) keyMap[kl].values.push(vl);
+                    });
+                });
+            // Merge new lines into keyMap
+            var changed = false;
+            newLines.forEach(function(l) {
+                var i = l.indexOf(':');
+                var k = i >= 0 ? l.slice(1, i).trim() : l.slice(1).trim();
+                var vStr = i >= 0 ? l.slice(i + 1).trim() : '';
+                var kl = k.toLowerCase();
+                if (!keyMap[kl]) { keyMap[kl] = { origKey: k, values: [] }; keyOrder.push(kl); }
+                vStr.split(',').map(function(v) { return v.trim(); }).filter(Boolean).forEach(function(v) {
+                    var vl = v.toLowerCase();
+                    if (keyMap[kl].values.indexOf(vl) < 0) { keyMap[kl].values.push(vl); changed = true; }
+                });
+            });
+            if (!changed) return;
+            // Rebuild _facts as grouped lines
+            var allLines = keyOrder.map(function(kl) {
+                var e = keyMap[kl];
+                return '- ' + e.origKey + ': ' + e.values.join(', ');
+            });
             this._facts = allLines.join('\n');
             syslog('[PROFILE] merged ' + newLines.length + ' new fact(s): ' + newLines.join(' | ').slice(0, 200));
             // Condense if over threshold
@@ -177,14 +323,14 @@ const UserProfile = {
             var condensePrompt =
                 'Below is a list of personal facts about a user, accumulated over many conversations.\n\n' +
                 allLines.join('\n') + '\n\n' +
-                'Task: Condense this list to the ' + targetCount + ' most important, distinct facts.\n' +
+                'Task: Condense and regroup this list to at most ' + targetCount + ' lines.\n' +
                 'Rules:\n' +
-                '- Merge near-duplicates into one line (e.g. two lines about the same city → one)\n' +
-                '- If a fact has been superseded by a newer one (e.g. old job vs new job), keep only the newer one\n' +
-                '- Merge closely related facts into a single line where natural\n' +
-                '- Drop trivial or very low-signal facts if over the limit\n' +
-                '- Keep all facts in English\n' +
-                'Output: one bullet per fact, same format as input (e.g. "- Name: Carl").\n' +
+                '- One line per category key. If multiple values share a key, merge them onto one line comma-separated.\n' +
+                '- Merge near-duplicate keys (e.g. "Hobbies" and "Hobbies, interests" → "Hobbies").\n' +
+                '- If a fact has been superseded by a newer one (e.g. old job vs new job), keep only the newer one.\n' +
+                '- Drop trivial or very low-signal values if over the limit.\n' +
+                '- Keep all facts in English.\n' +
+                'Output format: "- Key: value1, value2" — one bullet per category, no key repeated.\n' +
                 'Plain text only, no extra commentary.';
             var res = await cloudRoutedFetch(model, '/generate', {
                 model: model, stream: false, think: false,

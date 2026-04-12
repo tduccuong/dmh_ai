@@ -231,6 +231,18 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
 .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
 .about-modal { width: 50vw; max-width: 50vw; }
 @media (max-width: 600px) { .about-modal { width: 100vw; max-width: 100vw; border-radius: 10px 10px 0 0; align-self: flex-end; } }
+.user-profiles-modal { width: 62vw; max-width: 720px; max-height: 80vh; display: flex; flex-direction: column; }
+.user-profiles-content { flex: 1; overflow-y: auto; margin-bottom: 16px; }
+.user-profiles-content .profile-section { border: 1px solid #281e38; border-radius: 8px; margin-bottom: 14px; }
+.user-profiles-content .profile-section-header { padding: 8px 14px; background: #170f25; border-radius: 8px 8px 0 0; font-size: 13px; font-weight: 600; color: #c8b8e8; display: flex; align-items: center; gap: 8px; }
+.user-profiles-content .profile-section-header .profile-role-badge { font-size: 11px; font-weight: 500; padding: 1px 7px; border-radius: 10px; background: #281e38; color: #9880c0; }
+.user-profiles-content .profile-section-header .profile-role-badge.admin { background: #3a1f10; color: #e0903a; }
+.user-profiles-content .profile-body { padding: 10px 14px; font-size: 13px; color: #a898b8; line-height: 1.7; }
+.user-profiles-content .profile-body.empty { color: #504060; font-style: italic; }
+.user-profiles-content .profile-body p { margin: 0 0 6px; }
+.user-profiles-content .profile-body ul, .user-profiles-content .profile-body ol { margin: 4px 0 6px 18px; padding: 0; }
+.user-profiles-content .profile-body li { margin-bottom: 2px; }
+@media (max-width: 768px) { .user-profiles-modal { width: 96vw; max-width: 96vw; max-height: 85vh; } }
 .modal-btn { padding: 8px 20px; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500; }
 .modal-btn-cancel { background: #281e38; color: #ccc; }
 .modal-btn-cancel:hover { background: #342848; }

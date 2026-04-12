@@ -196,6 +196,11 @@ def init_db():
             reason TEXT,
             timeout_count INTEGER DEFAULT 0,
             added_at INTEGER)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS user_fact_counts (
+            user_id TEXT NOT NULL,
+            topic   TEXT NOT NULL,
+            count   INTEGER NOT NULL DEFAULT 1,
+            PRIMARY KEY (user_id, topic))''')
         # Seed default admin user
         if not c.execute('SELECT id FROM users WHERE email=?', ('admin@dmhai.local',)).fetchone():
             uid = secrets.token_hex(8)

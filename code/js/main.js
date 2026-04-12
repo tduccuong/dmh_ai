@@ -313,6 +313,16 @@ const UIManager = {
             userDropdown.classList.remove('open');
             self.showManageUsers();
         });
+        document.getElementById('user-profiles-btn').addEventListener('click', function() {
+            userDropdown.classList.remove('open');
+            self.showUserProfiles();
+        });
+        document.getElementById('user-profiles-close').addEventListener('click', function() {
+            document.getElementById('user-profiles-overlay').classList.remove('visible');
+        });
+        document.getElementById('user-profiles-overlay').addEventListener('click', function(e) {
+            if (e.target === this) this.classList.remove('visible');
+        });
         document.getElementById('user-signout-btn').addEventListener('click', async function() {
             userDropdown.classList.remove('open');
             await Auth.logout();
@@ -543,6 +553,7 @@ const UIManager = {
             var isAdmin = user.role === 'admin';
             document.getElementById('user-manage-btn').style.display = isAdmin ? '' : 'none';
             document.getElementById('user-manage-sep').style.display = isAdmin ? '' : 'none';
+            document.getElementById('user-profiles-btn').style.display = isAdmin ? '' : 'none';
             document.getElementById('user-settings-btn').style.display = isAdmin ? '' : 'none';
             document.getElementById('user-conv-settings-btn').style.display = isAdmin ? '' : 'none';
             document.getElementById('user-settings-sep').style.display = isAdmin ? '' : 'none';
@@ -574,6 +585,44 @@ const UIManager = {
         document.getElementById('cpw-confirm').value = '';
         setCpwError('');
         setTimeout(function() { document.getElementById('cpw-current').focus(); }, 50);
+    },
+
+    showUserProfiles: async function() {
+        var overlay = document.getElementById('user-profiles-overlay');
+        var content = document.getElementById('user-profiles-content');
+        content.innerHTML = '<div style="color:#504060;font-size:13px;padding:8px 0;">Loading...</div>';
+        overlay.classList.add('visible');
+        try {
+            var res = await fetch('/admin/user-profiles', { headers: { 'Authorization': 'Bearer ' + Auth.token } });
+            if (!res.ok) { content.innerHTML = '<div style="color:#e94560;font-size:13px;">Failed to load profiles.</div>'; return; }
+            var users = await res.json();
+            if (!users.length) { content.innerHTML = '<div style="color:#504060;font-size:13px;font-style:italic;">No users found.</div>'; return; }
+            content.innerHTML = '';
+            users.forEach(function(u) {
+                var section = document.createElement('div');
+                section.className = 'profile-section';
+                var header = document.createElement('div');
+                header.className = 'profile-section-header';
+                var badge = document.createElement('span');
+                badge.className = 'profile-role-badge' + (u.role === 'admin' ? ' admin' : '');
+                badge.textContent = u.role;
+                header.textContent = (u.name || u.email) + ' ';
+                header.appendChild(badge);
+                var body = document.createElement('div');
+                if (u.profile && u.profile.trim()) {
+                    body.className = 'profile-body';
+                    body.innerHTML = marked.parse(u.profile);
+                } else {
+                    body.className = 'profile-body empty';
+                    body.textContent = 'No profile built yet.';
+                }
+                section.appendChild(header);
+                section.appendChild(body);
+                content.appendChild(section);
+            });
+        } catch(e) {
+            content.innerHTML = '<div style="color:#e94560;font-size:13px;">Error loading profiles.</div>';
+        }
     },
 
     showManageUsers: async function() {

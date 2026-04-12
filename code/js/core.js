@@ -391,11 +391,11 @@ function getRecommendedCloudModels() {
     return [
         { name: 'ministral-3:14b-cloud',          label: t('recQuickAnswer') },
         { name: 'gemma4:31b-cloud',               label: t('recWordsmith') },
-        { name: 'qwen3.5:397b-cloud',              label: t('recDeepThinker') },
+        { name: 'qwen3.5:cloud',              label: t('recDeepThinker') },
     ];
 }
 // Constant names for filtering (language-independent)
-const RECOMMENDED_CLOUD_MODEL_NAMES = ['ministral-3:14b-cloud', 'qwen3.5:397b-cloud', 'gemma4:31b-cloud'];
+const RECOMMENDED_CLOUD_MODEL_NAMES = ['ministral-3:14b-cloud', 'qwen3.5:cloud', 'gemma4:31b-cloud'];
 
 var _MODEL_ACRONYMS = { vl: 'VL', rnj: 'RNJ', gpt: 'GPT', oss: 'OSS', glm: 'GLM' };
 function normalizeModelLabel(model) {
