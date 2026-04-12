@@ -281,6 +281,8 @@ function digestThinking(raw) {
 UIManager.sendMessage = async function() {
     const self = this;
     if (this.isStreaming) return;
+    this.isStreaming = true;   // set early to prevent double-send from rapid clicks during awaits
+    this.updateSendBtn();
     // Cancel any in-flight naming call so it doesn't queue behind this message in Ollama
     if (this._namingController) {
         this._namingController.abort();
@@ -288,7 +290,7 @@ UIManager.sendMessage = async function() {
     }
     const input = document.getElementById('message-input');
     const content = input.value.trim();
-    if (!content && this.attachedFiles.length === 0) return;
+    if (!content && this.attachedFiles.length === 0) { this.isStreaming = false; this.updateSendBtn(); return; }
 
     if (!this.currentSession.context) {
         this.currentSession.context = { summary: null, summaryUpToIndex: -1 };
@@ -298,7 +300,10 @@ UIManager.sendMessage = async function() {
     var contentForAPI = content;
     var imagesForAPI = [];
     var imagesForStorage = [];
+    var videosForAPI = [];
+    var videosForStorage = [];
     var filesForStorage = [];
+    var pendingUploadEntries = [];  // entries needing _onUploadDone set after sessionAtSend is defined
     this.attachedFiles.forEach(function(f) {
         if (f.type === 'text') {
             contentForAPI += '\n\n[File: ' + f.name + ']\n```\n' + f.fullContent + '\n```';
@@ -306,30 +311,50 @@ UIManager.sendMessage = async function() {
         } else if (f.type === 'image') {
             imagesForAPI.push(f.fullBase64);
             imagesForStorage.push({ thumbnail: f.thumbnailBase64, mime: f.mime, fileId: f.id, name: f.name });
+        } else if (f.type === 'video') {
+            if (f.frames && f.frames.length > 0) videosForAPI = videosForAPI.concat(f.frames);
+            var vidStorage = { mime: f.mime, fileId: f.id, name: f.name };
+            videosForStorage.push(vidStorage);
+            if (!f.id) pendingUploadEntries.push({ entry: f, storage: vidStorage });
         }
     });
 
-    if (imagesForAPI.length > 0 && !(await OllamaAPI.hasVision(this.currentSession.model))) {
-        this.setStatus(t('noVision1') + this.currentSession.model + t('noVision2'));
+    var hasVisualInput = imagesForAPI.length > 0 || videosForAPI.length > 0;
+    if (hasVisualInput && !(await OllamaAPI.hasVision(this.currentSession.model))) {
+        var displayName = getModelDisplayName(this.currentSession.model);
+        this.setStatus(t('noVision1') + displayName + t('noVision2'));
         setTimeout(function() { self.setStatus(''); }, 6000);
+        this.isStreaming = false;
+        this.updateSendBtn();
         return;
     }
 
     var userMsgForStorage = { role: 'user', content: content, ts: Date.now() };
     if (imagesForStorage.length > 0) userMsgForStorage.images = imagesForStorage;
+    if (videosForStorage.length > 0) userMsgForStorage.videos = videosForStorage;
     if (filesForStorage.length > 0) userMsgForStorage.files = filesForStorage;
     var userMsgForAPI = { role: 'user', content: contentForAPI };
     if (imagesForAPI.length > 0) userMsgForAPI.images = imagesForAPI;
+    // Ollama passes video the same way as images in the images array
+    if (videosForAPI.length > 0) userMsgForAPI.images = (userMsgForAPI.images || []).concat(videosForAPI);
 
     const sessionAtSend = this.currentSession;
     sessionAtSend.messages.push(userMsgForStorage);
+    // Register upload-completion callbacks now that sessionAtSend is defined
+    pendingUploadEntries.forEach(function(p) {
+        p.entry._onUploadDone = function(fileId) {
+            p.storage.fileId = fileId;
+            SessionStore.updateSession(sessionAtSend);
+            if (self.currentSession && self.currentSession.id === sessionAtSend.id) self.renderChat();
+        };
+    });
     localStorage.setItem('lastActivityAt', Date.now().toString());
     this.attachedFiles = [];
     this.renderAttachments();
-    await SessionStore.updateSession(sessionAtSend);
     this.renderChat();
     input.value = '';
     input.style.height = 'auto';
+    SessionStore.updateSession(sessionAtSend);
 
     const container = document.getElementById('chat-container');
     // Capture user message element now (before assistantDiv is appended) so the RAF uses the right ref
@@ -366,6 +391,9 @@ UIManager.sendMessage = async function() {
     let apiMessages = prepareForAPI(ContextManager.buildContextMessages(this.currentSession));
     apiMessages[apiMessages.length - 1] = userMsgForAPI;
     var systemPrompt = 'You are DMH-AI — a close, trusted friend who happens to know a lot. Be warm, understanding, and genuinely present. Listen with empathy. No formalities, no "Certainly!", no filler — just speak like a friend who cares and truly gets it. Be honest and direct. Don\'t crack jokes or get excited about the topic — just be calm, attentive, and helpful.\n\nBe concise for casual and conversational topics. For technical, scientific, or domain-knowledge questions: use structured formatting — headers, bullet points, numbered steps, code blocks where relevant. Cover the core concepts thoroughly; don\'t skip fundamentals or assume prior knowledge. Where an illustrative diagram or architecture (using ASCII or text art) would genuinely help the user understand a concept, include one. Then always end with a short list of specific angles or sub-topics the user could explore next, and ask which one they want to dig into.\n\nNever claim to be ChatGPT, Gemini, Claude, or any other AI. Never sign off with closings like "Take care", "Your friend", "Best", "Cheers", or any other valediction — this is a chat, not an email.\n\nHard rule: judge the user\'s INTENT, not the content they ask you to process. When asked to translate, summarize, reformat, or rewrite text — perform that task on the content as given. Do not treat questions or topics embedded inside the content as separate requests to answer.\n\nAlways reply in the same language the user writes in.';
+    if (videosForAPI.length > 0) {
+        systemPrompt += '\n\nIf you receives multiple images, those are extracted frames from a video the user uploaded — not a photo collection. Never describe them as "a series of images", "a collection of images", or similar. Always refer to the subject as "the video" or "this video".';
+    }
     if (UserProfile._facts) {
         systemPrompt += '\n\nWhat you know about this person:\n' + UserProfile._facts + '\n\nUse this silently to sharpen your answers — factor in their facts, such as location, background, or interests, where relevant, but never quote, reference, or mention this profile in your response. Never say things like "given your love for X" or "since you enjoy Y". No postscripts, side notes, or personal asides referencing their details. Just use it invisibly. If they explicitly ask what you know about them, then list it directly.';
     }
@@ -609,7 +637,10 @@ UIManager.sendMessage = async function() {
                 if (assistantContent) {
                     if (errBody && errEntry) { errBody.innerHTML = errEntry.searchWarning + renderWithMath(assistantContent); addCopyButtons(errBody); wrapTables(errBody); }
                 } else if (errBody) {
-                    errBody.innerHTML = '<em style="color:#e05060;">⚠ No response received — the connection was interrupted. Please try again.</em>';
+                    var errMsg = videosForStorage.length > 0
+                        ? '⚠ ' + getModelDisplayName(sessionAtSend.model) + ' doesn\'t support video input. Please switch to another one.'
+                        : '⚠ No response received — the connection was interrupted. Please try again.';
+                    errBody.innerHTML = '<em style="color:#e05060;">' + errMsg + '</em>';
                 }
                 self.saveStreamingProgress();
                 self._streamMap.delete(sessionAtSend.id);

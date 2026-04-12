@@ -92,6 +92,51 @@ UIManager.renderChat = function() {
                     body.appendChild(wrap);
                 });
             }
+            if (msg.videos && msg.videos.length > 0) {
+                msg.videos.forEach(function(vid) {
+                    var wrap = document.createElement('div');
+                    wrap.style.cssText = 'margin-top:8px;border:1px solid #281e38;border-radius:6px;overflow:hidden;max-width:280px;';
+                    var header = document.createElement('div');
+                    header.style.cssText = 'background:#281e38;padding:4px 10px;font-size:12px;color:#d8c0a0;display:flex;justify-content:space-between;align-items:center;';
+                    var nameSpan = document.createElement('span');
+                    nameSpan.textContent = '🎥 ' + (vid.name || 'video');
+                    header.appendChild(nameSpan);
+                    var dl = document.createElement('button');
+                    dl.style.cssText = 'background:none;border:none;color:#c87830;font-size:11px;font-weight:600;cursor:pointer;padding:0;flex-shrink:0;';
+                    if (vid.fileId) {
+                        dl.textContent = t('download');
+                        (function(sid, fid, fname) {
+                            dl.onclick = function() {
+                                dl.textContent = 'Preparing…';
+                                dl.disabled = true;
+                                apiFetch('/assets/' + sid + '/' + fid)
+                                    .then(function(r) { return r.blob(); })
+                                    .then(function(blob) {
+                                        var url = URL.createObjectURL(blob);
+                                        var a = document.createElement('a');
+                                        a.href = url; a.download = fname;
+                                        a.style.display = 'none';
+                                        document.body.appendChild(a);
+                                        a.click();
+                                        document.body.removeChild(a);
+                                        setTimeout(function() { URL.revokeObjectURL(url); }, 10000);
+                                    })
+                                    .finally(function() {
+                                        dl.textContent = t('download');
+                                        dl.disabled = false;
+                                    });
+                            };
+                        })(sessionId, vid.fileId, vid.name || vid.fileId);
+                    } else {
+                        dl.textContent = 'Uploading…';
+                        dl.disabled = true;
+                        dl.style.color = '#806040';
+                    }
+                    header.appendChild(dl);
+                    wrap.appendChild(header);
+                    body.appendChild(wrap);
+                });
+            }
             if (msg.files && msg.files.length > 0) {
                 msg.files.forEach(function(f) {
                     var wrap = document.createElement('div');
@@ -199,6 +244,72 @@ UIManager.resizeImage = function(file) {
     });
 };
 
+UIManager.extractVideoFrames = function(file, contextWindow, model) {
+    // Compute max frames from context window budget, capped by detail preset multiplier
+    var ctxFrames = Math.floor((contextWindow || 4096) * VIDEO_FRAME_CONTEXT_BUDGET / VIDEO_FRAME_TOKENS_PER_IMAGE);
+    var multiplier = VIDEO_DETAIL_MULTIPLIERS[Settings._videoDetail] || VIDEO_DETAIL_MULTIPLIERS.medium;
+    var maxFrames = Math.max(2, Math.min(VIDEO_FRAME_MAX_COUNT, Math.round(ctxFrames * multiplier)));
+    // Cloud API hard limit — local models are unconstrained by this
+    if (isCloudModel(model || '')) maxFrames = Math.min(maxFrames, CLOUD_MAX_IMAGES);
+    syslog('[VIDEO] ctx=' + (contextWindow||4096) + ' ctxFrames=' + ctxFrames + ' detail=' + Settings._videoDetail + ' maxFrames=' + maxFrames + (isCloudModel(model||'') ? ' (cloud cap=' + CLOUD_MAX_IMAGES + ')' : ''));
+    return new Promise(function(resolve, reject) {
+        var url = URL.createObjectURL(file);
+        var video = document.createElement('video');
+        video.muted = true;
+        video.preload = 'metadata';
+        video.onloadedmetadata = function() {
+            var duration = video.duration;
+            var interval = Math.max(VIDEO_FRAME_MIN_INTERVAL, duration / maxFrames);
+            syslog('[VIDEO] duration=' + duration.toFixed(1) + 's interval=' + interval.toFixed(1) + 's');
+            // Compute timestamps: start at interval/2, then every interval, cap at maxFrames
+            var timestamps = [];
+            for (var t = interval / 2; t < duration && timestamps.length < maxFrames; t += interval) {
+                timestamps.push(t);
+            }
+            if (timestamps.length === 0) timestamps.push(0);
+
+            var frames = [];
+            var canvas = document.createElement('canvas');
+            var ctx = canvas.getContext('2d');
+            var idx = 0;
+
+            function seekNext() {
+                if (idx >= timestamps.length) {
+                    URL.revokeObjectURL(url);
+                    resolve(frames);
+                    return;
+                }
+                video.currentTime = timestamps[idx];
+            }
+
+            video.onseeked = function() {
+                // Scale to 360p (640×360) maintaining aspect ratio
+                var vw = video.videoWidth, vh = video.videoHeight;
+                var scale = Math.min(1, VIDEO_FRAME_MAX_WIDTH / vw, VIDEO_FRAME_MAX_HEIGHT / vh);
+                canvas.width = Math.round(vw * scale);
+                canvas.height = Math.round(vh * scale);
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                var dataUrl = canvas.toDataURL('image/jpeg', VIDEO_FRAME_JPEG_QUALITY);
+                frames.push(dataUrl.split(',')[1]); // base64 only
+                idx++;
+                seekNext();
+            };
+
+            video.onerror = function() {
+                URL.revokeObjectURL(url);
+                reject(new Error('Video load error'));
+            };
+
+            seekNext();
+        };
+        video.onerror = function() {
+            URL.revokeObjectURL(url);
+            reject(new Error('Video metadata load error'));
+        };
+        video.src = url;
+    });
+};
+
 UIManager.extractPdfText = async function(file) {
     if (!window.pdfjsLib) throw new Error('PDF.js not loaded');
     var arrayBuffer = await file.arrayBuffer();
@@ -261,7 +372,6 @@ UIManager.extractXlsxText = async function(file) {
 UIManager.handleFileSelect = async function(files) {
     const self = this;
     const sessionId = this.currentSession ? this.currentSession.id : 'default';
-    self.setStatus(t('attaching'));
     for (var i = 0; i < files.length; i++) {
         var file = files[i];
         try {
@@ -276,15 +386,59 @@ UIManager.handleFileSelect = async function(files) {
                 nameLower = file.name.toLowerCase();
             }
             var isImage = IMAGE_EXTS.some(function(ext) { return nameLower.endsWith(ext); });
+            var isVideo = file.type.startsWith('video/');
             var isText = file.type.startsWith('text/');
             var isPdf = await self.isPdf(file);
-            var officeFormat = (!isImage && !isText && !isPdf) ? await self.detectDocxOrXlsx(file) : null;
+            var officeFormat = (!isImage && !isVideo && !isText && !isPdf) ? await self.detectDocxOrXlsx(file) : null;
 
-            if (!isImage && !isText && !isPdf && !officeFormat) {
+            if (!isImage && !isVideo && !isText && !isPdf && !officeFormat) {
                 self.setStatus(t('unsupported1') + file.name + t('unsupported2') + IMAGE_EXTS.join('/') + '.');
                 setTimeout(function() { self.setStatus(''); }, 4000);
                 continue;
             }
+
+            if ((isImage || isVideo) && file.size > MEDIA_MAX_SIZE_BYTES) {
+                var sizeMB = (file.size / (1024 * 1024)).toFixed(0);
+                Modal.alert('File too large', '"' + file.name + '" is ' + sizeMB + ' MB. DMH-AI does not support files larger than 300 MB.');
+                continue;
+            }
+
+            if (isVideo) {
+                // Upload runs in background (for download button); extraction gates the Send button
+                self._pendingVideo++;
+                self.setStatus('Processing video, may take time…');
+                var videoFile = file;
+                var videoFormData = new FormData();
+                videoFormData.append('file', videoFile);
+                videoFormData.append('sessionId', sessionId);
+                var entry = { id: null, name: videoFile.name, type: 'video', mime: videoFile.type, frames: [] };
+                self.attachedFiles.push(entry);
+                self.renderAttachments();
+                self.updateSendBtn();
+                // Upload silently in background — sets entry.id when done (needed for download button)
+                apiFetch('/assets', { method: 'POST', body: videoFormData })
+                    .then(function(r) { return r.json(); })
+                    .then(function(d) {
+                        entry.id = d.id;
+                        if (entry._onUploadDone) { entry._onUploadDone(d.id); entry._onUploadDone = null; }
+                    })
+                    .catch(function(e) { console.error('Video upload failed:', e); });
+                // Extraction gates Send — clears status and re-enables Send when ready
+                var videoModel = self.currentSession ? self.currentSession.model : '';
+                OllamaAPI.fetchContextWindow(videoModel)
+                    .then(function(ctxWindow) { return UIManager.extractVideoFrames(videoFile, ctxWindow, videoModel); })
+                    .then(function(frames) { entry.frames = frames; })
+                    .catch(function(e) { console.error('Frame extraction failed:', e); })
+                    .finally(function() {
+                        self._pendingVideo--;
+                        self.setStatus('');
+                        self.updateSendBtn();
+                    });
+                continue;
+            }
+
+            if (isImage) self.setStatus('Processing image, may take time…');
+            else self.setStatus(t('attaching'));
 
             var extractedText = null;
             if (isPdf) extractedText = await self.extractPdfText(file);
@@ -324,7 +478,7 @@ UIManager.handleFileSelect = async function(files) {
             console.error('Upload failed:', e);
         }
     }
-    self.setStatus('');
+    if (self._pendingVideo === 0) self.setStatus('');
 };
 
 UIManager.removeAttachment = function(id) {
@@ -345,7 +499,7 @@ UIManager.renderAttachments = function() {
     this.attachedFiles.forEach(function(f) {
         var chip = document.createElement('div');
         chip.className = 'attachment-chip';
-        var icon = f.type === 'image' ? '🖼 ' : '📄 ';
+        var icon = f.type === 'image' ? '🖼 ' : f.type === 'video' ? '🎥 ' : '📄 ';
         chip.innerHTML = '<span>' + icon + f.name + '</span>';
         var btn = document.createElement('button');
         btn.textContent = '×';
@@ -359,7 +513,7 @@ UIManager.renderAttachments = function() {
 UIManager.updateSendBtn = function() {
     var hasText = document.getElementById('message-input').value.trim() !== '';
     var hasAttachment = this.attachedFiles.length > 0;
-    document.getElementById('send-btn').disabled = this.isStreaming || (!hasText && !hasAttachment);
+    document.getElementById('send-btn').disabled = this.isStreaming || this._pendingVideo > 0 || (!hasText && !hasAttachment);
 };
 
 UIManager.saveStreamingProgress = function() {

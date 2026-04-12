@@ -104,6 +104,35 @@ const IMAGE_ZOOM_STEP = 1.15;
 const LIGHTBOX_MIN_ZOOM = 0.5;
 const LIGHTBOX_MAX_ZOOM = 10;
 
+// Maximum file size for image and video uploads (300 MB).
+const MEDIA_MAX_SIZE_BYTES = 300 * 1024 * 1024;
+
+// ─── Video frame extraction ─────────────────────────────────────────────────
+// Max width/height when scaling video frames before sending to LLM (360p).
+const VIDEO_FRAME_MAX_WIDTH = 640;
+const VIDEO_FRAME_MAX_HEIGHT = 360;
+
+// JPEG quality for extracted video frames (0–1).
+const VIDEO_FRAME_JPEG_QUALITY = 0.75;
+
+// Fraction of the model's context window reserved for video frames.
+const VIDEO_FRAME_CONTEXT_BUDGET = 0.25;
+
+// Estimated tokens consumed per image by the vision encoder (conservative average).
+const VIDEO_FRAME_TOKENS_PER_IMAGE = 300;
+
+// Hard cap on extracted frames for local models (context window is the real limit).
+const VIDEO_FRAME_MAX_COUNT = 16;
+
+// Ollama cloud API rejects requests with more than 8 images — enforced for cloud models only.
+const CLOUD_MAX_IMAGES = 8;
+
+// Minimum gap between sampled frames (seconds).
+const VIDEO_FRAME_MIN_INTERVAL = 2;
+
+// User detail preset → fraction of the dynamically computed max frames to use.
+const VIDEO_DETAIL_MULTIPLIERS = { low: 0.5, medium: 0.75, high: 1.0 };
+
 // ─── UI limits ──────────────────────────────────────────────────────────────
 // Maximum lines shown in a file attachment snippet preview.
 const FILE_SNIPPET_MAX_LINES = 5;

@@ -12,6 +12,7 @@ const Settings = {
     _compactTurns: 90,
     _keepRecent: 0,
     _condenseFacts: 50,
+    _videoDetail: 'medium',
     _modelLabels: {},
     get accounts() { return this._accounts; },
     get cloudModels() { return this._cloudModels; },
@@ -45,7 +46,7 @@ const Settings = {
         return apiFetch('/admin/settings', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ accounts: this._accounts, cloudModels: this._cloudModels, ollamaEndpoint: this._ollamaEndpoint, compactTurns: this._compactTurns, keepRecent: this._keepRecent, condenseFacts: this._condenseFacts, modelLabels: this._modelLabels })
+            body: JSON.stringify({ accounts: this._accounts, cloudModels: this._cloudModels, ollamaEndpoint: this._ollamaEndpoint, compactTurns: this._compactTurns, keepRecent: this._keepRecent, condenseFacts: this._condenseFacts, videoDetail: this._videoDetail, modelLabels: this._modelLabels })
         }).catch(function() {});
     },
     load: async function() {
@@ -70,6 +71,9 @@ const Settings = {
                 }
                 if (d.condenseFacts !== undefined) {
                     this._condenseFacts = parseInt(d.condenseFacts) || 50;
+                }
+                if (d.videoDetail && ['low','medium','high'].indexOf(d.videoDetail) !== -1) {
+                    this._videoDetail = d.videoDetail;
                 }
                 if (d.modelLabels && typeof d.modelLabels === 'object') {
                     this._modelLabels = d.modelLabels;
@@ -363,6 +367,7 @@ const SettingsModal = {
         document.getElementById('settings-compact-turns').value = Settings._compactTurns;
         document.getElementById('settings-keep-recent').value = Settings._keepRecent > 0 ? Settings._keepRecent : '';
         document.getElementById('settings-condense-facts').value = Settings._condenseFacts;
+        document.getElementById('settings-video-detail').value = Settings._videoDetail;
         var targetPage = page || 'page-model';
         document.querySelectorAll('.settings-page').forEach(function(p) { p.classList.remove('active'); });
         document.getElementById(targetPage).classList.add('active');
@@ -634,6 +639,13 @@ const SettingsModal = {
             var val = parseInt(document.getElementById('settings-condense-facts').value);
             if (!val || val < 10) return;
             Settings._condenseFacts = val;
+            Settings._persist();
+        });
+        // Video detail save
+        document.getElementById('settings-video-detail').addEventListener('change', function() {
+            var val = document.getElementById('settings-video-detail').value;
+            if (['low','medium','high'].indexOf(val) === -1) return;
+            Settings._videoDetail = val;
             Settings._persist();
         });
         document.getElementById('settings-profile-clear-btn').addEventListener('click', async function() {

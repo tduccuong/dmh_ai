@@ -8,13 +8,14 @@
 const Modal = {
     _resolve: null,
 
-    _open: function(title, message, inputDefault, okLabel, danger) {
+    _open: function(title, message, inputDefault, okLabel, danger, hideCancel) {
         document.getElementById('modal-title').textContent = title;
         document.getElementById('modal-message').textContent = message;
         const input = document.getElementById('modal-input');
         const okBtn = document.getElementById('modal-ok');
         okBtn.textContent = okLabel || t('ok');
         okBtn.className = 'modal-btn ' + (danger ? 'modal-btn-danger' : 'modal-btn-ok');
+        document.getElementById('modal-cancel').style.display = hideCancel ? 'none' : '';
         if (inputDefault !== null) {
             input.style.display = 'block';
             input.value = inputDefault;
@@ -30,6 +31,10 @@ const Modal = {
     _close: function(value) {
         document.getElementById('modal-overlay').classList.remove('visible');
         if (this._resolve) { this._resolve(value); this._resolve = null; }
+    },
+
+    alert: function(title, message) {
+        return this._open(title, message, null, t('ok'), false, true);
     },
 
     confirm: function(title, message, okLabel) {

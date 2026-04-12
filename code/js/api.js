@@ -77,12 +77,32 @@ const OllamaAPI = {
                 body: JSON.stringify({ name: model })
             });
             const data = await res.json();
-            const result = (data.capabilities || []).includes('vision');
-            this.capabilityCache[model] = result;
-            return result;
+            this._cacheCapabilities(model, data.capabilities || []);
+            return this.capabilityCache[model + ':vision'];
         } catch (e) {
             return false;
         }
+    },
+    hasVideo: async function(model) {
+        if ((model + ':video') in this.capabilityCache) return this.capabilityCache[model + ':video'];
+        try {
+            const res = await fetch(this.BASE_URL + '/show', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: model })
+            });
+            const data = await res.json();
+            this._cacheCapabilities(model, data.capabilities || []);
+            return this.capabilityCache[model + ':video'];
+        } catch (e) {
+            return false;
+        }
+    },
+    _cacheCapabilities: function(model, caps) {
+        this.capabilityCache[model + ':vision'] = caps.includes('vision');
+        this.capabilityCache[model + ':video']  = caps.includes('video');
+        // backward-compat key used by existing hasVision callers
+        this.capabilityCache[model] = caps.includes('vision');
     },
     formatSize: function(bytes) {
         if (!bytes) return '';

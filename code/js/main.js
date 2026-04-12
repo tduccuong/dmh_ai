@@ -30,6 +30,10 @@ function applyLanguage() {
     document.getElementById('settings-chat-section-title').textContent = t('settingsChatSection');
     document.getElementById('settings-compact-turns-label').textContent = t('settingsCompactLabel');
     document.getElementById('settings-keep-recent-label').textContent = t('settingsKeepRecentLabel');
+    document.getElementById('settings-multimedia-section-title').textContent = t('multimediaSection');
+    document.getElementById('settings-video-detail-label').textContent = t('videoDetailLabel');
+    var vdSel = document.getElementById('settings-video-detail');
+    if (vdSel) { vdSel.options[0].textContent = t('videoDetailLow'); vdSel.options[1].textContent = t('videoDetailMedium'); vdSel.options[2].textContent = t('videoDetailHigh'); }
     document.getElementById('settings-profile-section-title').textContent = t('profileSection');
     document.getElementById('settings-condense-facts-label').textContent = t('profileCondenseLabel');
     document.getElementById('settings-profile-clear-btn').textContent = t('profileClear');
@@ -57,6 +61,7 @@ function setCpwError(msg) {
 const UIManager = {
     currentSession: null,
     isStreaming: false,
+    _pendingVideo: 0,       // >0 while video upload/extraction in progress
     attachedFiles: [],
     _streamController: null,
     _lastUsedModel: null,
@@ -203,7 +208,7 @@ const UIManager = {
         document.getElementById('sidebar-settings-btn').addEventListener('click', function() { SettingsModal.open(); });
         document.getElementById('send-btn').addEventListener('click', function() { self.sendMessage(); });
         document.getElementById('message-input').addEventListener('keydown', function(e) {
-            if (e.key === 'Enter' && e.ctrlKey) { e.preventDefault(); if (!self.isStreaming) self.sendMessage(); }
+            if (e.key === 'Enter' && e.ctrlKey) { e.preventDefault(); if (!self.isStreaming && !self._pendingVideo) self.sendMessage(); }
         });
         document.getElementById('message-input').addEventListener('input', function() {
             this.style.height = 'auto';
