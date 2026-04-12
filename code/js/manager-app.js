@@ -82,6 +82,17 @@ UIManager.initializeApp = async function() {
         }
         await this.renderSessions();
         this.renderChat();
+        // Load image descriptions for the current session in background
+        if (this.currentSession) {
+            var initSessionId = this.currentSession.id;
+            ImageDescriptionStore.loadForSession(initSessionId).then(function(items) {
+                if (UIManager.currentSession && UIManager.currentSession.id === initSessionId) {
+                    items.forEach(function(d) {
+                        UIManager._imageDescriptions[d.file_id] = { name: d.name, description: d.description };
+                    });
+                }
+            });
+        }
         document.getElementById('message-input').focus();
     } catch (e) {
         console.error('Failed to load sessions:', e);
@@ -304,6 +315,15 @@ UIManager.switchSession = async function(id) {
     this.currentSession = await SessionStore.getSession(id);
     await SessionStore.setCurrentSessionId(id);
     this._setModelDropdownValue(this.currentSession.model);
+    // Clear and reload image descriptions for the new session
+    this._imageDescriptions = {};
+    ImageDescriptionStore.loadForSession(id).then(function(items) {
+        if (UIManager.currentSession && UIManager.currentSession.id === id) {
+            items.forEach(function(d) {
+                UIManager._imageDescriptions[d.file_id] = { name: d.name, description: d.description };
+            });
+        }
+    });
     this.renderChat();
 };
 

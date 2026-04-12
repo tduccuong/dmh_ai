@@ -56,12 +56,47 @@ class DataMixin:
                     self.send_json(200 if row else 404, parse(row) if row else {'error': 'Not found'})
                     return True
 
+        m = re.match(r'^/image-descriptions/([^/]+)$', p)
+        if m:
+            session_id = m.group(1)
+            with sqlite3.connect(DB) as c:
+                owns = c.execute('SELECT id FROM sessions WHERE id=? AND user_id=?', (session_id, user['id'])).fetchone()
+                if not owns:
+                    self.send_json(404, {'error': 'Not found'})
+                    return True
+                rows = c.execute(
+                    'SELECT file_id, name, description, created_at FROM image_descriptions WHERE session_id=?',
+                    (session_id,)
+                ).fetchall()
+            self.send_json(200, [{'file_id': r[0], 'name': r[1], 'description': r[2], 'created_at': r[3]} for r in rows])
+            return True
+
         return False
 
     def _handle_data_post(self, p, user):
         if p == '/log':
             d = self.body()
             log(d.get('msg', ''))
+            self.send_json(200, {'ok': True})
+            return True
+
+        if p == '/image-descriptions':
+            d = self.body()
+            session_id = d.get('sessionId', '')
+            file_id = d.get('fileId', '')
+            description = d.get('description', '').strip()
+            if not session_id or not file_id or not description:
+                self.send_json(400, {'error': 'Missing fields'})
+                return True
+            with sqlite3.connect(DB) as c:
+                owns = c.execute('SELECT id FROM sessions WHERE id=? AND user_id=?', (session_id, user['id'])).fetchone()
+                if not owns:
+                    self.send_json(403, {'error': 'Forbidden'})
+                    return True
+                c.execute(
+                    'INSERT OR REPLACE INTO image_descriptions (session_id, file_id, name, description, created_at) VALUES (?,?,?,?,?)',
+                    (session_id, file_id, d.get('name', ''), description, int(time.time() * 1000))
+                )
             self.send_json(200, {'ok': True})
             return True
 

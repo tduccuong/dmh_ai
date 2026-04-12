@@ -394,6 +394,13 @@ UIManager.sendMessage = async function() {
     if (videosForAPI.length > 0) {
         systemPrompt += '\n\nIf you receives multiple images, those are extracted frames from a video the user uploaded — not a photo collection. Never describe them as "a series of images", "a collection of images", or similar. Always refer to the subject as "the video" or "this video".';
     }
+    var imgDescEntries = Object.entries(self._imageDescriptions);
+    if (imgDescEntries.length > 0) {
+        systemPrompt += '\n\nImages the user has shared in this conversation (use these to answer questions about images even if the raw image is no longer in context):\n' +
+            imgDescEntries.map(function(kv) {
+                return '[' + (kv[1].name || 'image') + ']: ' + kv[1].description;
+            }).join('\n\n');
+    }
     if (UserProfile._facts) {
         systemPrompt += '\n\nWhat you know about this person:\n' + UserProfile._facts + '\n\nUse this silently to sharpen your answers — factor in their facts, such as location, background, or interests, where relevant, but never quote, reference, or mention this profile in your response. Never say things like "given your love for X" or "since you enjoy Y". No postscripts, side notes, or personal asides referencing their details. Just use it invisibly. If they explicitly ask what you know about them, then list it directly.';
     }
@@ -606,6 +613,23 @@ UIManager.sendMessage = async function() {
                         : '';
                     UserProfile.extractAndMerge(userText, assistantContent, sessionAtSend.model);
                 })();
+                // Background image description generation — runs after response, non-blocking
+                if (imagesForAPI.length > 0) {
+                    imagesForStorage.forEach(function(img, idx) {
+                        if (!img.fileId || self._imageDescriptions[img.fileId]) return;
+                        var b64 = imagesForAPI[idx];
+                        if (!b64) return;
+                        OllamaAPI.summarize(IMAGE_DESCRIBER_MODEL, [{
+                            role: 'user',
+                            content: 'Describe this image in exhaustive detail. Cover every visible element: main subjects and their appearance (colors, textures, shapes, sizes, quantities), spatial layout and relative positions, background and setting, lighting and shadows, any text, numbers, logos or symbols present, facial expressions or body language if people are shown, actions or motion, mood and atmosphere. Be thorough enough that someone who has never seen the image could reconstruct it accurately from your description alone.',
+                            images: [b64]
+                        }]).then(function(desc) {
+                            if (!desc || !img.fileId) return;
+                            self._imageDescriptions[img.fileId] = { name: img.name, description: desc };
+                            ImageDescriptionStore.save(sessionAtSend.id, img.fileId, img.name, desc);
+                        }).catch(function(e) { console.warn('Image description failed:', e); });
+                    });
+                }
                 // Background compaction — runs after response, transparent to user
                 OllamaAPI.fetchContextWindow(sessionAtSend.model).then(function(contextWindow) {
                     if (ContextManager.shouldCompact(sessionAtSend, contextWindow, '')) {

@@ -58,6 +58,30 @@ const SessionStore = {
     }
 };
 
+const ImageDescriptionStore = {
+    BASE: '/image-descriptions',
+    save: async function(sessionId, fileId, name, description) {
+        try {
+            await apiFetch(this.BASE, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sessionId: sessionId, fileId: fileId, name: name, description: description })
+            });
+        } catch (e) {
+            console.warn('Failed to save image description:', e);
+        }
+    },
+    loadForSession: async function(sessionId) {
+        try {
+            const res = await apiFetch(this.BASE + '/' + sessionId);
+            if (!res.ok) return [];
+            return res.json();
+        } catch (e) {
+            return [];
+        }
+    }
+};
+
 const OllamaAPI = {
     endpoint: '',
     contextWindowCache: {},

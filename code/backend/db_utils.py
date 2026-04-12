@@ -201,6 +201,13 @@ def init_db():
             topic   TEXT NOT NULL,
             count   INTEGER NOT NULL DEFAULT 1,
             PRIMARY KEY (user_id, topic))''')
+        c.execute('''CREATE TABLE IF NOT EXISTS image_descriptions (
+            session_id  TEXT NOT NULL,
+            file_id     TEXT NOT NULL,
+            name        TEXT,
+            description TEXT NOT NULL,
+            created_at  INTEGER,
+            PRIMARY KEY (session_id, file_id))''')
         # Seed default admin user
         if not c.execute('SELECT id FROM users WHERE email=?', ('admin@dmhai.local',)).fetchone():
             uid = secrets.token_hex(8)

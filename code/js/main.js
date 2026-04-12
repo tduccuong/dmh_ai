@@ -66,6 +66,7 @@ const UIManager = {
     _streamController: null,
     _lastUsedModel: null,
     _streamMap: new Map(),  // sessionId -> { content, searchWarning, session } — only 1 entry at a time
+    _imageDescriptions: {}, // fileId -> { name, description } — persisted descriptions loaded from DB
     _wakeLock: null,
     _activeBodyDiv: null,
     _streamingWhenHidden: false,
