@@ -459,10 +459,36 @@ UIManager.handleFileSelect = async function(files) {
                 var resizedFile = await self.resizeImage(file);
                 var resizedBase64 = await self.fileToBase64(resizedFile);
                 var thumbnail = await self.generateThumbnail(resizedBase64, 'image/jpeg');
-                self.attachedFiles.push({
+                var imgEntry = {
                     id: data.id, name: file.name, type: 'image', mime: data.mime,
                     thumbnailBase64: thumbnail,
                     fullBase64: resizedBase64
+                };
+                self.attachedFiles.push(imgEntry);
+                // Start description generation immediately so it's ready before user sends
+                var descFileId = data.id;
+                var descName = file.name;
+                var descB64 = resizedBase64;
+                self._pendingDesc++;
+                self.setStatus('Analyzing photo…');
+                self.updateSendBtn();
+                OllamaAPI.summarize(IMAGE_DESCRIBER_MODEL, [{
+                    role: 'user',
+                    content: 'Describe this image using the following structure:\n\n1. COUNTING RULE (apply to every section below): For every countable category — people, animals, objects — state the exact number. Never write "several", "some", "a few", or "many". Always write "1 cat", "3 fish", "2 chairs", etc.\n\n2. SUBJECTS: For every individual person, animal, and notable object — give each one its own numbered entry. Do NOT group them. Each entry must include: species/type, color(s), size, texture, position in the scene, and any distinguishing features. Example format:\n  - Animal 1: orange goldfish, 5cm, smooth scales, swimming in the bottom-left corner\n  - Animal 2: black betta fish, 7cm, flowing fins, near the center surface\n\n3. LAYOUT: Describe spatial positions — what is in the foreground, center, background, left, right.\n\n4. SETTING: Location, environment, surface the objects rest on.\n\n5. LIGHTING: Light source direction, brightness, shadow presence.\n\n6. TEXT & SYMBOLS: Any visible text, numbers, logos, timestamps — quote them exactly.\n\n7. ACTIONS & MOTION: What is happening, any movement or poses.\n\n8. MOOD: Overall atmosphere and tone.\n\nBe precise and exhaustive. A person who has never seen this image must be able to reconstruct it accurately from your description alone.',
+                    images: [descB64]
+                }]).then(function(desc) {
+                    if (desc && descFileId) {
+                        self._imageDescriptions[descFileId] = { name: descName, description: desc };
+                        if (self.currentSession) {
+                            ImageDescriptionStore.save(self.currentSession.id, descFileId, descName, desc);
+                        }
+                    }
+                }).catch(function(e) {
+                    console.warn('Image description failed:', e);
+                }).finally(function() {
+                    self._pendingDesc--;
+                    if (self._pendingDesc === 0 && self._pendingVideo === 0) self.setStatus('');
+                    self.updateSendBtn();
                 });
             } else {
                 var lines = (data.content || '').split('\n');
@@ -478,7 +504,7 @@ UIManager.handleFileSelect = async function(files) {
             console.error('Upload failed:', e);
         }
     }
-    if (self._pendingVideo === 0) self.setStatus('');
+    if (self._pendingVideo === 0 && self._pendingDesc === 0) self.setStatus('');
 };
 
 UIManager.removeAttachment = function(id) {
@@ -513,7 +539,7 @@ UIManager.renderAttachments = function() {
 UIManager.updateSendBtn = function() {
     var hasText = document.getElementById('message-input').value.trim() !== '';
     var hasAttachment = this.attachedFiles.length > 0;
-    document.getElementById('send-btn').disabled = this.isStreaming || this._pendingVideo > 0 || (!hasText && !hasAttachment);
+    document.getElementById('send-btn').disabled = this.isStreaming || this._pendingVideo > 0 || this._pendingDesc > 0 || (!hasText && !hasAttachment);
 };
 
 UIManager.saveStreamingProgress = function() {

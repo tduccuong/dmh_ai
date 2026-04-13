@@ -613,23 +613,6 @@ UIManager.sendMessage = async function() {
                         : '';
                     UserProfile.extractAndMerge(userText, assistantContent, sessionAtSend.model);
                 })();
-                // Background image description generation — runs after response, non-blocking
-                if (imagesForAPI.length > 0) {
-                    imagesForStorage.forEach(function(img, idx) {
-                        if (!img.fileId || self._imageDescriptions[img.fileId]) return;
-                        var b64 = imagesForAPI[idx];
-                        if (!b64) return;
-                        OllamaAPI.summarize(IMAGE_DESCRIBER_MODEL, [{
-                            role: 'user',
-                            content: 'Describe this image in exhaustive detail. Cover every visible element: main subjects and their appearance (colors, textures, shapes, sizes, quantities), spatial layout and relative positions, background and setting, lighting and shadows, any text, numbers, logos or symbols present, facial expressions or body language if people are shown, actions or motion, mood and atmosphere. Be thorough enough that someone who has never seen the image could reconstruct it accurately from your description alone.',
-                            images: [b64]
-                        }]).then(function(desc) {
-                            if (!desc || !img.fileId) return;
-                            self._imageDescriptions[img.fileId] = { name: img.name, description: desc };
-                            ImageDescriptionStore.save(sessionAtSend.id, img.fileId, img.name, desc);
-                        }).catch(function(e) { console.warn('Image description failed:', e); });
-                    });
-                }
                 // Background compaction — runs after response, transparent to user
                 OllamaAPI.fetchContextWindow(sessionAtSend.model).then(function(contextWindow) {
                     if (ContextManager.shouldCompact(sessionAtSend, contextWindow, '')) {

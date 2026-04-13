@@ -178,9 +178,22 @@ class DataMixin:
             session_id = m.group(1)
             with sqlite3.connect(DB) as c:
                 c.execute('DELETE FROM sessions WHERE id=? AND user_id=?', (session_id, user['id']))
+                c.execute('DELETE FROM image_descriptions WHERE session_id=?', (session_id,))
             session_dir = user_asset_dir(user['email'], session_id)
             if os.path.isdir(session_dir):
                 shutil.rmtree(session_dir, ignore_errors=True)
+            self.send_json(200, {'ok': True})
+            return True
+
+        m = re.match(r'^/image-descriptions/([^/]+)$', p)
+        if m:
+            session_id = m.group(1)
+            with sqlite3.connect(DB) as c:
+                owns = c.execute('SELECT id FROM sessions WHERE id=? AND user_id=?', (session_id, user['id'])).fetchone()
+                if not owns:
+                    self.send_json(404, {'error': 'Not found'})
+                    return True
+                c.execute('DELETE FROM image_descriptions WHERE session_id=?', (session_id,))
             self.send_json(200, {'ok': True})
             return True
 

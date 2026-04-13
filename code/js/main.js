@@ -62,6 +62,7 @@ const UIManager = {
     currentSession: null,
     isStreaming: false,
     _pendingVideo: 0,       // >0 while video upload/extraction in progress
+    _pendingDesc: 0,        // >0 while image description is being generated
     attachedFiles: [],
     _streamController: null,
     _lastUsedModel: null,
@@ -212,7 +213,7 @@ const UIManager = {
         document.getElementById('sidebar-settings-btn').addEventListener('click', function() { SettingsModal.open(); });
         document.getElementById('send-btn').addEventListener('click', function() { self.sendMessage(); });
         document.getElementById('message-input').addEventListener('keydown', function(e) {
-            if (e.key === 'Enter' && e.ctrlKey) { e.preventDefault(); if (!self.isStreaming && !self._pendingVideo) self.sendMessage(); }
+            if (e.key === 'Enter' && e.ctrlKey) { e.preventDefault(); if (!self.isStreaming && !self._pendingVideo && !self._pendingDesc) self.sendMessage(); }
         });
         document.getElementById('message-input').addEventListener('input', function() {
             this.style.height = 'auto';

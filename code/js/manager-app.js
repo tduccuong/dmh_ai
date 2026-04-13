@@ -383,6 +383,8 @@ UIManager.clearSession = async function() {
     this.currentSession.messages = [];
     this.currentSession.context = { summary: null, summaryUpToIndex: -1 };
     await SessionStore.updateSession(this.currentSession);
+    this._imageDescriptions = {};
+    ImageDescriptionStore.deleteForSession(this.currentSession.id);
     this.attachedFiles = [];
     this.renderAttachments();
     this.renderChat();

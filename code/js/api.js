@@ -79,6 +79,13 @@ const ImageDescriptionStore = {
         } catch (e) {
             return [];
         }
+    },
+    deleteForSession: async function(sessionId) {
+        try {
+            await apiFetch(this.BASE + '/' + sessionId, { method: 'DELETE' });
+        } catch (e) {
+            console.warn('Failed to delete image descriptions:', e);
+        }
     }
 };
 
