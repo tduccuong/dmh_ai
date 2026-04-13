@@ -5,15 +5,31 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 IMAGE_NAME="dmh-ai"
 DIST_DIR="$SCRIPT_DIR/dist"
 EXPORT=true
+NO_CACHE=false
+
+usage() {
+    echo "Usage: $0 [options]"
+    echo ""
+    echo "Options:"
+    echo "  --no-cache    Force Docker to rebuild all layers (bypass build cache)"
+    echo "  --no-export   Skip exporting image tars to dist/ (faster local builds)"
+    echo "  help          Show this help message"
+    exit 0
+}
 
 for arg in "$@"; do
     case $arg in
         --no-export) EXPORT=false ;;
+        --no-cache)  NO_CACHE=true ;;
+        help)        usage ;;
     esac
 done
 
+BUILD_FLAGS=""
+[ "$NO_CACHE" = true ] && BUILD_FLAGS="--no-cache"
+
 echo "Building Docker image..."
-docker build -t "$IMAGE_NAME" "$SCRIPT_DIR/code"
+docker build $BUILD_FLAGS -t "$IMAGE_NAME" "$SCRIPT_DIR/code"
 
 mkdir -p "$DIST_DIR"
 
