@@ -437,8 +437,11 @@ UIManager.handleFileSelect = async function(files) {
                 continue;
             }
 
-            if (isImage) self.setStatus('Processing image, may take time…');
-            else self.setStatus(t('attaching'));
+            if (isImage) {
+                self._pendingDesc++;
+                self.setStatus('Processing image, may take time…');
+                self.updateSendBtn();
+            } else self.setStatus(t('attaching'));
 
             var extractedText = null;
             if (isPdf) extractedText = await self.extractPdfText(file);
@@ -469,9 +472,7 @@ UIManager.handleFileSelect = async function(files) {
                 var descFileId = data.id;
                 var descName = file.name;
                 var descB64 = resizedBase64;
-                self._pendingDesc++;
                 self.setStatus('Analyzing photo…');
-                self.updateSendBtn();
                 OllamaAPI.summarize(IMAGE_DESCRIBER_MODEL, [{
                     role: 'user',
                     content: 'Describe this image using the following structure:\n\n1. COUNTING RULE (apply to every section below): For every countable category — people, animals, objects — state the exact number. Never write "several", "some", "a few", or "many". Always write "1 cat", "3 fish", "2 chairs", etc.\n\n2. SUBJECTS: For every individual person, animal, and notable object — give each one its own numbered entry. Do NOT group them. Each entry must include: species/type, color(s), size, texture, position in the scene, and any distinguishing features. Example format:\n  - Animal 1: orange goldfish, 5cm, smooth scales, swimming in the bottom-left corner\n  - Animal 2: black betta fish, 7cm, flowing fins, near the center surface\n\n3. LAYOUT: Describe spatial positions — what is in the foreground, center, background, left, right.\n\n4. SETTING: Location, environment, surface the objects rest on.\n\n5. LIGHTING: Light source direction, brightness, shadow presence.\n\n6. TEXT & SYMBOLS: Any visible text, numbers, logos, timestamps — quote them exactly.\n\n7. ACTIONS & MOTION: What is happening, any movement or poses.\n\n8. MOOD: Overall atmosphere and tone.\n\nBe precise and exhaustive. A person who has never seen this image must be able to reconstruct it accurately from your description alone.',
