@@ -423,11 +423,17 @@ UIManager.handleFileSelect = async function(files) {
                 // Upload and extraction+description both gate the Send button via Promise.all
                 var videoModel = self.currentSession ? self.currentSession.model : '';
                 var videoDescription = null;
-                var uploadPromise = apiFetch('/assets', { method: 'POST', body: videoFormData })
+                // Upload runs in background — does not gate the send button
+                apiFetch('/assets', { method: 'POST', body: videoFormData })
                     .then(function(r) { return r.json(); })
                     .then(function(d) {
                         entry.id = d.id;
                         if (entry._onUploadDone) { entry._onUploadDone(d.id); entry._onUploadDone = null; }
+                        // Save description if extraction finished before upload
+                        if (videoDescription && self.currentSession) {
+                            self._videoDescriptions[d.id] = { name: videoFile.name, description: videoDescription };
+                            VideoDescriptionStore.save(self.currentSession.id, d.id, videoFile.name, videoDescription);
+                        }
                     })
                     .catch(function(e) { console.error('Video upload failed:', e); });
                 var extractionPromise = OllamaAPI.fetchContextWindow(videoModel)
@@ -435,23 +441,28 @@ UIManager.handleFileSelect = async function(files) {
                     .then(function(frames) {
                         entry.frames = frames;
                         if (!frames || frames.length === 0) return;
+                        // Fire description in background — does not gate the send button
                         self.setStatus(t('analyzingVideo'));
-                        return OllamaAPI.summarize(VIDEO_DESCRIBER_MODEL, [{
+                        OllamaAPI.summarize(VIDEO_DESCRIBER_MODEL, [{
                             role: 'user',
                             content: 'These are frames extracted from a video. Describe the video content comprehensively:\n\n1. OVERVIEW: What type of video is this? What is the main subject or activity?\n2. TIMELINE: Describe what happens across the frames in chronological order.\n3. SUBJECTS: All people (count, appearance, actions), animals, or notable objects — give each a numbered entry with details.\n4. SETTING: Location, environment, time of day if visible.\n5. TEXT & SYMBOLS: Any visible text, signs, labels, or timestamps — quote exactly.\n6. KEY MOMENTS: Notable events, changes, or transitions visible across frames.\n\nBe concise but complete. A person who has not seen the video must understand its full content from your description alone.',
                             images: frames
                         }]).then(function(desc) {
-                            if (desc) videoDescription = desc;
+                            if (!desc) return;
+                            videoDescription = desc;
+                            // Save now if upload already finished, otherwise upload callback saves it
+                            if (entry.id && self.currentSession) {
+                                self._videoDescriptions[entry.id] = { name: videoFile.name, description: desc };
+                                VideoDescriptionStore.save(self.currentSession.id, entry.id, videoFile.name, desc);
+                            }
                         }).catch(function(e) {
                             console.warn('Video description failed:', e);
                         });
+                        // Don't return — extractionPromise resolves here, frames are ready
                     })
                     .catch(function(e) { console.error('Frame extraction failed:', e); });
-                Promise.all([uploadPromise, extractionPromise]).finally(function() {
-                    if (videoDescription && entry.id && self.currentSession) {
-                        self._videoDescriptions[entry.id] = { name: videoFile.name, description: videoDescription };
-                        VideoDescriptionStore.save(self.currentSession.id, entry.id, videoFile.name, videoDescription);
-                    }
+                // Gate send button only on frame extraction (frames ready = can send)
+                extractionPromise.finally(function() {
                     self._pendingVideo--;
                     if (self._pendingVideo === 0 && self._pendingDesc === 0) self.setStatus('');
                     self.updateSendBtn();
@@ -463,57 +474,73 @@ UIManager.handleFileSelect = async function(files) {
                 self._pendingDesc++;
                 self.setStatus(t('processingImage'));
                 self.updateSendBtn();
-            } else self.setStatus(t('attaching'));
 
-            var extractedText = null;
-            if (isPdf) extractedText = await self.extractPdfText(file);
-            else if (officeFormat === 'docx') extractedText = await self.extractDocxText(file);
-            else if (officeFormat === 'xlsx') extractedText = await self.extractXlsxText(file);
-
-            var uploadFile = file;
-            if (extractedText !== null) {
-                uploadFile = new File([extractedText], file.name + '.txt', { type: 'text/plain' });
-            }
-            var formData = new FormData();
-            formData.append('file', uploadFile);
-            formData.append('sessionId', sessionId);
-            var res = await apiFetch('/assets', { method: 'POST', body: formData });
-            var data = await res.json();
-
-            if (isImage) {
+                // Client-side processing (fast, no network)
                 var resizedFile = await self.resizeImage(file);
                 var resizedBase64 = await self.fileToBase64(resizedFile);
                 var thumbnail = await self.generateThumbnail(resizedBase64, 'image/jpeg');
                 var imgEntry = {
-                    id: data.id, name: file.name, type: 'image', mime: data.mime,
+                    id: null, name: file.name, type: 'image', mime: file.type,
                     thumbnailBase64: thumbnail,
                     fullBase64: resizedBase64
                 };
                 self.attachedFiles.push(imgEntry);
-                // Start description generation immediately so it's ready before user sends
-                var descFileId = data.id;
-                var descName = file.name;
-                var descB64 = resizedBase64;
-                self.setStatus(t('analyzingImage'));
+                self.renderAttachments();
+
+                // Upload in background — does not gate the send button
+                var imgDescResult = null;
+                var imgFormData = new FormData();
+                imgFormData.append('file', file);
+                imgFormData.append('sessionId', sessionId);
+                apiFetch('/assets', { method: 'POST', body: imgFormData })
+                    .then(function(r) { return r.json(); })
+                    .then(function(d) {
+                        imgEntry.id = d.id;
+                        // Save description if it finished before upload
+                        if (imgDescResult && self.currentSession) {
+                            self._imageDescriptions[d.id] = { name: file.name, description: imgDescResult };
+                            ImageDescriptionStore.save(self.currentSession.id, d.id, file.name, imgDescResult);
+                        }
+                    })
+                    .catch(function(e) { console.error('Image upload failed:', e); });
+
+                // Fire description in background — does not gate the send button
                 OllamaAPI.summarize(IMAGE_DESCRIBER_MODEL, [{
                     role: 'user',
                     content: 'Describe this image using the following structure:\n\n1. COUNTING RULE (apply to every section below): For every countable category — people, animals, objects — state the exact number. Never write "several", "some", "a few", or "many". Always write "1 cat", "3 fish", "2 chairs", etc.\n\n2. SUBJECTS: For every individual person, animal, and notable object — give each one its own numbered entry. Do NOT group them. Each entry must include: species/type, color(s), size, texture, position in the scene, and any distinguishing features. Example format:\n  - Animal 1: orange goldfish, 5cm, smooth scales, swimming in the bottom-left corner\n  - Animal 2: black betta fish, 7cm, flowing fins, near the center surface\n\n3. LAYOUT: Describe spatial positions — what is in the foreground, center, background, left, right.\n\n4. SETTING: Location, environment, surface the objects rest on.\n\n5. LIGHTING: Light source direction, brightness, shadow presence.\n\n6. TEXT & SYMBOLS: Any visible text, numbers, logos, timestamps — quote them exactly.\n\n7. ACTIONS & MOTION: What is happening, any movement or poses.\n\n8. MOOD: Overall atmosphere and tone.\n\nBe precise and exhaustive. A person who has never seen this image must be able to reconstruct it accurately from your description alone.',
-                    images: [descB64]
+                    images: [resizedBase64]
                 }]).then(function(desc) {
-                    if (desc && descFileId) {
-                        self._imageDescriptions[descFileId] = { name: descName, description: desc };
-                        if (self.currentSession) {
-                            ImageDescriptionStore.save(self.currentSession.id, descFileId, descName, desc);
-                        }
+                    imgDescResult = desc;
+                    // Save description if upload already finished
+                    if (desc && imgEntry.id && self.currentSession) {
+                        self._imageDescriptions[imgEntry.id] = { name: file.name, description: desc };
+                        ImageDescriptionStore.save(self.currentSession.id, imgEntry.id, file.name, desc);
                     }
                 }).catch(function(e) {
                     console.warn('Image description failed:', e);
-                }).finally(function() {
-                    self._pendingDesc--;
-                    if (self._pendingDesc === 0 && self._pendingVideo === 0) self.setStatus('');
-                    self.updateSendBtn();
                 });
+                // Unlock send button immediately — image base64 is ready, description runs in background
+                self._pendingDesc--;
+                if (self._pendingDesc === 0 && self._pendingVideo === 0) self.setStatus('');
+                self.updateSendBtn();
             } else {
+                self.setStatus(t('attaching'));
+
+                var extractedText = null;
+                if (isPdf) extractedText = await self.extractPdfText(file);
+                else if (officeFormat === 'docx') extractedText = await self.extractDocxText(file);
+                else if (officeFormat === 'xlsx') extractedText = await self.extractXlsxText(file);
+
+                var uploadFile = file;
+                if (extractedText !== null) {
+                    uploadFile = new File([extractedText], file.name + '.txt', { type: 'text/plain' });
+                }
+                var formData = new FormData();
+                formData.append('file', uploadFile);
+                formData.append('sessionId', sessionId);
+                var res = await apiFetch('/assets', { method: 'POST', body: formData });
+                var data = await res.json();
+
                 var lines = (data.content || '').split('\n');
                 var snippet = lines.slice(0, FILE_SNIPPET_MAX_LINES).join('\n') + (lines.length > FILE_SNIPPET_MAX_LINES ? '\n…' : '');
                 self.attachedFiles.push({
@@ -521,11 +548,12 @@ UIManager.handleFileSelect = async function(files) {
                     snippet: snippet,
                     fullContent: data.content
                 });
+                self.renderAttachments();
             }
-            self.renderAttachments();
         } catch (e) {
             console.error('Upload failed:', e);
             if (isVideoEarly) { self._pendingVideo--; self.setStatus(''); self.updateSendBtn(); }
+            if (isImage) { self._pendingDesc--; self.setStatus(''); self.updateSendBtn(); }
         }
     }
     if (self._pendingVideo === 0 && self._pendingDesc === 0) self.setStatus('');
