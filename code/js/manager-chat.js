@@ -378,7 +378,7 @@ UIManager.handleFileSelect = async function(files) {
         var isVideoEarly = file.type.startsWith('video/');
         if (isVideoEarly) {
             self._pendingVideo++;
-            self.setStatus('Processing video, may take time…');
+            self.setStatus(t('processingVideo'));
             self.updateSendBtn();
         }
         try {
@@ -435,7 +435,7 @@ UIManager.handleFileSelect = async function(files) {
                     .then(function(frames) {
                         entry.frames = frames;
                         if (!frames || frames.length === 0) return;
-                        self.setStatus('Analyzing video…');
+                        self.setStatus(t('analyzingVideo'));
                         return OllamaAPI.summarize(VIDEO_DESCRIBER_MODEL, [{
                             role: 'user',
                             content: 'These are frames extracted from a video. Describe the video content comprehensively:\n\n1. OVERVIEW: What type of video is this? What is the main subject or activity?\n2. TIMELINE: Describe what happens across the frames in chronological order.\n3. SUBJECTS: All people (count, appearance, actions), animals, or notable objects — give each a numbered entry with details.\n4. SETTING: Location, environment, time of day if visible.\n5. TEXT & SYMBOLS: Any visible text, signs, labels, or timestamps — quote exactly.\n6. KEY MOMENTS: Notable events, changes, or transitions visible across frames.\n\nBe concise but complete. A person who has not seen the video must understand its full content from your description alone.',
@@ -461,7 +461,7 @@ UIManager.handleFileSelect = async function(files) {
 
             if (isImage) {
                 self._pendingDesc++;
-                self.setStatus('Processing image, may take time…');
+                self.setStatus(t('processingImage'));
                 self.updateSendBtn();
             } else self.setStatus(t('attaching'));
 
@@ -494,7 +494,7 @@ UIManager.handleFileSelect = async function(files) {
                 var descFileId = data.id;
                 var descName = file.name;
                 var descB64 = resizedBase64;
-                self.setStatus('Analyzing photo…');
+                self.setStatus(t('analyzingImage'));
                 OllamaAPI.summarize(IMAGE_DESCRIBER_MODEL, [{
                     role: 'user',
                     content: 'Describe this image using the following structure:\n\n1. COUNTING RULE (apply to every section below): For every countable category — people, animals, objects — state the exact number. Never write "several", "some", "a few", or "many". Always write "1 cat", "3 fish", "2 chairs", etc.\n\n2. SUBJECTS: For every individual person, animal, and notable object — give each one its own numbered entry. Do NOT group them. Each entry must include: species/type, color(s), size, texture, position in the scene, and any distinguishing features. Example format:\n  - Animal 1: orange goldfish, 5cm, smooth scales, swimming in the bottom-left corner\n  - Animal 2: black betta fish, 7cm, flowing fins, near the center surface\n\n3. LAYOUT: Describe spatial positions — what is in the foreground, center, background, left, right.\n\n4. SETTING: Location, environment, surface the objects rest on.\n\n5. LIGHTING: Light source direction, brightness, shadow presence.\n\n6. TEXT & SYMBOLS: Any visible text, numbers, logos, timestamps — quote them exactly.\n\n7. ACTIONS & MOTION: What is happening, any movement or poses.\n\n8. MOOD: Overall atmosphere and tone.\n\nBe precise and exhaustive. A person who has never seen this image must be able to reconstruct it accurately from your description alone.',
