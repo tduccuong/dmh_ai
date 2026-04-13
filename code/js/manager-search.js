@@ -263,19 +263,12 @@ UIManager.synthesizeResults = async function(question, keywords, results, today,
 };
 
 function digestThinking(raw) {
-    var placeholder = '1. **Analyzing the request...**\n\n';
-    // Skip everything up to where section 2 begins (line starting with "2." or "2)")
-    var m = /(?:^|\n)(2[\.\)]\s)/.exec(raw);
-    if (!m) return placeholder;
-    var section2Start = m.index === 0 ? 0 : m.index + 1;
-    var rest = raw.slice(section2Start);
-    // Buffer last incomplete line so a partial censored sentence is never shown
-    var lastNl = rest.lastIndexOf('\n');
-    if (lastNl < 0) return placeholder;
-    var safe = rest.slice(0, lastNl);
+    if (!raw) return '';
+    // Buffer last incomplete line so a partial sentence mid-stream is never shown
+    var lastNl = raw.lastIndexOf('\n');
+    var safe = lastNl >= 0 ? raw.slice(0, lastNl) : raw;
     // Remove sentences containing the app name
-    var filtered = safe.replace(/[^.!?\n]*DMH[- ]?AI[^.!?\n]*/gi, '').replace(/[ \t]{2,}/g, ' ');
-    return placeholder + filtered;
+    return safe.replace(/[^.!?\n]*DMH[- ]?AI[^.!?\n]*/gi, '').replace(/[ \t]{2,}/g, ' ').trim();
 }
 
 UIManager.sendMessage = async function() {
@@ -378,6 +371,7 @@ UIManager.sendMessage = async function() {
 
     this.isStreaming = true;
     this._acquireWakeLock();
+    self._activeBodyDiv = bodyDiv;
     self._streamMap.clear();
     self._streamMap.set(sessionAtSend.id, { content: '', searchWarning: '', session: sessionAtSend });
     const pipelineController = new AbortController();
@@ -399,6 +393,13 @@ UIManager.sendMessage = async function() {
         systemPrompt += '\n\nImages the user has shared in this conversation (use these to answer questions about images even if the raw image is no longer in context):\n' +
             imgDescEntries.map(function(kv) {
                 return '[' + (kv[1].name || 'image') + ']: ' + kv[1].description;
+            }).join('\n\n');
+    }
+    var vidDescEntries = Object.entries(self._videoDescriptions || {});
+    if (vidDescEntries.length > 0) {
+        systemPrompt += '\n\nVideos the user has shared in this conversation (use these to answer questions about videos even if the frames are no longer in context):\n' +
+            vidDescEntries.map(function(kv) {
+                return '[' + (kv[1].name || 'video') + ']: ' + kv[1].description;
             }).join('\n\n');
     }
     if (UserProfile._facts) {
@@ -644,7 +645,7 @@ UIManager.sendMessage = async function() {
                 if (assistantContent) {
                     if (errBody && errEntry) { errBody.innerHTML = errEntry.searchWarning + renderWithMath(assistantContent); addCopyButtons(errBody); wrapTables(errBody); }
                 } else if (errBody) {
-                    var errMsg = videosForStorage.length > 0
+                    var errMsg = videosForAPI.length > 0
                         ? '⚠ ' + getModelDisplayName(sessionAtSend.model) + ' doesn\'t support video input. Please switch to another one.'
                         : '⚠ No response received — the connection was interrupted. Please try again.';
                     errBody.innerHTML = '<em style="color:#e05060;">' + errMsg + '</em>';
@@ -652,6 +653,7 @@ UIManager.sendMessage = async function() {
                 self.saveStreamingProgress();
                 self._streamMap.delete(sessionAtSend.id);
                 self._streamController = null;
+                self._activeBodyDiv = null;
                 self.isStreaming = false;
                 self._releaseWakeLock();
                 self.updateSendBtn();

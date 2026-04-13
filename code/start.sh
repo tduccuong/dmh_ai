@@ -1,3 +1,3 @@
 #!/bin/sh
-su-exec appuser python3 /app/server.py &
+su-exec appuser /app/bin/dmhai start &
 exec nginx -g 'daemon off;'

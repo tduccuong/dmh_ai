@@ -82,13 +82,20 @@ UIManager.initializeApp = async function() {
         }
         await this.renderSessions();
         this.renderChat();
-        // Load image descriptions for the current session in background
+        // Load image and video descriptions for the current session in background
         if (this.currentSession) {
             var initSessionId = this.currentSession.id;
             ImageDescriptionStore.loadForSession(initSessionId).then(function(items) {
                 if (UIManager.currentSession && UIManager.currentSession.id === initSessionId) {
                     items.forEach(function(d) {
                         UIManager._imageDescriptions[d.file_id] = { name: d.name, description: d.description };
+                    });
+                }
+            });
+            VideoDescriptionStore.loadForSession(initSessionId).then(function(items) {
+                if (UIManager.currentSession && UIManager.currentSession.id === initSessionId) {
+                    items.forEach(function(d) {
+                        UIManager._videoDescriptions[d.file_id] = { name: d.name, description: d.description };
                     });
                 }
             });
@@ -228,10 +235,9 @@ UIManager._setModelDropdownValue = function(value) {
 };
 
 UIManager.refreshModelSelect = async function() {
-    try {
-        var models = await OllamaAPI.fetchModels();
-        this.populateModelSelects(models);
-    } catch(e) {}
+    var models = [];
+    try { models = await OllamaAPI.fetchModels(); } catch(e) {}
+    this.populateModelSelects(models);
 };
 
 UIManager.renderSessions = async function() {
@@ -315,12 +321,20 @@ UIManager.switchSession = async function(id) {
     this.currentSession = await SessionStore.getSession(id);
     await SessionStore.setCurrentSessionId(id);
     this._setModelDropdownValue(this.currentSession.model);
-    // Clear and reload image descriptions for the new session
+    // Clear and reload image and video descriptions for the new session
     this._imageDescriptions = {};
+    this._videoDescriptions = {};
     ImageDescriptionStore.loadForSession(id).then(function(items) {
         if (UIManager.currentSession && UIManager.currentSession.id === id) {
             items.forEach(function(d) {
                 UIManager._imageDescriptions[d.file_id] = { name: d.name, description: d.description };
+            });
+        }
+    });
+    VideoDescriptionStore.loadForSession(id).then(function(items) {
+        if (UIManager.currentSession && UIManager.currentSession.id === id) {
+            items.forEach(function(d) {
+                UIManager._videoDescriptions[d.file_id] = { name: d.name, description: d.description };
             });
         }
     });
@@ -384,7 +398,9 @@ UIManager.clearSession = async function() {
     this.currentSession.context = { summary: null, summaryUpToIndex: -1 };
     await SessionStore.updateSession(this.currentSession);
     this._imageDescriptions = {};
+    this._videoDescriptions = {};
     ImageDescriptionStore.deleteForSession(this.currentSession.id);
+    VideoDescriptionStore.deleteForSession(this.currentSession.id);
     this.attachedFiles = [];
     this.renderAttachments();
     this.renderChat();

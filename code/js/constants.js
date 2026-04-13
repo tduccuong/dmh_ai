@@ -14,6 +14,10 @@ const ASSISTANT_MODEL = 'ministral-3:14b-cloud';
 // Must support vision; used after each image-containing message, non-blocking.
 const IMAGE_DESCRIBER_MODEL = 'ministral-3:14b-cloud';
 
+// Dedicated vision model for generating video descriptions stored in DB.
+// Receives all extracted frames; used after video upload, gates the Send button.
+const VIDEO_DESCRIBER_MODEL = 'ministral-3:14b-cloud';
+
 // Mid-tier cloud model for search result synthesis.
 // Needs enough capacity to compress multiple web pages into coherent facts.
 const SYNTHESIZER_MODEL = 'ministral-3:14b-cloud';

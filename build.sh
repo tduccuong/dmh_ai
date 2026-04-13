@@ -39,7 +39,9 @@ if [ "$EXPORT" = true ]; then
 
     echo "Pulling and exporting SearXNG image..."
     docker pull searxng/searxng
-    docker save searxng/searxng -o "$DIST_DIR/searxng.tar"
+    docker tag searxng/searxng searxng/searxng:build-export
+    docker save searxng/searxng:build-export -o "$DIST_DIR/searxng.tar"
+    docker rmi searxng/searxng:build-export
 else
     echo "Skipping image export (--no-export). Removing stale tars if present..."
     rm -f "$DIST_DIR/dmh-ai.tar" "$DIST_DIR/searxng.tar"

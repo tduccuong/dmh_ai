@@ -404,13 +404,13 @@ const AppConfig = {
 
 function getRecommendedCloudModels() {
     return [
-        { name: 'gemma4:31b-cloud',               label: t('recWordsmith') },
+        { name: 'gemini-3-flash-preview:cloud',   label: t('recWordsmith') },
         { name: 'ministral-3:14b-cloud',          label: t('recQuickAnswer') },
-        { name: 'qwen3.5:cloud',              label: t('recDeepThinker') },
+        { name: 'qwen3.5:cloud',                  label: t('recDeepThinker') },
     ];
 }
 // Constant names for filtering (language-independent)
-const RECOMMENDED_CLOUD_MODEL_NAMES = ['ministral-3:14b-cloud', 'qwen3.5:cloud', 'gemma4:31b-cloud'];
+const RECOMMENDED_CLOUD_MODEL_NAMES = ['ministral-3:14b-cloud', 'qwen3.5:cloud', 'gemini-3-flash-preview:cloud'];
 
 var _MODEL_ACRONYMS = { vl: 'VL', rnj: 'RNJ', gpt: 'GPT', oss: 'OSS', glm: 'GLM' };
 function normalizeModelLabel(model) {

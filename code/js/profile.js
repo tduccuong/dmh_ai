@@ -501,7 +501,7 @@ const SettingsModal = {
         sub.classList.toggle('disabled', !hasAccounts);
     },
     _addCloudModel: function(name) {
-        name = name.trim();
+        name = name.trim().toLowerCase();
         if (!name) return;
         // Recommended models are shown automatically — don't add to user list
         if (RECOMMENDED_CLOUD_MODEL_NAMES.indexOf(name) !== -1) return;
@@ -557,7 +557,7 @@ const SettingsModal = {
         var suggestions = document.getElementById('cloud-model-suggestions');
         var _searchTimer = null;
         searchInput.addEventListener('input', function() {
-            var q = this.value.trim();
+            var q = this.value.trim().toLowerCase();
             suggestions.innerHTML = '';
             if (!q) { suggestions.classList.remove('open'); return; }
             clearTimeout(_searchTimer);

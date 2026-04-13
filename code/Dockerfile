@@ -1,5 +1,17 @@
+# Build stage — compile Elixir release
+FROM elixir:alpine AS builder
+RUN apk add --no-cache build-base git
+WORKDIR /build
+COPY backend/mix.exs backend/mix.lock* ./
+RUN mix local.hex --force && mix local.rebar --force
+RUN mix deps.get --only prod
+RUN MIX_ENV=prod mix deps.compile
+COPY backend/ .
+RUN MIX_ENV=prod mix release --overwrite
+
+# Runtime stage — nginx + Elixir release
 FROM nginx:alpine
-RUN apk add --no-cache python3 su-exec openssl imagemagick && \
+RUN apk add --no-cache su-exec openssl imagemagick libstdc++ libgcc && \
     mkdir -p /etc/nginx/ssl && \
     openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
       -keyout /etc/nginx/ssl/key.pem \
@@ -19,13 +31,7 @@ RUN apk add --no-cache python3 su-exec openssl imagemagick && \
       https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js
 RUN adduser -D -u 1000 appuser && \
     mkdir -p /data /app && chown appuser:appuser /data /app
-COPY backend/server.py /app/server.py
-COPY backend/db_utils.py /app/db_utils.py
-COPY backend/auth_handlers.py /app/auth_handlers.py
-COPY backend/data_handlers.py /app/data_handlers.py
-COPY backend/proxy_handlers.py /app/proxy_handlers.py
-COPY backend/blocked_domains.py /app/blocked_domains.py
-COPY backend/constants.py /app/constants.py
+COPY --from=builder /build/_build/prod/rel/dmhai /app
 COPY index.html /usr/share/nginx/html/
 COPY css/ /usr/share/nginx/html/css/
 COPY js/ /usr/share/nginx/html/js/

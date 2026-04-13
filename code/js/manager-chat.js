@@ -374,6 +374,13 @@ UIManager.handleFileSelect = async function(files) {
     const sessionId = this.currentSession ? this.currentSession.id : 'default';
     for (var i = 0; i < files.length; i++) {
         var file = files[i];
+        // Detect video synchronously before any await so the button is disabled immediately
+        var isVideoEarly = file.type.startsWith('video/');
+        if (isVideoEarly) {
+            self._pendingVideo++;
+            self.setStatus('Processing video, may take time…');
+            self.updateSendBtn();
+        }
         try {
             var IMAGE_EXTS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.heic', '.heif'];
             var nameLower = file.name.toLowerCase();
@@ -400,13 +407,12 @@ UIManager.handleFileSelect = async function(files) {
             if ((isImage || isVideo) && file.size > MEDIA_MAX_SIZE_BYTES) {
                 var sizeMB = (file.size / (1024 * 1024)).toFixed(0);
                 Modal.alert('File too large', '"' + file.name + '" is ' + sizeMB + ' MB. DMH-AI does not support files larger than 300 MB.');
+                if (isVideo) { self._pendingVideo--; self.setStatus(''); self.updateSendBtn(); }
                 continue;
             }
 
             if (isVideo) {
-                // Upload runs in background (for download button); extraction gates the Send button
-                self._pendingVideo++;
-                self.setStatus('Processing video, may take time…');
+                // _pendingVideo already incremented before the try block
                 var videoFile = file;
                 var videoFormData = new FormData();
                 videoFormData.append('file', videoFile);
@@ -414,26 +420,42 @@ UIManager.handleFileSelect = async function(files) {
                 var entry = { id: null, name: videoFile.name, type: 'video', mime: videoFile.type, frames: [] };
                 self.attachedFiles.push(entry);
                 self.renderAttachments();
-                self.updateSendBtn();
-                // Upload silently in background — sets entry.id when done (needed for download button)
-                apiFetch('/assets', { method: 'POST', body: videoFormData })
+                // Upload and extraction+description both gate the Send button via Promise.all
+                var videoModel = self.currentSession ? self.currentSession.model : '';
+                var videoDescription = null;
+                var uploadPromise = apiFetch('/assets', { method: 'POST', body: videoFormData })
                     .then(function(r) { return r.json(); })
                     .then(function(d) {
                         entry.id = d.id;
                         if (entry._onUploadDone) { entry._onUploadDone(d.id); entry._onUploadDone = null; }
                     })
                     .catch(function(e) { console.error('Video upload failed:', e); });
-                // Extraction gates Send — clears status and re-enables Send when ready
-                var videoModel = self.currentSession ? self.currentSession.model : '';
-                OllamaAPI.fetchContextWindow(videoModel)
+                var extractionPromise = OllamaAPI.fetchContextWindow(videoModel)
                     .then(function(ctxWindow) { return UIManager.extractVideoFrames(videoFile, ctxWindow, videoModel); })
-                    .then(function(frames) { entry.frames = frames; })
-                    .catch(function(e) { console.error('Frame extraction failed:', e); })
-                    .finally(function() {
-                        self._pendingVideo--;
-                        self.setStatus('');
-                        self.updateSendBtn();
-                    });
+                    .then(function(frames) {
+                        entry.frames = frames;
+                        if (!frames || frames.length === 0) return;
+                        self.setStatus('Analyzing video…');
+                        return OllamaAPI.summarize(VIDEO_DESCRIBER_MODEL, [{
+                            role: 'user',
+                            content: 'These are frames extracted from a video. Describe the video content comprehensively:\n\n1. OVERVIEW: What type of video is this? What is the main subject or activity?\n2. TIMELINE: Describe what happens across the frames in chronological order.\n3. SUBJECTS: All people (count, appearance, actions), animals, or notable objects — give each a numbered entry with details.\n4. SETTING: Location, environment, time of day if visible.\n5. TEXT & SYMBOLS: Any visible text, signs, labels, or timestamps — quote exactly.\n6. KEY MOMENTS: Notable events, changes, or transitions visible across frames.\n\nBe concise but complete. A person who has not seen the video must understand its full content from your description alone.',
+                            images: frames
+                        }]).then(function(desc) {
+                            if (desc) videoDescription = desc;
+                        }).catch(function(e) {
+                            console.warn('Video description failed:', e);
+                        });
+                    })
+                    .catch(function(e) { console.error('Frame extraction failed:', e); });
+                Promise.all([uploadPromise, extractionPromise]).finally(function() {
+                    if (videoDescription && entry.id && self.currentSession) {
+                        self._videoDescriptions[entry.id] = { name: videoFile.name, description: videoDescription };
+                        VideoDescriptionStore.save(self.currentSession.id, entry.id, videoFile.name, videoDescription);
+                    }
+                    self._pendingVideo--;
+                    if (self._pendingVideo === 0 && self._pendingDesc === 0) self.setStatus('');
+                    self.updateSendBtn();
+                });
                 continue;
             }
 
@@ -503,6 +525,7 @@ UIManager.handleFileSelect = async function(files) {
             self.renderAttachments();
         } catch (e) {
             console.error('Upload failed:', e);
+            if (isVideoEarly) { self._pendingVideo--; self.setStatus(''); self.updateSendBtn(); }
         }
     }
     if (self._pendingVideo === 0 && self._pendingDesc === 0) self.setStatus('');

@@ -89,6 +89,37 @@ const ImageDescriptionStore = {
     }
 };
 
+const VideoDescriptionStore = {
+    BASE: '/video-descriptions',
+    save: async function(sessionId, fileId, name, description) {
+        try {
+            await apiFetch(this.BASE, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sessionId: sessionId, fileId: fileId, name: name, description: description })
+            });
+        } catch (e) {
+            console.warn('Failed to save video description:', e);
+        }
+    },
+    loadForSession: async function(sessionId) {
+        try {
+            const res = await apiFetch(this.BASE + '/' + sessionId);
+            if (!res.ok) return [];
+            return res.json();
+        } catch (e) {
+            return [];
+        }
+    },
+    deleteForSession: async function(sessionId) {
+        try {
+            await apiFetch(this.BASE + '/' + sessionId, { method: 'DELETE' });
+        } catch (e) {
+            console.warn('Failed to delete video descriptions:', e);
+        }
+    }
+};
+
 const OllamaAPI = {
     endpoint: '',
     contextWindowCache: {},
@@ -101,6 +132,7 @@ const OllamaAPI = {
     },
     hasVision: async function(model) {
         if (model in this.capabilityCache) return this.capabilityCache[model];
+        if (isCloudModel(model)) { this.capabilityCache[model] = true; return true; }
         try {
             const res = await fetch(this.BASE_URL + '/show', {
                 method: 'POST',
@@ -155,6 +187,7 @@ const OllamaAPI = {
     },
     fetchContextWindow: async function(model) {
         if (this.contextWindowCache[model]) return this.contextWindowCache[model];
+        if (isCloudModel(model)) { this.contextWindowCache[model] = 32768; return 32768; }
         try {
             const res = await fetch(this.BASE_URL + '/show', {
                 method: 'POST',
@@ -169,7 +202,7 @@ const OllamaAPI = {
             this.contextWindowCache[model] = ctxLen;
             return ctxLen;
         } catch (e) {
-            return 4096;
+            return 32768;
         }
     },
     summarize: async function(model, messages, signal) {

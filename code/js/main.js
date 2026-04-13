@@ -68,6 +68,7 @@ const UIManager = {
     _lastUsedModel: null,
     _streamMap: new Map(),  // sessionId -> { content, searchWarning, session } — only 1 entry at a time
     _imageDescriptions: {}, // fileId -> { name, description } — persisted descriptions loaded from DB
+    _videoDescriptions: {}, // fileId -> { name, description } — persisted descriptions loaded from DB
     _wakeLock: null,
     _activeBodyDiv: null,
     _streamingWhenHidden: false,
@@ -194,9 +195,6 @@ const UIManager = {
             } else if (c.scrollHeight > c.clientHeight) {
                 document.getElementById('scroll-bottom-btn').style.display = 'flex';
             }
-        });
-        document.addEventListener('visibilitychange', function() {
-            if (document.hidden && self.isStreaming) self.saveStreamingProgress();
         });
         window.addEventListener('beforeunload', function() {
             if (self.isStreaming) self.saveStreamingProgress();
