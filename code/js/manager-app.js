@@ -372,12 +372,7 @@ UIManager.switchModel = function(modelName) {
 UIManager.getDefaultModel = function() {
     const sel = document.getElementById('header-model-select');
     const activeOptions = Array.from(sel.options).map(function(o) { return o.value; }).filter(Boolean);
-    syslog('[MODEL] getDefaultModel _lastUsedModel=' + this._lastUsedModel + ' activeOptions=' + activeOptions.join(','));
-    // User's last-selected model takes priority if still available
-    if (this._lastUsedModel && activeOptions.indexOf(this._lastUsedModel) !== -1) {
-        return this._lastUsedModel;
-    }
-    // Fallback order: Recommended → Cloud → Local
+    // New chats always default to the first available Recommended Cloud Model, then Cloud, then Local
     const hasPool = Settings.accounts.length > 0;
     if (hasPool) {
         var rec = RECOMMENDED_CLOUD_MODEL_NAMES.find(function(n) { return activeOptions.indexOf(n) !== -1; });

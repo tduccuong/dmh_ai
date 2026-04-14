@@ -249,7 +249,7 @@ defmodule Dmhai.Handlers.Proxy do
   # POST /local-api/* (streaming, no auth)
   def post_local_api(conn, sub) do
     endpoint = get_local_endpoint()
-    {:ok, body, conn} = read_body(conn, length: 10_000_000)
+    {:ok, body, conn} = read_body(conn, length: 100_000_000)
 
     conn =
       conn
@@ -293,7 +293,7 @@ defmodule Dmhai.Handlers.Proxy do
     if cloud_key == "" do
       json(conn, 400, %{error: "Missing cloud API key"})
     else
-      {:ok, body, conn} = read_body(conn, length: 10_000_000)
+      {:ok, body, conn} = read_body(conn, length: 100_000_000)
 
       # First check for upstream errors before starting stream
       # We need to peek at the response status; use streaming and detect error status
@@ -306,6 +306,9 @@ defmodule Dmhai.Handlers.Proxy do
 
       url = "https://ollama.com/api/#{sub}"
 
+      bytes_key = {__MODULE__, :bytes, self()}
+      Process.put(bytes_key, 0)
+
       result =
         Req.post(url,
           body: body,
@@ -317,6 +320,7 @@ defmodule Dmhai.Handlers.Proxy do
           retry: false,
           finch: Dmhai.Finch,
           into: fn {:data, data}, {req, resp} ->
+            Process.put(bytes_key, Process.get(bytes_key) + byte_size(data))
             case chunk(conn, data) do
               {:ok, _conn} -> {:cont, {req, resp}}
               {:error, _} -> {:halt, {req, resp}}
@@ -324,12 +328,17 @@ defmodule Dmhai.Handlers.Proxy do
           end
         )
 
+      bytes_sent = Process.get(bytes_key)
+
       case result do
         {:error, reason} ->
           Logger.error("[CLOUD-API] ERROR: #{inspect(reason)}")
 
         {:ok, %{status: status}} when status >= 400 ->
-          Logger.error("[CLOUD-API] upstream error status=#{status}")
+          Logger.error("[CLOUD-API] upstream error status=#{status} sub=#{sub} bytes_sent=#{bytes_sent}")
+
+        {:ok, %{status: status}} when bytes_sent == 0 ->
+          Logger.error("[CLOUD-API] upstream returned 0 bytes status=#{status} sub=#{sub} req_size=#{byte_size(body)}")
 
         _ ->
           :ok
@@ -379,7 +388,10 @@ defmodule Dmhai.Handlers.Proxy do
 
     case Req.get(url, headers: headers, receive_timeout: timeout, retry: false, finch: Dmhai.Finch) do
       {:ok, resp} ->
-        resp_headers = Enum.map(resp.headers, fn {k, v} -> {k, v} end)
+        # Req 0.5+ returns header values as lists; normalize to strings
+        resp_headers = Enum.map(resp.headers, fn {k, v} ->
+          {k, if(is_list(v), do: List.first(v) || "", else: v)}
+        end)
         body = ensure_string(resp.body)
         {:ok, resp.status, resp_headers, body}
 
