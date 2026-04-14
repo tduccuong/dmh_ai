@@ -350,11 +350,7 @@ UIManager.sendMessage = async function() {
     SessionStore.updateSession(sessionAtSend);
 
     const container = document.getElementById('chat-container');
-    // Capture user message element now (before assistantDiv is appended) so the RAF uses the right ref
     var userMsgEl = container.lastElementChild;
-    requestAnimationFrame(function() {
-        if (userMsgEl) container.scrollTop = userMsgEl.offsetTop;
-    });
 
     const assistantTs = Date.now();
     const assistantDiv = document.createElement('div');
@@ -367,7 +363,15 @@ UIManager.sendMessage = async function() {
     bodyDiv.className = 'msg-body';
     bodyDiv.id = 'streaming-body';
     assistantDiv.appendChild(bodyDiv);
+    // Temporarily give bodyDiv enough height so user message can be scrolled to the top
+    bodyDiv.style.minHeight = container.clientHeight + 'px';
     container.appendChild(assistantDiv);
+    // Scroll so user's new message appears at the top — gives a "fresh question" feel
+    // (previous messages still accessible by scrolling up)
+    if (userMsgEl) {
+        var msgScrollPos = userMsgEl.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop;
+        container.scrollTop = msgScrollPos;
+    }
 
     this.isStreaming = true;
     this._acquireWakeLock();
@@ -520,14 +524,16 @@ UIManager.sendMessage = async function() {
                             if (thinkingContent && !thinkDetailsEl) {
                                 thinkDetailsEl = document.createElement('details');
                                 thinkDetailsEl.className = 'think-block';
-                                thinkDetailsEl.open = true;
                                 var smry = document.createElement('summary');
+                                var spinnerSpan = document.createElement('span');
+                                spinnerSpan.className = 'think-spinner';
                                 var titleSpan = document.createElement('span');
                                 titleSpan.className = 'think-title';
-                                titleSpan.textContent = 'Thinking\u2026';
+                                titleSpan.textContent = t('thinkingOutLoud');
                                 var arrowSpan = document.createElement('span');
                                 arrowSpan.className = 'think-arrow';
-                                arrowSpan.textContent = '\u25b2';
+                                arrowSpan.textContent = '\u25ba';
+                                smry.appendChild(spinnerSpan);
                                 smry.appendChild(titleSpan);
                                 smry.appendChild(arrowSpan);
                                 thinkBodyEl = document.createElement('div');
@@ -549,9 +555,9 @@ UIManager.sendMessage = async function() {
                                 thinkingCollapsed = true;
                                 thinkDetailsEl.open = false;
                                 if (thinkBodyEl) thinkBodyEl.textContent = digestThinking(thinkingContent);
-                                var colTitle = thinkDetailsEl.querySelector('.think-title');
+                                var colSpinner = thinkDetailsEl.querySelector('.think-spinner');
                                 var colArrow = thinkDetailsEl.querySelector('.think-arrow');
-                                if (colTitle) colTitle.textContent = 'Generated chain of thoughts from ' + getModelDisplayName(sessionAtSend.model);
+                                if (colSpinner) colSpinner.remove();
                                 if (colArrow) colArrow.textContent = '\u25ba';
                             }
                             // Render answer content
@@ -574,7 +580,7 @@ UIManager.sendMessage = async function() {
                 if (!assistantContent) {
                     // Stream ended with no content — connection was cut (proxy timeout, network drop)
                     var emptyBody = document.getElementById('streaming-body') || self._activeBodyDiv;
-                    if (emptyBody) emptyBody.innerHTML = '<em style="color:#e05060;">⚠ No response received — the connection was interrupted. Please try again.</em>';
+                    if (emptyBody) { emptyBody.style.minHeight = ''; emptyBody.innerHTML = '<em style="color:#e05060;">⚠ No response received — the connection was interrupted. Please try again.</em>'; }
                     self._streamMap.delete(sessionAtSend.id);
                     self._streamController = null;
                     self._activeBodyDiv = null;
@@ -642,6 +648,7 @@ UIManager.sendMessage = async function() {
                 console.error('Stream error:', err);
                 var errEntry = self._streamMap.get(sessionAtSend.id);
                 var errBody = document.getElementById('streaming-body') || self._activeBodyDiv;
+                if (errBody) errBody.style.minHeight = '';
                 if (assistantContent) {
                     if (errBody && errEntry) { errBody.innerHTML = errEntry.searchWarning + renderWithMath(assistantContent); addCopyButtons(errBody); wrapTables(errBody); }
                 } else if (errBody) {

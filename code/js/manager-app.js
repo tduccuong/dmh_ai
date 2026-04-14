@@ -213,7 +213,7 @@ UIManager.populateModelSelects = function(models) {
     var sessionModel = self.currentSession && self.currentSession.model;
     var initial = (sessionModel && activeNames.indexOf(sessionModel) !== -1)
         ? sessionModel
-        : (hasPool ? recNames[0] : (cloudModelNames.length > 0 ? cloudModelNames[0] : (localModels.length > 0 ? localModels[0].name : '')));
+        : (hasPool ? recModels[0].name : (cloudModelNames.length > 0 ? cloudModelNames[0] : (localModels.length > 0 ? localModels[0].name : '')));
     self._setModelDropdownValue(initial || '');
     // Update current session model if it differs, but do NOT call switchModel here —
     // switchModel persists to prefs and would corrupt _lastUsedModel if Settings hasn't loaded yet
@@ -288,8 +288,14 @@ UIManager.renderSessions = async function() {
 };
 
 UIManager.createNewSession = async function() {
-    // If already in an empty session, just focus input
+    // If already in an empty session, reset model to default and focus input
     if (this.currentSession && (!this.currentSession.messages || this.currentSession.messages.length === 0)) {
+        var def = this.getDefaultModel();
+        if (def && this.currentSession.model !== def) {
+            this.currentSession.model = def;
+            SessionStore.updateSession(this.currentSession);
+            this._setModelDropdownValue(def);
+        }
         document.getElementById('message-input').focus();
         return;
     }
@@ -373,11 +379,11 @@ UIManager.switchModel = function(modelName) {
 UIManager.getDefaultModel = function() {
     const sel = document.getElementById('header-model-select');
     const activeOptions = Array.from(sel.options).map(function(o) { return o.value; }).filter(Boolean);
-    // New chats always default to the first available Recommended Cloud Model, then Cloud, then Local
     const hasPool = Settings.accounts.length > 0;
     if (hasPool) {
-        var rec = RECOMMENDED_CLOUD_MODEL_NAMES.find(function(n) { return activeOptions.indexOf(n) !== -1; });
-        if (rec) return rec;
+        var recModels = getRecommendedCloudModels();
+        var rec = recModels.find(function(m) { return activeOptions.indexOf(m.name) !== -1; });
+        if (rec) return rec.name;
     }
     const userCloudModels = Settings.cloudModels.filter(function(n) {
         return RECOMMENDED_CLOUD_MODEL_NAMES.indexOf(n) === -1 && activeOptions.indexOf(n) !== -1;
