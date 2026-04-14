@@ -128,13 +128,14 @@ UIManager.getSearchQueries = async function(userMessage, recentMsgs, allUserMsgs
                     contextBlock +
                     'Current request: "' + userMessage + '"\n\n' +
                     'Task: generate compact web search keyword queries for what the user wants to find.\n\n' +
-                    'Step 1 — understand the user\'s actual search intent from the conversation. What specific information are they looking for?\n' +
-                    'Step 2 — generate keyword queries in this exact order:\n' +
+                    'Step 1 — identify the user\'s current search intent. The messages above are ordered oldest to newest — treat more recent messages as higher priority. The current request carries the most weight; earlier messages provide context (named subjects, ongoing topic) but should not override it.\n' +
+                    'Step 2 — resolve any implicit references: if the current request uses pronouns (he, she, they, it, this, that) or vague references ("the actor", "the company", "this disease"), look them up in the earlier messages and include the actual name in the query.\n' +
+                    'Step 3 — generate keyword queries in this exact order:\n' +
                     '  a) First: one query in the language that dominates the user\'s message.\n' +
                     '  b) Then: one English query if the topic is primarily English-language content.\n' +
                     '  c) Then: one query in each community language explicitly named in the intent (e.g. Japanese reactions → Japanese query, German reactions → German query).\n' +
                     'Total: 1-4 queries. No duplicates across languages.\n' +
-                    'Step 3 — output one line per query: LANG:xx followed by the keywords.\n\n' +
+                    'Step 4 — output one line per query: LANG:xx followed by the keywords.\n\n' +
                     'Rules:\n' +
                     '- Keyword-style only: NO sentences, NO filler words (für, mit, und, the, de, pour…), NO connectives\n' +
                     '- 4-8 words per query\n' +
