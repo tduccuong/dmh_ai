@@ -208,10 +208,11 @@ UIManager.populateModelSelects = function(models) {
     }
     menu.appendChild(localSection);
 
-    // Set initial value: last used (if still active) → first recommended (if pool) → first user cloud → first local
+    // Set initial value: current session's model (if still active) → first recommended (if pool) → first user cloud → first local
     const activeNames = (hasPool ? recNames : []).concat(cloudModelNames).concat(localModels.map(function(m) { return m.name; }));
-    var initial = (self._lastUsedModel && activeNames.indexOf(self._lastUsedModel) !== -1)
-        ? self._lastUsedModel
+    var sessionModel = self.currentSession && self.currentSession.model;
+    var initial = (sessionModel && activeNames.indexOf(sessionModel) !== -1)
+        ? sessionModel
         : (hasPool ? recNames[0] : (cloudModelNames.length > 0 ? cloudModelNames[0] : (localModels.length > 0 ? localModels[0].name : '')));
     self._setModelDropdownValue(initial || '');
     // Update current session model if it differs, but do NOT call switchModel here —

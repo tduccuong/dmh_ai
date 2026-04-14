@@ -428,7 +428,20 @@ UIManager.handleFileSelect = async function(files) {
                     .then(function(r) { return r.json(); })
                     .then(function(d) {
                         entry.id = d.id;
-                        if (entry._onUploadDone) { entry._onUploadDone(d.id); entry._onUploadDone = null; }
+                        if (entry._onUploadDone) {
+                            entry._onUploadDone(d.id);
+                            entry._onUploadDone = null;
+                        } else if (self.currentSession) {
+                            // Race condition fallback: sendMessage registered _onUploadDone after upload
+                            // already completed (during an await). Patch fileId directly in session messages.
+                            (self.currentSession.messages || []).forEach(function(msg) {
+                                (msg.videos || []).forEach(function(v) {
+                                    if (v.name === videoFile.name && !v.fileId) v.fileId = d.id;
+                                });
+                            });
+                            SessionStore.updateSession(self.currentSession);
+                            self.renderChat();
+                        }
                         // Save description if extraction finished before upload
                         if (videoDescription && self.currentSession) {
                             self._videoDescriptions[d.id] = { name: videoFile.name, description: videoDescription };
