@@ -5,82 +5,6 @@
  * For commercial inquiries, contact: tduccuong@gmail.com
  */
 
-// ─── Model assignments ──────────────────────────────────────────────────────
-// Cloud model for background utility tasks:
-// auto-naming, web search detection, search query building.
-const ASSISTANT_MODEL = 'ministral-3:14b-cloud';
-
-// Dedicated vision model for generating detailed image descriptions stored in DB.
-// Must support vision; used after each image-containing message, non-blocking.
-const IMAGE_DESCRIBER_MODEL = 'gemini-3-flash-preview:cloud';
-
-// Dedicated vision model for generating video descriptions stored in DB.
-// Receives all extracted frames; used after video upload, gates the Send button.
-const VIDEO_DESCRIBER_MODEL = 'gemini-3-flash-preview:cloud';
-
-// Mid-tier cloud model for search result synthesis.
-// Needs enough capacity to compress multiple web pages into coherent facts.
-const SYNTHESIZER_MODEL = 'ministral-3:14b-cloud';
-
-// ─── Web search pipeline ────────────────────────────────────────────────────
-// Maximum number of pages to fetch full content from per search round.
-const MAX_FETCH_PAGES = 8;
-
-// Per-fetch abort timeout in milliseconds (covers direct fetch + Jina fallback).
-// Must be comfortably above JINA_TIMEOUT_SECS (backend) + server overhead + network.
-// Too tight and Jina responses arriving at ~9s get dropped (BrokenPipeError on server).
-const FETCH_TIMEOUT_MS = 12000;
-
-// Total character budget distributed proportionally across all fetched pages.
-// Higher values give the synthesizer more raw material at the cost of a larger prompt.
-const TOTAL_CONTENT_BUDGET = 18000;
-
-// Maximum search results to process after deduplication and filtering.
-const MAX_SEARCH_RESULTS = 10;
-
-// Raw content length threshold (chars) above which the synthesizer is invoked.
-// Below this the raw content is passed directly to the user model, saving ~9s.
-// Set well above TOTAL_CONTENT_BUDGET so typical queries bypass synthesis entirely.
-const SYNTHESIS_THRESHOLD_CHARS = 45000;
-
-// Character fallback limit for formatted results when synthesis is unavailable.
-const SEARCH_FALLBACK_CHARS = 8000;
-
-// SearXNG snippet truncation per result and message chars for query-building context.
-const SEARCH_CONTEXT_CHARS = 300;
-
-// Message character limit used when building detect-web-search context.
-const DETECT_CONTEXT_CHARS = 400;
-
-// Character limit per message pair injected as relevant earlier context.
-const CONTEXT_PAIR_PREVIEW_CHARS = 600;
-
-// Minimum scraped page length (chars) to be considered usable content.
-const MIN_PAGE_CONTENT_CHARS = 500;
-
-// ─── Context window ─────────────────────────────────────────────────────────
-// Number of recent user/assistant messages passed to detectWebSearch and naming.
-const RECENT_MESSAGES_COUNT = 4;
-
-// Number of relevant earlier message pairs retrieved by keyword search.
-const RELEVANT_CONTEXT_TOP_K = 4;
-
-// Minimum keyword relevance score for a prior pair to be injected into context.
-const MIN_RELEVANCE_SCORE = 0.25;
-
-// ─── LLM output caps (num_predict) ─────────────────────────────────────────
-// Max tokens for the synthesizer; keeps synthesis fast and avoids runaway output.
-const SYNTHESIZER_NUM_PREDICT = 1500;
-
-// Max tokens for short utility calls: detect, query building, auto-naming.
-const UTILITY_NUM_PREDICT = 300;
-
-// Max tokens when extracting facts from the user profile.
-const PROFILE_EXTRACT_NUM_PREDICT = 200;
-
-// Max tokens when condensing the full profile into a compact summary.
-const PROFILE_CONDENSE_NUM_PREDICT = 600;
-
 // ─── Network timeouts ───────────────────────────────────────────────────────
 // Login request abort timeout in milliseconds.
 const LOGIN_TIMEOUT_MS = 10000;
@@ -123,23 +47,8 @@ const VIDEO_FRAME_MAX_HEIGHT = 360;
 // JPEG quality for extracted video frames (0–1).
 const VIDEO_FRAME_JPEG_QUALITY = 0.75;
 
-// Fraction of the model's context window reserved for video frames.
-const VIDEO_FRAME_CONTEXT_BUDGET = 0.25;
-
-// Estimated tokens consumed per image by the vision encoder (conservative average).
-const VIDEO_FRAME_TOKENS_PER_IMAGE = 300;
-
-// Hard cap on extracted frames for local models (context window is the real limit).
-const VIDEO_FRAME_MAX_COUNT = 16;
-
-// Ollama cloud API rejects requests with more than 8 images — enforced for cloud models only.
-const CLOUD_MAX_IMAGES = 8;
-
 // Minimum gap between sampled frames (seconds).
 const VIDEO_FRAME_MIN_INTERVAL = 2;
-
-// User detail preset → fraction of the dynamically computed max frames to use.
-const VIDEO_DETAIL_MULTIPLIERS = { low: 0.5, medium: 0.75, high: 1.0 };
 
 // ─── UI limits ──────────────────────────────────────────────────────────────
 // Maximum lines shown in a file attachment snippet preview.

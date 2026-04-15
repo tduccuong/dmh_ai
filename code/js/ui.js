@@ -334,8 +334,31 @@ function buildMsgHeader(msg, session) {
         var displayName = user ? (user.name || user.email.split('@')[0]) : '';
         return prefix + displayName + ':';
     }
-    var model = msg.model || (session && session.model) || '';
-    return prefix + (model ? getModelDisplayName(model) : 'Assistant') + ':';
+    var modeLabel = (session && session.mode === 'assistant') ? 'Assistant' : 'Confidant';
+    return prefix + modeLabel + ':';
+}
+
+function buildMsgHeaderEl(msg, session) {
+    var el = document.createElement('div');
+    el.className = 'msg-header';
+    var ts = formatTs(msg.ts);
+    var prefix = ts ? '[' + ts + '] ' : '';
+    if (msg.role === 'user') {
+        var user = Auth._user;
+        var displayName = user ? (user.name || user.email.split('@')[0]) : '';
+        el.appendChild(document.createTextNode(prefix + displayName + ':'));
+        return el;
+    }
+    // Assistant: [time] <icon> RoleName:
+    if (prefix) el.appendChild(document.createTextNode(prefix));
+    var mode = (session && session.mode) || 'confidant';
+    var iconEl = document.createElement('span');
+    iconEl.className = 'msg-header-icon';
+    iconEl.innerHTML = (typeof MODE_ICONS !== 'undefined' && MODE_ICONS[mode]) || '';
+    el.appendChild(iconEl);
+    var modeLabel = mode === 'assistant' ? 'Assistant' : 'Confidant';
+    el.appendChild(document.createTextNode('\u00a0' + modeLabel + ':'));
+    return el;
 }
 
 function prepareForAPI(messages) {

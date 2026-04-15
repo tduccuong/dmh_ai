@@ -1,0 +1,72 @@
+defmodule Dmhai.Agent.MasterBuffer do
+  @moduledoc """
+  Read/write interface for the `master_buffer` table.
+
+  Workers write full results + short summaries here.
+  The runtime reads unconsumed entries and injects them into the
+  Master Agent's next LLM call.
+  """
+
+  alias Dmhai.Repo
+  import Ecto.Adapters.SQL, only: [query!: 3]
+
+  @doc """
+  Append a worker result to the buffer.
+
+  - `content`  — full result text (injected into Master LLM call)
+  - `summary`  — short one-liner for frontend notification
+  """
+  def append(session_id, user_id, content, summary \\ nil) do
+    now = System.os_time(:millisecond)
+
+    query!(Repo,
+      "INSERT INTO master_buffer (session_id, user_id, content, summary, created_at) VALUES (?,?,?,?,?)",
+      [session_id, user_id, content, summary, now])
+  end
+
+  @doc """
+  Fetch all unconsumed entries for a session, ordered chronologically.
+  Returns a list of `%{id, content, summary, created_at}` maps.
+  """
+  def fetch_unconsumed(session_id) do
+    result =
+      query!(Repo,
+        "SELECT id, content, summary, created_at FROM master_buffer WHERE session_id=? AND consumed=0 ORDER BY created_at ASC",
+        [session_id])
+
+    Enum.map(result.rows, fn [id, content, summary, created_at] ->
+      %{id: id, content: content, summary: summary, created_at: created_at}
+    end)
+  end
+
+  @doc """
+  Mark entries as consumed so they aren't injected again.
+  Accepts a list of entry IDs.
+  """
+  def mark_consumed(ids) when is_list(ids) and ids != [] do
+    placeholders = Enum.map_join(ids, ",", fn _ -> "?" end)
+    query!(Repo, "UPDATE master_buffer SET consumed=1 WHERE id IN (#{placeholders})", ids)
+  end
+
+  def mark_consumed([]), do: :ok
+
+  @doc """
+  Fetch unconsumed summaries for a user across all sessions (for notification polling).
+  Returns entries since `since_ms` (unix millis).
+  """
+  def fetch_notifications(user_id, since_ms) do
+    result =
+      query!(Repo,
+        """
+        SELECT mb.id, mb.session_id, mb.summary, mb.created_at
+        FROM master_buffer mb
+        WHERE mb.user_id=? AND mb.created_at > ? AND mb.summary IS NOT NULL
+        ORDER BY mb.created_at ASC
+        """,
+        [user_id, since_ms])
+
+    Enum.map(result.rows, fn [id, session_id, summary, created_at] ->
+      %{id: id, session_id: session_id, summary: summary, created_at: created_at}
+    end)
+  end
+end

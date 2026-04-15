@@ -92,6 +92,23 @@ defmodule Dmhai.DB.Init do
       PRIMARY KEY (session_id, file_id)
     )
     """)
+
+    query!(Repo, """
+    CREATE TABLE IF NOT EXISTS master_buffer (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      content TEXT NOT NULL,
+      summary TEXT,
+      consumed INTEGER DEFAULT 0,
+      created_at INTEGER NOT NULL
+    )
+    """)
+
+    query!(Repo, """
+    CREATE INDEX IF NOT EXISTS idx_master_buffer_session
+    ON master_buffer (session_id, consumed, created_at)
+    """)
   end
 
   defp run_migrations do
@@ -100,6 +117,7 @@ defmodule Dmhai.DB.Init do
     alter_table_safe("ALTER TABLE users ADD COLUMN deleted INTEGER DEFAULT 0")
     alter_table_safe("ALTER TABLE sessions ADD COLUMN updated_at INTEGER DEFAULT 0")
     alter_table_safe("ALTER TABLE users ADD COLUMN profile TEXT DEFAULT \"\"")
+    alter_table_safe("ALTER TABLE sessions ADD COLUMN mode TEXT DEFAULT 'confidant'")
   end
 
   defp alter_table_safe(sql) do

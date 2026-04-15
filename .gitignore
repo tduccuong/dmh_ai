@@ -9,6 +9,15 @@ build/
 *.so
 *.dll
 
+# Elixir / Mix
+code/backend/_build/
+code/backend/deps/
+code/backend/*.db
+code/backend/erl_crash.dump
+code/backend/.elixir_ls/
+*.beam
+*.app
+
 # Python
 __pycache__/
 *.py[cod]
@@ -38,3 +47,6 @@ code/db/
 # AI assistant context
 CLAUDE.md
 .claude
+
+# Misc
+ideas.md

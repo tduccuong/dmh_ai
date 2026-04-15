@@ -96,7 +96,7 @@ const I18n = {
             videoDetailLow: 'Low (4 frames)', videoDetailMedium: 'Medium (8 frames)', videoDetailHigh: 'High (12 frames)',
             processingVideo: 'Processing video, may take a while…', analyzingVideo: 'Analyzing video, may take a while…',
             processingImage: 'Processing image, may take a while…', analyzingImage: 'Analyzing photo, may take a while…',
-            thinkingOutLoud: 'Thinking out loud…',
+            thinkingOutLoud: 'Thinking…',
         },
         vi: {
             retry: 'Thử lại', clear: 'Xóa', send: 'Gửi', cancel: 'Hủy', ok: 'OK', stopGen: 'Dừng',
@@ -149,7 +149,7 @@ const I18n = {
             videoDetailLow: 'Thấp (4 khung)', videoDetailMedium: 'Trung bình (8 khung)', videoDetailHigh: 'Cao (12 khung)',
             processingVideo: 'Đang xử lý video, có thể mất một lúc…', analyzingVideo: 'Đang phân tích video, có thể mất một lúc…',
             processingImage: 'Đang xử lý ảnh, có thể mất một lúc…', analyzingImage: 'Đang phân tích ảnh, có thể mất một lúc…',
-            thinkingOutLoud: 'Đang nghĩ thành tiếng…',
+            thinkingOutLoud: 'Suy nghĩ…',
         },
         de: {
             retry: 'Wiederholen', clear: 'Löschen', send: 'Senden', cancel: 'Abbrechen', ok: 'OK', stopGen: 'Stopp',
@@ -202,7 +202,7 @@ const I18n = {
             videoDetailLow: 'Niedrig (4 Frames)', videoDetailMedium: 'Mittel (8 Frames)', videoDetailHigh: 'Hoch (12 Frames)',
             processingVideo: 'Video wird verarbeitet, das kann einen Moment dauern…', analyzingVideo: 'Video wird analysiert, das kann einen Moment dauern…',
             processingImage: 'Bild wird verarbeitet, das kann einen Moment dauern…', analyzingImage: 'Foto wird analysiert, das kann einen Moment dauern…',
-            thinkingOutLoud: 'Denke laut nach…',
+            thinkingOutLoud: 'Denken…',
         },
         es: {
             retry: 'Reintentar', clear: 'Limpiar', send: 'Enviar', cancel: 'Cancelar', ok: 'OK', stopGen: 'Detener',
@@ -255,7 +255,7 @@ const I18n = {
             videoDetailLow: 'Baja (4 fotogramas)', videoDetailMedium: 'Media (8 fotogramas)', videoDetailHigh: 'Alta (12 fotogramas)',
             processingVideo: 'Procesando vídeo, puede tardar un momento…', analyzingVideo: 'Analizando vídeo, puede tardar un momento…',
             processingImage: 'Procesando imagen, puede tardar un momento…', analyzingImage: 'Analizando foto, puede tardar un momento…',
-            thinkingOutLoud: 'Pensando en voz alta…',
+            thinkingOutLoud: 'Pensando…',
         },
         fr: {
             retry: 'Réessayer', clear: 'Effacer', send: 'Envoyer', cancel: 'Annuler', ok: 'OK', stopGen: 'Arrêter',
@@ -308,7 +308,7 @@ const I18n = {
             videoDetailLow: 'Faible (4 images)', videoDetailMedium: 'Moyen (8 images)', videoDetailHigh: 'Élevé (12 images)',
             processingVideo: 'Traitement de la vidéo, cela peut prendre un moment…', analyzingVideo: 'Analyse de la vidéo, cela peut prendre un moment…',
             processingImage: 'Traitement de l\'image, cela peut prendre un moment…', analyzingImage: 'Analyse de la photo, cela peut prendre un moment…',
-            thinkingOutLoud: 'Réfléchir à voix haute…',
+            thinkingOutLoud: 'Réflexion…',
         }
     },
     t: function(key) { return (this._strings[this._lang] || this._strings.en)[key] || this._strings.en[key] || key; },
@@ -383,26 +383,65 @@ function apiFetch(url, options) {
     return fetch(url, options);
 }
 
-function isCloudModel(model) {
-    return (model || '').endsWith('-cloud') ||
-           RECOMMENDED_CLOUD_MODEL_NAMES.indexOf(model) !== -1 ||
-           Settings.cloudModels.indexOf(model) !== -1;
-}
-
-function cloudRoutedFetch(model, path, body, signal) {
-    var acct = isCloudModel(model) ? CloudAccountPool.getNext() : null;
-    var url = acct ? '/cloud-api' + path : OllamaAPI.BASE_URL + path;
-    var headers = { 'Content-Type': 'application/json' };
-    if (acct) {
-        headers['Authorization'] = 'Bearer ' + (Auth.token || '');
-        headers['X-Cloud-Key'] = acct.apiKey;
-    }
-    return fetch(url, { method: 'POST', headers: headers, body: JSON.stringify(body), signal: signal });
-}
-
 function syslog(msg) {
     apiFetch('/log', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({msg}) }).catch(function(){});
 }
+
+// ─── Notification Polling ──────────────────────────────────────────────
+const NotificationPoller = {
+    _interval: null,
+    _lastCheck: Date.now(),
+    _pollMs: 5000, // default 5s, overridden by user pref
+
+    start: function(pollMs) {
+        this.stop();
+        if (pollMs) this._pollMs = pollMs;
+        this._lastCheck = Date.now();
+        this._interval = setInterval(this._poll.bind(this), this._pollMs);
+    },
+
+    stop: function() {
+        if (this._interval) {
+            clearInterval(this._interval);
+            this._interval = null;
+        }
+    },
+
+    _poll: async function() {
+        try {
+            var since = this._lastCheck;
+            this._lastCheck = Date.now();
+            var res = await apiFetch('/notifications?since=' + since);
+            if (!res.ok) return;
+            var entries = await res.json();
+            if (!entries || !entries.length) return;
+            for (var i = 0; i < entries.length; i++) {
+                this._handleNotification(entries[i]);
+            }
+        } catch (e) {
+            // silent — polling errors shouldn't disrupt the UI
+        }
+    },
+
+    _handleNotification: function(entry) {
+        // Show notification in the status bar
+        if (entry.summary) {
+            UIManager.setStatus('🔔 ' + entry.summary);
+            setTimeout(function() { UIManager.setStatus(''); }, 8000);
+        }
+        // If user is viewing this session, refresh the chat
+        if (typeof UIManager !== 'undefined' && UIManager._currentSession &&
+            UIManager._currentSession.id === entry.session_id) {
+            // Reload session to show new messages from worker
+            SessionStore.getSession(entry.session_id).then(function(session) {
+                if (session) {
+                    UIManager._currentSession = session;
+                    UIManager.renderChat(session);
+                }
+            });
+        }
+    }
+};
 
 const AppConfig = {
     get searxngUrl() { return localStorage.getItem('searxng-url') || 'http://localhost:8888'; },
@@ -424,9 +463,6 @@ function getRecommendedCloudModels() {
         { name: 'qwen3.5:cloud',                  label: t('recDeepThinker') },
     ];
 }
-// Constant names for filtering (language-independent)
-const RECOMMENDED_CLOUD_MODEL_NAMES = ['ministral-3:14b-cloud', 'qwen3.5:cloud', 'gemini-3-flash-preview:cloud'];
-
 var _MODEL_ACRONYMS = { vl: 'VL', rnj: 'RNJ', gpt: 'GPT', oss: 'OSS', glm: 'GLM' };
 function normalizeModelLabel(model) {
     var s = model.replace(/-cloud$/, '');

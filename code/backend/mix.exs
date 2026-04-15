@@ -25,8 +25,10 @@ defmodule Dmhai.MixProject do
       {:ecto_sqlite3, "~> 0.17"},
       {:ecto, "~> 3.12"},
       {:req, "~> 0.5"},
+      {:req_llm, "~> 1.9"},
       {:floki, "~> 0.36"},
-      {:jason, "~> 1.4"}
+      {:jason, "~> 1.4"},
+      {:hammer, "~> 6.1"}
     ]
   end
 end

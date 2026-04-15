@@ -1,8 +1,11 @@
 defmodule Dmhai.Handlers.Data do
   import Plug.Conn
-  alias Dmhai.Repo
+  alias Dmhai.{Repo, Agent.LLM, Agent.UserAgent}
   import Ecto.Adapters.SQL, only: [query!: 3]
   require Logger
+
+  # Dedicated model for session naming; fast, cheap, 1M context.
+  @namer_model "ollama::cloud::gemini-3-flash-preview:cloud"
 
   @assets_dir "/data/user_assets"
   @image_exts ~w(.png .jpg .jpeg .gif .webp .bmp)
@@ -35,11 +38,19 @@ defmodule Dmhai.Handlers.Data do
     end
   end
 
+  # GET /notifications?since=<unix_millis>
+  def get_notifications(conn, user) do
+    params = URI.decode_query(conn.query_string)
+    since = String.to_integer(params["since"] || "0")
+    entries = Dmhai.Agent.MasterBuffer.fetch_notifications(user.id, since)
+    json(conn, 200, entries)
+  end
+
   # GET /sessions
   def get_sessions(conn, user) do
     result =
       query!(Repo, """
-      SELECT id, name, model, messages, context, created_at, updated_at
+      SELECT id, name, messages, context, created_at, updated_at, mode
       FROM sessions WHERE user_id=?
       ORDER BY COALESCE(updated_at, created_at) DESC
       """, [user.id])
@@ -68,7 +79,7 @@ defmodule Dmhai.Handlers.Data do
   def get_session(conn, user, session_id) do
     result =
       query!(Repo, """
-      SELECT id, name, model, messages, context, created_at, updated_at
+      SELECT id, name, messages, context, created_at, updated_at, mode
       FROM sessions WHERE id=? AND user_id=?
       """, [session_id, user.id])
 
@@ -193,18 +204,19 @@ defmodule Dmhai.Handlers.Data do
     d = Jason.decode!(body || "{}")
     now = :os.system_time(:millisecond)
 
+    mode = if d["mode"] in ["confidant", "assistant"], do: d["mode"], else: "confidant"
+
     query!(Repo, """
-    INSERT INTO sessions (id, name, model, messages, context, created_at, updated_at, user_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO sessions (id, name, messages, created_at, updated_at, user_id, mode)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
     """, [
       d["id"],
       d["name"],
-      d["model"] || "",
       Jason.encode!(d["messages"] || []),
-      Jason.encode!(d["context"]),
       d["createdAt"],
       now,
-      user.id
+      user.id,
+      mode
     ])
 
     json(conn, 200, d)
@@ -276,33 +288,103 @@ defmodule Dmhai.Handlers.Data do
     json(conn, 200, d)
   end
 
+  # POST /sessions/:id/name — call LLM to generate and persist a session name
+  def post_name_session(conn, user, session_id) do
+    owns = query!(Repo, "SELECT id FROM sessions WHERE id=? AND user_id=?", [session_id, user.id])
+
+    if owns.rows == [] do
+      json(conn, 403, %{error: "Forbidden"})
+    else
+      result = query!(Repo, "SELECT messages FROM sessions WHERE id=?", [session_id])
+
+      case result.rows do
+        [[msgs_json]] ->
+          msgs = Jason.decode!(msgs_json || "[]")
+          # Use up to last 6 messages for naming context
+          excerpt_msgs = Enum.take(msgs, -6)
+
+          excerpt =
+            Enum.map_join(excerpt_msgs, "\n", fn msg ->
+              role    = msg["role"] || "user"
+              content = msg["content"] || ""
+              prefix  = if role == "user", do: "User: ", else: "Assistant: "
+              prefix <> String.slice(to_string(content), 0, 200)
+            end)
+
+          if String.trim(excerpt) == "" do
+            json(conn, 200, %{name: nil})
+          else
+            messages = [%{
+              role: "user",
+              content:
+                "Give a short title (3-5 words) for this conversation:\n\n#{excerpt}\n\n" <>
+                "Use the language that dominates the conversation. " <>
+                "Reply with only the title, no quotes, no explanation."
+            }]
+
+            case LLM.call(@namer_model, messages) do
+              {:ok, name} when is_binary(name) and name != "" ->
+                sanitized = sanitize_session_name(name)
+
+                if sanitized && sanitized != "" do
+                  now = :os.system_time(:millisecond)
+                  query!(Repo, "UPDATE sessions SET name=?, updated_at=? WHERE id=? AND user_id=?",
+                         [sanitized, now, session_id, user.id])
+                  json(conn, 200, %{name: sanitized})
+                else
+                  json(conn, 200, %{name: nil})
+                end
+
+              _ ->
+                json(conn, 200, %{name: nil})
+            end
+          end
+
+        _ ->
+          json(conn, 404, %{error: "Not found"})
+      end
+    end
+  end
+
   # PUT /sessions/:id
   def put_session(conn, user, session_id) do
     {:ok, body, conn} = read_body(conn)
     d = Jason.decode!(body || "{}")
     now = :os.system_time(:millisecond)
+    messages = d["messages"] || []
 
-    query!(Repo, """
-    UPDATE sessions SET name=?, model=?, messages=?, context=?, updated_at=?
-    WHERE id=? AND user_id=?
-    """, [
-      d["name"],
-      d["model"] || "",
-      Jason.encode!(d["messages"] || []),
-      Jason.encode!(d["context"]),
-      now,
-      session_id,
-      user.id
-    ])
+    # When messages are cleared (session reset), also wipe server-owned context
+    # so the compaction summary doesn't bleed into the fresh conversation.
+    if messages == [] do
+      query!(Repo, """
+      UPDATE sessions SET name=?, messages=?, context=NULL, updated_at=?
+      WHERE id=? AND user_id=?
+      """, [sanitize_session_name(d["name"]), "[]", now, session_id, user.id])
+    else
+      query!(Repo, """
+      UPDATE sessions SET name=?, messages=?, updated_at=?
+      WHERE id=? AND user_id=?
+      """, [
+        sanitize_session_name(d["name"]),
+        Jason.encode!(messages),
+        now,
+        session_id,
+        user.id
+      ])
+    end
 
     json(conn, 200, d)
   end
 
   # DELETE /sessions/:id
   def delete_session(conn, user, session_id) do
+    # Stop any in-flight workers for this session before cleaning up
+    UserAgent.cancel_session_workers(user.id, session_id)
+
     query!(Repo, "DELETE FROM sessions WHERE id=? AND user_id=?", [session_id, user.id])
     query!(Repo, "DELETE FROM image_descriptions WHERE session_id=?", [session_id])
     query!(Repo, "DELETE FROM video_descriptions WHERE session_id=?", [session_id])
+    query!(Repo, "DELETE FROM master_buffer WHERE session_id=?", [session_id])
 
     session_dir = user_asset_dir(user.email, session_id)
     if File.dir?(session_dir) do
@@ -338,15 +420,46 @@ defmodule Dmhai.Handlers.Data do
 
   # Private helpers
 
-  defp parse_session_row([id, name, model, messages, context, created_at, updated_at]) do
+  # Strip LLM formatting artifacts from session names so double-quotes,
+  # bold markers, and heading prefixes can't leak in from auto-naming.
+  defp sanitize_session_name(nil), do: nil
+  defp sanitize_session_name(name) when is_binary(name) do
+    name
+    |> String.trim()
+    |> strip_markdown_bold()
+    |> strip_surrounding_quotes()
+    |> String.trim()
+  end
+
+  # Remove **bold**, *italic*, ***bold-italic*** wrappers
+  defp strip_markdown_bold(s), do: Regex.replace(~r/\*{1,3}([^*]*)\*{1,3}/, s, "\\1")
+
+  # Remove leading/trailing straight and curly quote characters
+  defp strip_surrounding_quotes(s) do
+    s
+    |> String.trim_leading("\"")
+    |> String.trim_leading("\u201C")   # "
+    |> String.trim_leading("\u2018")   # '
+    |> String.trim_leading("'")
+    |> String.trim_trailing("\"")
+    |> String.trim_trailing("\u201D")  # "
+    |> String.trim_trailing("\u2019")  # '
+    |> String.trim_trailing("'")
+  end
+
+  defp parse_session_row([id, name, messages, context, created_at, updated_at]) do
+    parse_session_row([id, name, messages, context, created_at, updated_at, "confidant"])
+  end
+
+  defp parse_session_row([id, name, messages, context, created_at, updated_at, mode]) do
     %{
       "id" => id,
       "name" => name,
-      "model" => model,
       "messages" => Jason.decode!(messages || "[]"),
       "context" => Jason.decode!(context || "null"),
       "createdAt" => created_at,
-      "updatedAt" => updated_at
+      "updatedAt" => updated_at,
+      "mode" => mode || "confidant"
     }
   end
 

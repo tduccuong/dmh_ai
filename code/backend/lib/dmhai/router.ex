@@ -4,11 +4,35 @@ defmodule Dmhai.Router do
   alias Dmhai.AuthPlug
   alias Dmhai.Handlers.Auth
   alias Dmhai.Handlers.Data
+  alias Dmhai.Handlers.Media
   alias Dmhai.Handlers.Proxy
+  alias Dmhai.Handlers.Tools
+  alias Dmhai.Handlers.AgentChat
 
+  plug Dmhai.Plugs.BlockScanners
+  plug Dmhai.Plugs.SecurityHeaders
+  plug Plug.Static, at: "/", from: "/app/static", gzip: false,
+    headers: %{"cache-control" => "no-store"}
+  plug Dmhai.Plugs.RateLimit
   plug Plug.Head
   plug :match
   plug :dispatch
+
+  # ─── Public (no-auth, no-rate-limit-bypass) routes ───────────────────────────
+
+  get "/" do
+    conn
+    |> put_resp_header("cache-control", "no-store")
+    |> put_resp_content_type("text/html")
+    |> send_file(200, "/app/static/index.html")
+  end
+
+  get "/dmh-ai.crt" do
+    conn
+    |> put_resp_header("content-disposition", "attachment; filename=\"dmh-ai.crt\"")
+    |> put_resp_content_type("application/x-x509-ca-cert")
+    |> send_file(200, "/app/ssl/cert.pem")
+  end
 
   # ─── No-auth GET routes ──────────────────────────────────────────────────────
 
@@ -18,6 +42,12 @@ defmodule Dmhai.Router do
 
   # GET /local-api/* — no auth required
   get "/local-api/*glob" do
+    sub = Enum.join(glob, "/")
+    Proxy.get_local_api(conn, sub)
+  end
+
+  # GET /api/* — no auth, proxy to local Ollama (replaces nginx /api → :11434)
+  get "/api/*glob" do
     sub = Enum.join(glob, "/")
     Proxy.get_local_api(conn, sub)
   end
@@ -49,6 +79,19 @@ defmodule Dmhai.Router do
 
   # POST /local-api/* — no auth required (streaming)
   post "/local-api/*glob" do
+    sub = Enum.join(glob, "/")
+    Proxy.post_local_api(conn, sub)
+  end
+
+  # POST /api/show — capability check; backend models always support vision + video
+  post "/api/show" do
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(200, Jason.encode!(%{capabilities: ["vision", "video"]}))
+  end
+
+  # POST /api/* — no auth, proxy to local Ollama (replaces nginx /api → :11434)
+  post "/api/*glob" do
     sub = Enum.join(glob, "/")
     Proxy.post_local_api(conn, sub)
   end
@@ -103,6 +146,12 @@ defmodule Dmhai.Router do
     end
   end
 
+  get "/tools" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      Tools.get_tools(conn, user)
+    end
+  end
+
   get "/cloud-api/*glob" do
     with {:ok, conn, user} <- check_auth(conn) do
       sub = Enum.join(glob, "/")
@@ -140,6 +189,12 @@ defmodule Dmhai.Router do
     end
   end
 
+  get "/notifications" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      Data.get_notifications(conn, user)
+    end
+  end
+
   get "/assets/:session_id/:file_id" do
     with {:ok, conn, user} <- check_auth(conn) do
       Data.get_asset(conn, user, session_id, file_id)
@@ -160,6 +215,12 @@ defmodule Dmhai.Router do
     end
   end
 
+  post "/user/track-facts" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      Auth.post_track_facts(conn, user)
+    end
+  end
+
   post "/image-descriptions" do
     with {:ok, conn, user} <- check_auth(conn) do
       Data.post_image_description(conn, user)
@@ -169,6 +230,42 @@ defmodule Dmhai.Router do
   post "/video-descriptions" do
     with {:ok, conn, user} <- check_auth(conn) do
       Data.post_video_description(conn, user)
+    end
+  end
+
+  get "/video-frame-count" do
+    with {:ok, conn, _user} <- check_auth(conn) do
+      Media.get_video_frame_count(conn)
+    end
+  end
+
+  post "/describe-video" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      Media.post_describe_video(conn, user)
+    end
+  end
+
+  post "/describe-image" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      Media.post_describe_image(conn, user)
+    end
+  end
+
+  post "/agent/chat" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      AgentChat.post_chat(conn, user)
+    end
+  end
+
+  post "/tools/execute" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      Tools.post_execute(conn, user)
+    end
+  end
+
+  post "/sessions/:session_id/name" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      Data.post_name_session(conn, user, session_id)
     end
   end
 

@@ -185,6 +185,155 @@ defmodule Dmhai.Handlers.Auth do
     end
   end
 
+  # POST /user/track-facts
+  # Accepts {candidates: [string]}, runs Jaccard normalization + threshold check,
+  # promotes to user profile if threshold reached. Idempotent fire-and-forget endpoint.
+  @fact_threshold 3
+
+  def post_track_facts(conn, user) do
+    {:ok, body, conn} = read_body(conn)
+    d = Jason.decode!(body || "{}")
+    candidates = d["candidates"] || []
+
+    track_facts_for_user(user.id, candidates)
+    json(conn, 200, %{ok: true})
+  end
+
+  @doc "Called from ProfileExtractor to process candidate topics after each LLM turn."
+  def track_facts_for_user(user_id, candidates) do
+    if is_list(candidates) and candidates != [] do
+      result = query!(Repo, "SELECT topic, count FROM user_fact_counts WHERE user_id=?", [user_id])
+      initial_counts = Map.new(result.rows, fn [topic, count] -> {topic, count} end)
+
+      {new_counts, promoted} = process_fact_candidates(candidates, initial_counts)
+
+      # Write deltas to DB
+      Enum.each(new_counts, fn {topic, new_val} ->
+        old_val = Map.get(initial_counts, topic, 0)
+        delta = new_val - old_val
+        if delta != 0 do
+          query!(Repo, """
+          INSERT INTO user_fact_counts (user_id, topic, count) VALUES (?, ?, ?)
+          ON CONFLICT(user_id, topic) DO UPDATE SET count = count + excluded.count
+          """, [user_id, topic, delta])
+        end
+      end)
+
+      # Merge promoted topics into user profile
+      if promoted != [] do
+        pr = query!(Repo, "SELECT profile FROM users WHERE id=?", [user_id])
+        profile = case pr.rows do
+          [[p] | _] -> p || ""
+          _ -> ""
+        end
+        new_profile = merge_interests(profile, promoted) |> String.slice(0, 4000)
+        query!(Repo, "UPDATE users SET profile=? WHERE id=?", [new_profile, user_id])
+      end
+    end
+  end
+
+  defp process_fact_candidates(candidates, initial_counts) do
+    Enum.reduce(candidates, {initial_counts, []}, fn raw, {counts, promoted} ->
+      t = raw |> to_string() |> String.trim() |> String.downcase()
+      if t == "" do
+        {counts, promoted}
+      else
+        t = jaccard_normalize(t, counts)
+        current = Map.get(counts, t, 0)
+        if current < 0 do
+          # Already promoted — skip
+          {counts, promoted}
+        else
+          new_val = current + 1
+          if new_val >= @fact_threshold do
+            {Map.put(counts, t, -1), [String.trim(raw) | promoted]}
+          else
+            {Map.put(counts, t, new_val), promoted}
+          end
+        end
+      end
+    end)
+  end
+
+  # Word-level Jaccard similarity normalization: if a known topic key matches
+  # the candidate with score >= 0.4, collapse candidate into that key.
+  defp jaccard_normalize(topic, counts) do
+    t_words = topic |> String.split() |> Enum.filter(&(String.length(&1) > 3))
+    if t_words == [] do
+      topic
+    else
+      best =
+        Enum.reduce(counts, {nil, 0.0}, fn {key, _}, {best_key, best_score} ->
+          k_words = key |> String.split() |> Enum.filter(&(String.length(&1) > 3))
+          intersection = Enum.count(t_words, &(&1 in k_words))
+          if intersection == 0 do
+            {best_key, best_score}
+          else
+            union = length(t_words) + length(k_words) - intersection
+            score = if union > 0, do: intersection / union, else: 0.0
+            if score > best_score, do: {key, score}, else: {best_key, best_score}
+          end
+        end)
+
+      case best do
+        {key, score} when score >= 0.4 and key != nil -> key
+        _ -> topic
+      end
+    end
+  end
+
+  # Parse bullet-list profile format and merge new topics under the "Interests" key.
+  # Format: "- Key: val1, val2\n- Key2: val3"
+  defp merge_interests(profile, topics) do
+    lines = profile |> String.split("\n") |> Enum.filter(&String.starts_with?(&1, "-"))
+
+    {key_order, key_map} =
+      Enum.reduce(lines, {[], %{}}, fn line, {order, map} ->
+        rest = line |> String.slice(1, String.length(line)) |> String.trim()
+        {k, v_str} =
+          case String.split(rest, ":", parts: 2) do
+            [k, v] -> {String.trim(k), String.trim(v)}
+            [k] -> {String.trim(k), ""}
+          end
+        kl = String.downcase(k)
+        values = v_str |> String.split(",") |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == ""))
+        if Map.has_key?(map, kl) do
+          {order, Map.update!(map, kl, fn e -> %{e | values: e.values ++ values} end)}
+        else
+          {order ++ [kl], Map.put(map, kl, %{orig_key: k, values: values})}
+        end
+      end)
+
+    {key_order, key_map} =
+      if Map.has_key?(key_map, "interests") do
+        {key_order, key_map}
+      else
+        {key_order ++ ["interests"], Map.put(key_map, "interests", %{orig_key: "Interests", values: []})}
+      end
+
+    key_map =
+      Enum.reduce(topics, key_map, fn topic, m ->
+        tl = String.downcase(topic)
+        Map.update!(m, "interests", fn e ->
+          existing_lower = Enum.map(e.values, &String.downcase/1)
+          if tl in existing_lower, do: e, else: %{e | values: e.values ++ [tl]}
+        end)
+      end)
+
+    key_order
+    |> Enum.map(fn kl ->
+      e = key_map[kl]
+      deduped =
+        Enum.reduce(e.values, {[], MapSet.new()}, fn v, {acc, seen} ->
+          vl = String.downcase(v)
+          if MapSet.member?(seen, vl), do: {acc, seen}, else: {acc ++ [v], MapSet.put(seen, vl)}
+        end)
+        |> elem(0)
+      "- #{e.orig_key}: #{Enum.join(deduped, ", ")}"
+    end)
+    |> Enum.join("\n")
+  end
+
   # PUT /auth/password
   def put_password(conn, user) do
     {:ok, body, conn} = read_body(conn)
@@ -237,7 +386,7 @@ defmodule Dmhai.Handlers.Auth do
         _ -> %{}
       end
 
-    allowed_keys = ["lang", "model"]
+    allowed_keys = ["lang", "notificationPollInterval"]
     updates = Map.take(d, allowed_keys)
     new_prefs = Map.merge(prefs, updates)
 

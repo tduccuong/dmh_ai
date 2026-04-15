@@ -14,9 +14,7 @@ UIManager.renderChat = function() {
     this.currentSession.messages.forEach(function(msg) {
         const div = document.createElement('div');
         div.className = 'message ' + msg.role;
-        var hdr = document.createElement('div');
-        hdr.className = 'msg-header';
-        hdr.textContent = buildMsgHeader(msg, renderSession);
+        var hdr = buildMsgHeaderEl(msg, renderSession);
         div.appendChild(hdr);
         var body = document.createElement('div');
         body.className = 'msg-body';
@@ -35,7 +33,7 @@ UIManager.renderChat = function() {
                 thinkSummary.appendChild(thinkArrowSpan);
                 var thinkBody = document.createElement('div');
                 thinkBody.className = 'think-body';
-                thinkBody.textContent = digestThinking(msg.thinking);
+                thinkBody.textContent = digestThinking(msg.thinking, true);
                 thinkBlock.appendChild(thinkSummary);
                 thinkBlock.appendChild(thinkBody);
                 thinkBlock.addEventListener('toggle', function() {
@@ -184,10 +182,10 @@ UIManager.renderChat = function() {
     if (streamEntry) {
         var streamDiv = document.createElement('div');
         streamDiv.className = 'message assistant';
-        var streamHdr = document.createElement('div');
-        streamHdr.className = 'msg-header';
-        streamHdr.textContent = buildMsgHeader({ role: 'assistant', ts: Date.now(), model: streamEntry.session.model }, streamEntry.session);
-        streamDiv.appendChild(streamHdr);
+        if (streamEntry.content) {
+            var streamHdr = buildMsgHeaderEl({ role: 'assistant', ts: Date.now() }, streamEntry.session);
+            streamDiv.appendChild(streamHdr);
+        }
         var streamBody = document.createElement('div');
         streamBody.className = 'msg-body';
         streamBody.id = 'streaming-body';
@@ -244,14 +242,8 @@ UIManager.resizeImage = function(file) {
     });
 };
 
-UIManager.extractVideoFrames = function(file, contextWindow, model) {
-    // Compute max frames from context window budget, capped by detail preset multiplier
-    var ctxFrames = Math.floor((contextWindow || 4096) * VIDEO_FRAME_CONTEXT_BUDGET / VIDEO_FRAME_TOKENS_PER_IMAGE);
-    var multiplier = VIDEO_DETAIL_MULTIPLIERS[Settings._videoDetail] || VIDEO_DETAIL_MULTIPLIERS.medium;
-    var maxFrames = Math.max(2, Math.min(VIDEO_FRAME_MAX_COUNT, Math.round(ctxFrames * multiplier)));
-    // Cloud API hard limit — local models are unconstrained by this
-    if (isCloudModel(model || '')) maxFrames = Math.min(maxFrames, CLOUD_MAX_IMAGES);
-    syslog('[VIDEO] ctx=' + (contextWindow||4096) + ' ctxFrames=' + ctxFrames + ' detail=' + Settings._videoDetail + ' maxFrames=' + maxFrames + (isCloudModel(model||'') ? ' (cloud cap=' + CLOUD_MAX_IMAGES + ')' : ''));
+UIManager.extractVideoFrames = function(file, maxFrames) {
+    syslog('[VIDEO] maxFrames=' + maxFrames);
     return new Promise(function(resolve, reject) {
         var url = URL.createObjectURL(file);
         var video = document.createElement('video');
@@ -420,9 +412,6 @@ UIManager.handleFileSelect = async function(files) {
                 var entry = { id: null, name: videoFile.name, type: 'video', mime: videoFile.type, frames: [] };
                 self.attachedFiles.push(entry);
                 self.renderAttachments();
-                // Upload and extraction+description both gate the Send button via Promise.all
-                var videoModel = self.currentSession ? self.currentSession.model : '';
-                var videoDescription = null;
                 // Upload runs in background — does not gate the send button
                 apiFetch('/assets', { method: 'POST', body: videoFormData })
                     .then(function(r) { return r.json(); })
@@ -440,41 +429,29 @@ UIManager.handleFileSelect = async function(files) {
                                 });
                             });
                             SessionStore.updateSession(self.currentSession);
-                            self.renderChat();
-                        }
-                        // Save description if extraction finished before upload
-                        if (videoDescription && self.currentSession) {
-                            self._videoDescriptions[d.id] = { name: videoFile.name, description: videoDescription };
-                            VideoDescriptionStore.save(self.currentSession.id, d.id, videoFile.name, videoDescription);
+                            if (!self.isStreaming) self.renderChat();
                         }
                     })
                     .catch(function(e) { console.error('Video upload failed:', e); });
-                var extractionPromise = OllamaAPI.fetchContextWindow(videoModel)
-                    .then(function(ctxWindow) { return UIManager.extractVideoFrames(videoFile, ctxWindow, videoModel); })
+                // Ask backend how many frames to extract, then extract, then pre-describe in background
+                var capturedVideoFile = videoFile;
+                var capturedSessionId = sessionId;
+                var extractionPromise = apiFetch('/video-frame-count')
+                    .then(function(r) { return r.json(); })
+                    .then(function(d) { return UIManager.extractVideoFrames(capturedVideoFile, d.count || 8); })
                     .then(function(frames) {
                         entry.frames = frames;
-                        if (!frames || frames.length === 0) return;
-                        // Fire description in background — does not gate the send button
-                        self.setStatus(t('analyzingVideo'));
-                        OllamaAPI.summarize(VIDEO_DESCRIBER_MODEL, [{
-                            role: 'user',
-                            content: 'These are frames extracted from a video. Describe the video content comprehensively:\n\n1. OVERVIEW: What type of video is this? What is the main subject or activity?\n2. TIMELINE: Describe what happens across the frames in chronological order.\n3. SUBJECTS: All people (count, appearance, actions), animals, or notable objects — give each a numbered entry with details.\n4. SETTING: Location, environment, time of day if visible.\n5. TEXT & SYMBOLS: Any visible text, signs, labels, or timestamps — quote exactly.\n6. KEY MOMENTS: Notable events, changes, or transitions visible across frames.\n\nBe concise but complete. A person who has not seen the video must understand its full content from your description alone.',
-                            images: frames
-                        }]).then(function(desc) {
-                            if (!desc) return;
-                            videoDescription = desc;
-                            // Save now if upload already finished, otherwise upload callback saves it
-                            if (entry.id && self.currentSession) {
-                                self._videoDescriptions[entry.id] = { name: videoFile.name, description: desc };
-                                VideoDescriptionStore.save(self.currentSession.id, entry.id, videoFile.name, desc);
-                            }
-                        }).catch(function(e) {
-                            console.warn('Video description failed:', e);
-                        });
-                        // Don't return — extractionPromise resolves here, frames are ready
+                        if (frames && frames.length > 0) {
+                            // Fire description in background — does not gate the send button
+                            apiFetch('/describe-video', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ sessionId: capturedSessionId, name: capturedVideoFile.name, frames: frames })
+                            }).catch(function(e) { console.error('Video description failed:', e); });
+                        }
                     })
                     .catch(function(e) { console.error('Frame extraction failed:', e); });
-                // Gate send button only on frame extraction (frames ready = can send)
+                // Gate send button on frame extraction only (description is non-blocking)
                 extractionPromise.finally(function() {
                     self._pendingVideo--;
                     if (self._pendingVideo === 0 && self._pendingDesc === 0) self.setStatus('');
@@ -501,38 +478,25 @@ UIManager.handleFileSelect = async function(files) {
                 self.renderAttachments();
 
                 // Upload in background — does not gate the send button
-                var imgDescResult = null;
                 var imgFormData = new FormData();
                 imgFormData.append('file', file);
                 imgFormData.append('sessionId', sessionId);
+                var capturedImgName = file.name;
+                var capturedImgBase64 = resizedBase64;
+                var capturedImgSessionId = sessionId;
                 apiFetch('/assets', { method: 'POST', body: imgFormData })
                     .then(function(r) { return r.json(); })
-                    .then(function(d) {
-                        imgEntry.id = d.id;
-                        // Save description if it finished before upload
-                        if (imgDescResult && self.currentSession) {
-                            self._imageDescriptions[d.id] = { name: file.name, description: imgDescResult };
-                            ImageDescriptionStore.save(self.currentSession.id, d.id, file.name, imgDescResult);
-                        }
-                    })
+                    .then(function(d) { imgEntry.id = d.id; })
                     .catch(function(e) { console.error('Image upload failed:', e); });
 
                 // Fire description in background — does not gate the send button
-                OllamaAPI.summarize(IMAGE_DESCRIBER_MODEL, [{
-                    role: 'user',
-                    content: 'Describe this image using the following structure:\n\n1. COUNTING RULE (apply to every section below): For every countable category — people, animals, objects — state the exact number. Never write "several", "some", "a few", or "many". Always write "1 cat", "3 fish", "2 chairs", etc.\n\n2. SUBJECTS: For every individual person, animal, and notable object — give each one its own numbered entry. Do NOT group them. Each entry must include: species/type, color(s), size, texture, position in the scene, and any distinguishing features. Example format:\n  - Animal 1: orange goldfish, 5cm, smooth scales, swimming in the bottom-left corner\n  - Animal 2: black betta fish, 7cm, flowing fins, near the center surface\n\n3. LAYOUT: Describe spatial positions — what is in the foreground, center, background, left, right.\n\n4. SETTING: Location, environment, surface the objects rest on.\n\n5. LIGHTING: Light source direction, brightness, shadow presence.\n\n6. TEXT & SYMBOLS: Any visible text, numbers, logos, timestamps — quote them exactly.\n\n7. ACTIONS & MOTION: What is happening, any movement or poses.\n\n8. MOOD: Overall atmosphere and tone.\n\nBe precise and exhaustive. A person who has never seen this image must be able to reconstruct it accurately from your description alone.',
-                    images: [resizedBase64]
-                }]).then(function(desc) {
-                    imgDescResult = desc;
-                    // Save description if upload already finished
-                    if (desc && imgEntry.id && self.currentSession) {
-                        self._imageDescriptions[imgEntry.id] = { name: file.name, description: desc };
-                        ImageDescriptionStore.save(self.currentSession.id, imgEntry.id, file.name, desc);
-                    }
-                }).catch(function(e) {
-                    console.warn('Image description failed:', e);
-                });
-                // Unlock send button immediately — image base64 is ready, description runs in background
+                apiFetch('/describe-image', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ sessionId: capturedImgSessionId, name: capturedImgName, image: capturedImgBase64 })
+                }).catch(function(e) { console.error('Image description failed:', e); });
+
+                // Unlock send button immediately — base64 is ready
                 self._pendingDesc--;
                 if (self._pendingDesc === 0 && self._pendingVideo === 0) self.setStatus('');
                 self.updateSendBtn();
@@ -637,7 +601,13 @@ UIManager._releaseWakeLock = function() {
 UIManager.setStatus = function(text) {
     document.getElementById('status-text').textContent = text;
     document.getElementById('status-bar').classList.toggle('visible', !!text);
-    if (!text) this.setStatusDetail(null);
+    if (!text) { this.stopStatusDetailSlider(); this.setStatusDetail(null); }
+};
+
+UIManager.setStatusHtml = function(html) {
+    document.getElementById('status-text').innerHTML = html;
+    document.getElementById('status-bar').classList.toggle('visible', !!html);
+    if (!html) this.setStatusDetail(null);
 };
 
 UIManager.setStatusDetail = function(items) {

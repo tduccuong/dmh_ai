@@ -43,7 +43,7 @@ defmodule Dmhai.Handlers.Proxy do
         _ -> %{}
       end
 
-    json(conn, 200, data)
+    json(conn, 200, Map.put(data, "systemModels", Dmhai.Agent.AgentSettings.system_model_names()))
   end
 
   # GET /model-labels
@@ -356,7 +356,7 @@ defmodule Dmhai.Handlers.Proxy do
       {:ok, body, conn} = read_body(conn)
       d = Jason.decode!(body || "{}")
 
-      allowed_keys = ~w(accounts cloudModels ollamaEndpoint compactTurns keepRecent condenseFacts modelLabels)
+      allowed_keys = ~w(accounts cloudModels ollamaEndpoint compactTurns keepRecent condenseFacts modelLabels openaiKey googleKey anthropicKey confidantModel assistantModel workerModel webSearchModel imageDescriberModel videoDescriberModel profileExtractorModel)
       allowed = Map.take(d, allowed_keys)
 
       query!(Repo, "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",

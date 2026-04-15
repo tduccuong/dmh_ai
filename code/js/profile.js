@@ -8,6 +8,7 @@
 const Settings = {
     _accounts: [],
     _cloudModels: [],
+    _systemModels: [],
     _ollamaEndpoint: '',
     _compactTurns: 90,
     _keepRecent: 0,
@@ -16,6 +17,7 @@ const Settings = {
     _modelLabels: {},
     get accounts() { return this._accounts; },
     get cloudModels() { return this._cloudModels; },
+    get systemModels() { return this._systemModels; },
     get modelLabels() { return this._modelLabels; },
     saveAccounts: function(list) {
         this._accounts = list;
@@ -42,11 +44,37 @@ const Settings = {
         this._ollamaEndpoint = url || '';
         AppConfig.saveOllamaEndpoint(url);
     },
+    // Agent model settings
+    _confidantModel: '',
+    _assistantModel: '',
+    _workerModel: '',
+    _webSearchModel: '',
+    _imageDescriberModel: '',
+    _videoDescriberModel: '',
+    _profileExtractorModel: '',
+    get confidantModel() { return this._confidantModel; },
+    get assistantModel() { return this._assistantModel; },
+    get workerModel() { return this._workerModel; },
+    get webSearchModel() { return this._webSearchModel; },
+    get imageDescriberModel() { return this._imageDescriberModel; },
+    get videoDescriberModel() { return this._videoDescriberModel; },
+    get profileExtractorModel() { return this._profileExtractorModel; },
+
     _persist: function() {
         return apiFetch('/admin/settings', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ accounts: this._accounts, cloudModels: this._cloudModels, ollamaEndpoint: this._ollamaEndpoint, compactTurns: this._compactTurns, keepRecent: this._keepRecent, condenseFacts: this._condenseFacts, videoDetail: this._videoDetail, modelLabels: this._modelLabels })
+            body: JSON.stringify({
+                accounts: this._accounts, cloudModels: this._cloudModels,
+                ollamaEndpoint: this._ollamaEndpoint, compactTurns: this._compactTurns,
+                keepRecent: this._keepRecent, condenseFacts: this._condenseFacts,
+                videoDetail: this._videoDetail, modelLabels: this._modelLabels,
+                confidantModel: this._confidantModel, assistantModel: this._assistantModel,
+                workerModel: this._workerModel, webSearchModel: this._webSearchModel,
+                imageDescriberModel: this._imageDescriberModel,
+                videoDescriberModel: this._videoDescriberModel,
+                profileExtractorModel: this._profileExtractorModel
+            })
         }).catch(function() {});
     },
     load: async function() {
@@ -56,18 +84,17 @@ const Settings = {
                 const d = await res.json();
                 this._accounts = Array.isArray(d.accounts) ? d.accounts : [];
                 this._cloudModels = Array.isArray(d.cloudModels) ? d.cloudModels : [];
+                this._systemModels = Array.isArray(d.systemModels) ? d.systemModels : [];
                 if (d.ollamaEndpoint !== undefined) {
                     this._ollamaEndpoint = d.ollamaEndpoint || '';
                     AppConfig.saveOllamaEndpoint(this._ollamaEndpoint);
                     OllamaAPI.setEndpoint(this._ollamaEndpoint);
                 }
                 if (d.compactTurns !== undefined) {
-                    this._compactTurns = parseInt(d.compactTurns) || ContextManager.TURN_THRESHOLD;
-                    ContextManager.TURN_THRESHOLD = this._compactTurns;
+                    this._compactTurns = parseInt(d.compactTurns) || 90;
                 }
                 if (d.keepRecent !== undefined) {
                     this._keepRecent = parseInt(d.keepRecent) || 0;
-                    ContextManager.KEEP_RECENT_OVERRIDE = this._keepRecent;
                 }
                 if (d.condenseFacts !== undefined) {
                     this._condenseFacts = parseInt(d.condenseFacts) || 50;
@@ -78,76 +105,28 @@ const Settings = {
                 if (d.modelLabels && typeof d.modelLabels === 'object') {
                     this._modelLabels = d.modelLabels;
                 }
+                // Agent model settings
+                if (d.confidantModel) this._confidantModel = d.confidantModel;
+                if (d.assistantModel) this._assistantModel = d.assistantModel;
+                if (d.workerModel) this._workerModel = d.workerModel;
+                if (d.webSearchModel) this._webSearchModel = d.webSearchModel;
+                if (d.imageDescriberModel) this._imageDescriberModel = d.imageDescriberModel;
+                if (d.videoDescriberModel) this._videoDescriberModel = d.videoDescriberModel;
+                if (d.profileExtractorModel) this._profileExtractorModel = d.profileExtractorModel;
             }
         } catch(e) {}
     }
 };
 
 const UserFactTracker = {
-    _counts: {},       // topic (lowercase) → count (in-memory mirror of DB)
-    THRESHOLD: 3,
-
-    load: async function() {
-        try {
-            var res = await apiFetch('/user/fact-counts');
-            if (res && res.ok) {
-                var d = await res.json();
-                this._counts = d || {};
-                syslog('[FACT-TRACKER] loaded ' + Object.keys(this._counts).length + ' topic(s)');
-            }
-        } catch(e) {}
-    },
-
-    // Receive candidate topic labels from LLM, increment counts, promote to profile when threshold hit
-    track: async function(candidates, model) {
+    // Receive candidate topic labels from LLM; backend handles normalization, threshold, and profile merge.
+    track: async function(candidates) {
         if (!candidates || !candidates.length) return;
-        var self = this;
-        var deltas = {};
-        var promoted = [];
-        candidates.forEach(function(topic) {
-            var t = topic.trim().toLowerCase();
-            if (!t) return;
-            // Normalize: find the most similar existing key using word-level Jaccard similarity
-            // jaccard(a,b) = |intersection of words| / |union of words|
-            var tWords = t.split(/\s+/).filter(function(w) { return w.length > 3; });
-            var bestKey = null, bestScore = 0;
-            // Include promoted keys in Jaccard search (for normalization only — they won't be incremented)
-            Object.keys(self._counts).forEach(function(key) {
-                var kWords = key.split(/\s+/).filter(function(w) { return w.length > 3; });
-                var intersection = tWords.filter(function(w) { return kWords.indexOf(w) >= 0; }).length;
-                if (!intersection) return;
-                var union = tWords.concat(kWords.filter(function(w) { return tWords.indexOf(w) < 0; })).length;
-                var score = union > 0 ? intersection / union : 0;
-                var cnt = self._counts[key] < 0 ? 0 : self._counts[key]; // treat promoted as 0 for tie-breaking
-                if (score > bestScore || (score === bestScore && cnt > (self._counts[bestKey] || 0))) {
-                    bestScore = score;
-                    bestKey = key;
-                }
-            });
-            if (bestScore >= 0.4 && bestKey) t = bestKey;
-            // Already promoted to profile — skip incrementing
-            if (self._counts[t] < 0) return;
-            self._counts[t] = (self._counts[t] || 0) + 1;
-            deltas[t] = 1;
-            if (self._counts[t] >= self.THRESHOLD) {
-                promoted.push(topic.trim());
-                self._counts[t] = -1; // sentinel: promoted, stop counting
-                deltas[t] = -((self.THRESHOLD - 1) + 1); // write -THRESHOLD so DB also goes negative
-            }
-        });
-        if (!Object.keys(deltas).length) return;
-        // Persist count deltas to backend (fire and forget)
-        apiFetch('/user/fact-counts', {
-            method: 'PUT',
+        apiFetch('/user/track-facts', {
+            method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(deltas)
+            body: JSON.stringify({ candidates: candidates })
         }).catch(function() {});
-        // Promote reached-threshold topics into UserProfile._facts under Interests
-        if (promoted.length) {
-            syslog('[FACT-TRACKER] promoting to Interests: ' + promoted.join(', '));
-            UserProfile.mergeInterests(promoted);
-            await UserProfile.save();
-        }
     }
 };
 
@@ -180,180 +159,6 @@ const UserProfile = {
         await this.save();
     },
 
-    // Merge a list of promoted interest labels into _facts under the "Interests" key
-    mergeInterests: function(topics) {
-        var self = this;
-        var keyMap = {}, keyOrder = [];
-        (this._facts ? this._facts.split('\n') : [])
-            .filter(function(l) { return l.trim().startsWith('-'); })
-            .forEach(function(l) {
-                var i = l.indexOf(':');
-                var k = i >= 0 ? l.slice(1, i).trim() : l.slice(1).trim();
-                var vStr = i >= 0 ? l.slice(i + 1).trim() : '';
-                var kl = k.toLowerCase();
-                if (!keyMap[kl]) { keyMap[kl] = { origKey: k, values: [] }; keyOrder.push(kl); }
-                vStr.split(',').map(function(v) { return v.trim(); }).filter(Boolean).forEach(function(v) {
-                    if (keyMap[kl].values.indexOf(v.toLowerCase()) < 0) keyMap[kl].values.push(v.toLowerCase());
-                });
-            });
-        var kl = 'interests';
-        if (!keyMap[kl]) { keyMap[kl] = { origKey: 'Interests', values: [] }; keyOrder.push(kl); }
-        topics.forEach(function(t) {
-            var tl = t.toLowerCase();
-            if (keyMap[kl].values.indexOf(tl) < 0) keyMap[kl].values.push(tl);
-        });
-        // Final dedup pass — guards against race conditions where _facts was stale at read time
-        this._facts = keyOrder.map(function(kl) {
-            var e = keyMap[kl];
-            var seen = {};
-            var deduped = e.values.filter(function(v) {
-                if (seen[v]) return false;
-                seen[v] = true;
-                return true;
-            });
-            return '- ' + e.origKey + ': ' + deduped.join(', ');
-        }).join('\n');
-    },
-
-    // Run after each LLM turn — extract new facts and merge into profile
-    extractAndMerge: async function(userText, assistantText, model) {
-        if (!userText || !assistantText) return;
-        try {
-            syslog('[PROFILE] extracting from user="' + userText.slice(0, 80) + '"');
-            const existing = this._facts ? 'Already known:\n' + this._facts + '\n\n' : '';
-            const prompt =
-                '[USER MESSAGE]\n"' + userText.slice(0, 800) + '"\n[END USER MESSAGE]\n\n' +
-                existing +
-                'Task: Analyse the USER MESSAGE and output TWO sections.\n' +
-                '\n' +
-                '[FACTS]\n' +
-                'Explicit personal facts the user stated about themselves (name, job, family, hobbies declared, preferences stated, health, location, events).\n' +
-                'Only extract from explicit self-descriptions: "I am...", "I have...", "I like...", "I live in...", etc.\n' +
-                'One bullet per category, comma-separated values. e.g. "- Name: Carl", "- Hobbies: hiking, reading"\n' +
-                'Never repeat a category key. Keep values short (a few words each).\n' +
-                'Do not duplicate anything already in "Already known".\n' +
-                'Write NONE if nothing qualifies.\n' +
-                '\n' +
-                '[CANDIDATES]\n' +
-                'Topics or subjects the user is asking about or showing curiosity in — even without explicit "I like X" statements.\n' +
-                'Rules:\n' +
-                '- Use the broadest, most general label possible: prefer "gardening" over "indoor tomato cultivation", "blockchain" over "blockchain immutability"\n' +
-                '- 1–2 words maximum. No qualifiers, adjectives, or specifics.\n' +
-                '- If the topic is already tracked below, reuse that exact label word-for-word.\n' +
-                '- If the message covers multiple aspects of the same broad topic, output only ONE label for it.\n' +
-                (Object.keys(UserFactTracker._counts).filter(function(k) { return UserFactTracker._counts[k] > 0; }).length
-                    ? 'Already tracked topics (reuse these labels if applicable): ' + Object.keys(UserFactTracker._counts).filter(function(k) { return UserFactTracker._counts[k] > 0; }).join(', ') + '\n'
-                    : '') +
-                'Write NONE if nothing qualifies.\n' +
-                '\n' +
-                'The user message may be in any language. Always write output in English. Plain text only, no markdown.';
-            const res = await cloudRoutedFetch(model, '/generate', {
-                model: model, stream: false, think: false,
-                options: { temperature: 0, num_predict: PROFILE_EXTRACT_NUM_PREDICT, think: false },
-                prompt: prompt
-            }, null);
-            if (!res || !res.ok) return;
-            const data = await res.json();
-            const reply = (data.response || '').trim();
-            syslog('[PROFILE] extraction result="' + reply.slice(0, 200) + '"');
-            if (!reply || reply === 'NONE' || /^none$/i.test(reply)) return;
-            // Split output into [FACTS] and [CANDIDATES] sections
-            var factsText = '', candidatesText = '';
-            var factsMatch = reply.match(/\[FACTS\]([\s\S]*?)(?=\[CANDIDATES\]|$)/i);
-            var candidatesMatch = reply.match(/\[CANDIDATES\]([\s\S]*?)$/i);
-            if (factsMatch) factsText = factsMatch[1];
-            if (candidatesMatch) candidatesText = candidatesMatch[1];
-            // Parse CANDIDATES and feed to UserFactTracker
-            var candidates = candidatesText.split('\n')
-                .map(function(l) { return l.trim().replace(/^-\s*/, '').replace(/\*{1,3}([^*]*)\*{1,3}/g, '$1'); })
-                .filter(function(l) { return l && !/^none$/i.test(l); });
-            if (candidates.length) UserFactTracker.track(candidates, model);
-            // Parse FACTS bullets
-            var newLines = (factsText || reply).split('\n')
-                .map(function(l) { return l.trim().replace(/\*{1,3}([^*]*)\*{1,3}/g, '$1').replace(/_{1,2}([^_]*)_{1,2}/g, '$1'); })
-                .filter(function(l) { return l.startsWith('-'); });
-            if (newLines.length === 0) return;
-            // Key-based merge: build a map of key → [values] from existing facts
-            var keyMap = {}; // lowercase key → { origKey, values: [lowercase vals] }
-            var keyOrder = []; // preserve insertion order
-            (this._facts ? this._facts.split('\n') : [])
-                .filter(function(l) { return l.trim().startsWith('-'); })
-                .forEach(function(l) {
-                    var i = l.indexOf(':');
-                    var k = i >= 0 ? l.slice(1, i).trim() : l.slice(1).trim();
-                    var vStr = i >= 0 ? l.slice(i + 1).trim() : '';
-                    var kl = k.toLowerCase();
-                    if (!keyMap[kl]) { keyMap[kl] = { origKey: k, values: [] }; keyOrder.push(kl); }
-                    vStr.split(',').map(function(v) { return v.trim(); }).filter(Boolean).forEach(function(v) {
-                        var vl = v.toLowerCase();
-                        if (keyMap[kl].values.indexOf(vl) < 0) keyMap[kl].values.push(vl);
-                    });
-                });
-            // Merge new lines into keyMap
-            var changed = false;
-            newLines.forEach(function(l) {
-                var i = l.indexOf(':');
-                var k = i >= 0 ? l.slice(1, i).trim() : l.slice(1).trim();
-                var vStr = i >= 0 ? l.slice(i + 1).trim() : '';
-                var kl = k.toLowerCase();
-                if (!keyMap[kl]) { keyMap[kl] = { origKey: k, values: [] }; keyOrder.push(kl); }
-                vStr.split(',').map(function(v) { return v.trim(); }).filter(Boolean).forEach(function(v) {
-                    var vl = v.toLowerCase();
-                    if (keyMap[kl].values.indexOf(vl) < 0) { keyMap[kl].values.push(vl); changed = true; }
-                });
-            });
-            if (!changed) return;
-            // Rebuild _facts as grouped lines
-            var allLines = keyOrder.map(function(kl) {
-                var e = keyMap[kl];
-                return '- ' + e.origKey + ': ' + e.values.join(', ');
-            });
-            this._facts = allLines.join('\n');
-            syslog('[PROFILE] merged ' + newLines.length + ' new fact(s): ' + newLines.join(' | ').slice(0, 200));
-            // Condense if over threshold
-            var condenseThreshold = (typeof Settings !== 'undefined' && Settings._condenseFacts) || 50;
-            if (allLines.length >= condenseThreshold) {
-                await this._condense(model, allLines);
-            } else {
-                await this.save();
-            }
-        } catch(e) {}
-    },
-
-    _condense: async function(model, allLines) {
-        try {
-            var targetCount = Math.ceil((typeof Settings !== 'undefined' && Settings._condenseFacts || 50) / 2);
-            syslog('[PROFILE] condensing ' + allLines.length + ' facts → target ~' + targetCount);
-            var condensePrompt =
-                'Below is a list of personal facts about a user, accumulated over many conversations.\n\n' +
-                allLines.join('\n') + '\n\n' +
-                'Task: Condense and regroup this list to at most ' + targetCount + ' lines.\n' +
-                'Rules:\n' +
-                '- One line per category key. If multiple values share a key, merge them onto one line comma-separated.\n' +
-                '- Merge near-duplicate keys (e.g. "Hobbies" and "Hobbies, interests" → "Hobbies").\n' +
-                '- If a fact has been superseded by a newer one (e.g. old job vs new job), keep only the newer one.\n' +
-                '- Drop trivial or very low-signal values if over the limit.\n' +
-                '- Keep all facts in English.\n' +
-                'Output format: "- Key: value1, value2" — one bullet per category, no key repeated.\n' +
-                'Plain text only, no extra commentary.';
-            var res = await cloudRoutedFetch(model, '/generate', {
-                model: model, stream: false, think: false,
-                options: { temperature: 0, num_predict: PROFILE_CONDENSE_NUM_PREDICT, think: false },
-                prompt: condensePrompt
-            }, null);
-            if (!res || !res.ok) { await this.save(); return; }
-            var data = await res.json();
-            var condensed = (data.response || '').trim();
-            var condensedLines = condensed.split('\n')
-                .map(function(l) { return l.trim().replace(/\*{1,3}([^*]*)\*{1,3}/g, '$1').replace(/_{1,2}([^_]*)_{1,2}/g, '$1'); })
-                .filter(function(l) { return l.startsWith('-'); });
-            if (condensedLines.length > 0) {
-                this._facts = condensedLines.join('\n');
-                syslog('[PROFILE] condensed to ' + condensedLines.length + ' fact(s)');
-            }
-            await this.save();
-        } catch(e) { await this.save(); }
-    }
 };
 
 const SettingsModal = {
@@ -411,7 +216,6 @@ const SettingsModal = {
                 Settings.saveAccounts(accts);
                 SettingsModal._renderAccounts();
                 SettingsModal._updateSubsectionState();
-                UIManager.refreshModelSelect();
             });
             item.appendChild(del);
             list.appendChild(item);
@@ -433,7 +237,6 @@ const SettingsModal = {
                 var val = labelInput.value.trim();
                 if (val) labels[name] = val; else delete labels[name];
                 Settings.saveModelLabels(labels);
-                UIManager.refreshModelSelect();
             });
             var nameSpan = document.createElement('span');
             nameSpan.className = 'settings-list-item-sub';
@@ -447,7 +250,6 @@ const SettingsModal = {
                 Settings._modelLabels = labels;
                 Settings.saveCloudModels(models);
                 SettingsModal._renderCloudModels();
-                UIManager.refreshModelSelect();
             });
             item.appendChild(labelInput);
             item.appendChild(nameSpan);
@@ -462,7 +264,7 @@ const SettingsModal = {
         try {
             var models = await OllamaAPI.fetchModels();
             var localModels = models.filter(function(m) {
-                return RECOMMENDED_CLOUD_MODEL_NAMES.indexOf(m.name) === -1 &&
+                return Settings.systemModels.indexOf(m.name) === -1 &&
                        Settings.cloudModels.indexOf(m.name) === -1;
             }).sort(function(a, b) { return (a.size || 0) - (b.size || 0); });
             if (localModels.length === 0) {
@@ -482,7 +284,6 @@ const SettingsModal = {
                     var val = labelInput.value.trim();
                     if (val) labels[model.name] = val; else delete labels[model.name];
                     Settings.saveModelLabels(labels);
-                    UIManager.refreshModelSelect();
                 });
                 var nameSpan = document.createElement('span');
                 nameSpan.className = 'settings-list-item-sub';
@@ -504,13 +305,12 @@ const SettingsModal = {
         name = name.trim().toLowerCase();
         if (!name) return;
         // Recommended models are shown automatically — don't add to user list
-        if (RECOMMENDED_CLOUD_MODEL_NAMES.indexOf(name) !== -1) return;
+        if (Settings.systemModels.indexOf(name) !== -1) return;
         var models = Settings.cloudModels;
         if (models.indexOf(name) !== -1) return;
         models.push(name);
         Settings.saveCloudModels(models);
         this._renderCloudModels();
-        UIManager.refreshModelSelect();
         document.getElementById('cloud-model-search').value = '';
         document.getElementById('cloud-model-suggestions').classList.remove('open');
     },
@@ -550,7 +350,6 @@ const SettingsModal = {
             document.getElementById('cloud-acct-key').value = '';
             self._renderAccounts();
             self._updateSubsectionState();
-            UIManager.refreshModelSelect();
         });
         // Cloud model search
         var searchInput = document.getElementById('cloud-model-search');
@@ -571,7 +370,7 @@ const SettingsModal = {
                         var data = await res.json();
                         models = (data.models || [])
                             .map(function(m) { return m.name; })
-                            .filter(function(n) { return RECOMMENDED_CLOUD_MODEL_NAMES.indexOf(n) === -1; });
+                            .filter(function(n) { return Settings.systemModels.indexOf(n) === -1; });
                     }
                 } catch(e) {}
                 // Also show locally-installed cloud models that match the query
@@ -582,7 +381,7 @@ const SettingsModal = {
                             var tag = m.name.includes(':') ? m.name.split(':')[1] : '';
                             return tag.includes('cloud')
                                 && m.name.toLowerCase().includes(q.toLowerCase())
-                                && RECOMMENDED_CLOUD_MODEL_NAMES.indexOf(m.name) === -1;
+                                && Settings.systemModels.indexOf(m.name) === -1;
                         })
                         .map(function(m) { return m.name; });
                     localCloud.forEach(function(n) { if (models.indexOf(n) === -1) models.push(n); });
@@ -622,7 +421,6 @@ const SettingsModal = {
             var val = parseInt(document.getElementById('settings-compact-turns').value);
             if (!val || val < 10) return;
             Settings._compactTurns = val;
-            ContextManager.TURN_THRESHOLD = val;
             Settings._persist();
         });
         // Keep recent save
@@ -631,7 +429,6 @@ const SettingsModal = {
             var val = raw === '' ? 0 : parseInt(raw);
             if (isNaN(val) || val < 0) return;
             Settings._keepRecent = val;
-            ContextManager.KEEP_RECENT_OVERRIDE = val;
             Settings._persist();
         });
         // Condense facts threshold save

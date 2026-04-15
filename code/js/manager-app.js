@@ -33,30 +33,14 @@ UIManager.initializeApp = async function() {
         await Settings.loadPublicLabels();
     }
     await UserProfile.load();
-    await UserFactTracker.load();
 
-    try {
-        const models = await OllamaAPI.fetchModels();
-        this.populateModelSelects(models);
-    } catch (e) {
-        if (OllamaAPI.endpoint) {
-            // Custom endpoint unreachable — fall back to default /api so local models still appear
-            OllamaAPI.setEndpoint('');
-            try {
-                const models = await OllamaAPI.fetchModels();
-                this.populateModelSelects(models);
-            } catch (e2) {
-                this.showError(t('cannotConnectFull'));
-            }
-        } else {
-            this.showError(t('cannotConnectFull'));
-        }
-    }
+    // Initialize mode selector
+    this.initModeSelector();
 
     try {
         const sessions = await SessionStore.getSessions();
         if (sessions.length === 0) {
-            const defaultSession = await SessionStore.createSession(t('newChat'), this.getDefaultModel());
+            const defaultSession = await SessionStore.createSession(t('newChat'), this._currentMode);
             await SessionStore.setCurrentSessionId(defaultSession.id);
             this.currentSession = defaultSession;
         } else {
@@ -65,187 +49,101 @@ UIManager.initializeApp = async function() {
             if (!this.currentSession) this.currentSession = sessions[0];
             await SessionStore.setCurrentSessionId(this.currentSession.id);
         }
-        if (this.currentSession && this.currentSession.model) {
-            var sel = document.getElementById('header-model-select');
-            var sessionModel = this.currentSession.model;
-            var modelAvailable = Array.from(sel.options).some(function(o) { return o.value === sessionModel; });
-            if (modelAvailable) {
-                this._setModelDropdownValue(sessionModel);
-            } else {
-                // Model no longer available (e.g. pool deleted); keep dropdown value from populateModelSelects
-                var dropdownModel = sel.value || this._lastUsedModel;
-                if (dropdownModel && dropdownModel !== sessionModel) {
-                    this.currentSession.model = dropdownModel;
-                    SessionStore.updateSession(this.currentSession);
-                }
-            }
+        // Set mode from current session
+        if (this.currentSession) {
+            this._currentMode = this.currentSession.mode || 'confidant';
+            this._updateModeLabel();
         }
         await this.renderSessions();
         this.renderChat();
-        // Load image and video descriptions for the current session in background
-        if (this.currentSession) {
-            var initSessionId = this.currentSession.id;
-            ImageDescriptionStore.loadForSession(initSessionId).then(function(items) {
-                if (UIManager.currentSession && UIManager.currentSession.id === initSessionId) {
-                    items.forEach(function(d) {
-                        UIManager._imageDescriptions[d.file_id] = { name: d.name, description: d.description };
-                    });
-                }
-            });
-            VideoDescriptionStore.loadForSession(initSessionId).then(function(items) {
-                if (UIManager.currentSession && UIManager.currentSession.id === initSessionId) {
-                    items.forEach(function(d) {
-                        UIManager._videoDescriptions[d.file_id] = { name: d.name, description: d.description };
-                    });
-                }
-            });
-        }
         document.getElementById('message-input').focus();
+
+        // Start notification polling for Assistant worker updates
+        var pollMs = parseInt(this._prefs && this._prefs.notificationPollInterval) || 5000;
+        NotificationPoller.start(pollMs);
     } catch (e) {
         console.error('Failed to load sessions:', e);
     }
 };
 
-UIManager.populateModelSelects = function(models) {
-    const select = document.getElementById('header-model-select');
-    const menu = document.getElementById('model-dropdown-menu');
-    select.innerHTML = '';
+// ─── Mode Selector ──────────────────────────────────────────────────────
+
+UIManager._currentMode = 'confidant';
+
+var MODE_ICONS = {
+    confidant: '<svg width="15" height="15" viewBox="0 0 24 24" fill="#e09040" stroke="none"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>',
+    assistant: '<svg width="16" height="16" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="16" cy="14" r="13" fill="#c6dff0"/><path d="M9 28 Q9 20 16 20 Q23 20 23 26 L21 24 L19 28 L16 25 L13 28 L11 24 Z" fill="#f03878"/><circle cx="16" cy="13" r="5" fill="#b06828"/><circle cx="16" cy="13" r="4" fill="#e8a070"/><circle cx="14.5" cy="12.5" r="0.6" fill="#d07858" opacity="0.7"/><circle cx="17.5" cy="12.5" r="0.6" fill="#d07858" opacity="0.7"/><path d="M11 13 Q11 7 16 7 Q21 7 21 13" stroke="#3a3450" stroke-width="2" fill="none" stroke-linecap="round"/><rect x="9.5" y="11.5" width="2.5" height="4" rx="1.2" fill="#3a3450"/><rect x="20" y="11.5" width="2.5" height="4" rx="1.2" fill="#3a3450"/><path d="M21 14 Q23.5 15 22.5 18" stroke="#3a3450" stroke-width="1.5" fill="none" stroke-linecap="round"/><rect x="21" y="17.5" width="3" height="2" rx="1" fill="#3a3450"/><path d="M9 21 Q9 18 16 18 Q23 18 23 21" fill="#f03878"/></svg>'
+};
+
+UIManager.initModeSelector = function() {
+    var self = this;
+    var menu = document.getElementById('mode-dropdown-menu');
+    if (!menu) return;
     menu.innerHTML = '';
-    const self = this;
-    const hasPool = Settings.accounts.length > 0;
-    const recModels = getRecommendedCloudModels();
-    const recNames = RECOMMENDED_CLOUD_MODEL_NAMES;
-    const cloudModelNames = Settings.cloudModels.filter(function(n) { return recNames.indexOf(n) === -1; });
-    const localModels = models.filter(function(m) {
-        return recNames.indexOf(m.name) === -1 && Settings.cloudModels.indexOf(m.name) === -1;
-    }).sort(function(a, b) { return (a.size || 0) - (b.size || 0); });
 
-    function makeOption(value, text) {
-        var opt = document.createElement('option');
-        opt.value = value; opt.textContent = text;
-        select.appendChild(opt);
-    }
-    function makeItem(value, text, disabled) {
+    var modes = [
+        { value: 'confidant', label: 'Confidant', sublabel: 'Bạn Tâm Giao' },
+        { value: 'assistant', label: 'Assistant',  sublabel: 'Người Giúp Việc' }
+    ];
+
+    modes.forEach(function(m) {
         var el = document.createElement('div');
-        el.className = 'model-dropdown-item' + (disabled ? ' disabled' : '');
-        el.textContent = text;
-        el.dataset.value = value;
-        if (!disabled) {
-            el.addEventListener('click', function() {
-                self._setModelDropdownValue(value);
-                document.getElementById('header-model-select').dispatchEvent(new Event('change'));
-                var menu = document.getElementById('model-dropdown-menu');
-                menu.classList.remove('open');
-                menu.style.position = '';
-                menu.style.top = '';
-                menu.style.left = '';
-                menu.style.right = '';
-                menu.style.width = '';
-                document.getElementById('model-dropdown-trigger').classList.remove('open');
-            });
-        }
-        return el;
-    }
-
-    // Recommended section — always visible, disabled when no pool account is active
-    var recSection = document.createElement('div');
-    recSection.className = 'model-dropdown-section';
-    var recHdr = document.createElement('div');
-    recHdr.className = 'model-dropdown-section-hdr recommended' + (hasPool ? '' : ' inactive');
-    recHdr.innerHTML = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg> Recommended';
-    recSection.appendChild(recHdr);
-    var isAdmin = Auth.user && Auth.user.role === 'admin';
-    recModels.forEach(function(rec) {
-        var displayText = isAdmin ? rec.label + ' — ' + rec.name : rec.label;
-        if (hasPool) makeOption(rec.name, displayText);
-        recSection.appendChild(makeItem(rec.name, displayText, !hasPool));
+        el.className = 'model-dropdown-item mode-item' + (m.value === self._currentMode ? ' selected' : '');
+        el.dataset.value = m.value;
+        el.innerHTML = '<span class="mode-item-icon">' + MODE_ICONS[m.value] + '</span><span class="mode-item-label">' + m.label + '</span><span class="mode-item-sub">' + m.sublabel + '</span>';
+        el.addEventListener('click', function() {
+            self.switchMode(m.value);
+            menu.classList.remove('open');
+            var trigger = document.getElementById('mode-dropdown-trigger');
+            if (trigger) trigger.classList.remove('open');
+        });
+        menu.appendChild(el);
     });
-    menu.appendChild(recSection);
-    var dividerRec = document.createElement('div');
-    dividerRec.className = 'model-dropdown-divider';
-    menu.appendChild(dividerRec);
 
-    // Cloud Models section (user-added, excluding recommended)
-    var cloudSection = document.createElement('div');
-    cloudSection.className = 'model-dropdown-section';
-    var cloudHdr = document.createElement('div');
-    cloudHdr.className = 'model-dropdown-section-hdr cloud';
-    cloudHdr.innerHTML = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg> Cloud Models';
-    cloudSection.appendChild(cloudHdr);
-    if (cloudModelNames.length === 0) {
-        cloudSection.appendChild(makeItem('', 'No cloud models configured', true));
+    this._updateModeLabel();
+};
+
+UIManager.switchMode = async function(mode) {
+    this._currentMode = mode;
+    this._updateModeLabel();
+    // Re-render sessions filtered by mode
+    await this.renderSessions();
+    // Switch to first session of this mode, or create one
+    var sessions = await SessionStore.getSessions();
+    var filtered = sessions.filter(function(s) { return (s.mode || 'confidant') === mode; });
+    if (filtered.length > 0) {
+        await this.switchSession(filtered[0].id);
     } else {
-        cloudModelNames.forEach(function(name) {
-            var label = getModelDisplayName(name);
-            var displayText = isAdmin ? label + ' — ' + name : label;
-            makeOption(name, displayText);
-            cloudSection.appendChild(makeItem(name, displayText, false));
-        });
-    }
-    menu.appendChild(cloudSection);
-
-    // Divider
-    var divider = document.createElement('div');
-    divider.className = 'model-dropdown-divider';
-    menu.appendChild(divider);
-
-    // Local Models section
-    var localSection = document.createElement('div');
-    localSection.className = 'model-dropdown-section';
-    var localHdr = document.createElement('div');
-    localHdr.className = 'model-dropdown-section-hdr local';
-    localHdr.innerHTML = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg> Local Models';
-    localSection.appendChild(localHdr);
-    if (localModels.length === 0) {
-        localSection.appendChild(makeItem('', 'No local models configured', true));
-    } else {
-        localModels.forEach(function(model) {
-            var label = getModelDisplayName(model.name);
-            var displayText = isAdmin ? label + ' — ' + model.name + OllamaAPI.formatSize(model.size) : label;
-            makeOption(model.name, displayText);
-            localSection.appendChild(makeItem(model.name, displayText, false));
-        });
-    }
-    menu.appendChild(localSection);
-
-    // Set initial value: current session's model (if still active) → first recommended (if pool) → first user cloud → first local
-    const activeNames = (hasPool ? recNames : []).concat(cloudModelNames).concat(localModels.map(function(m) { return m.name; }));
-    var sessionModel = self.currentSession && self.currentSession.model;
-    var initial = (sessionModel && activeNames.indexOf(sessionModel) !== -1)
-        ? sessionModel
-        : (hasPool ? recModels[0].name : (cloudModelNames.length > 0 ? cloudModelNames[0] : (localModels.length > 0 ? localModels[0].name : '')));
-    self._setModelDropdownValue(initial || '');
-    // Update current session model if it differs, but do NOT call switchModel here —
-    // switchModel persists to prefs and would corrupt _lastUsedModel if Settings hasn't loaded yet
-    // (populateModelSelects can be called from applyLanguage before Settings.load completes).
-    if (initial && self.currentSession && self.currentSession.model !== initial) {
-        self.currentSession.model = initial;
-        SessionStore.updateSession(self.currentSession);
+        var newSession = await SessionStore.createSession(t('newChat'), mode);
+        await SessionStore.setCurrentSessionId(newSession.id);
+        this.currentSession = newSession;
+        await this.renderSessions();
+        this.renderChat();
     }
 };
 
-UIManager._setModelDropdownValue = function(value) {
-    var select = document.getElementById('header-model-select');
-    var label = document.getElementById('model-dropdown-label');
-    select.value = value;
-    label.textContent = value ? getModelDisplayName(value) : 'Select model...';
-    // Update selected highlight
-    document.getElementById('model-dropdown-menu').querySelectorAll('.model-dropdown-item').forEach(function(el) {
-        el.classList.toggle('selected', el.dataset.value === value);
-    });
-};
-
-UIManager.refreshModelSelect = async function() {
-    var models = [];
-    try { models = await OllamaAPI.fetchModels(); } catch(e) {}
-    this.populateModelSelects(models);
+UIManager._updateModeLabel = function() {
+    var label = document.getElementById('mode-dropdown-label');
+    var iconEl = document.getElementById('mode-icon');
+    if (!label) return;
+    var isAssistant = this._currentMode === 'assistant';
+    if (iconEl) iconEl.innerHTML = MODE_ICONS[this._currentMode] || '';
+    label.textContent = isAssistant ? 'Assistant' : 'Confidant';
+    var menu = document.getElementById('mode-dropdown-menu');
+    if (menu) {
+        menu.querySelectorAll('.model-dropdown-item').forEach(function(el) {
+            el.classList.toggle('selected', el.dataset.value === UIManager._currentMode);
+        });
+    }
 };
 
 UIManager.renderSessions = async function() {
     const self = this;
     const container = document.getElementById('sessions-list');
     container.innerHTML = '';
-    const sessions = await SessionStore.getSessions();
+    const allSessions = await SessionStore.getSessions();
+    var currentMode = this._currentMode || 'confidant';
+    const sessions = allSessions.filter(function(s) { return (s.mode || 'confidant') === currentMode; });
     sessions.forEach(function(s) {
         const item = document.createElement('div');
         item.className = 'session-item' + (self.currentSession && s.id === self.currentSession.id ? ' active' : '');
@@ -269,11 +167,17 @@ UIManager.renderSessions = async function() {
             const ok = await Modal.confirm(t('deleteSession'), t('deleteConfirm1') + s.name + t('deleteConfirm2'), t('delete_'));
             if (!ok) return;
             await SessionStore.deleteSession(s.id);
-            if (self.currentSession.id === s.id) {
-                const remaining = await SessionStore.getSessions();
+            var currentMode = self._currentMode || 'confidant';
+            var remaining = (await SessionStore.getSessions()).filter(function(r) {
+                return (r.mode || 'confidant') === currentMode;
+            });
+            var currentStillValid = remaining.some(function(r) {
+                return self.currentSession && r.id === self.currentSession.id;
+            });
+            if (!currentStillValid) {
                 self.currentSession = remaining.length > 0
                     ? remaining[0]
-                    : await SessionStore.createSession(t('newChat'), self.getDefaultModel());
+                    : await SessionStore.createSession(t('newChat'), currentMode);
                 await SessionStore.setCurrentSessionId(self.currentSession.id);
                 self.renderChat();
             }
@@ -288,34 +192,22 @@ UIManager.renderSessions = async function() {
 };
 
 UIManager.createNewSession = async function() {
-    // If already in an empty session, reset model to default and focus input
+    // If already in an empty session, just focus input
     if (this.currentSession && (!this.currentSession.messages || this.currentSession.messages.length === 0)) {
-        var def = this.getDefaultModel();
-        if (def && this.currentSession.model !== def) {
-            this.currentSession.model = def;
-            SessionStore.updateSession(this.currentSession);
-            this._setModelDropdownValue(def);
-        }
         document.getElementById('message-input').focus();
         return;
     }
-    // Reuse an existing empty session if one exists
+    // Reuse an existing empty session of the same mode if one exists
+    var currentMode = this._currentMode || 'confidant';
     const sessions = await SessionStore.getSessions();
-    var empty = sessions.find(function(s) { return !s.messages || s.messages.length === 0; });
-    const defaultModel = this.getDefaultModel();
-    if (!defaultModel) {
-        this.showError(t('noModelAvail'));
-        return;
-    }
+    var empty = sessions.find(function(s) {
+        return (!s.messages || s.messages.length === 0) && (s.mode || 'confidant') === currentMode;
+    });
     if (!empty) {
-        empty = await SessionStore.createSession(t('newChat'), defaultModel);
-    } else if (defaultModel && empty.model !== defaultModel) {
-        empty.model = defaultModel;
-        SessionStore.updateSession(empty);
+        empty = await SessionStore.createSession(t('newChat'), currentMode);
     }
     await SessionStore.setCurrentSessionId(empty.id);
     this.currentSession = empty;
-    this._setModelDropdownValue(this.currentSession.model);
     await this.renderSessions();
     this.renderChat();
     document.getElementById('message-input').focus();
@@ -327,24 +219,6 @@ UIManager.switchSession = async function(id) {
     });
     this.currentSession = await SessionStore.getSession(id);
     await SessionStore.setCurrentSessionId(id);
-    this._setModelDropdownValue(this.currentSession.model);
-    // Clear and reload image and video descriptions for the new session
-    this._imageDescriptions = {};
-    this._videoDescriptions = {};
-    ImageDescriptionStore.loadForSession(id).then(function(items) {
-        if (UIManager.currentSession && UIManager.currentSession.id === id) {
-            items.forEach(function(d) {
-                UIManager._imageDescriptions[d.file_id] = { name: d.name, description: d.description };
-            });
-        }
-    });
-    VideoDescriptionStore.loadForSession(id).then(function(items) {
-        if (UIManager.currentSession && UIManager.currentSession.id === id) {
-            items.forEach(function(d) {
-                UIManager._videoDescriptions[d.file_id] = { name: d.name, description: d.description };
-            });
-        }
-    });
     this.renderChat();
 };
 
@@ -361,36 +235,9 @@ UIManager.loadPrefs = async function() {
             I18n.setLang(prefs.lang);
             applyLanguage();
         }
-        if (prefs.model) { this._lastUsedModel = prefs.model; syslog('[MODEL] loadPrefs model=' + prefs.model); }
     } catch(e) {}
 };
 
-UIManager.switchModel = function(modelName) {
-    syslog('[MODEL] switchModel=' + modelName + ' session=' + (this.currentSession ? this.currentSession.id : 'null') + ' caller=' + (new Error().stack || '').split('\n')[2]);
-    if (this.currentSession) {
-        this.currentSession.model = modelName;
-        SessionStore.updateSession(this.currentSession);
-    }
-    this._lastUsedModel = modelName;
-    this.savePrefs({ model: modelName });
-    this._setModelDropdownValue(modelName);
-};
-
-UIManager.getDefaultModel = function() {
-    const sel = document.getElementById('header-model-select');
-    const activeOptions = Array.from(sel.options).map(function(o) { return o.value; }).filter(Boolean);
-    const hasPool = Settings.accounts.length > 0;
-    if (hasPool) {
-        var recModels = getRecommendedCloudModels();
-        var rec = recModels.find(function(m) { return activeOptions.indexOf(m.name) !== -1; });
-        if (rec) return rec.name;
-    }
-    const userCloudModels = Settings.cloudModels.filter(function(n) {
-        return RECOMMENDED_CLOUD_MODEL_NAMES.indexOf(n) === -1 && activeOptions.indexOf(n) !== -1;
-    });
-    if (userCloudModels.length > 0) return userCloudModels[0];
-    return activeOptions.length > 0 ? activeOptions[0] : null;
-};
 
 UIManager.clearSession = async function() {
     if (!this.currentSession) return;
@@ -416,23 +263,10 @@ UIManager.updateEndpoint = async function(url) {
     AppConfig.saveOllamaEndpoint(url);
     await Settings._persist();
     if (!url) {
-        // Cleared — just reload models via default /api path
-        try {
-            var models = await OllamaAPI.fetchModels();
-            this.populateModelSelects(models);
-        } catch(e) {}
         return;
     }
     try {
-        var models = await OllamaAPI.fetchModels();
-        const currentModel = this.currentSession ? this.currentSession.model : null;
-        this.populateModelSelects(models);
-        const names = models.map(function(m) { return m.name; });
-        if (currentModel && names.indexOf(currentModel) !== -1) {
-            this._setModelDropdownValue(currentModel);
-        } else if (models.length > 0) {
-            this.switchModel(models[0].name);
-        }
+        await OllamaAPI.fetchModels();
         UIManager._showOllamaUrlMsg('Successfully connected to the Ollama instance at ' + url + '.', false);
     } catch (e) {
         // Revert to previous endpoint
@@ -462,36 +296,23 @@ UIManager.autoNameSession = async function(session) {
     const controller = new AbortController();
     this._namingController = controller;
     try {
-        var msgs = (session.messages || []).slice(-RECENT_MESSAGES_COUNT);
-        if (!msgs.length) return;
-        var excerpt = msgs.map(function(m) {
-            var text = typeof m.content === 'string' ? m.content : '';
-            if (!text.trim() && m.files && m.files.length > 0)
-                text = m.files.map(function(f) { return f.snippet || ''; }).join(' ');
-            return (m.role === 'user' ? 'User: ' : 'Assistant: ') + text.slice(0, 200);
-        }).join('\n');
-        if (!excerpt.trim()) return;
-        syslog('[NAMING] model=' + ASSISTANT_MODEL + ' excerpt="' + excerpt.slice(0, 80) + '"');
-        var name = await OllamaAPI.summarize(ASSISTANT_MODEL, [{
-            role: 'user',
-            content: 'Give a short title (3-5 words) for this conversation:\n\n' + excerpt + '\n\nUse the language that dominates the conversation. Reply with only the title, no quotes, no explanation.'
-        }], controller.signal);
-        syslog('[NAMING] result="' + (name || '').trim().slice(0, 80) + '"');
+        syslog('[NAMING] session=' + session.id);
+        const res = await apiFetch('/sessions/' + session.id + '/name', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+            signal: controller.signal
+        });
         if (controller.signal.aborted) return;
-        if (!name || !name.trim()) return;
-        name = name.trim()
-            .replace(/^["""''']+|["""''']+$/g, '')   // strip surrounding quotes
-            .replace(/\*{1,3}([^*]*)\*{1,3}/g, '$1') // strip ***bold italic*** **bold** *italic*
-            .replace(/_{1,2}([^_]*)_{1,2}/g, '$1')   // strip __bold__ _italic_
-            .replace(/^#{1,6}\s+/, '')                // strip heading markers
-            .replace(/`([^`]*)`/g, '$1')              // strip inline code
-            .trim();
-        if (!name) return;
-        session.name = name;
-        await SessionStore.updateSession(session);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!data.name) return;
+        syslog('[NAMING] result="' + data.name + '"');
+        session.name = data.name;
         await this.renderSessions();
-    } catch(e) { syslog('[NAMING] error=' + e.message); }
-    finally {
+    } catch(e) {
+        if (e.name !== 'AbortError') syslog('[NAMING] error=' + e.message);
+    } finally {
         this._namingInProgress.delete(session.id);
         if (this._namingController === controller) this._namingController = null;
     }

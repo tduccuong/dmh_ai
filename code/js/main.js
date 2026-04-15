@@ -47,9 +47,6 @@ function applyLanguage() {
     document.getElementById('about-source-line').innerHTML = '<strong style="color:#c8b8e8;">' + t('aboutSourceLabel') + '</strong> <a href="https://github.com/tduccuong/dmh_ai" target="_blank" rel="noopener noreferrer" style="color:#b098d8;">GitHub Repository</a>';
     document.getElementById('about-commercial-line').innerHTML = '<strong style="color:#c8b8e8;">' + t('aboutCommercialLabel') + '</strong> ' + t('aboutCommercialBody');
     document.getElementById('about-close').textContent = t('aboutClose');
-    if (typeof UIManager !== 'undefined' && UIManager.refreshModelSelect) {
-        UIManager.refreshModelSelect();
-    }
 }
 
 function setCpwError(msg) {
@@ -65,7 +62,6 @@ const UIManager = {
     _pendingDesc: 0,        // >0 while image description is being generated
     attachedFiles: [],
     _streamController: null,
-    _lastUsedModel: null,
     _streamMap: new Map(),  // sessionId -> { content, searchWarning, session } — only 1 entry at a time
     _imageDescriptions: {}, // fileId -> { name, description } — persisted descriptions loaded from DB
     _videoDescriptions: {}, // fileId -> { name, description } — persisted descriptions loaded from DB
@@ -156,6 +152,11 @@ const UIManager = {
 
         document.getElementById('stop-gen-btn').addEventListener('click', function() {
             if (self._streamController) { self._streamController.abort(); self._streamController = null; }
+            if (self._thinkBodyEl) {
+                self._thinkBodyEl.textContent = digestThinking(self._thinkingContent || '', true);
+                self._thinkBodyEl = null;
+                self._thinkingContent = null;
+            }
             self.saveStreamingProgress();
             self.isStreaming = false;
             self._releaseWakeLock();
@@ -233,61 +234,38 @@ const UIManager = {
                 }
             }
         });
-        document.getElementById('header-model-select').addEventListener('change', function(e) { self.switchModel(e.target.value); });
         function closeAllDropdowns() {
-            var menu = document.getElementById('model-dropdown-menu');
-            menu.classList.remove('open');
-            menu.style.position = '';
-            menu.style.top = '';
-            menu.style.left = '';
-            menu.style.right = '';
-            menu.style.width = '';
-            document.getElementById('model-dropdown-trigger').classList.remove('open');
+            var modeMenu = document.getElementById('mode-dropdown-menu');
+            if (modeMenu) modeMenu.classList.remove('open');
+            var modeTrigger = document.getElementById('mode-dropdown-trigger');
+            if (modeTrigger) modeTrigger.classList.remove('open');
             document.getElementById('user-dropdown').classList.remove('open');
             document.getElementById('lang-dropdown').classList.remove('open');
             document.getElementById('attach-menu').classList.remove('open');
         }
 
-        // Custom model dropdown open/close
-        document.getElementById('model-dropdown-trigger').addEventListener('click', function(e) {
-            e.stopPropagation();
-            var menu = document.getElementById('model-dropdown-menu');
-            var trigger = this;
-            var wasOpen = menu.classList.contains('open');
-            closeAllDropdowns();
-            var isOpen = !wasOpen;
-            if (isOpen) {
-                menu.classList.add('open');
-                trigger.classList.add('open');
-            }
-            if (isOpen && window.innerWidth <= 768) {
-                var isAdmin = Auth.user && Auth.user.role === 'admin';
-                if (isAdmin) {
-                    var rect = trigger.getBoundingClientRect();
-                    menu.style.position = 'fixed';
-                    menu.style.top = rect.bottom + 'px';
-                    menu.style.left = 'auto';
-                    menu.style.right = '0';
-                    menu.style.width = Math.min(Math.round(window.innerWidth * 0.84), window.innerWidth) + 'px';
+        // Mode dropdown open/close
+        var modeTrigger = document.getElementById('mode-dropdown-trigger');
+        if (modeTrigger) {
+            modeTrigger.addEventListener('click', function(e) {
+                e.stopPropagation();
+                var menu = document.getElementById('mode-dropdown-menu');
+                var trigger = this;
+                var wasOpen = menu.classList.contains('open');
+                closeAllDropdowns();
+                if (!wasOpen) {
+                    menu.classList.add('open');
+                    trigger.classList.add('open');
                 }
-            } else {
-                menu.style.position = '';
-                menu.style.top = '';
-                menu.style.left = '';
-                menu.style.right = '';
-                menu.style.width = '';
-            }
-        });
+            });
+        }
         document.addEventListener('click', function(e) {
-            if (!document.getElementById('model-dropdown-wrap').contains(e.target)) {
-                var menu = document.getElementById('model-dropdown-menu');
-                menu.classList.remove('open');
-                menu.style.position = '';
-                menu.style.top = '';
-                menu.style.left = '';
-                menu.style.right = '';
-                menu.style.width = '';
-                document.getElementById('model-dropdown-trigger').classList.remove('open');
+            var wrap = document.getElementById('mode-dropdown-wrap');
+            if (wrap && !wrap.contains(e.target)) {
+                var menu = document.getElementById('mode-dropdown-menu');
+                if (menu) menu.classList.remove('open');
+                var trigger = document.getElementById('mode-dropdown-trigger');
+                if (trigger) trigger.classList.remove('open');
             }
         });
 
