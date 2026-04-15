@@ -17,7 +17,7 @@ RUN magick /tmp/logo.png -resize 180x180 /tmp/apple-touch-icon.png
 
 # Stage 3 — minimal runtime
 FROM alpine:3
-RUN apk add --no-cache su-exec openssl libstdc++ libgcc ncurses-libs && \
+RUN apk add --no-cache su-exec openssl libstdc++ libgcc ncurses-libs bash && \
     mkdir -p /app/ssl && \
     openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
       -keyout /app/ssl/key.pem \

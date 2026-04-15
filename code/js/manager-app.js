@@ -243,6 +243,8 @@ UIManager.clearSession = async function() {
     if (!this.currentSession) return;
     const ok = await Modal.confirm(t('clearSession'), t('clearConfirm1') + this.currentSession.name + t('clearConfirm2'), t('clear'));
     if (!ok) return;
+    // Cancel any running workers and flush pending buffer entries before clearing messages
+    apiFetch('/sessions/' + this.currentSession.id + '/cancel-workers', { method: 'POST' }).catch(function() {});
     this.currentSession.messages = [];
     this.currentSession.context = { summary: null, summaryUpToIndex: -1 };
     await SessionStore.updateSession(this.currentSession);

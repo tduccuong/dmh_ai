@@ -1,3 +1,8 @@
+# Copyright (c) 2026 Cuong Truong
+# This project is licensed under the AGPL v3.
+# See the LICENSE file in the repository root for full details.
+# For commercial inquiries, contact: tduccuong@gmail.com
+
 defmodule Dmhai.Agent.AgentSettings do
   @moduledoc """
   Reads per-agent model configuration from admin_cloud_settings.
@@ -9,13 +14,19 @@ defmodule Dmhai.Agent.AgentSettings do
 
   @defaults %{
     "confidantModel"       => "gemini-3-flash-preview:cloud",
-    "assistantModel"       => "gemini-3-flash-preview:cloud",
-    "workerModel"          => "glm-5:cloud",
+    "assistantModel"       => "ministral-3:14b-cloud",
+    "workerModel"          => "kimi-k2.5:cloud",
+    "compactorModel"       => "gemini-3-flash-preview:cloud",
     "webSearchModel"       => "ministral-3:14b-cloud",
     "imageDescriberModel"  => "gemini-3-flash-preview:cloud",
     "videoDescriberModel"  => "gemini-3-flash-preview:cloud",
     "profileExtractorModel" => "gemini-3-flash-preview:cloud"
   }
+
+  @worker_max_iter_default 20
+  @spawn_task_timeout_secs_default 30
+  @worker_context_n_default 20
+  @worker_context_m_default 10
 
   @doc "Get the model string for a given agent role. Returns the default if unset."
   @spec model_for(String.t()) :: String.t()
@@ -42,10 +53,27 @@ defmodule Dmhai.Agent.AgentSettings do
   def confidant_model,        do: model_for("confidantModel")
   def assistant_model,        do: model_for("assistantModel")
   def worker_model,           do: model_for("workerModel")
+  def compactor_model,        do: model_for("compactorModel")
   def web_search_model,       do: model_for("webSearchModel")
   def image_describer_model,  do: model_for("imageDescriberModel")
   def video_describer_model,  do: model_for("videoDescriberModel")
   def profile_extractor_model, do: model_for("profileExtractorModel")
+
+  @doc "Timeout in seconds applied to each bash command run inside spawn_task."
+  @spec spawn_task_timeout_secs() :: pos_integer()
+  def spawn_task_timeout_secs, do: int_setting("spawnTaskTimeoutSecs", @spawn_task_timeout_secs_default)
+
+  @doc "Worker context compaction: number of messages in the middle (stub) tier."
+  @spec worker_context_n() :: pos_integer()
+  def worker_context_n, do: int_setting("workerContextN", @worker_context_n_default)
+
+  @doc "Worker context compaction: number of most-recent messages to leave untouched."
+  @spec worker_context_m() :: pos_integer()
+  def worker_context_m, do: int_setting("workerContextM", @worker_context_m_default)
+
+  @doc "Max tool-call iterations for a non-periodic worker. Periodic workers ignore this."
+  @spec worker_max_iter() :: pos_integer()
+  def worker_max_iter, do: int_setting("workerMaxIter", @worker_max_iter_default)
 
   @doc "User's chosen video detail level from admin settings. Returns 'low', 'medium', or 'high'."
   @spec video_detail() :: String.t()
@@ -64,6 +92,19 @@ defmodule Dmhai.Agent.AgentSettings do
     |> Map.values()
     |> Enum.uniq()
     |> Enum.filter(fn m -> String.ends_with?(m, ":cloud") or String.ends_with?(m, "-cloud") end)
+  end
+
+  defp int_setting(key, default) do
+    settings = load()
+    case settings[key] do
+      n when is_integer(n) and n > 0 -> n
+      s when is_binary(s) ->
+        case Integer.parse(s) do
+          {n, _} when n > 0 -> n
+          _ -> default
+        end
+      _ -> default
+    end
   end
 
   defp load do

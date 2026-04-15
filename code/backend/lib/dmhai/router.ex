@@ -1,3 +1,8 @@
+# Copyright (c) 2026 Cuong Truong
+# This project is licensed under the AGPL v3.
+# See the LICENSE file in the repository root for full details.
+# For commercial inquiries, contact: tduccuong@gmail.com
+
 defmodule Dmhai.Router do
   use Plug.Router
   import Plug.Conn
@@ -8,6 +13,8 @@ defmodule Dmhai.Router do
   alias Dmhai.Handlers.Proxy
   alias Dmhai.Handlers.Tools
   alias Dmhai.Handlers.AgentChat
+  alias Dmhai.Agent.UserAgent
+  alias Dmhai.Agent.MasterBuffer
 
   plug Dmhai.Plugs.BlockScanners
   plug Dmhai.Plugs.SecurityHeaders
@@ -349,6 +356,15 @@ defmodule Dmhai.Router do
   delete "/sessions/:session_id" do
     with {:ok, conn, user} <- check_auth(conn) do
       Data.delete_session(conn, user, session_id)
+    end
+  end
+
+  # Cancel all running workers and flush master_buffer for a session (used by "Clear session")
+  post "/sessions/:session_id/cancel-workers" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      UserAgent.cancel_session_workers(user.id, session_id)
+      MasterBuffer.delete_for_session(session_id)
+      send_resp(conn, 200, Jason.encode!(%{ok: true}))
     end
   end
 

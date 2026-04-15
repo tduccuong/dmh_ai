@@ -1,3 +1,8 @@
+# Copyright (c) 2026 Cuong Truong
+# This project is licensed under the AGPL v3.
+# See the LICENSE file in the repository root for full details.
+# For commercial inquiries, contact: tduccuong@gmail.com
+
 defmodule Dmhai.DB.Init do
   require Logger
   alias Dmhai.Repo
@@ -118,6 +123,9 @@ defmodule Dmhai.DB.Init do
     alter_table_safe("ALTER TABLE sessions ADD COLUMN updated_at INTEGER DEFAULT 0")
     alter_table_safe("ALTER TABLE users ADD COLUMN profile TEXT DEFAULT \"\"")
     alter_table_safe("ALTER TABLE sessions ADD COLUMN mode TEXT DEFAULT 'confidant'")
+    alter_table_safe("ALTER TABLE master_buffer ADD COLUMN worker_id TEXT")
+    alter_table_safe("CREATE UNIQUE INDEX IF NOT EXISTS idx_image_descriptions_name ON image_descriptions (session_id, name)")
+    alter_table_safe("CREATE UNIQUE INDEX IF NOT EXISTS idx_video_descriptions_name ON video_descriptions (session_id, name)")
   end
 
   defp alter_table_safe(sql) do

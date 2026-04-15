@@ -1,3 +1,8 @@
+# Copyright (c) 2026 Cuong Truong
+# This project is licensed under the AGPL v3.
+# See the LICENSE file in the repository root for full details.
+# For commercial inquiries, contact: tduccuong@gmail.com
+
 defmodule Dmhai.Html do
   @moduledoc """
   HTML to text extraction using Floki, replicating Python's _html_to_text.

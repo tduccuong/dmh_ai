@@ -1,3 +1,8 @@
+# Copyright (c) 2026 Cuong Truong
+# This project is licensed under the AGPL v3.
+# See the LICENSE file in the repository root for full details.
+# For commercial inquiries, contact: tduccuong@gmail.com
+
 defmodule Dmhai.Tools.Registry do
   @moduledoc """
   Lists all available tools and dispatches execute calls by name.
@@ -10,7 +15,10 @@ defmodule Dmhai.Tools.Registry do
     Dmhai.Tools.WriteFile,
     Dmhai.Tools.ListDir,
     Dmhai.Tools.DatetimeTool,
-    Dmhai.Tools.Calculator
+    Dmhai.Tools.Calculator,
+    Dmhai.Tools.MidjobNotify,
+    Dmhai.Tools.SpawnTask,
+    Dmhai.Tools.DeclarePeriodic
   ]
 
   @doc "Returns all tool definitions in OpenAI function-calling format."

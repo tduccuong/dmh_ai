@@ -1,3 +1,8 @@
+# Copyright (c) 2026 Cuong Truong
+# This project is licensed under the AGPL v3.
+# See the LICENSE file in the repository root for full details.
+# For commercial inquiries, contact: tduccuong@gmail.com
+
 defmodule Dmhai.Agent.UserAgent do
   @idle_timeout :timer.minutes(30)
 
@@ -55,11 +60,12 @@ defmodule Dmhai.Agent.UserAgent do
     end
   end
 
-  @doc "Spawn a detached worker task. Returns {:ok, worker_id} immediately."
-  @spec spawn_worker(String.t(), String.t(), String.t(), (-> any())) ::
+  @doc "Spawn a detached worker task. Returns {:ok, worker_id} immediately.
+  `task_fn` receives (agent_pid, worker_id) so it can report progress."
+  @spec spawn_worker(String.t(), String.t(), String.t(), (pid(), String.t() -> any())) ::
           {:ok, String.t()} | {:error, term()}
   def spawn_worker(user_id, session_id, description, task_fn)
-      when is_binary(user_id) and is_function(task_fn, 0) do
+      when is_binary(user_id) and is_function(task_fn, 2) do
     with {:ok, pid} <- Supervisor.ensure_started(user_id) do
       GenServer.call(pid, {:spawn_worker, session_id, description, task_fn})
     end
@@ -148,6 +154,7 @@ defmodule Dmhai.Agent.UserAgent do
   def handle_call({:spawn_worker, session_id, description, task_fn}, _from, state) do
     worker_id = generate_id()
     user_id = state.user_id
+    agent_pid = self()
 
     task =
       Task.Supervisor.async_nolink(Dmhai.Agent.WorkerSupervisor, fn ->
@@ -155,15 +162,15 @@ defmodule Dmhai.Agent.UserAgent do
 
         result =
           try do
-            task_fn.()
+            task_fn.(agent_pid, worker_id)
           rescue
             e ->
               Logger.error("[Worker] crashed id=#{worker_id}: #{Exception.message(e)}")
               %{error: Exception.message(e)}
           end
 
-        # Trigger proactive master response from buffer
-        trigger_master_from_buffer(session_id, user_id)
+        # Trigger proactive master response from buffer (final worker result)
+        trigger_master_from_buffer(session_id, user_id, worker_id, description)
 
         MsgGateway.notify(user_id, "✓ #{description} — result ready in DMH-AI")
         result
@@ -174,7 +181,8 @@ defmodule Dmhai.Agent.UserAgent do
       pid: task.pid,
       session_id: session_id,
       description: description,
-      started_at: DateTime.utc_now()
+      started_at: DateTime.utc_now(),
+      progress: []
     }
 
     Logger.info("[UserAgent] spawned worker id=#{worker_id} user=#{user_id}")
@@ -214,7 +222,7 @@ defmodule Dmhai.Agent.UserAgent do
     workers =
       Enum.map(state.workers, fn {id, w} ->
         %{id: id, session_id: w.session_id, description: w.description,
-          started_at: w.started_at}
+          started_at: w.started_at, progress: w.progress}
       end)
 
     {:reply, workers, state, @idle_timeout}
@@ -252,8 +260,52 @@ defmodule Dmhai.Agent.UserAgent do
     {:noreply, %{state | current_task: nil}, @idle_timeout}
   end
 
-  # Worker task crashed (already logged inside the task_fn rescue block)
-  def handle_info({:DOWN, ref, :task, _pid, _reason}, state) do
+  # Mid-job notification from a worker — trigger master response + external push.
+  # Runs both in background Tasks to avoid blocking the GenServer.
+  def handle_info({:midjob_notify, session_id, user_id, worker_id, summary}, state) do
+    worker_desc = get_in(state.workers, [worker_id, :description])
+    Task.start(fn -> trigger_master_from_buffer(session_id, user_id, worker_id, worker_desc) end)
+    Task.start(fn -> MsgGateway.notify(user_id, summary) end)
+    {:noreply, state, @idle_timeout}
+  end
+
+  # Worker progress report — append step to worker's progress list
+  def handle_info({:worker_progress, worker_id, step}, state) do
+    case Map.get(state.workers, worker_id) do
+      nil ->
+        {:noreply, state, @idle_timeout}
+
+      worker ->
+        updated = %{worker | progress: worker.progress ++ [step]}
+        {:noreply, %{state | workers: Map.put(state.workers, worker_id, updated)},
+         @idle_timeout}
+    end
+  end
+
+  # Worker task exited — either crashed or was cancelled via Task.Supervisor.terminate_child.
+  # Task.Supervisor.async_nolink sends {:DOWN, ref, :process, pid, reason}, not :task.
+  def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
+    crashed =
+      Enum.find_value(state.workers, fn {id, w} ->
+        if w.ref == ref, do: {id, w}, else: nil
+      end)
+
+    case crashed do
+      {worker_id, worker} when reason not in [:normal, :shutdown] ->
+        Logger.error("[UserAgent] worker crashed id=#{worker_id} reason=#{inspect(reason)}")
+
+        Task.start(fn ->
+          MasterBuffer.append(
+            worker.session_id, state.user_id,
+            "Worker task '#{worker.description}' crashed unexpectedly: #{inspect(reason)}",
+            "⚠ Task '#{worker.description}' crashed"
+          )
+        end)
+
+      _ ->
+        :ok
+    end
+
     state = drop_worker_by_ref(ref, state)
     {:noreply, state, @idle_timeout}
   end
@@ -377,7 +429,7 @@ defmodule Dmhai.Agent.UserAgent do
       )
 
     case LLM.stream(model, llm_messages, reply_pid) do
-      {:ok, full_text} ->
+      {:ok, full_text} when full_text != "" ->
         append_session_message(session_id, user_id, %{
           role: "assistant",
           content: full_text,
@@ -391,6 +443,9 @@ defmodule Dmhai.Agent.UserAgent do
         Task.start(fn ->
           ProfileExtractor.extract_and_merge(command.content, full_text, user_id)
         end)
+
+      {:ok, ""} ->
+        send(reply_pid, {:error, "No response received. Please try again."})
 
       {:error, reason} ->
         send(reply_pid, {:error, "LLM error: #{inspect(reason)}"})
@@ -422,7 +477,14 @@ defmodule Dmhai.Agent.UserAgent do
       state.workers
       |> Enum.filter(fn {_id, w} -> w.session_id == session_id end)
       |> Enum.map(fn {id, w} ->
-        "- id: #{id}, task: #{w.description}, started: #{DateTime.to_iso8601(w.started_at)}"
+        progress_str =
+          case w.progress do
+            [] -> ""
+            steps ->
+              recent = steps |> Enum.take(-5) |> Enum.join("; ")
+              "\n  progress (last steps): #{recent}"
+          end
+        "- id: #{id}, task: #{w.description}, started: #{DateTime.to_iso8601(w.started_at)}#{progress_str}"
       end)
 
     worker_context =
@@ -445,6 +507,7 @@ defmodule Dmhai.Agent.UserAgent do
 
     llm_messages =
       ContextEngine.build_messages(session_data,
+        mode:               "assistant",
         profile:            profile,
         has_video:          images != [] and command.has_video,
         images:             images,
@@ -454,39 +517,45 @@ defmodule Dmhai.Agent.UserAgent do
         buffer_context:     combined_buffer
       )
 
-    tools = [handoff_to_worker_def(), cancel_worker_tool_def()]
+    tools = [
+      handoff_to_resolver_json_schema_def(),
+      handoff_to_worker_json_schema_def(),
+      cancel_worker_json_schema_def(),
+      query_job_updates_json_schema_def()
+    ]
 
     case LLM.stream(model, llm_messages, reply_pid, tools: tools) do
       {:ok, {:tool_calls, calls}} ->
-        handle_tool_calls(calls, command, state)
+        handle_tool_calls(calls, command, state, session_data)
 
-      {:ok, full_text} ->
+      {:ok, full_text} when full_text != "" ->
+        # Fallback — master should always call a tool, but handle gracefully if it doesn't
+        Logger.warning("[UserAgent] master returned text without tool call, presenting directly")
         append_session_message(session_id, user_id, %{
           role: "assistant",
           content: full_text,
           ts: System.os_time(:millisecond)
         })
-
         send(reply_pid, {:done, %{content: full_text}})
-
         Task.start(fn -> maybe_compact(session_id, user_id) end)
 
-        Task.start(fn ->
-          ProfileExtractor.extract_and_merge(command.content, full_text, user_id)
-        end)
+      {:ok, ""} ->
+        send(reply_pid, {:error, "No response received. Please try again."})
 
       {:error, reason} ->
         send(reply_pid, {:error, "LLM error: #{inspect(reason)}"})
     end
   end
 
-  defp handle_tool_calls(calls, command, state) do
+  defp handle_tool_calls(calls, command, state, session_data) do
     tool_name =
       Enum.find_value(calls, nil, fn call -> get_in(call, ["function", "name"]) end)
 
     case tool_name do
-      "cancel_worker" -> handle_cancel_worker(calls, command, state)
-      _               -> handle_handoff(calls, command, state)
+      "handoff_to_resolver" -> run_confidant(command, state, session_data)
+      "cancel_worker"       -> handle_cancel_worker(calls, command, state)
+      "query_job_updates"   -> handle_query_job_updates(calls, command, state)
+      _                     -> handle_handoff(calls, command, state)
     end
   end
 
@@ -526,6 +595,77 @@ defmodule Dmhai.Agent.UserAgent do
     send(reply_pid, {:done, %{}})
   end
 
+  defp handle_query_job_updates(calls, command, state) do
+    %Command{reply_pid: reply_pid, session_id: session_id} = command
+    user_id = state.user_id
+    model   = AgentSettings.assistant_model()
+
+    {worker_id, limit} =
+      Enum.find_value(calls, {nil, 20}, fn call ->
+        case get_in(call, ["function", "name"]) do
+          "query_job_updates" ->
+            args = get_in(call, ["function", "arguments"]) || %{}
+            args = case args do
+              a when is_map(a)    -> a
+              a when is_binary(a) -> Jason.decode!(a)
+            end
+            {args["worker_id"], args["limit"] || 20}
+          _ -> nil
+        end
+      end)
+
+    updates = if worker_id do
+      MasterBuffer.fetch_for_worker(session_id, worker_id, limit)
+    else
+      []
+    end
+
+    worker_desc = get_in(state.workers, [worker_id, :description])
+    label = if worker_desc, do: "Job [#{worker_id}]: #{worker_desc}", else: "Job [#{worker_id}]"
+
+    updates_text =
+      if updates == [] do
+        "No progress updates found for #{label}."
+      else
+        entries =
+          updates
+          |> Enum.map(fn e -> "[#{label} — at #{e.created_at}]\n#{e.content}" end)
+          |> Enum.join("\n---\n")
+        "[Recent updates for #{label}]\n#{entries}"
+      end
+
+    case load_session(session_id, user_id) do
+      {:ok, _, session_data} ->
+        profile = load_user_profile(user_id)
+
+        llm_messages =
+          ContextEngine.build_messages(session_data,
+            mode:           "assistant",
+            profile:        profile,
+            buffer_context: updates_text
+          )
+
+        case LLM.stream(model, llm_messages, reply_pid) do
+          {:ok, full_text} when full_text != "" ->
+            append_session_message(session_id, user_id, %{
+              role: "assistant",
+              content: full_text,
+              ts: System.os_time(:millisecond)
+            })
+            send(reply_pid, {:done, %{content: full_text}})
+
+          {:ok, ""} ->
+            send(reply_pid, {:error, "No response received."})
+
+          {:error, reason} ->
+            send(reply_pid, {:error, "LLM error: #{inspect(reason)}"})
+        end
+
+      _ ->
+        send(reply_pid, {:error, "Session not found."})
+    end
+  end
+
   defp handle_handoff(calls, command, state) do
     %Command{reply_pid: reply_pid, session_id: session_id} = command
     user_id = state.user_id
@@ -563,12 +703,24 @@ defmodule Dmhai.Agent.UserAgent do
         end
       end) || "Working on it — I'll notify you when the result is ready."
 
+    # Describe any attached media and append to task brief so worker has full context.
+    # Descriptions are usually already in DB (background describe ran while user was typing).
+    # The synchronous fallback only fires if the user sent before background describe finished.
+    media_context = describe_command_media(command, session_id)
+
+    full_task =
+      if media_context do
+        task_desc <> "\n\n" <> media_context
+      else
+        task_desc
+      end
+
     Logger.info("[UserAgent] handoff to worker user=#{user_id} task=#{String.slice(task_desc, 0, 80)}")
 
     # Spawn the worker as a detached task
-    spawn_worker(user_id, session_id, task_desc, fn ->
-      ctx = %{user_id: user_id, session_id: session_id}
-      Worker.run(task_desc, ctx)
+    spawn_worker(user_id, session_id, full_task, fn agent_pid, worker_id ->
+      ctx = %{user_id: user_id, session_id: session_id, agent_pid: agent_pid, worker_id: worker_id}
+      Worker.run(full_task, ctx)
     end)
 
     append_session_message(session_id, user_id, %{
@@ -581,22 +733,46 @@ defmodule Dmhai.Agent.UserAgent do
     send(reply_pid, {:done, %{}})
   end
 
-  defp handoff_to_worker_def do
+  defp handoff_to_resolver_json_schema_def do
+    %{
+      name: "handoff_to_resolver",
+      description:
+        "Route to the Resolver for a direct answer. " <>
+          "Use for: factual questions, explanations, general knowledge, opinions, " <>
+          "quick web lookups, or anything answerable in one shot. " <>
+          "The Resolver runs the full Confidant pipeline — web search is handled automatically.",
+      parameters: %{
+        type: "object",
+        properties: %{},
+        required: []
+      }
+    }
+  end
+
+  defp handoff_to_worker_json_schema_def do
     %{
       name: "handoff_to_worker",
       description:
-        "Hand off this task to a dedicated AI agent equipped with tools: " <>
-          "web search, web fetch, file read/write, bash commands, calculator, and date/time. " <>
-          "Use this when the request requires real-time information, research, " <>
-          "file operations, calculations, or any multi-step work that needs tools.",
+        "Hand off this task to a dedicated background agent that runs independently. " <>
+          "The agent has tools: bash, web fetch, file read/write, calculator, date/time, " <>
+          "and can push mid-job notifications directly into this chat. " <>
+          "Use this for: research, file operations, calculations, multi-step work, " <>
+          "AND any periodic or monitoring task (e.g. 'check CPU every 10 seconds', " <>
+          "'notify me when disk usage exceeds 80%', 'poll this URL every minute'). " <>
+          "The worker can run indefinitely for ongoing tasks — it will notify the user " <>
+          "with each update directly in the chat thread.",
       parameters: %{
         type: "object",
         properties: %{
           task: %{
             type: "string",
             description:
-              "A clear, self-contained description of what needs to be accomplished, " <>
-                "including any relevant context from the conversation."
+              "A fully self-contained task brief for the worker. " <>
+                "The worker has NO access to the chat history, so include everything it needs. " <>
+                "Structure it as:\n" <>
+                "Goal: what to accomplish and why.\n" <>
+                "Steps: key steps or approach (for multi-step tasks).\n" <>
+                "Context: relevant parameters, constraints, preferences, or data from the conversation."
           },
           ack: %{
             type: "string",
@@ -610,7 +786,7 @@ defmodule Dmhai.Agent.UserAgent do
     }
   end
 
-  defp cancel_worker_tool_def do
+  defp cancel_worker_json_schema_def do
     %{
       name: "cancel_worker",
       description:
@@ -630,6 +806,33 @@ defmodule Dmhai.Agent.UserAgent do
           }
         },
         required: ["worker_id", "ack"]
+      }
+    }
+  end
+
+  defp query_job_updates_json_schema_def do
+    %{
+      name: "query_job_updates",
+      description:
+        "Fetch recent progress updates for a specific background job. " <>
+          "Use this when the user asks about a job's status, progress, or results " <>
+          "(e.g. 'how is job X doing?', 'what happened to the monitoring task?', " <>
+          "'show me the latest report from Y'). " <>
+          "Identify the worker_id from the active tasks list or conversation context, " <>
+          "then call this tool to retrieve recent updates and summarise them for the user.",
+      parameters: %{
+        type: "object",
+        properties: %{
+          worker_id: %{
+            type: "string",
+            description: "The ID of the worker/job to query."
+          },
+          limit: %{
+            type: "integer",
+            description: "Maximum number of recent updates to fetch (default: 20)."
+          }
+        },
+        required: ["worker_id"]
       }
     }
   end
@@ -736,11 +939,20 @@ defmodule Dmhai.Agent.UserAgent do
   end
 
   # Format master_buffer entries for injection into Assistant LLM call.
-  defp format_buffer_context([]), do: nil
+  defp format_buffer_context(entries), do: format_buffer_context(entries, nil, nil)
 
-  defp format_buffer_context(entries) do
+  defp format_buffer_context([], _worker_id, _worker_desc), do: nil
+
+  defp format_buffer_context(entries, worker_id, worker_desc) do
+    job_label =
+      cond do
+        worker_desc && worker_id -> "Job [#{worker_id}]: #{worker_desc}"
+        worker_id                -> "Job [#{worker_id}]"
+        true                     -> "Worker update"
+      end
+
     entries
-    |> Enum.map(fn e -> "[Worker update at #{e.created_at}]\n#{e.content}" end)
+    |> Enum.map(fn e -> "[#{job_label} — update at #{e.created_at}]\n#{e.content}" end)
     |> Enum.join("\n---\n")
   end
 
@@ -801,6 +1013,99 @@ defmodule Dmhai.Agent.UserAgent do
     end
   end
 
+  # Build a text block describing any images/videos attached to the command.
+  # Loads from DB first (background describe already ran); only calls the describer
+  # synchronously as a fallback when descriptions aren't stored yet.
+  # Uses INSERT OR IGNORE so a late-arriving background describe doesn't duplicate.
+  defp describe_command_media(%Command{images: [], files: []}, _session_id), do: nil
+
+  defp describe_command_media(%Command{} = command, session_id) do
+    image_descs = load_image_descriptions(session_id)
+    video_descs = load_video_descriptions(session_id)
+
+    new_descs =
+      if command.images != [] do
+        model =
+          if command.has_video,
+            do: AgentSettings.video_describer_model(),
+            else: AgentSettings.image_describer_model()
+
+        prompt =
+          if command.has_video,
+            do: video_describe_prompt(),
+            else: image_describe_prompt()
+
+        command.image_names
+        |> Enum.zip(Enum.chunk_every(command.images, length(command.images)))
+        |> Enum.flat_map(fn {name, imgs} ->
+          already = if command.has_video,
+            do: Enum.any?(video_descs, &(&1.name == name)),
+            else: Enum.any?(image_descs, &(&1.name == name))
+
+          if already do
+            []
+          else
+            Logger.info("[UserAgent] describe_command_media fallback name=#{name}")
+            messages = [%{role: "user", content: prompt, images: imgs}]
+
+            case LLM.call(model, messages) do
+              {:ok, desc} when is_binary(desc) and desc != "" ->
+                store_media_description(session_id, name, desc, command.has_video)
+                [%{name: name, description: desc}]
+              _ ->
+                []
+            end
+          end
+        end)
+      else
+        []
+      end
+
+    all_descs = image_descs ++ video_descs ++ new_descs
+
+    file_descs =
+      Enum.flat_map(command.files || [], fn f ->
+        case f do
+          %{"name" => name, "content" => content} when is_binary(content) and content != "" ->
+            ["[File: #{name}]\n#{String.slice(content, 0, 8_000)}"]
+          _ ->
+            []
+        end
+      end)
+
+    parts =
+      (Enum.map(all_descs, fn d -> "[#{d.name}]: #{d.description}" end) ++ file_descs)
+
+    if parts == [] do
+      nil
+    else
+      "[Attached media and files — use these to understand the content]\n" <>
+        Enum.join(parts, "\n")
+    end
+  end
+
+  defp store_media_description(session_id, name, desc, is_video) do
+    table = if is_video, do: "video_descriptions", else: "image_descriptions"
+    file_id = :crypto.strong_rand_bytes(8) |> Base.url_encode64(padding: false)
+    now = System.os_time(:millisecond)
+
+    try do
+      query!(Repo,
+        "INSERT OR IGNORE INTO #{table} (session_id, file_id, name, description, created_at) VALUES (?,?,?,?,?)",
+        [session_id, file_id, name, desc, now])
+    rescue
+      e -> Logger.error("[UserAgent] store_media_description failed: #{Exception.message(e)}")
+    end
+  end
+
+  defp image_describe_prompt do
+    "Describe this image in detail: subjects, layout, setting, lighting, text, and mood."
+  end
+
+  defp video_describe_prompt do
+    "These are frames from a video. Describe the content: overview, timeline, subjects, setting, and any visible text."
+  end
+
   # Reload session data after a response and compact if thresholds are exceeded.
   # Runs in a background Task — failures are logged but do not affect the user.
   defp maybe_compact(session_id, user_id) do
@@ -837,40 +1142,49 @@ defmodule Dmhai.Agent.UserAgent do
 
   # Proactive master response: when a Worker finishes, call the Master Agent
   # with the buffer contents so it can generate a report/response.
-  defp trigger_master_from_buffer(session_id, user_id) do
+  defp trigger_master_from_buffer(session_id, user_id, worker_id, worker_desc) do
     try do
       entries = MasterBuffer.fetch_unconsumed(session_id)
 
       if entries != [] do
-        buffer_context = format_buffer_context(entries)
+        buffer_context = format_buffer_context(entries, worker_id, worker_desc)
         ids = Enum.map(entries, & &1.id)
         MasterBuffer.mark_consumed(ids)
 
-        model = AgentSettings.assistant_model()
+        # Present the worker update directly to the user.
+        # Do NOT use assistant mode here — that system prompt instructs the model to
+        # call tools, causing it to emit raw tool-call text instead of a real message.
+        # A simple two-message prompt with the confidant model works correctly.
+        model = AgentSettings.confidant_model()
+        date = Date.utc_today() |> Date.to_string()
 
-        case load_session(session_id, user_id) do
-          {:ok, _session_model, session_data} ->
-            profile = load_user_profile(user_id)
+        llm_messages = [
+          %{role: "system",
+            content:
+              "You are DMH-AI. Today's date: #{date}. " <>
+              "A background job has sent you an update to report to the user. " <>
+              "Format your response as:\n\n" <>
+              "**<Job Name>:**\n\n<report content>\n\n" <>
+              "Use the job description from the update label (the text after 'Job [id]: ') as the bold title. " <>
+              "If multiple jobs reported, use a separate bold header for each. " <>
+              "No other preamble — just the bold title, a blank line, then the information directly."},
+          %{role: "user", content: buffer_context}
+        ]
 
-            llm_messages =
-              ContextEngine.build_messages(session_data,
-                profile:        profile,
-                buffer_context: buffer_context
-              )
+        case LLM.call(model, llm_messages) do
+          {:ok, text} when is_binary(text) and text != "" ->
+            append_session_message(session_id, user_id, %{
+              role: "assistant",
+              content: text,
+              ts: System.os_time(:millisecond)
+            })
 
-            case LLM.call(model, llm_messages) do
-              {:ok, text} when is_binary(text) and text != "" ->
-                append_session_message(session_id, user_id, %{
-                  role: "assistant",
-                  content: text,
-                  ts: System.os_time(:millisecond)
-                })
+            # Write a consumed notification entry now that the message is in the session.
+            # consumed=1 means fetch_unconsumed skips it (no loop), but fetch_notifications
+            # returns it (summary IS NOT NULL) — frontend reloads and sees the master message.
+            MasterBuffer.append_notification(session_id, user_id, String.slice(text, 0, 200))
 
-                Logger.info("[UserAgent] proactive master response session=#{session_id} chars=#{String.length(text)}")
-
-              _ ->
-                :ok
-            end
+            Logger.info("[UserAgent] proactive master response session=#{session_id} chars=#{String.length(text)}")
 
           _ ->
             :ok

@@ -10,3 +10,9 @@ config :dmhai, Dmhai.Repo,
   pool_size: 5
 
 config :dmhai, ecto_repos: [Dmhai.Repo]
+
+config :dmhai, :worker,
+  # Inline-summarise tool results larger than this (chars) using the compactor model.
+  summarize_threshold: 5_000,
+  # Hard truncation cap applied when summarisation fails.
+  max_tool_result_chars: 8_000

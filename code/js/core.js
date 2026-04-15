@@ -58,7 +58,7 @@ const I18n = {
             deleteSession: 'Delete session',
             deleteConfirm1: 'Delete "', deleteConfirm2: '"? This cannot be undone.',
             clearSession: 'Clear session',
-            clearConfirm1: 'Clear all history in "', clearConfirm2: '"? This cannot be undone.',
+            clearConfirm1: 'Clear all history in "', clearConfirm2: '"? Any active background tasks will be cancelled. This cannot be undone.',
             confirm: 'Confirm', updating: 'Updating...',
             unsupported1: 'Unsupported file: ', unsupported2: '. Supported: PDF, DOCX, XLSX, plain text, ',
             noVision1: '⚠ ', noVision2: ' does not support images. Switch to a vision-capable model and send again.',
@@ -111,7 +111,7 @@ const I18n = {
             deleteSession: 'Xóa phiên',
             deleteConfirm1: 'Xóa "', deleteConfirm2: '"? Không thể hoàn tác.',
             clearSession: 'Xóa phiên',
-            clearConfirm1: 'Xóa toàn bộ lịch sử trong "', clearConfirm2: '"? Không thể hoàn tác.',
+            clearConfirm1: 'Xóa toàn bộ lịch sử trong "', clearConfirm2: '"? Các tác vụ nền đang chạy sẽ bị hủy. Không thể hoàn tác.',
             confirm: 'Xác nhận', updating: 'Đang cập nhật...',
             unsupported1: 'Tệp không hỗ trợ: ', unsupported2: '. Hỗ trợ: PDF, DOCX, XLSX, văn bản, ',
             noVision1: '⚠ ', noVision2: ' không hỗ trợ hình ảnh. Hãy chọn mô hình hỗ trợ hình ảnh và gửi lại.',
@@ -164,7 +164,7 @@ const I18n = {
             deleteSession: 'Sitzung löschen',
             deleteConfirm1: '"', deleteConfirm2: '" löschen? Dies kann nicht rückgängig gemacht werden.',
             clearSession: 'Sitzung leeren',
-            clearConfirm1: 'Gesamten Verlauf in "', clearConfirm2: '" löschen? Dies kann nicht rückgängig gemacht werden.',
+            clearConfirm1: 'Gesamten Verlauf in "', clearConfirm2: '" löschen? Aktive Hintergrundaufgaben werden abgebrochen. Dies kann nicht rückgängig gemacht werden.',
             confirm: 'Bestätigen', updating: 'Aktualisierung...',
             unsupported1: 'Nicht unterstützte Datei: ', unsupported2: '. Unterstützt: PDF, DOCX, XLSX, Text, ',
             noVision1: '⚠ ', noVision2: ' unterstützt keine Bilder. Wählen Sie ein bildtaugliches Modell und senden Sie erneut.',
@@ -217,7 +217,7 @@ const I18n = {
             deleteSession: 'Eliminar sesión',
             deleteConfirm1: '¿Eliminar "', deleteConfirm2: '"? Esto no se puede deshacer.',
             clearSession: 'Limpiar sesión',
-            clearConfirm1: '¿Borrar todo el historial en "', clearConfirm2: '"? Esto no se puede deshacer.',
+            clearConfirm1: '¿Borrar todo el historial en "', clearConfirm2: '"? Las tareas activas en segundo plano serán canceladas. Esto no se puede deshacer.',
             confirm: 'Confirmar', updating: 'Actualizando...',
             unsupported1: 'Archivo no compatible: ', unsupported2: '. Compatible: PDF, DOCX, XLSX, texto, ',
             noVision1: '⚠ ', noVision2: ' no admite imágenes. Seleccione un modelo con visión y envíe de nuevo.',
@@ -270,7 +270,7 @@ const I18n = {
             deleteSession: 'Supprimer la session',
             deleteConfirm1: 'Supprimer "', deleteConfirm2: '" ? Cette action est irréversible.',
             clearSession: 'Effacer la session',
-            clearConfirm1: 'Effacer tout l\'historique de "', clearConfirm2: '" ? Cette action est irréversible.',
+            clearConfirm1: 'Effacer tout l\'historique de "', clearConfirm2: '" ? Les tâches actives en arrière-plan seront annulées. Cette action est irréversible.',
             confirm: 'Confirmer', updating: 'Mise à jour...',
             unsupported1: 'Fichier non pris en charge : ', unsupported2: '. Pris en charge : PDF, DOCX, XLSX, texte, ',
             noVision1: '⚠ ', noVision2: ' ne prend pas en charge les images. Sélectionnez un modèle compatible et réessayez.',
@@ -390,14 +390,22 @@ function syslog(msg) {
 // ─── Notification Polling ──────────────────────────────────────────────
 const NotificationPoller = {
     _interval: null,
+    _visHandler: null,
     _lastCheck: Date.now(),
     _pollMs: 5000, // default 5s, overridden by user pref
+    _lsKey: 'dmh-notif-last-check',
 
     start: function(pollMs) {
         this.stop();
         if (pollMs) this._pollMs = pollMs;
-        this._lastCheck = Date.now();
+        // Restore from localStorage — survive page reload, tab background, screen lock.
+        // Fall back to now only if nothing stored (first ever load).
+        var stored = parseInt(localStorage.getItem(this._lsKey) || '0', 10);
+        this._lastCheck = stored > 0 ? stored : Date.now();
         this._interval = setInterval(this._poll.bind(this), this._pollMs);
+        // Immediately catch up when tab becomes visible (unlock, tab switch, app resume).
+        this._visHandler = this._onVisible.bind(this);
+        document.addEventListener('visibilitychange', this._visHandler);
     },
 
     stop: function() {
@@ -405,12 +413,21 @@ const NotificationPoller = {
             clearInterval(this._interval);
             this._interval = null;
         }
+        if (this._visHandler) {
+            document.removeEventListener('visibilitychange', this._visHandler);
+            this._visHandler = null;
+        }
+    },
+
+    _onVisible: function() {
+        if (document.visibilityState === 'visible') this._poll();
     },
 
     _poll: async function() {
         try {
             var since = this._lastCheck;
             this._lastCheck = Date.now();
+            localStorage.setItem(this._lsKey, String(this._lastCheck));
             var res = await apiFetch('/notifications?since=' + since);
             if (!res.ok) return;
             var entries = await res.json();
@@ -424,21 +441,23 @@ const NotificationPoller = {
     },
 
     _handleNotification: function(entry) {
-        // Show notification in the status bar
-        if (entry.summary) {
-            UIManager.setStatus('🔔 ' + entry.summary);
-            setTimeout(function() { UIManager.setStatus(''); }, 8000);
-        }
-        // If user is viewing this session, refresh the chat
-        if (typeof UIManager !== 'undefined' && UIManager._currentSession &&
-            UIManager._currentSession.id === entry.session_id) {
-            // Reload session to show new messages from worker
+        var isCurrentSession = typeof UIManager !== 'undefined' && UIManager.currentSession &&
+            UIManager.currentSession.id === entry.session_id;
+
+        if (isCurrentSession) {
+            // User is already in this session — reload chat silently, no toast needed
             SessionStore.getSession(entry.session_id).then(function(session) {
                 if (session) {
-                    UIManager._currentSession = session;
-                    UIManager.renderChat(session);
+                    UIManager.currentSession = session;
+                    UIManager.renderChat();
                 }
             });
+        } else {
+            // User is elsewhere — show toast so they know an update arrived
+            if (entry.summary) {
+                UIManager.setStatus('🔔 ' + entry.summary);
+                setTimeout(function() { UIManager.setStatus(''); }, 8000);
+            }
         }
     }
 };

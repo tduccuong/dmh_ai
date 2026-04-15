@@ -1,3 +1,8 @@
+# Copyright (c) 2026 Cuong Truong
+# This project is licensed under the AGPL v3.
+# See the LICENSE file in the repository root for full details.
+# For commercial inquiries, contact: tduccuong@gmail.com
+
 defmodule Dmhai.Agent.LLM do
   @moduledoc """
   Unified LLM client using direct Req.post to provider APIs.
@@ -39,87 +44,19 @@ defmodule Dmhai.Agent.LLM do
           {:ok, String.t() | {:tool_calls, list()}} | {:error, term()}
   def stream(model_str, messages, reply_pid, opts \\ []) do
     tools = Keyword.get(opts, :tools, [])
-    {url, headers, model_name} = resolve(model_str)
-
-    body = build_body(model_name, messages, tools, true)
-
-    text_key = {__MODULE__, :text, self()}
-    calls_key = {__MODULE__, :calls, self()}
-    buf_key  = {__MODULE__, :buf,  self()}
-    Process.put(text_key, "")
-    Process.put(calls_key, [])
-    Process.put(buf_key, "")
-
     Logger.info("[LLM] stream #{model_str} msgs=#{length(messages)} tools=#{length(tools)}")
 
-    result =
-      Req.post(url,
-        json: body,
-        headers: headers,
-        receive_timeout: :infinity,
-        retry: false,
-        finch: Dmhai.Finch,
-        into: fn {:data, data}, {req, resp} ->
-          combined = Process.get(buf_key) <> data
-          lines = String.split(combined, "\n")
-          # Last element may be an incomplete line — keep it in the buffer
-          {complete, [leftover]} = Enum.split(lines, length(lines) - 1)
-          Process.put(buf_key, leftover)
+    case String.split(model_str, "::", parts: 3) do
+      ["ollama", "cloud", model_name] ->
+        settings = load_settings()
+        {active, throttled} = partition_accounts(settings["accounts"] || [])
+        body = build_body(model_name, messages, tools, true)
+        do_cloud_stream(Enum.shuffle(active) ++ Enum.shuffle(throttled), model_name, body, reply_pid, model_str)
 
-          Enum.each(complete, fn line ->
-            line = String.trim(line)
-            if line != "" do
-              case Jason.decode(line) do
-                {:ok, %{"message" => %{"content" => token}}}
-                when is_binary(token) and token != "" ->
-                  Process.put(text_key, Process.get(text_key) <> token)
-                  send(reply_pid, {:chunk, token})
-
-                {:ok, %{"message" => %{"thinking" => token}}}
-                when is_binary(token) and token != "" ->
-                  Logger.debug("[LLM] thinking token len=#{String.length(token)}")
-                  send(reply_pid, {:thinking, token})
-
-                {:ok, %{"message" => %{"tool_calls" => calls}}}
-                when is_list(calls) and calls != [] ->
-                  Process.put(calls_key, calls)
-
-                {:ok, %{"error" => err}} ->
-                  Logger.error("[LLM] model error: #{err}")
-
-                {:ok, decoded} ->
-                  Logger.debug("[LLM] unmatched line keys=#{inspect(Map.keys(decoded))}")
-                  :ok
-
-                {:error, _} ->
-                  :ok
-              end
-            end
-          end)
-
-          {:cont, {req, resp}}
-        end
-      )
-
-    full_text = Process.get(text_key)
-    tool_calls = Process.get(calls_key)
-    Process.delete(text_key)
-    Process.delete(calls_key)
-    Process.delete(buf_key)
-
-    case result do
-      {:ok, _} ->
-        if tool_calls != [] do
-          Logger.info("[LLM] stream tool_calls=#{length(tool_calls)}")
-          {:ok, {:tool_calls, normalize_tool_calls(tool_calls)}}
-        else
-          Logger.info("[LLM] stream done chars=#{String.length(full_text)}")
-          {:ok, full_text}
-        end
-
-      {:error, reason} ->
-        Logger.error("[LLM] stream failed #{model_str}: #{inspect(reason)}")
-        {:error, reason}
+      _ ->
+        {url, headers, model_name} = resolve(model_str)
+        body = build_body(model_name, messages, tools, true)
+        do_stream_request(url, headers, body, reply_pid, model_str)
     end
   end
 
@@ -128,29 +65,19 @@ defmodule Dmhai.Agent.LLM do
   def call(model_str, messages, opts \\ []) do
     tools = Keyword.get(opts, :tools, [])
     llm_options = Keyword.get(opts, :options, %{})
-    {url, headers, model_name} = resolve(model_str)
-
-    body = build_body(model_name, messages, tools, false, llm_options)
-
     Logger.info("[LLM] call #{model_str} msgs=#{length(messages)} tools=#{length(tools)}")
 
-    case Req.post(url,
-           json: body,
-           headers: headers,
-           receive_timeout: :infinity,
-           retry: false,
-           finch: Dmhai.Finch
-         ) do
-      {:ok, %{status: 200, body: resp_body}} ->
-        parse_response(resp_body, model_str)
+    case String.split(model_str, "::", parts: 3) do
+      ["ollama", "cloud", model_name] ->
+        settings = load_settings()
+        {active, throttled} = partition_accounts(settings["accounts"] || [])
+        body = build_body(model_name, messages, tools, false, llm_options)
+        do_cloud_call(Enum.shuffle(active) ++ Enum.shuffle(throttled), model_name, body, model_str)
 
-      {:ok, %{status: status, body: resp_body}} ->
-        Logger.error("[LLM] call HTTP #{status} #{model_str}: #{inspect(resp_body)}")
-        {:error, "HTTP #{status}"}
-
-      {:error, reason} ->
-        Logger.error("[LLM] call failed #{model_str}: #{inspect(reason)}")
-        {:error, reason}
+      _ ->
+        {url, headers, model_name} = resolve(model_str)
+        body = build_body(model_name, messages, tools, false, llm_options)
+        do_call_request(url, headers, body, model_str)
     end
   end
 
@@ -257,6 +184,231 @@ defmodule Dmhai.Agent.LLM do
   defp decode_args(_), do: %{}
 
   # ─── Helpers ───────────────────────────────────────────────────────────────
+
+  # ─── Ollama cloud: streaming with per-key fallback ─────────────────────────
+
+  defp do_cloud_stream([], _model_name, _body, _reply_pid, model_str) do
+    Logger.error("[LLM] all cloud accounts exhausted #{model_str}")
+    {:error, "all_keys_exhausted"}
+  end
+
+  defp do_cloud_stream([account | rest], model_name, body, reply_pid, model_str) do
+    key = (account["apiKey"] || account["key"] || "") |> String.trim()
+    headers = if key != "", do: [{"authorization", "Bearer #{key}"}], else: []
+
+    case do_stream_request(@ollama_cloud_url, headers, body, reply_pid, model_str) do
+      {:error, :quota_exhausted} ->
+        Logger.warning("[LLM] account #{account["name"]} weekly quota exhausted, throttling 7d")
+        mark_account_throttled(account, :timer.hours(24 * 7))
+        do_cloud_stream(rest, model_name, body, reply_pid, model_str)
+
+      {:error, :rate_limited} ->
+        Logger.warning("[LLM] account #{account["name"]} rate-limited, throttling 1h")
+        mark_account_throttled(account, :timer.hours(1))
+        do_cloud_stream(rest, model_name, body, reply_pid, model_str)
+
+      other ->
+        other
+    end
+  end
+
+  defp do_stream_request(url, headers, body, reply_pid, model_str) do
+    text_key  = {__MODULE__, :text,  self()}
+    calls_key = {__MODULE__, :calls, self()}
+    buf_key   = {__MODULE__, :buf,   self()}
+    err_key   = {__MODULE__, :err,   self()}
+
+    Process.put(text_key,  "")
+    Process.put(calls_key, [])
+    Process.put(buf_key,   "")
+    Process.delete(err_key)
+
+    result =
+      Req.post(url,
+        json: body,
+        headers: headers,
+        receive_timeout: :infinity,
+        retry: false,
+        finch: Dmhai.Finch,
+        into: fn {:data, data}, {req, resp} ->
+          combined = Process.get(buf_key) <> data
+          lines = String.split(combined, "\n")
+          {complete, [leftover]} = Enum.split(lines, length(lines) - 1)
+          Process.put(buf_key, leftover)
+
+          halt? =
+            Enum.reduce_while(complete, false, fn line, _ ->
+              line = String.trim(line)
+              if line == "" do
+                {:cont, false}
+              else
+                case Jason.decode(line) do
+                  {:ok, %{"message" => %{"content" => token}}}
+                  when is_binary(token) and token != "" ->
+                    Process.put(text_key, Process.get(text_key) <> token)
+                    send(reply_pid, {:chunk, token})
+                    {:cont, false}
+
+                  {:ok, %{"message" => %{"thinking" => token}}}
+                  when is_binary(token) and token != "" ->
+                    Logger.debug("[LLM] thinking token len=#{String.length(token)}")
+                    send(reply_pid, {:thinking, token})
+                    {:cont, false}
+
+                  {:ok, %{"message" => %{"tool_calls" => calls}}}
+                  when is_list(calls) and calls != [] ->
+                    Process.put(calls_key, calls)
+                    {:cont, false}
+
+                  {:ok, %{"error" => err}} ->
+                    Logger.error("[LLM] model error: #{err}")
+                    Process.put(err_key, err)
+                    {:halt, true}
+
+                  {:ok, decoded} ->
+                    Logger.debug("[LLM] unmatched line keys=#{inspect(Map.keys(decoded))}")
+                    {:cont, false}
+
+                  {:error, _} ->
+                    {:cont, false}
+                end
+              end
+            end)
+
+          if halt?, do: {:halt, {req, resp}}, else: {:cont, {req, resp}}
+        end
+      )
+
+    stream_err = Process.get(err_key)
+    full_text  = Process.get(text_key)
+    tool_calls = Process.get(calls_key)
+    Process.delete(text_key)
+    Process.delete(calls_key)
+    Process.delete(buf_key)
+    Process.delete(err_key)
+
+    cond do
+      stream_err != nil ->
+        # Inline error in NDJSON — distinguish quota exhausted vs temporary rate-limit
+        if String.contains?(to_string(stream_err), "weekly usage limit") do
+          {:error, :quota_exhausted}
+        else
+          {:error, :rate_limited}
+        end
+
+      match?({:ok, %{status: s}} when s not in [200], result) ->
+        {:ok, %{status: status}} = result
+        Logger.error("[LLM] stream HTTP #{status} #{model_str}")
+        if status == 429, do: {:error, :rate_limited}, else: {:error, "HTTP #{status}"}
+
+      match?({:ok, _}, result) ->
+        if tool_calls != [] do
+          Logger.info("[LLM] stream tool_calls=#{length(tool_calls)}")
+          {:ok, {:tool_calls, normalize_tool_calls(tool_calls)}}
+        else
+          Logger.info("[LLM] stream done chars=#{String.length(full_text)}")
+          {:ok, full_text}
+        end
+
+      true ->
+        {:error, reason} = result
+        Logger.error("[LLM] stream failed #{model_str}: #{inspect(reason)}")
+        {:error, reason}
+    end
+  end
+
+  # ─── Ollama cloud: non-streaming with per-key fallback ──────────────────────
+
+  defp do_cloud_call([], _model_name, _body, model_str) do
+    Logger.error("[LLM] all cloud accounts exhausted #{model_str}")
+    {:error, "all_keys_exhausted"}
+  end
+
+  defp do_cloud_call([account | rest], model_name, body, model_str) do
+    key = (account["apiKey"] || account["key"] || "") |> String.trim()
+    headers = if key != "", do: [{"authorization", "Bearer #{key}"}], else: []
+
+    case do_call_request(@ollama_cloud_url, headers, body, model_str) do
+      {:error, :quota_exhausted} ->
+        Logger.warning("[LLM] account #{account["name"]} weekly quota exhausted, throttling 7d")
+        mark_account_throttled(account, :timer.hours(24 * 7))
+        do_cloud_call(rest, model_name, body, model_str)
+
+      {:error, :rate_limited} ->
+        Logger.warning("[LLM] account #{account["name"]} rate-limited, throttling 1h")
+        mark_account_throttled(account, :timer.hours(1))
+        do_cloud_call(rest, model_name, body, model_str)
+
+      other ->
+        other
+    end
+  end
+
+  defp do_call_request(url, headers, body, model_str) do
+    case Req.post(url,
+           json: body,
+           headers: headers,
+           receive_timeout: :infinity,
+           retry: false,
+           finch: Dmhai.Finch
+         ) do
+      {:ok, %{status: 200, body: resp_body}} ->
+        parse_response(resp_body, model_str)
+
+      {:ok, %{status: 429, body: resp_body}} ->
+        err_msg = get_in(resp_body, ["error"]) || ""
+        Logger.warning("[LLM] call 429 #{model_str}: #{inspect(resp_body)}")
+        if String.contains?(to_string(err_msg), "weekly usage limit") do
+          {:error, :quota_exhausted}
+        else
+          {:error, :rate_limited}
+        end
+
+      {:ok, %{status: status, body: resp_body}} ->
+        Logger.error("[LLM] call HTTP #{status} #{model_str}: #{inspect(resp_body)}")
+        {:error, "HTTP #{status}"}
+
+      {:error, reason} ->
+        Logger.error("[LLM] call failed #{model_str}: #{inspect(reason)}")
+        {:error, reason}
+    end
+  end
+
+  # Split accounts into {active, throttled} based on throttledUntil epoch-ms field.
+  # Throttled accounts go to the back of the queue as last-resort fallback.
+  defp partition_accounts(accounts) do
+    now = System.os_time(:millisecond)
+    Enum.split_with(accounts, fn acc ->
+      throttled_until = acc["throttledUntil"]
+      is_nil(throttled_until) or throttled_until <= now
+    end)
+  end
+
+  # Persist throttledUntil on the matching account in admin_cloud_settings.
+  defp mark_account_throttled(account, duration_ms) do
+    name = account["name"] || account["apiKey"] || "unknown"
+    failed_until = System.os_time(:millisecond) + duration_ms
+
+    try do
+      settings = load_settings()
+      updated_accounts =
+        Enum.map(settings["accounts"] || [], fn acc ->
+          if (acc["name"] || acc["apiKey"]) == name,
+            do: Map.put(acc, "throttledUntil", failed_until),
+            else: acc
+        end)
+
+      save_settings(Map.put(settings, "accounts", updated_accounts))
+      Logger.info("[LLM] account #{name} throttled until #{failed_until}")
+    rescue
+      e -> Logger.error("[LLM] mark_account_throttled failed: #{Exception.message(e)}")
+    end
+  end
+
+  defp save_settings(settings) do
+    query!(Repo, "UPDATE settings SET value=? WHERE key=?",
+           [Jason.encode!(settings), "admin_cloud_settings"])
+  end
 
   defp pick_pool_key(settings) do
     accounts = settings["accounts"] || []

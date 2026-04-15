@@ -261,6 +261,17 @@ UIManager.sendMessage = async function() {
         if (self.currentSession && self.currentSession.id === sessionAtSend.id) {
             self.currentSession = sessionAtSend;
             self.renderChat();
+            // Re-apply the "user message at top" scroll that was set during streaming.
+            // renderChat() always resets to scrollHeight; override it so the layout
+            // is consistent: user's question at the top, assistant answer below.
+            var allMsgEls = container.querySelectorAll('.message');
+            var latestUserEl = allMsgEls[allMsgEls.length - 2]; // second-to-last = user msg
+            if (latestUserEl) {
+                var userMsgTop = latestUserEl.getBoundingClientRect().top
+                    - container.getBoundingClientRect().top
+                    + container.scrollTop;
+                container.scrollTop = userMsgTop;
+            }
         }
         if ((sessionAtSend.messages.length - 2) % 8 === 0) {
             self.autoNameSession(sessionAtSend);

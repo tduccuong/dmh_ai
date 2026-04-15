@@ -1,3 +1,8 @@
+# Copyright (c) 2026 Cuong Truong
+# This project is licensed under the AGPL v3.
+# See the LICENSE file in the repository root for full details.
+# For commercial inquiries, contact: tduccuong@gmail.com
+
 defmodule Dmhai.Agent.ContextEngine do
   @moduledoc """
   Server-side context engineering for LLM conversations.
@@ -76,6 +81,7 @@ defmodule Dmhai.Agent.ContextEngine do
     video_descriptions = Keyword.get(opts, :video_descriptions, [])
     web_context        = Keyword.get(opts, :web_context)
     buffer_context     = Keyword.get(opts, :buffer_context)
+    mode               = Keyword.get(opts, :mode, "confidant")
 
     messages = session_data["messages"] || []
     ctx      = session_data["context"] || %{}
@@ -84,6 +90,7 @@ defmodule Dmhai.Agent.ContextEngine do
 
     system_msg = %{role: "system",
                    content: SystemPrompt.generate(
+                     mode:               mode,
                      profile:            profile,
                      has_video:          has_video,
                      image_descriptions: image_descriptions,
