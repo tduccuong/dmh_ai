@@ -365,6 +365,8 @@ defmodule Dmhai.Handlers.Data do
       UPDATE sessions SET name=?, messages=?, context=NULL, updated_at=?
       WHERE id=? AND user_id=?
       """, [sanitize_session_name(d["name"]), "[]", now, session_id, user.id])
+      query!(Repo, "DELETE FROM session_token_stats WHERE session_id=?", [session_id])
+      query!(Repo, "DELETE FROM worker_token_stats WHERE session_id=?", [session_id])
     else
       query!(Repo, """
       UPDATE sessions SET name=?, messages=?, updated_at=?
@@ -390,6 +392,8 @@ defmodule Dmhai.Handlers.Data do
     query!(Repo, "DELETE FROM image_descriptions WHERE session_id=?", [session_id])
     query!(Repo, "DELETE FROM video_descriptions WHERE session_id=?", [session_id])
     query!(Repo, "DELETE FROM master_buffer WHERE session_id=?", [session_id])
+    query!(Repo, "DELETE FROM session_token_stats WHERE session_id=?", [session_id])
+    query!(Repo, "DELETE FROM worker_token_stats WHERE session_id=?", [session_id])
 
     session_dir = user_asset_dir(user.email, session_id)
     if File.dir?(session_dir) do
@@ -581,11 +585,5 @@ defmodule Dmhai.Handlers.Data do
     end
   end
 
-  defp log(msg) do
-    log_file = "/data/system_logs/system.log"
-    File.mkdir_p!(Path.dirname(log_file))
-    ts = NaiveDateTime.utc_now() |> NaiveDateTime.to_string() |> String.slice(0, 19)
-    line = "[#{ts}] #{msg}\n"
-    File.write!(log_file, line, [:append])
-  end
+  defp log(msg), do: Dmhai.SysLog.log(msg)
 end

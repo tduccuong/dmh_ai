@@ -28,9 +28,12 @@ defmodule Dmhai.Agent.Worker do
   crash or restart can resume from the last checkpoint.
   """
 
-  alias Dmhai.Agent.{AgentSettings, LLM, MasterBuffer, TokenTracker, WorkerState}
+  alias Dmhai.Agent.{AgentSettings, LLM, MasterBuffer, Police, TokenTracker, WorkerState}
   alias Dmhai.Tools.Registry, as: ToolRegistry
   require Logger
+
+  # Max consecutive Police rejections before giving up.
+  @max_consecutive_rejections 3
 
   defp compactor_model, do: AgentSettings.compactor_model()
 
@@ -43,35 +46,48 @@ defmodule Dmhai.Agent.Worker do
   # ─── Public API ────────────────────────────────────────────────────────────
 
   @system_prompt """
-  You are a focused worker agent. Complete the task given to you using the tools available.
+  You are a focused worker agent, operating within the scope of DMH-AI ecosystem. Complete the task given to you using the tools available.
 
   Available tools and when to use them:
-  - bash          — run shell commands; always write commands that produce concise output — use grep, awk, head -n, cut to filter verbose dumps; avoid commands that print large raw tables
+  - bash             — run shell commands; always write commands that produce concise output — use grep, awk, head -n, cut to filter verbose dumps; avoid commands that print large raw tables
   - write_file / read_file / list_dir — file operations
-  - web_fetch     — fetch and read a URL
-  - calculator    — evaluate math expressions
-  - datetime      — get current date/time
-  - spawn_task    — spawn a short-lived background process to run a bash command after an optional delay; the result is returned to you in the NEXT step
-  - midjob_notify — push an update/report to the user mid-task (appears in chat + external platforms)
+  - web_search       — search the Web using keywords
+  - web_fetch        — fetch a URL and read the content
+  - calculator       — evaluate math expressions
+  - datetime         — get current date/time
+  - describe_image   — describe the visual content of an image file (pass the file path); use when you need to understand what an image contains
+  - describe_video   — describe the visual content of a video file (pass the file path); extracts frames and returns a structured description
+  - parse_document   — extract text from a document file (.pdf, .docx, .odt, .pptx, .epub, .html, etc.) and return it as Markdown
+  - spawn_task       — spawn a short-lived background process to run a bash command after an optional delay; the result is returned to you in the NEXT step
+  - midjob_notify    — push an update/report to the user mid-task (appears in chat + external platforms)
   - declare_periodic — declare that this is a long-running repeating task; lifts the iteration cap
 
-  Rules for PERIODIC tasks (monitoring, polling, scheduled reports):
+  **Rules for ONE-OFF tasks**:
+  1. Work through the task step by step using bash, web_search, web_fetch, file tools, etc.
+  2. Return a clear final summary when done.
+
+  **Rules for PERIODIC tasks** (monitoring, polling, scheduled reports):
   1. Call declare_periodic FIRST — before anything else.
-  2. NEVER use `sleep` in bash commands or write shell scripts with `while true; sleep N`. That blocks the process.
-  3. Instead, use spawn_task with delay_ms to schedule each timed step:
-       spawn_task(command: "...", delay_ms: 10000)
-     The result arrives in your next step automatically.
-  4. When the result arrives, call midjob_notify to deliver it to the user.
-  5. Then spawn_task again with the same delay to schedule the next iteration.
-  6. Repeat indefinitely until the user cancels.
+  2. ONLY generate exactly ONE item per cycle on-demand (e.g. one joke, one report) via `spawn_task` e.g., `spawn_task(command: "...", delay_ms: 10000)`. The result WILL be available automatically.
+  3. When the result arrives, call `midjob_notify` to deliver it to the user.
+  4. Then call `spawn_task` again with the same delay to schedule the next iteration.
+  5. NEVER use `sleep` in bash commands or write shell scripts with `while true; sleep N`. That blocks the process. Use `spawn_task` with delay_ms instead.
+  6. Never pre-generate content in bulk upfront.
+  7. Repeat indefinitely until the user cancels.
 
-  Rules for ONE-OFF tasks:
-  - Work through the task step by step using bash, web_fetch, file tools, etc.
-  - Return a clear final summary when done.
-
-  Language: always use the same language as the task description. If the task is in English, respond in English. If in Vietnamese, respond in Vietnamese. Never switch to another language unless explicitly asked.
-
-  Content generation: never pre-generate content in bulk upfront. For periodic tasks, generate exactly one item per cycle on-demand (e.g. one joke, one report), deliver it via midjob_notify, then use spawn_task with delay_ms to schedule the next cycle. This keeps the first delivery fast and avoids bursts.
+  **CRITICAL RULES:**
+  1. Language:
+     - Always use the **SAME** language as the task description.
+     - Never switch to another language unless explicitly asked.
+  2. Tool calling:
+     - ALWAYS invoke tools via the tool-calling mechanism. Call that does NOT conform to tool schemas is FORBIDDEN.
+  3. `web_search` is EXPENSIVE: Only call `web_search` when the task genuinely requires live or recent data:
+     - Breaking news, sports scores, stock/crypto prices, weather, recent headlines
+     - Current status of a service, platform, website, or system (outages, incidents)
+     - Figures that change over time: tax rates, salary tables, laws, regulations, prices, statistics
+     - Latest version, recent release, or recent update of a product, tool, or library
+     - Anything you are unsure about or that may have changed since your training data
+     **Do NOT call** `web_search` for: translation, summarisation, writing help, coding questions you can answer, science, history, math, geography, or well-known stable concepts.
   """
 
   @doc """
@@ -106,7 +122,7 @@ defmodule Dmhai.Agent.Worker do
       {:error, reason} ->
         MasterBuffer.append(
           context.session_id, context.user_id,
-          "Worker error: #{inspect(reason)}",
+          "__WORKER_ERROR__\n#{worker_error_text(reason)}",
           nil, worker_id
         )
     end
@@ -149,7 +165,7 @@ defmodule Dmhai.Agent.Worker do
       {:error, reason} ->
         MasterBuffer.append(
           checkpoint.session_id, checkpoint.user_id,
-          "Worker error: #{inspect(reason)}",
+          "__WORKER_ERROR__\n#{worker_error_text(reason)}",
           nil, checkpoint.worker_id
         )
     end
@@ -186,13 +202,30 @@ defmodule Dmhai.Agent.Worker do
         TokenTracker.add_worker(ctx.session_id, ctx.user_id, worker_id, description, rx, tx)
       end
 
+      Dmhai.SysLog.log("[WORKER] iter=#{iter} id=#{worker_id} periodic=#{periodic} msgs=#{length(messages)} summary=#{inspect(Map.get(ctx, :rolling_summary))|> String.slice(0,80)}\n  #{log_worker_messages(messages)}")
+
       # Inject rolling summary as a transient prefix — not stored in messages.
       effective_messages = inject_rolling_summary(messages, ctx)
 
       case LLM.call(model, effective_messages, tools: tools, on_tokens: on_tokens) do
         {:ok, {:tool_calls, calls}} ->
           Logger.info("[Worker] executing #{length(calls)} tool(s) iter=#{iter} periodic=#{periodic}")
+          call_names = Enum.map_join(calls, ", ", fn c -> get_in(c, ["function", "name"]) || "?" end)
+          Dmhai.SysLog.log("[WORKER] id=#{worker_id} iter=#{iter} → tool_calls=[#{call_names}]")
 
+          case Police.check_tool_calls(calls, messages) do
+            {:rejected, reason} ->
+              consec = Map.get(ctx, :consecutive_rejections, 0) + 1
+              if consec >= @max_consecutive_rejections do
+                Logger.error("[Worker] Police: max rejections reached (#{reason}), stopping")
+                {:error, "Repeated policy violation: #{reason}"}
+              else
+                rejection_msg = %{role: "user", content: Police.rejection_msg()}
+                new_ctx = Map.put(ctx, :consecutive_rejections, consec)
+                loop(messages ++ [rejection_msg], tools, model, new_ctx)
+              end
+
+            :ok ->
           declaring_periodic = Enum.any?(calls, fn c ->
             get_in(c, ["function", "name"]) == "declare_periodic"
           end)
@@ -213,11 +246,16 @@ defmodule Dmhai.Agent.Worker do
 
               Logger.info("[Worker] tool=#{name} args=#{inspect(args, limit: 200)}")
 
+              args_str = Jason.encode!(args) |> String.slice(0, 200)
+              Dmhai.SysLog.log("[WORKER] id=#{worker_id} tool=#{name} args=#{args_str}")
+
               content =
                 case ToolRegistry.execute(name, args, ctx) do
                   {:ok, result}    -> maybe_summarize_result(format_tool_result(result))
                   {:error, reason} -> "Error: #{reason}"
                 end
+
+              Dmhai.SysLog.log("[WORKER] id=#{worker_id} tool=#{name} result=#{String.slice(content, 0, 300)}")
 
               if agent_pid = Map.get(ctx, :agent_pid) do
                 send(agent_pid, {:worker_progress, worker_id, "#{name}: #{String.slice(content, 0, 150)}"})
@@ -227,7 +265,11 @@ defmodule Dmhai.Agent.Worker do
             end)
 
           new_messages = messages ++ [assistant_msg] ++ tool_result_msgs
-          new_ctx      = ctx |> Map.put(:iter, iter + 1) |> Map.put(:periodic, new_periodic)
+          new_ctx      =
+            ctx
+            |> Map.put(:iter, iter + 1)
+            |> Map.put(:periodic, new_periodic)
+            |> Map.put(:consecutive_rejections, 0)
 
           # Checkpoint to DB so a restart can resume from here.
           # Uses checkpoint/5 (not upsert) so status is not clobbered —
@@ -238,8 +280,25 @@ defmodule Dmhai.Agent.Worker do
           )
 
           loop(new_messages, tools, model, new_ctx)
+          end  # case Police.check_tool_calls
 
         {:ok, text} when is_binary(text) and text != "" ->
+          Dmhai.SysLog.log("[WORKER] id=#{worker_id} iter=#{iter} → text(#{String.length(text)} chars): #{String.slice(text, 0, 200)}")
+
+          case Police.check_text(text, ctx) do
+            {:rejected, reason} ->
+              consec = Map.get(ctx, :consecutive_rejections, 0) + 1
+              if consec >= @max_consecutive_rejections do
+                Logger.error("[Worker] Police: max rejections reached (#{reason}), stopping")
+                {:error, "Repeated policy violation: #{reason}"}
+              else
+                rejection_msg = %{role: "user", content: Police.rejection_msg()}
+                assistant_msg = %{role: "assistant", content: text}
+                new_ctx = Map.put(ctx, :consecutive_rejections, consec)
+                loop(messages ++ [assistant_msg, rejection_msg], tools, model, new_ctx)
+              end
+
+            :ok ->
           if Map.get(ctx, :periodic, false) do
             # In periodic mode the LLM sometimes returns a text summary after
             # scheduling the next spawn_task. Block until the result arrives.
@@ -260,6 +319,7 @@ defmodule Dmhai.Agent.Worker do
             Logger.info("[Worker] done chars=#{String.length(text)}")
             {:ok, text}
           end
+          end  # case Police.check_text
 
         {:ok, ""} ->
           Logger.warning("[Worker] empty response, stopping")
@@ -267,6 +327,7 @@ defmodule Dmhai.Agent.Worker do
 
         {:error, reason} ->
           Logger.error("[Worker] LLM error: #{inspect(reason)}")
+          Dmhai.SysLog.log("[WORKER] id=#{worker_id} iter=#{iter} → ERROR: #{inspect(reason)}")
           {:error, inspect(reason)}
       end
     end
@@ -513,4 +574,25 @@ defmodule Dmhai.Agent.Worker do
   end
 
   defp normalize_messages(_), do: []
+
+  defp worker_error_text(reason) when is_binary(reason), do: reason
+  defp worker_error_text(reason), do: inspect(reason)
+
+  defp log_worker_messages(messages) do
+    non_sys = Enum.reject(messages, fn m -> (m[:role] || m["role"]) == "system" end)
+    parts = Enum.map(non_sys, fn m ->
+      role    = m[:role]       || m["role"]       || "?"
+      content = m[:content]    || m["content"]    || ""
+      calls   = m[:tool_calls] || m["tool_calls"] || []
+      if is_list(calls) and calls != [] do
+        names = Enum.map_join(calls, ",", fn c -> get_in(c, ["function", "name"]) || "?" end)
+        "[#{role}→#{names}]"
+      else
+        snippet = content |> to_string() |> String.slice(0, 80) |> String.replace("\n", "↵")
+        "[#{role}]#{snippet}"
+      end
+    end)
+    result = Enum.join(parts, " | ")
+    if String.length(result) > 1000, do: String.slice(result, 0, 1000) <> "…", else: result
+  end
 end

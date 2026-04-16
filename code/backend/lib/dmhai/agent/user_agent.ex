@@ -502,9 +502,13 @@ defmodule Dmhai.Agent.UserAgent do
         buffer_context:     extra_context
       )
 
+    Dmhai.SysLog.log("[CONFIDANT] user=#{user_id} session=#{session_id} msg=#{String.slice(command.content, 0, 200)} web_search=#{web_context != nil}")
+    Dmhai.SysLog.log("[CONFIDANT] sending #{length(llm_messages)} msgs to model=#{model}\n  #{log_llm_messages(llm_messages)}")
+
     on_tokens = fn rx, tx -> TokenTracker.add_master(session_id, user_id, rx, tx) end
     case LLM.stream(model, llm_messages, reply_pid, on_tokens: on_tokens) do
       {:ok, full_text} when full_text != "" ->
+        Dmhai.SysLog.log("[CONFIDANT] response(#{String.length(full_text)} chars): #{String.slice(full_text, 0, 300)}")
         append_session_message(session_id, user_id, %{
           role: "assistant",
           content: full_text,
@@ -523,6 +527,7 @@ defmodule Dmhai.Agent.UserAgent do
         send(reply_pid, {:error, "No response received. Please try again."})
 
       {:error, reason} ->
+        Dmhai.SysLog.log("[CONFIDANT] ERROR: #{inspect(reason)}")
         send(reply_pid, {:error, "LLM error: #{inspect(reason)}"})
     end
   end
@@ -599,17 +604,23 @@ defmodule Dmhai.Agent.UserAgent do
       query_job_updates_json_schema_def()
     ]
 
+    Dmhai.SysLog.log("[ASSISTANT] user=#{user_id} session=#{session_id} msg=#{String.slice(command.content, 0, 200)}")
+    Dmhai.SysLog.log("[ASSISTANT] sending #{length(llm_messages)} msgs to model=#{model}\n  #{log_llm_messages(llm_messages)}")
+
     on_tokens = fn rx, tx -> TokenTracker.add_master(session_id, user_id, rx, tx) end
     # Pass self() so master reasoning/text does not stream to the user when a tool call is made.
     # For the rare text-only fallback, we forward full_text manually below.
     case LLM.stream(model, llm_messages, self(), tools: tools, on_tokens: on_tokens) do
       {:ok, {:tool_calls, calls}} ->
+        call_names = Enum.map_join(calls, ", ", fn c -> get_in(c, ["function", "name"]) || "?" end)
+        Dmhai.SysLog.log("[ASSISTANT] tool_calls=[#{call_names}]")
         handle_tool_calls(calls, command, state, session_data, combined_buffer)
 
       {:ok, full_text} when full_text != "" ->
         # Fallback — master should always call a tool, but handle gracefully if it doesn't.
         # Since we passed self() above, chunks went to the Task mailbox; forward them here.
         Logger.warning("[UserAgent] master returned text without tool call, presenting directly")
+        Dmhai.SysLog.log("[ASSISTANT] text fallback (#{String.length(full_text)} chars): #{String.slice(full_text, 0, 200)}")
         append_session_message(session_id, user_id, %{
           role: "assistant",
           content: full_text,
@@ -623,6 +634,7 @@ defmodule Dmhai.Agent.UserAgent do
         send(reply_pid, {:error, "No response received. Please try again."})
 
       {:error, reason} ->
+        Dmhai.SysLog.log("[ASSISTANT] ERROR: #{inspect(reason)}")
         send(reply_pid, {:error, "LLM error: #{inspect(reason)}"})
     end
   end
@@ -1238,53 +1250,105 @@ defmodule Dmhai.Agent.UserAgent do
       entries = MasterBuffer.fetch_unconsumed(session_id)
 
       if entries != [] do
-        buffer_context = format_buffer_context(entries, worker_id, worker_desc, worker_descs)
         ids = Enum.map(entries, & &1.id)
         MasterBuffer.mark_consumed(ids)
 
-        # Present the worker update directly to the user.
-        # Do NOT use assistant mode here — that system prompt instructs the model to
-        # call tools, causing it to emit raw tool-call text instead of a real message.
-        # A simple two-message prompt with the confidant model works correctly.
-        model = AgentSettings.confidant_model()
-        date = Date.utc_today() |> Date.to_string()
+        {error_entries, normal_entries} = Enum.split_with(entries, fn e ->
+          String.starts_with?(e.content || "", "__WORKER_ERROR__\n")
+        end)
 
-        llm_messages = [
-          %{role: "system",
-            content:
-              "You are DMH-AI. Today's date: #{date}. " <>
-              "A background job has sent you an update to report to the user. " <>
-              "Format your response as:\n\n" <>
-              "**<Job Name>:**\n\n<report content>\n\n" <>
-              "Derive a short 2-6 word bold title from the job description in the update label (e.g. '**Joke delivery:**', '**Resource monitor:**') — never use the full description verbatim. " <>
-              "If multiple jobs reported, use a separate short bold header for each. " <>
-              "No other preamble — just the bold title, a blank line, then the information directly. " <>
-              "Always reply in the same language the user used in their original task description."},
-          %{role: "user", content: buffer_context}
-        ]
+        # Error entries: bypass LLM, inject a red-titled error message directly.
+        Enum.each(error_entries, fn entry ->
+          desc  = Map.get(worker_descs, entry.worker_id, worker_desc) || ""
+          title = short_job_title(desc)
+          error = String.replace_prefix(entry.content, "__WORKER_ERROR__\n", "")
+          text  = "<span style=\"color:#ef4444;font-weight:600\">🔴 #{title}:</span>\n\nSystem error: #{error}"
+          Dmhai.SysLog.log("[MASTER_BUFFER] error entry session=#{session_id} worker=#{entry.worker_id}: #{error}")
+          append_session_message(session_id, user_id, %{role: "assistant", content: text, ts: System.os_time(:millisecond)})
+          MasterBuffer.append_notification(session_id, user_id, String.slice(text, 0, 200))
+        end)
 
-        on_tokens = fn rx, tx -> TokenTracker.add_master(session_id, user_id, rx, tx) end
-        case LLM.call(model, llm_messages, on_tokens: on_tokens) do
-          {:ok, text} when is_binary(text) and text != "" ->
-            append_session_message(session_id, user_id, %{
-              role: "assistant",
-              content: text,
-              ts: System.os_time(:millisecond)
-            })
+        # Normal entries: format via LLM as before.
+        if normal_entries != [] do
+          buffer_context = format_buffer_context(normal_entries, worker_id, worker_desc, worker_descs)
 
-            # Write a consumed notification entry now that the message is in the session.
-            # consumed=1 means fetch_unconsumed skips it (no loop), but fetch_notifications
-            # returns it (summary IS NOT NULL) — frontend reloads and sees the master message.
-            MasterBuffer.append_notification(session_id, user_id, String.slice(text, 0, 200))
+          # Present the worker update directly to the user.
+          # Do NOT use assistant mode here — that system prompt instructs the model to
+          # call tools, causing it to emit raw tool-call text instead of a real message.
+          # A simple two-message prompt with the confidant model works correctly.
+          model = AgentSettings.confidant_model()
+          date = Date.utc_today() |> Date.to_string()
 
-            Logger.info("[UserAgent] proactive master response session=#{session_id} chars=#{String.length(text)}")
+          llm_messages = [
+            %{role: "system",
+              content:
+                "You are DMH-AI. Today's date: #{date}. " <>
+                "A background job has sent you an update to report to the user. " <>
+                "Format your response as:\n\n" <>
+                "**<Job Name>:**\n\n<report content>\n\n" <>
+                "Derive a short 2-6 word bold title from the job description in the update label (e.g. '**Joke delivery:**', '**Resource monitor:**') — never use the full description verbatim. " <>
+                "If multiple jobs reported, use a separate short bold header for each. " <>
+                "No other preamble — just the bold title, a blank line, then the information directly. " <>
+                "Always reply in the same language the user used in their original task description."},
+            %{role: "user", content: buffer_context}
+          ]
 
-          _ ->
-            :ok
+          Dmhai.SysLog.log("[MASTER_BUFFER] session=#{session_id} entries=#{length(normal_entries)} worker=#{worker_id} model=#{model}")
+
+          on_tokens = fn rx, tx -> TokenTracker.add_master(session_id, user_id, rx, tx) end
+          case LLM.call(model, llm_messages, on_tokens: on_tokens) do
+            {:ok, text} when is_binary(text) and text != "" ->
+              Dmhai.SysLog.log("[MASTER_BUFFER] response(#{String.length(text)} chars): #{String.slice(text, 0, 300)}")
+              append_session_message(session_id, user_id, %{
+                role: "assistant",
+                content: text,
+                ts: System.os_time(:millisecond)
+              })
+
+              # Write a consumed notification entry now that the message is in the session.
+              # consumed=1 means fetch_unconsumed skips it (no loop), but fetch_notifications
+              # returns it (summary IS NOT NULL) — frontend reloads and sees the master message.
+              MasterBuffer.append_notification(session_id, user_id, String.slice(text, 0, 200))
+
+              Logger.info("[UserAgent] proactive master response session=#{session_id} chars=#{String.length(text)}")
+
+            _ ->
+              :ok
+          end
         end
       end
     rescue
       e -> Logger.error("[UserAgent] trigger_master_from_buffer failed: #{Exception.message(e)}")
     end
+  end
+
+  defp short_job_title(desc) when is_binary(desc) do
+    desc
+    |> String.replace(~r/\[.*?\]\s*/s, "")
+    |> String.trim()
+    |> String.split(~r/\s+/)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.take(5)
+    |> Enum.join(" ")
+    |> then(fn t -> if t == "", do: "Background job", else: t end)
+  end
+  defp short_job_title(_), do: "Background job"
+
+  defp log_llm_messages(messages) do
+    non_sys = Enum.reject(messages, fn m -> (m[:role] || m["role"]) == "system" end)
+    parts = Enum.map(non_sys, fn m ->
+      role    = m[:role]       || m["role"]       || "?"
+      content = m[:content]    || m["content"]    || ""
+      calls   = m[:tool_calls] || m["tool_calls"] || []
+      if is_list(calls) and calls != [] do
+        names = Enum.map_join(calls, ",", fn c -> get_in(c, ["function", "name"]) || "?" end)
+        "[#{role}→#{names}]"
+      else
+        snippet = content |> to_string() |> String.slice(0, 100) |> String.replace("\n", "↵")
+        "[#{role}]#{snippet}"
+      end
+    end)
+    result = Enum.join(parts, " | ")
+    if String.length(result) > 1000, do: String.slice(result, 0, 1000) <> "…", else: result
   end
 end

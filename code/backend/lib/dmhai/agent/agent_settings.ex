@@ -15,7 +15,7 @@ defmodule Dmhai.Agent.AgentSettings do
   @defaults %{
     "confidantModel"       => "gemini-3-flash-preview:cloud",
     "assistantModel"       => "ministral-3:14b-cloud",
-    "workerModel"          => "gemini-3-flash-preview:cloud",
+    "workerModel"          => "qwen3-coder-next:cloud",
     "compactorModel"       => "gemini-3-flash-preview:cloud",
     "webSearchModel"       => "ministral-3:14b-cloud",
     "imageDescriberModel"  => "gemini-3-flash-preview:cloud",

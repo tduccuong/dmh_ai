@@ -43,43 +43,72 @@ defmodule Dmhai.Agent.LLM do
   @spec stream(String.t(), list(map()), pid(), keyword()) ::
           {:ok, String.t() | {:tool_calls, list()}} | {:error, term()}
   def stream(model_str, messages, reply_pid, opts \\ []) do
-    tools = Keyword.get(opts, :tools, [])
-    on_tokens = Keyword.get(opts, :on_tokens, nil)
-    Logger.info("[LLM] stream #{model_str} msgs=#{length(messages)} tools=#{length(tools)}")
+    # Test hook: Application.put_env(:dmhai, :__llm_stream_stub__, fn model, msgs, pid, opts -> ... end)
+    # Stub must return {:ok, text}, {:ok, {:tool_calls, calls}}, or {:error, reason}.
+    # The stub is responsible for sending {:chunk, token} / {:thinking, token} to reply_pid if desired.
+    if stub = Application.get_env(:dmhai, :__llm_stream_stub__) do
+      stub.(model_str, messages, reply_pid, opts)
+    else
+      tools = Keyword.get(opts, :tools, [])
+      on_tokens = Keyword.get(opts, :on_tokens, nil)
+      Logger.info("[LLM] stream #{model_str} msgs=#{length(messages)} tools=#{length(tools)}")
+      Dmhai.SysLog.log("[LLM] stream model=#{model_str} msgs=#{length(messages)} tools=#{length(tools)}\n  #{log_messages(messages)}")
 
-    case String.split(model_str, "::", parts: 3) do
-      ["ollama", "cloud", model_name] ->
-        settings = load_settings()
-        {active, throttled} = partition_accounts(settings["accounts"] || [])
-        body = build_body(model_name, messages, tools, true)
-        do_cloud_stream(Enum.shuffle(active) ++ Enum.shuffle(throttled), model_name, body, reply_pid, model_str, on_tokens)
+      case String.split(model_str, "::", parts: 3) do
+        ["ollama", "cloud", model_name] ->
+          settings = load_settings()
+          {active, throttled} = partition_accounts(settings["accounts"] || [])
+          sanitized = sanitize_ollama_messages(messages, model_name)
+          body = build_body(model_name, sanitized, tools, true)
+          do_cloud_stream(Enum.shuffle(active) ++ Enum.shuffle(throttled), model_name, body, reply_pid, model_str, on_tokens)
 
-      _ ->
-        {url, headers, model_name} = resolve(model_str)
-        body = build_body(model_name, messages, tools, true)
-        do_stream_request(url, headers, body, reply_pid, model_str, on_tokens)
+        ["ollama", _pool, model_name] ->
+          {url, headers, _} = resolve(model_str)
+          sanitized = sanitize_ollama_messages(messages, model_name)
+          body = build_body(model_name, sanitized, tools, true)
+          do_stream_request(url, headers, body, reply_pid, model_str, on_tokens)
+
+        _ ->
+          {url, headers, model_name} = resolve(model_str)
+          body = build_body(model_name, messages, tools, true)
+          do_stream_request(url, headers, body, reply_pid, model_str, on_tokens)
+      end
     end
   end
 
   @spec call(String.t(), list(map()), keyword()) ::
           {:ok, String.t() | {:tool_calls, list()}} | {:error, term()}
   def call(model_str, messages, opts \\ []) do
-    tools = Keyword.get(opts, :tools, [])
-    llm_options = Keyword.get(opts, :options, %{})
-    on_tokens = Keyword.get(opts, :on_tokens, nil)
-    Logger.info("[LLM] call #{model_str} msgs=#{length(messages)} tools=#{length(tools)}")
+    # Test hook: Application.put_env(:dmhai, :__llm_call_stub__, fn model, msgs, opts -> ... end)
+    # Stub must return {:ok, text}, {:ok, {:tool_calls, calls}}, or {:error, reason}.
+    if stub = Application.get_env(:dmhai, :__llm_call_stub__) do
+      stub.(model_str, messages, opts)
+    else
+      tools = Keyword.get(opts, :tools, [])
+      llm_options = Keyword.get(opts, :options, %{})
+      on_tokens = Keyword.get(opts, :on_tokens, nil)
+      Logger.info("[LLM] call #{model_str} msgs=#{length(messages)} tools=#{length(tools)}")
+      Dmhai.SysLog.log("[LLM] call model=#{model_str} msgs=#{length(messages)} tools=#{length(tools)}\n  #{log_messages(messages)}")
 
-    case String.split(model_str, "::", parts: 3) do
-      ["ollama", "cloud", model_name] ->
-        settings = load_settings()
-        {active, throttled} = partition_accounts(settings["accounts"] || [])
-        body = build_body(model_name, messages, tools, false, llm_options)
-        do_cloud_call(Enum.shuffle(active) ++ Enum.shuffle(throttled), model_name, body, model_str, on_tokens)
+      case String.split(model_str, "::", parts: 3) do
+        ["ollama", "cloud", model_name] ->
+          settings = load_settings()
+          {active, throttled} = partition_accounts(settings["accounts"] || [])
+          sanitized = sanitize_ollama_messages(messages, model_name)
+          body = build_body(model_name, sanitized, tools, false, llm_options)
+          do_cloud_call(Enum.shuffle(active) ++ Enum.shuffle(throttled), model_name, body, model_str, on_tokens)
 
-      _ ->
-        {url, headers, model_name} = resolve(model_str)
-        body = build_body(model_name, messages, tools, false, llm_options)
-        do_call_request(url, headers, body, model_str, on_tokens)
+        ["ollama", _pool, model_name] ->
+          {url, headers, _} = resolve(model_str)
+          sanitized = sanitize_ollama_messages(messages, model_name)
+          body = build_body(model_name, sanitized, tools, false, llm_options)
+          do_call_request(url, headers, body, model_str, on_tokens)
+
+        _ ->
+          {url, headers, model_name} = resolve(model_str)
+          body = build_body(model_name, messages, tools, false, llm_options)
+          do_call_request(url, headers, body, model_str, on_tokens)
+      end
     end
   end
 
@@ -170,15 +199,87 @@ defmodule Dmhai.Agent.LLM do
 
   defp normalize_tool_calls(calls) when is_list(calls) do
     Enum.map(calls, fn call ->
-      %{
-        "id" => call["id"] || generate_id(),
-        "function" => %{
-          "name" =>
-            get_in(call, ["function", "name"]) || "",
-          "arguments" =>
-            decode_args(get_in(call, ["function", "arguments"]) || %{})
-        }
-      }
+      # Preserve all fields the model returned in the function map, only decoding
+      # `arguments` (which may arrive as a JSON string). Unknown fields (e.g.
+      # Gemini's thought_signature) are kept intact so they can be echoed back in
+      # conversation history without model-specific special cases.
+      fn_map =
+        (call["function"] || %{})
+        |> Map.put("name",      get_in(call, ["function", "name"]) || "")
+        |> Map.put("arguments", decode_args(get_in(call, ["function", "arguments"]) || %{}))
+
+      call
+      |> Map.put("id",       call["id"] || generate_id())
+      |> Map.put("function", fn_map)
+    end)
+  end
+
+  # ─── Ollama message sanitization ───────────────────────────────────────────
+
+  # Gemini thinking-mode responses attach an internal `thought_signature` to each
+  # function call.  Ollama's /api/chat format does not expose this field, so the
+  # client can never echo it back.  When the history contains tool-call messages
+  # from a previous thinking-mode turn, Gemini rejects the next request with
+  # HTTP 400 "Function call is missing a thought_signature in functionCall parts."
+  #
+  # Fix: before sending to any Ollama endpoint, convert:
+  #   assistant{tool_calls:[…]} → assistant{content:"[called tools: name1, name2]"}
+  #   tool{content:…, tool_call_id:…} → user{content:"[tool result: name] …"}
+  #
+  # The model continues to understand the conversation from the text descriptions.
+  # Verified by isolated HTTP replay test: stripping tool-call format from history
+  # resolves the 400 while preserving model reasoning quality.
+  # Only Gemini models (hosted via Ollama) have the thought_signature limitation.
+  # Other models (Mistral, LLaMA, etc.) handle tool_call history natively — leave them unchanged.
+  defp sanitize_ollama_messages(messages, model_name) do
+    if String.contains?(String.downcase(model_name), "gemini") do
+      do_sanitize_gemini_messages(messages)
+    else
+      messages
+    end
+  end
+
+  defp do_sanitize_gemini_messages(messages) do
+    # Build a map from tool_call_id → full call, so the tool result message
+    # can include both the name and the arguments for context.
+    call_id_to_call =
+      Enum.flat_map(messages, fn msg ->
+        if (msg[:role] || msg["role"]) == "assistant" do
+          (msg[:tool_calls] || msg["tool_calls"] || [])
+          |> Enum.map(fn call -> {call["id"] || "", call} end)
+        else
+          []
+        end
+      end)
+      |> Map.new()
+
+    Enum.map(messages, fn msg ->
+      role  = msg[:role]  || msg["role"]
+      calls = msg[:tool_calls] || msg["tool_calls"] || []
+
+      cond do
+        role == "assistant" and is_list(calls) and calls != [] ->
+          existing_content = msg[:content] || msg["content"] || ""
+          parts = Enum.map(calls, fn c ->
+            name = get_in(c, ["function", "name"]) || "?"
+            args = decode_args(get_in(c, ["function", "arguments"]) || %{})
+            args_str = Jason.encode!(args)
+            "[used: #{name}(#{args_str})]"
+          end)
+          suffix = Enum.join(parts, " ")
+          combined = if existing_content != "", do: "#{existing_content}\n#{suffix}", else: suffix
+          %{role: "assistant", content: combined}
+
+        role == "tool" ->
+          content      = msg[:content] || msg["content"] || ""
+          tool_call_id = msg[:tool_call_id] || msg["tool_call_id"] || ""
+          call         = Map.get(call_id_to_call, tool_call_id, %{})
+          name         = get_in(call, ["function", "name"]) || "tool"
+          %{role: "user", content: "[result:#{name}] #{content}"}
+
+        true ->
+          msg
+      end
     end)
   end
 
@@ -197,12 +298,15 @@ defmodule Dmhai.Agent.LLM do
 
   # ─── Ollama cloud: streaming with per-key fallback ─────────────────────────
 
+  @server_error_retries 3
+  @server_error_delay_ms 2_000
+
   defp do_cloud_stream([], _model_name, _body, _reply_pid, model_str, _on_tokens) do
     Logger.error("[LLM] all cloud accounts exhausted #{model_str}")
     {:error, "all_keys_exhausted"}
   end
 
-  defp do_cloud_stream([account | rest], model_name, body, reply_pid, model_str, on_tokens) do
+  defp do_cloud_stream([account | rest], model_name, body, reply_pid, model_str, on_tokens, retries \\ @server_error_retries) do
     key = (account["apiKey"] || account["key"] || "") |> String.trim()
     headers = if key != "", do: [{"authorization", "Bearer #{key}"}], else: []
 
@@ -215,6 +319,15 @@ defmodule Dmhai.Agent.LLM do
       {:error, :rate_limited} ->
         Logger.warning("[LLM] account #{account["name"]} rate-limited, throttling 1h")
         mark_account_throttled(account, :timer.hours(1))
+        do_cloud_stream(rest, model_name, body, reply_pid, model_str, on_tokens)
+
+      {:error, :server_error} when retries > 0 ->
+        Logger.warning("[LLM] transient server error, retrying in #{@server_error_delay_ms}ms (#{retries} left) #{model_str}")
+        Process.sleep(@server_error_delay_ms)
+        do_cloud_stream([account | rest], model_name, body, reply_pid, model_str, on_tokens, retries - 1)
+
+      {:error, :server_error} ->
+        Logger.error("[LLM] server error persists after retries, skipping account #{account["name"]} #{model_str}")
         do_cloud_stream(rest, model_name, body, reply_pid, model_str, on_tokens)
 
       other ->
@@ -314,7 +427,11 @@ defmodule Dmhai.Agent.LLM do
       match?({:ok, %{status: s}} when s not in [200], result) ->
         {:ok, %{status: status}} = result
         Logger.error("[LLM] stream HTTP #{status} #{model_str}")
-        if status == 429, do: {:error, :rate_limited}, else: {:error, "HTTP #{status}"}
+        cond do
+          status == 429 -> {:error, :rate_limited}
+          status >= 500 -> {:error, :server_error}
+          true          -> {:error, "HTTP #{status}"}
+        end
 
       match?({:ok, _}, result) ->
         if tool_calls != [] do
@@ -339,7 +456,7 @@ defmodule Dmhai.Agent.LLM do
     {:error, "all_keys_exhausted"}
   end
 
-  defp do_cloud_call([account | rest], model_name, body, model_str, on_tokens) do
+  defp do_cloud_call([account | rest], model_name, body, model_str, on_tokens, retries \\ @server_error_retries) do
     key = (account["apiKey"] || account["key"] || "") |> String.trim()
     headers = if key != "", do: [{"authorization", "Bearer #{key}"}], else: []
 
@@ -352,6 +469,15 @@ defmodule Dmhai.Agent.LLM do
       {:error, :rate_limited} ->
         Logger.warning("[LLM] account #{account["name"]} rate-limited, throttling 1h")
         mark_account_throttled(account, :timer.hours(1))
+        do_cloud_call(rest, model_name, body, model_str, on_tokens)
+
+      {:error, :server_error} when retries > 0 ->
+        Logger.warning("[LLM] transient server error, retrying in #{@server_error_delay_ms}ms (#{retries} left) #{model_str}")
+        Process.sleep(@server_error_delay_ms)
+        do_cloud_call([account | rest], model_name, body, model_str, on_tokens, retries - 1)
+
+      {:error, :server_error} ->
+        Logger.error("[LLM] server error persists after retries, skipping account #{account["name"]} #{model_str}")
         do_cloud_call(rest, model_name, body, model_str, on_tokens)
 
       other ->
@@ -378,6 +504,10 @@ defmodule Dmhai.Agent.LLM do
         else
           {:error, :rate_limited}
         end
+
+      {:ok, %{status: status, body: resp_body}} when status >= 500 ->
+        Logger.error("[LLM] call HTTP #{status} #{model_str}: #{inspect(resp_body)}")
+        {:error, :server_error}
 
       {:ok, %{status: status, body: resp_body}} ->
         Logger.error("[LLM] call HTTP #{status} #{model_str}: #{inspect(resp_body)}")
@@ -437,6 +567,26 @@ defmodule Dmhai.Agent.LLM do
   end
 
   defp generate_id, do: :crypto.strong_rand_bytes(6) |> Base.url_encode64(padding: false)
+
+  # ─── Log helpers ───────────────────────────────────────────────────────────
+
+  defp log_messages(messages) do
+    non_sys = Enum.reject(messages, fn m -> (m[:role] || m["role"]) == "system" end)
+    parts = Enum.map(non_sys, fn m ->
+      role    = m[:role]       || m["role"]       || "?"
+      content = m[:content]    || m["content"]    || ""
+      calls   = m[:tool_calls] || m["tool_calls"] || []
+      if is_list(calls) and calls != [] do
+        names = Enum.map_join(calls, ",", fn c -> get_in(c, ["function", "name"]) || "?" end)
+        "[#{role}→#{names}]"
+      else
+        snippet = content |> to_string() |> String.slice(0, 100) |> String.replace("\n", "↵")
+        "[#{role}]#{snippet}"
+      end
+    end)
+    result = Enum.join(parts, " | ")
+    if String.length(result) > 1000, do: String.slice(result, 0, 1000) <> "…", else: result
+  end
 
   defp load_settings do
     try do

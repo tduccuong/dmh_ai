@@ -12,8 +12,10 @@ defmodule Dmhai.DB.Init do
   @db_dir "/data/db"
 
   def run do
-    File.mkdir_p!(@db_dir)
-    File.mkdir_p!(@assets_dir)
+    # mkdir_p may fail in test/CI environments (no /data mount) — that is fine
+    # because the DB path is configured to a writable temp location in those cases.
+    File.mkdir_p(@db_dir)
+    File.mkdir_p(@assets_dir)
 
     create_tables()
     run_migrations()

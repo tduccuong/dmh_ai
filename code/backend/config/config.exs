@@ -16,3 +16,8 @@ config :dmhai, :worker,
   summarize_threshold: 5_000,
   # Hard truncation cap applied when summarisation fails.
   max_tool_result_chars: 8_000
+
+# Per-env overrides (test.exs sets an in-memory DB and silences the HTTP servers)
+if File.exists?(Path.join(__DIR__, "#{config_env()}.exs")) do
+  import_config "#{config_env()}.exs"
+end

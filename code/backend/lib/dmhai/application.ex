@@ -11,6 +11,7 @@ defmodule Dmhai.Application do
   def start(_type, _args) do
     children = [
       Dmhai.Repo,
+      Dmhai.SysLog,
       Dmhai.DomainBlocker,
       {Finch,
        name: Dmhai.Finch,
@@ -24,16 +25,24 @@ defmodule Dmhai.Application do
       {Registry, keys: :unique, name: Dmhai.Agent.Registry},
       Dmhai.Agent.Supervisor,
       {Task.Supervisor, name: Dmhai.Agent.TaskSupervisor},
-      {Task.Supervisor, name: Dmhai.Agent.WorkerSupervisor},
-      {Bandit, plug: Dmhai.Router, scheme: :http, ip: {0, 0, 0, 0}, port: 8080},
-      {Bandit,
-       plug: Dmhai.Router,
-       scheme: :https,
-       ip: {0, 0, 0, 0},
-       port: 8443,
-       certfile: "/app/ssl/cert.pem",
-       keyfile: "/app/ssl/key.pem"}
-    ]
+      {Task.Supervisor, name: Dmhai.Agent.WorkerSupervisor}
+    ] ++
+      (if Application.get_env(:dmhai, :start_http, true) do
+        [{Bandit, plug: Dmhai.Router, scheme: :http, ip: {0, 0, 0, 0}, port: 8080}]
+      else
+        []
+      end) ++
+      if Application.get_env(:dmhai, :start_https, true) and File.exists?("/app/ssl/cert.pem") do
+        [{Bandit,
+          plug: Dmhai.Router,
+          scheme: :https,
+          ip: {0, 0, 0, 0},
+          port: 8443,
+          certfile: "/app/ssl/cert.pem",
+          keyfile: "/app/ssl/key.pem"}]
+      else
+        []
+      end
 
     opts = [strategy: :one_for_one, name: Dmhai.Supervisor]
 

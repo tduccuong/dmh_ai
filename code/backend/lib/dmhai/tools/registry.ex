@@ -9,6 +9,7 @@ defmodule Dmhai.Tools.Registry do
   """
 
   @tools [
+    Dmhai.Tools.WebSearch,
     Dmhai.Tools.WebFetch,
     Dmhai.Tools.Bash,
     Dmhai.Tools.ReadFile,
@@ -16,6 +17,9 @@ defmodule Dmhai.Tools.Registry do
     Dmhai.Tools.ListDir,
     Dmhai.Tools.DatetimeTool,
     Dmhai.Tools.Calculator,
+    Dmhai.Tools.DescribeImage,
+    Dmhai.Tools.DescribeVideo,
+    Dmhai.Tools.ParseDocument,
     Dmhai.Tools.MidjobNotify,
     Dmhai.Tools.SpawnTask,
     Dmhai.Tools.DeclarePeriodic

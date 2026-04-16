@@ -39,12 +39,13 @@ The SPA is plain JavaScript — no framework, no bundler.
 index.html
  ├── core.js          — i18n (en/vi/de/es/fr), apiFetch, syslog
  ├── constants.js     — client-side-only constants (image sizing, timeouts)
+ ├── stopwords.js     — stop-word list used by client-side keyword extraction
  ├── api.js           — SessionStore, ImageDescriptionStore, VideoDescriptionStore
  ├── profile.js       — Settings, UserProfile, UserFactTracker
  ├── ui.js            — Modal, Lightbox, SettingsModal helpers
  ├── manager-app.js   — session list sidebar, mode switching, session CRUD
  ├── manager-chat.js  — renderChat(), renderSessions(), streaming placeholder
- ├── manager-search.js— sendMessage() — streaming, thinking block, scroll
+ ├── manager-search.js— sendMessage() — streaming, thinking block, scroll fix
  └── main.js          — app bootstrap, event wiring, notification polling
 ```
 
@@ -72,9 +73,11 @@ Sidebar (filtered by mode)
 ```
 sendMessage()
     │
-    ├─ renderChat()          — shows user msg, clears input
-    ├─ Build streaming DOM   — assistantDiv + bodyDiv (minHeight trick)
-    ├─ Scroll user msg to top
+    ├─ renderChat()               — shows user msg, clears input
+    ├─ Build streaming DOM        — assistantDiv + bodyDiv
+    ├─ minHeight = clientHeight   — placeholder so scrollTop is valid
+    ├─ scrollTop = msgScrollPos   — pin user msg to top of viewport
+    ├─ capture originalScrollHeight
     ├─ await SessionStore.updateSession()   — persist before sending
     │
     └─ POST /agent/chat  (NDJSON stream)
@@ -82,7 +85,13 @@ sendMessage()
            ├── {status: "..."}      → status bar update
            ├── {message:{thinking}} → think block (collapsible <details>)
            ├── {message:{content}}  → answer content (renderWithMath)
-           └── {done: true}         → onComplete() → renderChat()
+           └── {done: true}         → onComplete()
+
+onComplete() scroll fix (single RAF):
+    required = msgScrollPos + clientHeight - originalScrollHeight
+    minHeight = (actualHeight < required) ? max(0, required)+'px' : ''
+    scrollTop = msgScrollPos   ← never clamped; no visible jump
+    renderChat()               ← rebuilds from stored message
 
 Think Block lifecycle:
   streaming thinking  →  open <details>, live-update (last line buffered)
@@ -112,11 +121,14 @@ setInterval(
 ```
 Application
  ├── Repo                        (SQLite via Ecto + Exqlite)
+ ├── DomainBlocker               (GenServer — scanner/abuse domain blocklist)
+ ├── Finch                       (HTTP client pool — used by LLM & web-fetch)
  ├── Dmhai.Agent.Registry        (Registry for UserAgent lookups)
  ├── Dmhai.Agent.Supervisor      (DynamicSupervisor for UserAgents)
  ├── Dmhai.Agent.TaskSupervisor  (Task.Supervisor — inline tasks)
  ├── Dmhai.Agent.WorkerSupervisor(Task.Supervisor — detached workers)
- └── Bandit (HTTP server, :8080 / :8443)
+ ├── Bandit HTTP  :8080           (optional; disabled when start_http: false)
+ └── Bandit HTTPS :8443           (optional; requires /app/ssl/cert.pem)
       └── Dmhai.Router (Plug.Router)
 ```
 
@@ -174,6 +186,22 @@ Worker Task
 On crash (abnormal :DOWN):
    UserAgent finds crashed worker → MasterBuffer.append(crash notice)
    → next Master LLM call sees the failure
+```
+
+### Worker Crash Recovery
+
+Worker state is checkpointed to `worker_state` after every tool-call iteration. On `UserAgent.init/1` (including after idle-timeout restart), `WorkerState.fetch_and_claim/1` atomically claims all orphaned workers and re-spawns them via `Worker.run_from_checkpoint/2`.
+
+```
+Status lifecycle:
+  'running'    ← set on fresh start
+  'recovering' ← set when fetch_and_claim claims it (prevents double-claim)
+  'done'       ← terminal, set by mark_done/1
+  'cancelled'  ← terminal, set by mark_cancelled/1
+
+Orphan detection:
+  A 'recovering' row whose updated_at is older than 10 minutes is
+  considered orphaned (the recovery process itself died) and is re-claimed.
 ```
 
 ---
@@ -248,7 +276,8 @@ Browser              Master (inline Task)           Worker (detached Task)
    │                                        └──────────────►│
    │                                                        │
    │                                          Worker.run()  │
-   │                                           loop (≤10x): │
+   │                                           loop (≤20×,  │
+   │                                           configurable):│
    │                                           LLM.call()   │
    │                                           → tool_calls │
    │                                           → execute    │
@@ -280,24 +309,33 @@ The Worker Agent has access to these tools (registered in `Tools.Registry`):
 
 | Tool | Description |
 |------|-------------|
-| `web_search` | Query SearXNG for search results |
-| `web_fetch` | Fetch and extract text from a URL |
-| `read_file` | Read a file from the data directory |
-| `write_file` | Write a file to the data directory |
-| `list_dir` | List directory contents |
 | `bash` | Execute a shell command |
+| `write_file` | Write a file to the data directory |
+| `read_file` | Read a file from the data directory |
+| `list_dir` | List directory contents |
+| `web_fetch` | Fetch and extract text from a URL |
 | `calculator` | Evaluate a math expression |
 | `datetime` | Get current date/time |
+| `midjob_notify` | Push an update/report to the user mid-task (chat + external platforms) |
+| `spawn_task` | Run a bash command after an optional delay; result returned in the next iteration |
+| `declare_periodic` | Declare this is a long-running repeating job; lifts the iteration cap |
 
-### Periodic Jobs (no Cronjob needed)
+### Periodic Jobs (no external scheduler needed)
 
-Workers can implement scheduled / repeating work natively using `bash` with `sleep` or by looping inside a tool sequence. Because a Worker is a long-lived Elixir Task with no wall-clock timeout, it can simply `Process.sleep/1` between iterations. No separate cron mechanism is required — the Worker itself is the cron.
+Workers implement repeating work with `declare_periodic` + `spawn_task`. The pattern:
+
+1. Call `declare_periodic` first — lifts the iteration cap.
+2. Use `spawn_task(command: "...", delay_ms: N)` to schedule the next step; the result arrives in the worker's next loop iteration.
+3. Deliver the result to the user via `midjob_notify`.
+4. Call `spawn_task` again with the same delay to schedule the following cycle.
+
+**Important:** `bash` commands with `sleep` or `while true; do ... done` loops are explicitly forbidden — they block the BEAM scheduler. `spawn_task` is the correct mechanism.
 
 ---
 
-## Context Engine
+## Context Engine (Master / Confidant)
 
-Builds the message list for every LLM call. Handles compaction (summarisation) automatically when conversation history grows large.
+Builds the message list for every Master LLM call. Handles compaction automatically when conversation history grows large.
 
 ```
 build_messages(session_data, opts)
@@ -306,14 +344,15 @@ build_messages(session_data, opts)
     │     (persona + user profile + image/video descriptions)
     │
     ├── [summary prefix]   ← if history was compacted
-    │     user:  "Summary of conversation so far: ..."
-    │     asst:  "Understood, I have full context."
+    │     user:  "[Summary of our conversation so far]\n..."
+    │     asst:  "Understood, I have the full context."
     │
     ├── recent history     (messages after compaction cutoff)
-    │     role: user/assistant, content only (thinking stripped)
+    │     role: user/assistant, content only
     │
     ├── [relevant snippets] ← top-4 keyword-matched old messages
-    │     (from compacted history, re-injected when relevant)
+    │     user:  "[Potentially relevant excerpts from earlier...]"
+    │     asst:  "Noted — I have those earlier exchanges in context."
     │
     ├── [buffer context]   ← Assistant only: worker results
     │     user:  "[Worker agent updates] ..."
@@ -322,12 +361,34 @@ build_messages(session_data, opts)
     └── current user message
           + images + files + web_context (merged in)
 
-Compaction triggers when:
+Compaction triggers when (configurable via admin settings):
   - recent turn count > 90, OR
   - recent chars > 45% of ~32k char budget
 
 Compaction: LLM summarises old messages → stored in sessions.context
-            old messages become "dead" — only used for snippet retrieval
+            {"summary": "...", "summary_up_to_index": N}
+            old messages become "dead" — only used for keyword snippet retrieval
+```
+
+## Worker Context Compaction (rolling summary)
+
+Workers maintain their own message list (tool calls + results). When it grows beyond `1 + N + M + 5` messages (defaults: N=8, M=6), old messages are compacted into a rolling summary stored in `worker_state.rolling_summary` — separate from the message list so it is never re-summarised on the next pass.
+
+```
+maybe_compact_worker_messages():
+    if total_msgs <= 1 + N + M + 5  →  no-op
+
+    [system] ++ old(N) ++ middle(stub) ++ recent(M)
+                 │                ↑
+                 └─ LLM summarises old → new rolling_summary
+                    middle tool results replaced with size stubs
+                    "[truncated: N chars]"
+
+inject_rolling_summary():
+    [system] ++ [user "[Prior work summary]\n..."]
+             ++ [asst "Understood, continuing from prior work."]
+             ++ rest_of_messages
+    ← transient, NOT stored in messages list
 ```
 
 ---
@@ -388,10 +449,11 @@ The profile text is injected into the system prompt on every LLM call, giving th
 ```
 sessions
   id TEXT PK          ← timestamp-based (Date.now().toString())
+  user_id TEXT
   name TEXT
   model TEXT          ← legacy (models now from admin settings)
   messages TEXT       ← JSON array of {role, content, thinking?, ts, images?, ...}
-  context TEXT        ← JSON {summary, summaryUpToIndex}  (compaction state)
+  context TEXT        ← JSON {"summary": "...", "summary_up_to_index": N}
   mode TEXT           ← 'confidant' | 'assistant'
   created_at INTEGER
   updated_at INTEGER
@@ -403,6 +465,8 @@ users
   password_hash TEXT
   role TEXT           ← 'user' | 'admin'
   profile TEXT        ← accumulated personal facts (bullet list)
+  password_changed INTEGER
+  deleted INTEGER
   created_at INTEGER
 
 auth_tokens
@@ -417,42 +481,72 @@ master_buffer
   content TEXT        ← full worker result (injected into next Master call)
   summary TEXT        ← short one-liner (shown as notification)
   consumed INTEGER    ← 0 = pending, 1 = already injected into Master
+  worker_id TEXT      ← which worker produced this entry (nullable)
   created_at INTEGER
 
-image_descriptions   → (session_id, file_id, name, description)
-video_descriptions   → (session_id, file_id, name, description)
+worker_state
+  worker_id TEXT PK
+  session_id TEXT
+  user_id TEXT
+  task TEXT           ← original task description
+  messages TEXT       ← JSON — full message list checkpointed after every tool call
+  rolling_summary TEXT← LLM-produced summary of compacted old messages
+  iter INTEGER        ← tool-call iterations completed
+  periodic INTEGER    ← 0/1 — periodic mode declared
+  status TEXT         ← 'running' | 'recovering' | 'done' | 'cancelled'
+  created_at INTEGER
+  updated_at INTEGER  ← acts as heartbeat; stale recovering rows are re-claimed
+
+session_token_stats
+  session_id TEXT PK
+  user_id TEXT
+  master_rx_tokens INTEGER
+  master_tx_tokens INTEGER
+  updated_at INTEGER
+
+worker_token_stats
+  session_id TEXT
+  worker_id TEXT
+  user_id TEXT
+  description TEXT
+  rx_tokens INTEGER
+  tx_tokens INTEGER
+  updated_at INTEGER
+  PRIMARY KEY (session_id, worker_id)
+
+image_descriptions   → (session_id, file_id, name, description, created_at)
+video_descriptions   → (session_id, file_id, name, description, created_at)
 user_fact_counts     → (user_id, topic, count)
 settings             → (key, value)  ← admin settings KV store
-blocked_domains      → (domain, reason, timeout_count, blocked_until)
+blocked_domains      → (domain, reason, timeout_count, added_at)
 ```
 
 ---
 
 ## LLM Routing
 
-All LLM calls go through `Dmhai.Agent.LLM`. The model string encodes the provider:
+All LLM calls go through `Dmhai.Agent.LLM`. The model string uses a three-part `<provider>::<pool>::<model>` format:
 
 ```
-"ollama::mistral:latest"          → local Ollama (:11434)
-"ollama::cloud::gemini-3-flash:cloud"  → Ollama cloud proxy (authenticated)
-"openai::gpt-4o"                  → OpenAI API
-"anthropic::claude-3-5-sonnet"    → Anthropic API
+"ollama::local::llama3.2:3b"              → local Ollama (:11434), no auth
+"ollama::cloud::gemini-3-flash-preview:cloud" → Ollama cloud proxy (authenticated key pool)
+"openai::default::gpt-4o"                → OpenAI API
+"anthropic::default::claude-3-5-sonnet"  → Anthropic API
 ```
 
-Cloud API keys are managed in admin settings (key pool per provider). The LLM module picks a key from the pool on each call.
+Models ending in `:cloud` or `-cloud` are automatically routed to the cloud pool; all others go local. Cloud API keys are managed in admin settings (key pool per provider). The LLM module picks a key from the pool on each call, shuffling active keys first, then throttled ones.
 
 ### Model Assignments (admin-configurable)
 
 | Role | Default |
 |------|---------|
-| Confidant Master | admin setting |
-| Assistant Master | admin setting |
-| Worker Agent | `glm-5:cloud` |
+| Confidant Master | `gemini-3-flash-preview:cloud` |
+| Assistant Master | `ministral-3:14b-cloud` |
+| Worker Agent | `gemini-3-flash-preview:cloud` |
 | Web Search Detector | `ministral-3:14b-cloud` |
 | Image Describer | `gemini-3-flash-preview:cloud` |
 | Video Describer | `gemini-3-flash-preview:cloud` |
-| Profile Extractor | admin setting |
-| Session Namer | `gemini-3-flash-preview:cloud` |
+| Profile Extractor | `gemini-3-flash-preview:cloud` |
 | Context Compactor | `gemini-3-flash-preview:cloud` |
 
 ---

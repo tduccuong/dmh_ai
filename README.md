@@ -2,24 +2,9 @@
 
 A self-hosted AI chat app you run on your own computer — like ChatGPT, but private, free, and yours.
 
-DMH-AI is designed to be more than a chat tool. It is a long-lived AI companion that grows with you — the more you talk to it, the more it understands you, and the more it becomes a companion you can truly rely on.
-
-Because DMH-AI runs on your own machine, **you are in full control of your data**. Your conversations, your profile, your files — all of it lives on your hardware, under your roof. No third party can access, analyse, or monetise it. If you choose to run local models (Path B), not a single byte of your queries or personal context ever leaves your network — making it one of the most private AI setups you can run today.
-
-**Who is this for?**
-
-- **Cloud users** — you want fast, powerful AI chat without worrying about usage limits. You don't need a powerful computer. You use Ollama's cloud models via your own API key — DMH-AI automatically manages account rotation and rate limits behind the scenes, so you never have to think about it.
-- **Privacy-first users** — you want everything to stay on your own machine, completely offline. Nothing ever leaves your network.
-
-Both modes work in the same app. You can even switch between them freely.
+Because DMH-AI runs on your own machine, **you are in full control of your data**. Your conversations, your companion memory, your files — all of it lives on your hardware, under your roof. No third party can ever access, analyse, or monetise it. When using cloud AI, only the text of each request is sent out for processing — nothing else leaves your machine.
 
 ## Screenshots
-
-![Preloaded models](preloaded_models.png)
-*Three ready-to-use cloud models — Quick-Wit, Lexicon, Deep Thinker — appear the moment you add an API key. No extra setup.*
-
-
----
 
 ![Auto web search](auto_web_search.png)
 *Ask about anything time-sensitive and DMH-AI automatically searches the web, fetches live data, and gives you a sourced answer.*
@@ -27,38 +12,63 @@ Both modes work in the same app. You can even switch between them freely.
 ---
 
 ![See images](see_images.png)
-*Drop in any photo/video and ask questions about it.*
+*Drop in any photo or video and ask questions about it.*
+
+---
+
+## Two modes: Confidant and Assistant
+
+DMH-AI gives you two kinds of AI sessions, switchable from the top bar.
+
+### Confidant — your private AI companion
+
+Confidant is conversational, like ChatGPT. You type a message, the AI replies, and the exchange flows naturally back and forth. It is the mode you use for everyday questions, writing help, image analysis, brainstorming, and anything where you want an immediate, streaming response.
+
+What makes Confidant more than a chat tool:
+
+- **It grows with you.** Confidant builds a profile of you over time — your preferences, your context, the things you've told it — and uses that understanding to give more relevant, personalised answers. You never have to re-explain yourself.
+- **It remembers long conversations.** No matter how long a session runs, Confidant compresses old context intelligently so you never hit a memory wall.
+- **It searches the web automatically.** Ask about anything time-sensitive and Confidant decides on its own whether a web search is needed. If so, it fetches live results through its bundled search engine and synthesises a sourced answer — without you having to ask.
+- **Your profile stays on your machine.** Popular AI chatbots build a picture of you too, but store it on their servers outside your control. Everything Confidant learns about you stays on your hardware. You can review or clear it at any time from Conversation Settings.
+
+### Assistant — background AI that works while you chat
+
+Assistant is for tasks that take time: research, writing long documents, running code, coordinating multiple steps. You give it a goal, it works autonomously in the background, and it notifies you when it's done — you don't have to wait or watch.
+
+While the Assistant is working, you can keep chatting. Ask it how the task is going and it will give you a live status update. When the Assistant finishes, its result appears in the session and a notification pops up.
+
+Assistant sessions are independent: you can have several running at the same time, each working on a different goal.
+
+**When to use which:**
+
+| | Confidant | Assistant |
+|---|---|---|
+| Response style | Streaming, immediate | Notification when done |
+| Good for | Questions, writing, image analysis, conversation | Long tasks, research, multi-step work |
+| You wait? | Yes, but seconds | No — keep chatting |
+| Multiple at once | One active at a time | Many concurrent |
+
+---
 
 ## What you get
 
-- **Companion memory** — DMH-AI gets to know you over time and uses that understanding to give more relevant, personalised answers — so you never have to repeat yourself. What sets DMH-AI apart from popular chatbots like ChatGPT or Gemini: your profile never leaves your machine. Popular AI chatbots build a picture of you too, but store it on their servers, outside your control, and use it however their terms allow. Here, everything stays on your hardware. You can review or clear what DMH-AI knows about you at any time from Conversation Settings.
-- **Built-in web search** — like Perplexity, but self-hosted and private. Ask any question and DMH-AI automatically decides whether to search the web. If it does, it fetches live results through its own bundled search engine and gives you a sourced, up-to-date answer. Works in any language.
-- **Rich media attachments** — attach documents (PDF, DOCX, XLSX), images, and videos. On mobile, you can take a photo or record a video directly and drop it into the chat — no need to save it first.
-- **Multi-user support** — each person has their own login, their own chat history, and their own files. An admin account is created automatically on first run. Admins can add and remove users from within the app.
-- **Persistent chat history** — all your conversations are saved and searchable.
-- **Rolling context** — chat as long as you want without hitting AI memory limits.
-- **Multi-language UI** — English, Vietnamese, German, Spanish, French.
-- **Access from any device on your home network** — phone, tablet, laptop.
+- **Companion memory** — personalised answers that get better the longer you use it
+- **Built-in web search** — like Perplexity, but self-hosted and private; works in any language
+- **Rich media attachments** — PDF, DOCX, XLSX, images, and videos; on mobile, photograph or record directly into the chat
+- **Multi-user support** — each person has their own login, history, and files; admin manages users from within the app
+- **Persistent chat history** — all sessions saved and searchable
+- **Multi-language UI** — English, Vietnamese, German, Spanish, French
+- **Access from any device on your home network** — phone, tablet, laptop
+
+For a detailed technical description, see [specs/architecture.md](specs/architecture.md).
 
 ---
 
-## Quick Start
+## Installation
 
-There are two paths. Choose the one that fits you.
+### Step 1 — Install Docker
 
-| | Path A: Cloud | Path B: Local |
-|---|---|---|
-| **Best for** | Most users | Privacy-first users |
-| **Requires GPU?** | No | Depends on model size |
-| **Internet needed?** | Yes (for AI responses) | No |
-| **Data leaves your machine?** | AI requests go to Ollama's servers | Never |
-| **Setup time** | ~5 minutes | ~10 minutes |
-
----
-
-## Step 1 — Install Docker
-
-Docker runs DMH-AI in a self-contained container. Required for both paths.
+Docker runs DMH-AI in a self-contained container.
 
 **Linux:**
 ```bash
@@ -67,7 +77,7 @@ curl -fsSL https://get.docker.com | sh
 
 **macOS / Windows:** Download and run **Docker Desktop** from [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop/). After installing, open Docker Desktop and wait for the whale icon in the menu bar (macOS) or taskbar (Windows) to stop animating — it's ready when it's still.
 
-## Step 2 — Build and Install DMH-AI
+### Step 2 — Build and install DMH-AI
 
 **Linux / macOS:**
 ```bash
@@ -85,7 +95,7 @@ dmhai start
 
 Open [http://localhost:8080](http://localhost:8080) in your browser.
 
-### Managing the app (Linux / macOS)
+### Managing the app
 
 ```bash
 dmhai start      # start
@@ -101,21 +111,7 @@ After a code update, rebuild and reinstall:
 dmhai restart
 ```
 
-### Managing the app (Windows)
-
-```
-dmhai start      # start
-dmhai stop       # stop
-dmhai restart    # restart (picks up new build automatically)
-dmhai status     # show running containers
-```
-
-After a code update, rebuild and reinstall:
-```
-build.bat
-install.bat
-dmhai restart
-```
+On Windows, use `build.bat` and `install.bat` instead.
 
 ### First login
 
@@ -129,85 +125,46 @@ Sign in, then **immediately change your password**: click the user icon (top rig
 
 ---
 
-## Path A: Cloud Models (recommended for most users)
+## Connecting an AI service (admin)
 
-Ollama offers powerful cloud AI models for free, with generous usage limits. Your questions are sent to Ollama's servers for processing — fast, no GPU needed, no subscription fee.
+DMH-AI needs an AI backend to function. The admin configures this once in Settings. Users never interact with model selection directly.
 
-### Get your Ollama API key
+### Default — Ollama cloud
 
-You need an API key to use cloud models. This is free.
+Ollama offers powerful cloud AI models for free, with generous usage limits. This is the easiest setup: no GPU, no hardware requirements.
 
-1. Go to [ollama.com](https://ollama.com) and create a free account (click **Sign Up**)
-2. Click your profile icon (top right) → **Settings** → **API Keys**
-3. Click **Create new key**, give it any name, and copy the key somewhere safe
+1. Go to [ollama.com](https://ollama.com) and create a free account
+2. Click your profile icon → **Settings** → **API Keys** → **Create new key**, copy it
+3. In DMH-AI: user icon → **Settings** → **Ollama Cloud — API Accounts** → **Add account**, paste the key
 
-### Add your API key in DMH-AI
+That's it. Both Confidant and Assistant modes are immediately available to all users.
 
-1. Click the user icon → **Settings**
-2. Under **Ollama Cloud — API Accounts**, click **Add account**
-3. Enter any name you like (e.g. "my account") and paste your API key
-4. Click **Save**
+In this setup, only the text of each AI request is sent to Ollama's servers for processing. All user data — chat history, companion memory, uploaded files — stays on your machine and is never shared with any third party.
 
-That's it. Three recommended models appear instantly at the top of the model selector — just pick one and start chatting.
+### Alternative — Local Ollama (fully offline)
 
-**Recommended models (ready to use, no extra setup):**
+For a setup where absolutely nothing leaves your network — not even AI requests — you can switch to a locally running Ollama instance. This requires hardware capable of running AI models (a modern CPU is sufficient for small models; a GPU significantly improves speed for larger ones).
 
-- 👁 **Quick-Wit** (`ministral-3:14b-cloud`) — fast responses for everyday questions
-- ✍ **Lexicon** (`gemma4:31b-cloud`) — excels at writing: emails, essays, literature, creative text
-- 💡 **Deep Thinker** (`qwen3.5:397b-cloud`) — slower but more thorough; great for complex questions, image analysis
+**Install Ollama:**
 
----
-
-## Path B: Local Models (fully offline, maximum privacy)
-
-Everything runs on your machine. No internet needed for AI. Your data never leaves your network.
-
-### Install Ollama
-
-Ollama runs the AI model locally on your computer.
-
-**Linux:**
 ```bash
+# Linux
 curl -fsSL https://ollama.com/install.sh | sh
 ```
 
-**macOS / Windows:** Download and run the installer from [ollama.com/download](https://ollama.com/download). Ollama starts automatically in the background after installation.
+macOS / Windows: download from [ollama.com/download](https://ollama.com/download). Ollama starts automatically after installation.
 
-Verify it works:
+**Pull a model** (the admin decides which model to use):
 ```bash
-ollama --version
+ollama pull <model-name>
 ```
 
-### Download a model
-
-Choose a model based on what your computer can handle. The size listed is how much disk space and RAM you need.
-
-**Good starting points (text and documents):**
-
-| Model | Size | Notes |
-|---|---|---|
-| `gemma3n:e2b` | ~5.6 GB | Best small multilingual model |
-| `phi4-mini:3.8b` | ~2.5 GB | Good all-rounder, low memory |
-| `granite4:3b` | ~2.1 GB | Fast, strong reasoning |
-
-**If you want to analyze images:**
-
-| Model | Size | Notes |
-|---|---|---|
-| `ministral-3:3b` | ~3 GB | Supports image input, fast |
-
-Download your chosen model (example):
-```bash
-ollama pull gemma3n:e2b
-```
-
-On Linux, if Ollama isn't already running as a service:
+On Linux, start Ollama if it isn't already running as a service:
 ```bash
 ollama serve
 ```
-On macOS and Windows, Ollama starts automatically — no need to run `ollama serve`.
 
-Your locally running models will appear in the model dropdown. Select one and start chatting.
+In DMH-AI admin settings, point **Ollama Local — Endpoint URL** at your Ollama instance (e.g. `http://localhost:11434`) and configure the AI Models to use local model names.
 
 ---
 
@@ -229,15 +186,11 @@ Click the user icon → **Settings** (admin only).
 
 Add one or more accounts (label + API key). DMH-AI rotates through all added accounts automatically — if one hits its rate limit, the next one takes over without any interruption.
 
-**Example:** a family of four each creates a free Ollama account and adds all four keys here. DMH-AI distributes the load across them transparently — no family member needs to think about which account is being used or whether a limit has been hit. This is perfectly fine: each Ollama account comes with its own free quota, and each person is simply using the quota they are entitled to.
+**Example:** a family of four each creates a free Ollama account and adds all four keys here. DMH-AI distributes the load across them transparently — no family member needs to think about which account is being used or whether a limit has been hit.
 
-**Ollama Cloud — Recommended Models**
+**AI Models**
 
-When at least one account is added, three models appear automatically at the top of the model dropdown with no extra configuration needed: **Quick-Wit**, **Lexicon**, and **Deep Thinker**.
-
-**Ollama Cloud — Cloud Models**
-
-Add additional cloud models beyond the three recommended ones. The search field queries the public Ollama model registry — you can find and add any cloud model without visiting ollama.com. Added models appear under a **☁ Cloud Models** section in the dropdown.
+Configure which AI model handles each role: Confidant conversations, Assistant background work, web search, image and video analysis, and context compaction. Each role can use a different model optimised for that task.
 
 **Ollama Local — Endpoint URL**
 
@@ -273,53 +226,3 @@ Running `install.sh` again is safe — it never overwrites existing data files. 
 To back up or move DMH-AI to another machine, copy `~/.dmhai/` and run `install.sh` on the new machine.
 
 To add more users: user icon → **Manage users**.
-
----
-
-## Architecture (for developers)
-
-```
-Browser
-  ├── nginx :8080 (HTTP)
-  └── nginx :8443 (HTTPS, for voice input)
-        ├── /          → index.html (SPA)
-        ├── /api       → Ollama :11434
-        ├── /sessions  → Python backend :3000
-        ├── /assets    → Python backend :3000
-        ├── /search    → Python backend :3000 → SearXNG :8888
-        └── /log       → Python backend :3000
-```
-
-The entire frontend is a single `code/index.html` file — vanilla JS, no framework, no build step. The backend is `code/backend/server.py` using only Python stdlib.
-
-**Using a real SSL certificate (optional)**
-
-If you have a domain with a valid SSL certificate, point a reverse proxy (nginx, Caddy, etc.) at port `8080`. With proper HTTPS in place, voice input works without the self-signed certificate warning, and you no longer need port `8443` at all.
-
-A valid HTTPS origin also lets you install DMH-AI as a standalone app on mobile — no app store needed:
-- **Android (Chrome):** open the site → three-dot menu → **Add to Home screen**
-- **iOS (Safari):** open the site → share icon → **Add to Home Screen**
-
-The app then launches full-screen, indistinguishable from a native app.
-
-## Project Structure
-
-```
-code/
-  index.html              # entire frontend (HTML + CSS + JS)
-  backend/server.py       # sessions API, file uploads, search proxy, logging
-  nginx.conf              # reverse proxy config
-  Dockerfile              # nginx:alpine + python3
-  start.sh                # entrypoint: starts python backend then nginx
-deploy/
-  docker-compose.yml      # deployment compose file (source of truth)
-  searxng-settings.yml    # SearXNG config (enables JSON API on port 8888)
-  run.sh                  # legacy direct-run script (copied to dist/ by build.sh)
-build.sh                  # Linux/macOS: builds Docker image and assembles dist/
-build.bat                 # Windows: builds Docker image and assembles dist/
-install.sh                # Linux/macOS: installs dist/ → ~/.dmhai/, registers dmhai command
-install.bat               # Windows: installs dist/ → %USERPROFILE%\.dmhai\, adds dmhai to PATH
-dmhai.bat                 # Windows: management script (start/stop/restart/status)
-dist/                     # generated by build.sh — do not edit manually
-~/.dmhai/                 # live installation — all user data lives here
-```
