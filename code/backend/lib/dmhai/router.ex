@@ -184,6 +184,12 @@ defmodule Dmhai.Router do
     end
   end
 
+  get "/sessions/:session_id/token-stats" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      Data.get_token_stats(conn, user, session_id)
+    end
+  end
+
   get "/image-descriptions/:session_id" do
     with {:ok, conn, user} <- check_auth(conn) do
       Data.get_image_descriptions(conn, user, session_id)

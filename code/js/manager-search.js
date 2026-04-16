@@ -103,6 +103,7 @@ UIManager.sendMessage = async function() {
     // --- Set up streaming UI immediately (before await) so layout is correct from the start ---
     const container = document.getElementById('chat-container');
     var userMsgEl = container.lastElementChild;
+    const originalScrollHeight = container.scrollHeight; // capture before adding assistantDiv
 
     const assistantTs = Date.now();
     const assistantDiv = document.createElement('div');
@@ -112,10 +113,10 @@ UIManager.sendMessage = async function() {
     bodyDiv.className = 'msg-body';
     bodyDiv.id = 'streaming-body';
     assistantDiv.appendChild(bodyDiv);
-    // Temporarily give bodyDiv height so user message scrolls to the top
+    // Temporarily give bodyDiv height so user message can scroll to the top
     bodyDiv.style.minHeight = container.clientHeight + 'px';
     container.appendChild(assistantDiv);
-    // Scroll so user's new message appears at the top — "fresh question" feel
+    // Scroll so user's new message appears at the top
     if (userMsgEl) {
         var msgScrollPos = userMsgEl.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop;
         container.scrollTop = msgScrollPos;
@@ -232,7 +233,7 @@ UIManager.sendMessage = async function() {
         if (!assistantContent) {
             // Stream ended with no content — connection was cut
             var emptyBody = document.getElementById('streaming-body') || self._activeBodyDiv;
-            if (emptyBody) { emptyBody.style.minHeight = ''; emptyBody.innerHTML = '<em style="color:#e05060;">⚠ No response received — the connection was interrupted. Please try again.</em>'; }
+            if (emptyBody) { emptyBody.innerHTML = '<em style="color:#e05060;">⚠ No response received — the connection was interrupted. Please try again.</em>'; }
             self._streamMap.delete(sessionAtSend.id);
             self._streamController = null;
             self._activeBodyDiv = null;
@@ -260,18 +261,39 @@ UIManager.sendMessage = async function() {
         document.getElementById('stop-gen-btn').style.display = 'none';
         if (self.currentSession && self.currentSession.id === sessionAtSend.id) {
             self.currentSession = sessionAtSend;
-            self.renderChat();
-            // Re-apply the "user message at top" scroll that was set during streaming.
-            // renderChat() always resets to scrollHeight; override it so the layout
-            // is consistent: user's question at the top, assistant answer below.
-            var allMsgEls = container.querySelectorAll('.message');
-            var latestUserEl = allMsgEls[allMsgEls.length - 2]; // second-to-last = user msg
-            if (latestUserEl) {
-                var userMsgTop = latestUserEl.getBoundingClientRect().top
-                    - container.getBoundingClientRect().top
-                    + container.scrollTop;
-                container.scrollTop = userMsgTop;
-            }
+            // Do NOT call renderChat() here — it resets scrollTop to scrollHeight, and the
+            // placeholder min-height is gone in the new DOM so the scroll target gets clamped,
+            // causing a visible jump.  Instead, finalize the streaming div in-place:
+            // strip the placeholder sizing and id so it looks like a normal message div.
+            // The scroll position set during streaming (user message at top) is preserved.
+            requestAnimationFrame(function() {
+                // Fires after the last onChunk RAF, so content (markdown, think block) is final.
+                var activeBody = document.getElementById('streaming-body');
+                if (activeBody) {
+                    activeBody.removeAttribute('id');
+                    if (userMsgEl) {
+                        // Measure actual rendered content height (without minHeight override).
+                        // Setting minHeight='0' then reading offsetHeight forces a synchronous
+                        // reflow; all three steps happen inside this RAF tick so the browser
+                        // paints only the final state — no intermediate visible jump.
+                        activeBody.style.minHeight = '0';
+                        var H_content = activeBody.offsetHeight; // forced reflow
+                        // Keep just enough minHeight so that scrollTop = msgScrollPos remains a
+                        // valid scroll position.  If the response is tall enough on its own, no
+                        // minHeight is needed and the value becomes ''.
+                        var required = msgScrollPos + container.clientHeight - originalScrollHeight;
+                        activeBody.style.minHeight = H_content < required ? Math.max(0, required) + 'px' : '';
+                        // Re-assert scrollTop — the reflows above may have clamped it.
+                        container.scrollTop = msgScrollPos;
+                    } else {
+                        activeBody.style.minHeight = '';
+                    }
+                } else {
+                    // streaming-body was removed externally (e.g. a notification-triggered
+                    // renderChat during the brief window after _streamMap was cleared).
+                    self.renderChat();
+                }
+            });
         }
         if ((sessionAtSend.messages.length - 2) % 8 === 0) {
             self.autoNameSession(sessionAtSend);

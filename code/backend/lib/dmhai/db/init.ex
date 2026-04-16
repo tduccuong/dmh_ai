@@ -126,6 +126,43 @@ defmodule Dmhai.DB.Init do
     alter_table_safe("ALTER TABLE master_buffer ADD COLUMN worker_id TEXT")
     alter_table_safe("CREATE UNIQUE INDEX IF NOT EXISTS idx_image_descriptions_name ON image_descriptions (session_id, name)")
     alter_table_safe("CREATE UNIQUE INDEX IF NOT EXISTS idx_video_descriptions_name ON video_descriptions (session_id, name)")
+    alter_table_safe("""
+    CREATE TABLE IF NOT EXISTS session_token_stats (
+      session_id TEXT PRIMARY KEY,
+      user_id TEXT,
+      master_rx_tokens INTEGER DEFAULT 0,
+      master_tx_tokens INTEGER DEFAULT 0,
+      updated_at INTEGER
+    )
+    """)
+    alter_table_safe("""
+    CREATE TABLE IF NOT EXISTS worker_token_stats (
+      session_id TEXT,
+      worker_id TEXT,
+      user_id TEXT,
+      description TEXT,
+      rx_tokens INTEGER DEFAULT 0,
+      tx_tokens INTEGER DEFAULT 0,
+      updated_at INTEGER,
+      PRIMARY KEY (session_id, worker_id)
+    )
+    """)
+    alter_table_safe("""
+    CREATE TABLE IF NOT EXISTS worker_state (
+      worker_id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      task TEXT,
+      messages TEXT DEFAULT '[]',
+      rolling_summary TEXT,
+      iter INTEGER DEFAULT 0,
+      periodic INTEGER DEFAULT 0,
+      status TEXT DEFAULT 'running',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+    """)
+    alter_table_safe("CREATE INDEX IF NOT EXISTS idx_worker_state_user_status ON worker_state (user_id, status)")
   end
 
   defp alter_table_safe(sql) do

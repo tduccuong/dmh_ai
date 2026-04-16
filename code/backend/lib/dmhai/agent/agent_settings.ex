@@ -15,7 +15,7 @@ defmodule Dmhai.Agent.AgentSettings do
   @defaults %{
     "confidantModel"       => "gemini-3-flash-preview:cloud",
     "assistantModel"       => "ministral-3:14b-cloud",
-    "workerModel"          => "kimi-k2.5:cloud",
+    "workerModel"          => "gemini-3-flash-preview:cloud",
     "compactorModel"       => "gemini-3-flash-preview:cloud",
     "webSearchModel"       => "ministral-3:14b-cloud",
     "imageDescriberModel"  => "gemini-3-flash-preview:cloud",
@@ -25,8 +25,11 @@ defmodule Dmhai.Agent.AgentSettings do
 
   @worker_max_iter_default 20
   @spawn_task_timeout_secs_default 30
-  @worker_context_n_default 20
-  @worker_context_m_default 10
+  @worker_context_n_default 8
+  @worker_context_m_default 6
+  @max_tool_result_chars_default 8_000
+  @master_compact_turn_threshold_default 90
+  @master_compact_fraction_default 0.45
 
   @doc "Get the model string for a given agent role. Returns the default if unset."
   @spec model_for(String.t()) :: String.t()
@@ -75,6 +78,18 @@ defmodule Dmhai.Agent.AgentSettings do
   @spec worker_max_iter() :: pos_integer()
   def worker_max_iter, do: int_setting("workerMaxIter", @worker_max_iter_default)
 
+  @doc "Hard character limit for tool results fed into worker context. Larger results are summarised first."
+  @spec max_tool_result_chars() :: pos_integer()
+  def max_tool_result_chars, do: int_setting("maxToolResultChars", @max_tool_result_chars_default)
+
+  @doc "Master session compaction: compact after this many recent turns."
+  @spec master_compact_turn_threshold() :: pos_integer()
+  def master_compact_turn_threshold, do: int_setting("masterCompactTurnThreshold", @master_compact_turn_threshold_default)
+
+  @doc "Master session compaction: compact when recent chars exceed this fraction of estimated context budget."
+  @spec master_compact_fraction() :: float()
+  def master_compact_fraction, do: float_setting("masterCompactFraction", @master_compact_fraction_default)
+
   @doc "User's chosen video detail level from admin settings. Returns 'low', 'medium', or 'high'."
   @spec video_detail() :: String.t()
   def video_detail do
@@ -92,6 +107,20 @@ defmodule Dmhai.Agent.AgentSettings do
     |> Map.values()
     |> Enum.uniq()
     |> Enum.filter(fn m -> String.ends_with?(m, ":cloud") or String.ends_with?(m, "-cloud") end)
+  end
+
+  defp float_setting(key, default) do
+    settings = load()
+    case settings[key] do
+      n when is_float(n) and n > 0 -> n
+      n when is_integer(n) and n > 0 -> n * 1.0
+      s when is_binary(s) ->
+        case Float.parse(s) do
+          {n, _} when n > 0 -> n
+          _ -> default
+        end
+      _ -> default
+    end
   end
 
   defp int_setting(key, default) do

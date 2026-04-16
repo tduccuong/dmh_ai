@@ -37,11 +37,11 @@ defmodule Dmhai.Agent.MasterBuffer do
   def fetch_unconsumed(session_id) do
     result =
       query!(Repo,
-        "SELECT id, content, summary, created_at FROM master_buffer WHERE session_id=? AND consumed=0 ORDER BY created_at ASC",
+        "SELECT id, content, summary, created_at, worker_id FROM master_buffer WHERE session_id=? AND consumed=0 ORDER BY created_at ASC",
         [session_id])
 
-    Enum.map(result.rows, fn [id, content, summary, created_at] ->
-      %{id: id, content: content, summary: summary, created_at: created_at}
+    Enum.map(result.rows, fn [id, content, summary, created_at, worker_id] ->
+      %{id: id, content: content, summary: summary, created_at: created_at, worker_id: worker_id}
     end)
   end
 

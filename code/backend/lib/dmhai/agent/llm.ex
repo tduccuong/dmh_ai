@@ -44,6 +44,7 @@ defmodule Dmhai.Agent.LLM do
           {:ok, String.t() | {:tool_calls, list()}} | {:error, term()}
   def stream(model_str, messages, reply_pid, opts \\ []) do
     tools = Keyword.get(opts, :tools, [])
+    on_tokens = Keyword.get(opts, :on_tokens, nil)
     Logger.info("[LLM] stream #{model_str} msgs=#{length(messages)} tools=#{length(tools)}")
 
     case String.split(model_str, "::", parts: 3) do
@@ -51,12 +52,12 @@ defmodule Dmhai.Agent.LLM do
         settings = load_settings()
         {active, throttled} = partition_accounts(settings["accounts"] || [])
         body = build_body(model_name, messages, tools, true)
-        do_cloud_stream(Enum.shuffle(active) ++ Enum.shuffle(throttled), model_name, body, reply_pid, model_str)
+        do_cloud_stream(Enum.shuffle(active) ++ Enum.shuffle(throttled), model_name, body, reply_pid, model_str, on_tokens)
 
       _ ->
         {url, headers, model_name} = resolve(model_str)
         body = build_body(model_name, messages, tools, true)
-        do_stream_request(url, headers, body, reply_pid, model_str)
+        do_stream_request(url, headers, body, reply_pid, model_str, on_tokens)
     end
   end
 
@@ -65,6 +66,7 @@ defmodule Dmhai.Agent.LLM do
   def call(model_str, messages, opts \\ []) do
     tools = Keyword.get(opts, :tools, [])
     llm_options = Keyword.get(opts, :options, %{})
+    on_tokens = Keyword.get(opts, :on_tokens, nil)
     Logger.info("[LLM] call #{model_str} msgs=#{length(messages)} tools=#{length(tools)}")
 
     case String.split(model_str, "::", parts: 3) do
@@ -72,12 +74,12 @@ defmodule Dmhai.Agent.LLM do
         settings = load_settings()
         {active, throttled} = partition_accounts(settings["accounts"] || [])
         body = build_body(model_name, messages, tools, false, llm_options)
-        do_cloud_call(Enum.shuffle(active) ++ Enum.shuffle(throttled), model_name, body, model_str)
+        do_cloud_call(Enum.shuffle(active) ++ Enum.shuffle(throttled), model_name, body, model_str, on_tokens)
 
       _ ->
         {url, headers, model_name} = resolve(model_str)
         body = build_body(model_name, messages, tools, false, llm_options)
-        do_call_request(url, headers, body, model_str)
+        do_call_request(url, headers, body, model_str, on_tokens)
     end
   end
 
@@ -136,10 +138,18 @@ defmodule Dmhai.Agent.LLM do
     if map_size(options) > 0, do: Map.put(base, :options, options), else: base
   end
 
-  defp parse_response(body, model_str) when is_map(body) do
+  defp parse_response(body, model_str, on_tokens) when is_map(body) do
+    rx = body["eval_count"] || 0
+    tx = body["prompt_eval_count"] || 0
+    if on_tokens && (rx > 0 or tx > 0), do: on_tokens.(rx, tx)
     msg = body["message"] || %{}
     tool_calls = msg["tool_calls"]
     content = msg["content"] || ""
+    thinking = msg["thinking"]
+
+    if is_binary(thinking) and thinking != "" do
+      Logger.debug("[LLM] thinking len=#{String.length(thinking)} #{model_str}: #{String.slice(thinking, 0, 200)}")
+    end
 
     cond do
       is_list(tool_calls) and tool_calls != [] ->
@@ -152,7 +162,7 @@ defmodule Dmhai.Agent.LLM do
     end
   end
 
-  defp parse_response(body, _model_str) do
+  defp parse_response(body, _model_str, _on_tokens) do
     {:error, "Unexpected response: #{inspect(body, limit: 200)}"}
   end
 
@@ -187,32 +197,32 @@ defmodule Dmhai.Agent.LLM do
 
   # ─── Ollama cloud: streaming with per-key fallback ─────────────────────────
 
-  defp do_cloud_stream([], _model_name, _body, _reply_pid, model_str) do
+  defp do_cloud_stream([], _model_name, _body, _reply_pid, model_str, _on_tokens) do
     Logger.error("[LLM] all cloud accounts exhausted #{model_str}")
     {:error, "all_keys_exhausted"}
   end
 
-  defp do_cloud_stream([account | rest], model_name, body, reply_pid, model_str) do
+  defp do_cloud_stream([account | rest], model_name, body, reply_pid, model_str, on_tokens) do
     key = (account["apiKey"] || account["key"] || "") |> String.trim()
     headers = if key != "", do: [{"authorization", "Bearer #{key}"}], else: []
 
-    case do_stream_request(@ollama_cloud_url, headers, body, reply_pid, model_str) do
+    case do_stream_request(@ollama_cloud_url, headers, body, reply_pid, model_str, on_tokens) do
       {:error, :quota_exhausted} ->
         Logger.warning("[LLM] account #{account["name"]} weekly quota exhausted, throttling 7d")
         mark_account_throttled(account, :timer.hours(24 * 7))
-        do_cloud_stream(rest, model_name, body, reply_pid, model_str)
+        do_cloud_stream(rest, model_name, body, reply_pid, model_str, on_tokens)
 
       {:error, :rate_limited} ->
         Logger.warning("[LLM] account #{account["name"]} rate-limited, throttling 1h")
         mark_account_throttled(account, :timer.hours(1))
-        do_cloud_stream(rest, model_name, body, reply_pid, model_str)
+        do_cloud_stream(rest, model_name, body, reply_pid, model_str, on_tokens)
 
       other ->
         other
     end
   end
 
-  defp do_stream_request(url, headers, body, reply_pid, model_str) do
+  defp do_stream_request(url, headers, body, reply_pid, model_str, on_tokens) do
     text_key  = {__MODULE__, :text,  self()}
     calls_key = {__MODULE__, :calls, self()}
     buf_key   = {__MODULE__, :buf,   self()}
@@ -266,6 +276,11 @@ defmodule Dmhai.Agent.LLM do
                     {:halt, true}
 
                   {:ok, decoded} ->
+                    if decoded["done"] do
+                      rx = decoded["eval_count"] || 0
+                      tx = decoded["prompt_eval_count"] || 0
+                      if on_tokens && (rx > 0 or tx > 0), do: on_tokens.(rx, tx)
+                    end
                     Logger.debug("[LLM] unmatched line keys=#{inspect(Map.keys(decoded))}")
                     {:cont, false}
 
@@ -319,32 +334,32 @@ defmodule Dmhai.Agent.LLM do
 
   # ─── Ollama cloud: non-streaming with per-key fallback ──────────────────────
 
-  defp do_cloud_call([], _model_name, _body, model_str) do
+  defp do_cloud_call([], _model_name, _body, model_str, _on_tokens) do
     Logger.error("[LLM] all cloud accounts exhausted #{model_str}")
     {:error, "all_keys_exhausted"}
   end
 
-  defp do_cloud_call([account | rest], model_name, body, model_str) do
+  defp do_cloud_call([account | rest], model_name, body, model_str, on_tokens) do
     key = (account["apiKey"] || account["key"] || "") |> String.trim()
     headers = if key != "", do: [{"authorization", "Bearer #{key}"}], else: []
 
-    case do_call_request(@ollama_cloud_url, headers, body, model_str) do
+    case do_call_request(@ollama_cloud_url, headers, body, model_str, on_tokens) do
       {:error, :quota_exhausted} ->
         Logger.warning("[LLM] account #{account["name"]} weekly quota exhausted, throttling 7d")
         mark_account_throttled(account, :timer.hours(24 * 7))
-        do_cloud_call(rest, model_name, body, model_str)
+        do_cloud_call(rest, model_name, body, model_str, on_tokens)
 
       {:error, :rate_limited} ->
         Logger.warning("[LLM] account #{account["name"]} rate-limited, throttling 1h")
         mark_account_throttled(account, :timer.hours(1))
-        do_cloud_call(rest, model_name, body, model_str)
+        do_cloud_call(rest, model_name, body, model_str, on_tokens)
 
       other ->
         other
     end
   end
 
-  defp do_call_request(url, headers, body, model_str) do
+  defp do_call_request(url, headers, body, model_str, on_tokens) do
     case Req.post(url,
            json: body,
            headers: headers,
@@ -353,7 +368,7 @@ defmodule Dmhai.Agent.LLM do
            finch: Dmhai.Finch
          ) do
       {:ok, %{status: 200, body: resp_body}} ->
-        parse_response(resp_body, model_str)
+        parse_response(resp_body, model_str, on_tokens)
 
       {:ok, %{status: 429, body: resp_body}} ->
         err_msg = get_in(resp_body, ["error"]) || ""

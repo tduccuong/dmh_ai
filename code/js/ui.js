@@ -37,6 +37,19 @@ const Modal = {
         return this._open(title, message, null, t('ok'), false, true);
     },
 
+    alertHtml: function(title, html) {
+        document.getElementById('modal-title').textContent = title;
+        document.getElementById('modal-message').innerHTML = html;
+        document.getElementById('modal-input').style.display = 'none';
+        var okBtn = document.getElementById('modal-ok');
+        okBtn.textContent = t('ok');
+        okBtn.className = 'modal-btn modal-btn-ok';
+        document.getElementById('modal-cancel').style.display = 'none';
+        document.getElementById('modal-overlay').classList.add('visible');
+        var self = this;
+        return new Promise(function(resolve) { self._resolve = resolve; });
+    },
+
     confirm: function(title, message, okLabel) {
         return this._open(title, message, null, okLabel || t('confirm'), true);
     },

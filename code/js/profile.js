@@ -59,6 +59,13 @@ const Settings = {
     get imageDescriberModel() { return this._imageDescriberModel; },
     get videoDescriberModel() { return this._videoDescriberModel; },
     get profileExtractorModel() { return this._profileExtractorModel; },
+    // Worker agent tuning
+    _maxToolResultChars: 8000,
+    _workerContextN: 8,
+    _workerContextM: 6,
+    get maxToolResultChars() { return this._maxToolResultChars; },
+    get workerContextN() { return this._workerContextN; },
+    get workerContextM() { return this._workerContextM; },
 
     _persist: function() {
         return apiFetch('/admin/settings', {
@@ -73,7 +80,10 @@ const Settings = {
                 workerModel: this._workerModel, webSearchModel: this._webSearchModel,
                 imageDescriberModel: this._imageDescriberModel,
                 videoDescriberModel: this._videoDescriberModel,
-                profileExtractorModel: this._profileExtractorModel
+                profileExtractorModel: this._profileExtractorModel,
+                maxToolResultChars: this._maxToolResultChars,
+                workerContextN: this._workerContextN,
+                workerContextM: this._workerContextM
             })
         }).catch(function() {});
     },
@@ -113,6 +123,9 @@ const Settings = {
                 if (d.imageDescriberModel) this._imageDescriberModel = d.imageDescriberModel;
                 if (d.videoDescriberModel) this._videoDescriberModel = d.videoDescriberModel;
                 if (d.profileExtractorModel) this._profileExtractorModel = d.profileExtractorModel;
+                if (d.maxToolResultChars !== undefined) this._maxToolResultChars = parseInt(d.maxToolResultChars) || 8000;
+                if (d.workerContextN !== undefined) this._workerContextN = parseInt(d.workerContextN) || 8;
+                if (d.workerContextM !== undefined) this._workerContextM = parseInt(d.workerContextM) || 6;
             }
         } catch(e) {}
     }
@@ -171,6 +184,9 @@ const SettingsModal = {
         document.getElementById('settings-ollama-url').value = AppConfig.ollamaEndpoint || '';
         document.getElementById('settings-compact-turns').value = Settings._compactTurns;
         document.getElementById('settings-keep-recent').value = Settings._keepRecent > 0 ? Settings._keepRecent : '';
+        document.getElementById('settings-max-tool-result-chars').value = Settings._maxToolResultChars;
+        document.getElementById('settings-worker-context-n').value = Settings._workerContextN;
+        document.getElementById('settings-worker-context-m').value = Settings._workerContextM;
         document.getElementById('settings-condense-facts').value = Settings._condenseFacts;
         document.getElementById('settings-video-detail').value = Settings._videoDetail;
         var targetPage = page || 'page-model';
@@ -443,6 +459,24 @@ const SettingsModal = {
             var val = document.getElementById('settings-video-detail').value;
             if (['low','medium','high'].indexOf(val) === -1) return;
             Settings._videoDetail = val;
+            Settings._persist();
+        });
+        document.getElementById('settings-max-tool-result-chars-save').addEventListener('click', function() {
+            var val = parseInt(document.getElementById('settings-max-tool-result-chars').value);
+            if (!val || val < 500) return;
+            Settings._maxToolResultChars = val;
+            Settings._persist();
+        });
+        document.getElementById('settings-worker-context-n-save').addEventListener('click', function() {
+            var val = parseInt(document.getElementById('settings-worker-context-n').value);
+            if (!val || val < 2) return;
+            Settings._workerContextN = val;
+            Settings._persist();
+        });
+        document.getElementById('settings-worker-context-m-save').addEventListener('click', function() {
+            var val = parseInt(document.getElementById('settings-worker-context-m').value);
+            if (!val || val < 2) return;
+            Settings._workerContextM = val;
             Settings._persist();
         });
         document.getElementById('settings-profile-clear-btn').addEventListener('click', async function() {

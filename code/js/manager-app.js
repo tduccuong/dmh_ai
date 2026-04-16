@@ -158,6 +158,17 @@ UIManager.renderSessions = async function() {
         const actions = document.createElement('div');
         actions.className = 'session-actions';
 
+        const statsBtn = Auth.user && Auth.user.role === 'admin' ? document.createElement('button') : null;
+        if (statsBtn) {
+            statsBtn.className = 'session-btn session-btn-stats';
+            statsBtn.title = 'Statistics';
+            statsBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>';
+            statsBtn.addEventListener('click', async function(e) {
+                e.stopPropagation();
+                UIManager.showTokenStats(s.id, s.name);
+            });
+        }
+
         const delBtn = document.createElement('button');
         delBtn.className = 'session-btn session-btn-delete';
         delBtn.title = t('delete_');
@@ -184,6 +195,7 @@ UIManager.renderSessions = async function() {
             await self.renderSessions();
         });
 
+        if (statsBtn) actions.appendChild(statsBtn);
         actions.appendChild(delBtn);
         item.appendChild(nameSpan);
         item.appendChild(actions);
@@ -289,6 +301,45 @@ UIManager._showOllamaUrlMsg = function(text, isError) {
     el.style.display = 'block';
     clearTimeout(el._hideTimer);
     el._hideTimer = setTimeout(function() { el.style.display = 'none'; }, isError ? 8000 : 5000);
+};
+
+UIManager.showTokenStats = async function(sessionId, sessionName) {
+    try {
+        const res = await apiFetch('/sessions/' + sessionId + '/token-stats');
+        if (!res.ok) return;
+        const data = await res.json();
+        const s = data.session;
+        const g = data.global;
+
+        const masterTotal = (s.master.rx || 0) + (s.master.tx || 0);
+        const workerTotal = s.workers.reduce(function(a, w) { return a + (w.rx || 0) + (w.tx || 0); }, 0);
+        const sessionTotal = masterTotal + workerTotal;
+        const globalTotal = (g.master.rx || 0) + (g.master.tx || 0) + (g.worker.rx || 0) + (g.worker.tx || 0);
+
+        function fmt(n) { return n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n); }
+
+        var workerRows = '';
+        if (s.workers.length > 0) {
+            workerRows = s.workers.map(function(w) {
+                var desc = w.description ? w.description.slice(0, 50) : w.worker_id;
+                return '<tr><td style="padding:4px 8px 4px 0;color:#aaa;">' + desc + '</td>' +
+                       '<td style="padding:4px 0;text-align:right;white-space:nowrap;">' + fmt(w.tx) + ' / ' + fmt(w.rx) + '</td></tr>';
+            }).join('');
+        }
+
+        var body =
+            '<div style="font-size:13px;line-height:1.7;">' +
+            '<table style="width:100%;border-collapse:collapse;">' +
+            '<tr><td style="padding:4px 8px 4px 0;color:#aaa;">Global total</td><td style="text-align:right;font-weight:600;">' + fmt(globalTotal) + '</td></tr>' +
+            '<tr><td style="padding:4px 8px 4px 0;color:#aaa;">This session total</td><td style="text-align:right;font-weight:600;">' + fmt(sessionTotal) + '</td></tr>' +
+            '<tr><td style="padding:4px 8px 4px 0;color:#aaa;">Master (tx / rx)</td><td style="text-align:right;">' + fmt(s.master.tx) + ' / ' + fmt(s.master.rx) + '</td></tr>' +
+            (workerRows ? '<tr><td colspan="2" style="padding:8px 0 2px;font-weight:600;border-top:1px solid #333;margin-top:4px;">Background jobs (tx / rx)</td></tr>' + workerRows : '') +
+            '</table></div>';
+
+        Modal.alertHtml('Statistics \u2014 ' + sessionName, body);
+    } catch (e) {
+        console.error('Failed to load token stats', e);
+    }
 };
 
 UIManager.autoNameSession = async function(session) {

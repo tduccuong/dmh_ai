@@ -34,7 +34,7 @@ defmodule Dmhai.Agent.UserAgent do
   use GenServer
   require Logger
 
-  alias Dmhai.Agent.{AgentSettings, Command, ContextEngine, LLM, MasterBuffer, ProfileExtractor, Supervisor, WebSearch, Worker}
+  alias Dmhai.Agent.{AgentSettings, Command, ContextEngine, LLM, MasterBuffer, ProfileExtractor, Supervisor, TokenTracker, WebSearch, Worker, WorkerState}
   alias Dmhai.{MsgGateway, Repo}
   import Ecto.Adapters.SQL, only: [query!: 3]
 
@@ -47,7 +47,9 @@ defmodule Dmhai.Agent.UserAgent do
     # active detached workers: %{worker_id => %{ref, pid, session_id, description, started_at}}
     workers: %{},
     # per-platform opaque state (e.g. %{telegram: %{chat_id: "123"}})
-    platform_state: %{}
+    platform_state: %{},
+    # debounce timers for trigger_master_from_buffer: %{session_id => timer_ref}
+    buffer_timers: %{}
   ]
 
   # ─── Client API ───────────────────────────────────────────────────────────
@@ -124,7 +126,46 @@ defmodule Dmhai.Agent.UserAgent do
   @impl true
   def init(user_id) do
     Logger.info("[UserAgent] started user=#{user_id}")
-    {:ok, %__MODULE__{user_id: user_id}, @idle_timeout}
+    agent_pid = self()
+
+    # Re-spawn any workers that were running before a crash/restart.
+    # fetch_and_claim atomically marks them 'recovering' so a second UserAgent
+    # init (after idle-timeout) cannot double-claim still-live recovery tasks.
+    workers =
+      WorkerState.fetch_and_claim(user_id)
+      |> Enum.reduce(%{}, fn checkpoint, acc ->
+        task =
+          Task.Supervisor.async_nolink(Dmhai.Agent.WorkerSupervisor, fn ->
+            Logger.info("[Worker] recovering id=#{checkpoint.worker_id} session=#{checkpoint.session_id}")
+
+            _result =
+              try do
+                Worker.run_from_checkpoint(checkpoint, agent_pid)
+              rescue
+                e ->
+                  Logger.error("[Worker] recovery crashed id=#{checkpoint.worker_id}: #{Exception.message(e)}")
+                  %{error: Exception.message(e)}
+              end
+
+            trigger_master_from_buffer(
+              checkpoint.session_id, user_id, checkpoint.worker_id, checkpoint.task
+            )
+            MsgGateway.notify(user_id, "✓ #{checkpoint.task} — result ready in DMH-AI")
+          end)
+
+        worker = %{
+          ref:        task.ref,
+          pid:        task.pid,
+          session_id: checkpoint.session_id,
+          description: checkpoint.task,
+          started_at: DateTime.utc_now(),
+          progress:   []
+        }
+
+        Map.put(acc, checkpoint.worker_id, worker)
+      end)
+
+    {:ok, %__MODULE__{user_id: user_id, workers: workers}, @idle_timeout}
   end
 
   # Dispatch a command
@@ -200,6 +241,7 @@ defmodule Dmhai.Agent.UserAgent do
 
       %{pid: pid} ->
         Task.Supervisor.terminate_child(Dmhai.Agent.WorkerSupervisor, pid)
+        WorkerState.mark_cancelled(worker_id)
         {:reply, :ok, %{state | workers: Map.delete(state.workers, worker_id)},
          @idle_timeout}
     end
@@ -210,8 +252,9 @@ defmodule Dmhai.Agent.UserAgent do
     {to_cancel, remaining} =
       Enum.split_with(state.workers, fn {_id, w} -> w.session_id == session_id end)
 
-    Enum.each(to_cancel, fn {_id, %{pid: pid}} ->
+    Enum.each(to_cancel, fn {worker_id, %{pid: pid}} ->
       Task.Supervisor.terminate_child(Dmhai.Agent.WorkerSupervisor, pid)
+      WorkerState.mark_cancelled(worker_id)
     end)
 
     {:reply, :ok, %{state | workers: Map.new(remaining)}, @idle_timeout}
@@ -260,12 +303,42 @@ defmodule Dmhai.Agent.UserAgent do
     {:noreply, %{state | current_task: nil}, @idle_timeout}
   end
 
-  # Mid-job notification from a worker — trigger master response + external push.
-  # Runs both in background Tasks to avoid blocking the GenServer.
+  # Mid-job notification from a worker — debounce then trigger master response + external push.
+  # Multiple rapid notifications within 1.5 s are collapsed: only the last one
+  # fires trigger_master_from_buffer, which fetches ALL unconsumed buffer entries
+  # at once.  MsgGateway.notify runs immediately for each (low-latency push).
+  @buffer_debounce_ms 4_000
+
   def handle_info({:midjob_notify, session_id, user_id, worker_id, summary}, state) do
     worker_desc = get_in(state.workers, [worker_id, :description])
-    Task.start(fn -> trigger_master_from_buffer(session_id, user_id, worker_id, worker_desc) end)
+
+    # Cancel any pending flush timer for this session and start a fresh one.
+    state =
+      case Map.get(state.buffer_timers, session_id) do
+        nil -> state
+        ref ->
+          Process.cancel_timer(ref)
+          %{state | buffer_timers: Map.delete(state.buffer_timers, session_id)}
+      end
+
+    timer_ref =
+      Process.send_after(
+        self(),
+        {:flush_buffer, session_id, user_id, worker_id, worker_desc},
+        @buffer_debounce_ms
+      )
+
+    state = %{state | buffer_timers: Map.put(state.buffer_timers, session_id, timer_ref)}
+
     Task.start(fn -> MsgGateway.notify(user_id, summary) end)
+    {:noreply, state, @idle_timeout}
+  end
+
+  def handle_info({:flush_buffer, session_id, user_id, worker_id, worker_desc}, state) do
+    state = %{state | buffer_timers: Map.delete(state.buffer_timers, session_id)}
+    # Snapshot worker descriptions so the task can label each entry correctly.
+    worker_descs = Map.new(state.workers, fn {id, w} -> {id, w.description} end)
+    Task.start(fn -> trigger_master_from_buffer(session_id, user_id, worker_id, worker_desc, worker_descs) end)
     {:noreply, state, @idle_timeout}
   end
 
@@ -389,7 +462,7 @@ defmodule Dmhai.Agent.UserAgent do
   # ─── Confidant pipeline ─────────────────────────────────────────────────
   # Synchronous: detect web search → maybe fetch → master responds.
 
-  defp run_confidant(%Command{reply_pid: reply_pid, session_id: session_id} = command, state, session_data) do
+  defp run_confidant(%Command{reply_pid: reply_pid, session_id: session_id} = command, state, session_data, extra_context \\ nil) do
     user_id = state.user_id
     model   = AgentSettings.confidant_model()
 
@@ -425,10 +498,12 @@ defmodule Dmhai.Agent.UserAgent do
         files:              command.files,
         image_descriptions: image_descriptions,
         video_descriptions: video_descriptions,
-        web_context:        web_context
+        web_context:        web_context,
+        buffer_context:     extra_context
       )
 
-    case LLM.stream(model, llm_messages, reply_pid) do
+    on_tokens = fn rx, tx -> TokenTracker.add_master(session_id, user_id, rx, tx) end
+    case LLM.stream(model, llm_messages, reply_pid, on_tokens: on_tokens) do
       {:ok, full_text} when full_text != "" ->
         append_session_message(session_id, user_id, %{
           role: "assistant",
@@ -524,18 +599,23 @@ defmodule Dmhai.Agent.UserAgent do
       query_job_updates_json_schema_def()
     ]
 
-    case LLM.stream(model, llm_messages, reply_pid, tools: tools) do
+    on_tokens = fn rx, tx -> TokenTracker.add_master(session_id, user_id, rx, tx) end
+    # Pass self() so master reasoning/text does not stream to the user when a tool call is made.
+    # For the rare text-only fallback, we forward full_text manually below.
+    case LLM.stream(model, llm_messages, self(), tools: tools, on_tokens: on_tokens) do
       {:ok, {:tool_calls, calls}} ->
-        handle_tool_calls(calls, command, state, session_data)
+        handle_tool_calls(calls, command, state, session_data, combined_buffer)
 
       {:ok, full_text} when full_text != "" ->
-        # Fallback — master should always call a tool, but handle gracefully if it doesn't
+        # Fallback — master should always call a tool, but handle gracefully if it doesn't.
+        # Since we passed self() above, chunks went to the Task mailbox; forward them here.
         Logger.warning("[UserAgent] master returned text without tool call, presenting directly")
         append_session_message(session_id, user_id, %{
           role: "assistant",
           content: full_text,
           ts: System.os_time(:millisecond)
         })
+        send(reply_pid, {:chunk, full_text})
         send(reply_pid, {:done, %{content: full_text}})
         Task.start(fn -> maybe_compact(session_id, user_id) end)
 
@@ -547,12 +627,12 @@ defmodule Dmhai.Agent.UserAgent do
     end
   end
 
-  defp handle_tool_calls(calls, command, state, session_data) do
+  defp handle_tool_calls(calls, command, state, session_data, combined_buffer) do
     tool_name =
       Enum.find_value(calls, nil, fn call -> get_in(call, ["function", "name"]) end)
 
     case tool_name do
-      "handoff_to_resolver" -> run_confidant(command, state, session_data)
+      "handoff_to_resolver" -> run_confidant(command, state, session_data, combined_buffer)
       "cancel_worker"       -> handle_cancel_worker(calls, command, state)
       "query_job_updates"   -> handle_query_job_updates(calls, command, state)
       _                     -> handle_handoff(calls, command, state)
@@ -645,7 +725,8 @@ defmodule Dmhai.Agent.UserAgent do
             buffer_context: updates_text
           )
 
-        case LLM.stream(model, llm_messages, reply_pid) do
+        on_tokens = fn rx, tx -> TokenTracker.add_master(session_id, user_id, rx, tx) end
+        case LLM.stream(model, llm_messages, reply_pid, on_tokens: on_tokens) do
           {:ok, full_text} when full_text != "" ->
             append_session_message(session_id, user_id, %{
               role: "assistant",
@@ -708,18 +789,25 @@ defmodule Dmhai.Agent.UserAgent do
     # The synchronous fallback only fires if the user sent before background describe finished.
     media_context = describe_command_media(command, session_id)
 
+    # Prepend a language directive so the worker model cannot miss it.
+    # Placed in the task text itself (not just the system prompt) because
+    # some models ignore system prompt language rules when generating content.
+    lang_prefix =
+      "[LANGUAGE RULE: You must respond and generate ALL content — including any text written to files or sent via midjob_notify — in the exact same language as this task description. Never use Spanish or any other language unless this task is explicitly written in that language.]\n\n"
+
     full_task =
-      if media_context do
-        task_desc <> "\n\n" <> media_context
-      else
-        task_desc
-      end
+      lang_prefix <>
+        if media_context do
+          task_desc <> "\n\n" <> media_context
+        else
+          task_desc
+        end
 
     Logger.info("[UserAgent] handoff to worker user=#{user_id} task=#{String.slice(task_desc, 0, 80)}")
 
     # Spawn the worker as a detached task
     spawn_worker(user_id, session_id, full_task, fn agent_pid, worker_id ->
-      ctx = %{user_id: user_id, session_id: session_id, agent_pid: agent_pid, worker_id: worker_id}
+      ctx = %{user_id: user_id, session_id: session_id, agent_pid: agent_pid, worker_id: worker_id, description: full_task}
       Worker.run(full_task, ctx)
     end)
 
@@ -939,20 +1027,23 @@ defmodule Dmhai.Agent.UserAgent do
   end
 
   # Format master_buffer entries for injection into Assistant LLM call.
-  defp format_buffer_context(entries), do: format_buffer_context(entries, nil, nil)
+  defp format_buffer_context(entries), do: format_buffer_context(entries, nil, nil, %{})
 
-  defp format_buffer_context([], _worker_id, _worker_desc), do: nil
+  defp format_buffer_context([], _worker_id, _worker_desc, _worker_descs), do: nil
 
-  defp format_buffer_context(entries, worker_id, worker_desc) do
-    job_label =
-      cond do
-        worker_desc && worker_id -> "Job [#{worker_id}]: #{worker_desc}"
-        worker_id                -> "Job [#{worker_id}]"
-        true                     -> "Worker update"
-      end
-
+  defp format_buffer_context(entries, _worker_id, _worker_desc, worker_descs) do
     entries
-    |> Enum.map(fn e -> "[#{job_label} — update at #{e.created_at}]\n#{e.content}" end)
+    |> Enum.map(fn e ->
+      id   = e.worker_id
+      desc = Map.get(worker_descs, id)
+      label =
+        cond do
+          desc && id -> "Job [#{id}]: #{desc}"
+          id         -> "Job [#{id}]"
+          true       -> "Worker update"
+        end
+      "[#{label} — update at #{e.created_at}]\n#{e.content}"
+    end)
     |> Enum.join("\n---\n")
   end
 
@@ -1142,12 +1233,12 @@ defmodule Dmhai.Agent.UserAgent do
 
   # Proactive master response: when a Worker finishes, call the Master Agent
   # with the buffer contents so it can generate a report/response.
-  defp trigger_master_from_buffer(session_id, user_id, worker_id, worker_desc) do
+  defp trigger_master_from_buffer(session_id, user_id, worker_id, worker_desc, worker_descs \\ %{}) do
     try do
       entries = MasterBuffer.fetch_unconsumed(session_id)
 
       if entries != [] do
-        buffer_context = format_buffer_context(entries, worker_id, worker_desc)
+        buffer_context = format_buffer_context(entries, worker_id, worker_desc, worker_descs)
         ids = Enum.map(entries, & &1.id)
         MasterBuffer.mark_consumed(ids)
 
@@ -1165,13 +1256,15 @@ defmodule Dmhai.Agent.UserAgent do
               "A background job has sent you an update to report to the user. " <>
               "Format your response as:\n\n" <>
               "**<Job Name>:**\n\n<report content>\n\n" <>
-              "Use the job description from the update label (the text after 'Job [id]: ') as the bold title. " <>
-              "If multiple jobs reported, use a separate bold header for each. " <>
-              "No other preamble — just the bold title, a blank line, then the information directly."},
+              "Derive a short 2-6 word bold title from the job description in the update label (e.g. '**Joke delivery:**', '**Resource monitor:**') — never use the full description verbatim. " <>
+              "If multiple jobs reported, use a separate short bold header for each. " <>
+              "No other preamble — just the bold title, a blank line, then the information directly. " <>
+              "Always reply in the same language the user used in their original task description."},
           %{role: "user", content: buffer_context}
         ]
 
-        case LLM.call(model, llm_messages) do
+        on_tokens = fn rx, tx -> TokenTracker.add_master(session_id, user_id, rx, tx) end
+        case LLM.call(model, llm_messages, on_tokens: on_tokens) do
           {:ok, text} when is_binary(text) and text != "" ->
             append_session_message(session_id, user_id, %{
               role: "assistant",

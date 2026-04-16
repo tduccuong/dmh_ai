@@ -18,6 +18,10 @@ defmodule Dmhai.Tools.MidjobNotify do
 
   alias Dmhai.Agent.MasterBuffer
 
+  # Minimum milliseconds between midjob_notify calls per worker.
+  # Enforced via the worker process dictionary to prevent burst notifications.
+  @min_interval_ms 8_000
+
   @impl true
   def name, do: "midjob_notify"
 
@@ -31,22 +35,36 @@ defmodule Dmhai.Tools.MidjobNotify do
 
   @impl true
   def execute(%{"message" => message} = args, ctx) do
-    summary = Map.get(args, "summary", String.slice(message, 0, 200))
-    session_id = Map.get(ctx, :session_id)
-    user_id = Map.get(ctx, :user_id)
-    agent_pid = Map.get(ctx, :agent_pid)
-
     worker_id = Map.get(ctx, :worker_id)
 
-    # Write content only (no summary) — fetch_notifications filters by summary IS NOT NULL,
-    # so the frontend won't reload yet. The notification fires after master has responded.
-    MasterBuffer.append(session_id, user_id, message, nil, worker_id)
+    # Rate-limit: reject if called too soon after the previous notify for this worker.
+    # Uses the worker process dictionary — safe because each worker is a single process.
+    pdict_key = {:midjob_last_ms, worker_id}
+    now = System.os_time(:millisecond)
+    last = Process.get(pdict_key, 0)
+    elapsed = now - last
 
-    if agent_pid do
-      send(agent_pid, {:midjob_notify, session_id, user_id, worker_id, summary})
+    if elapsed < @min_interval_ms do
+      wait = @min_interval_ms - elapsed
+      {:ok, "Rate-limited: called too soon (#{elapsed} ms since last notify, minimum #{@min_interval_ms} ms). Wait #{wait} ms before calling again."}
+    else
+      Process.put(pdict_key, now)
+
+      summary = Map.get(args, "summary", String.slice(message, 0, 200))
+      session_id = Map.get(ctx, :session_id)
+      user_id = Map.get(ctx, :user_id)
+      agent_pid = Map.get(ctx, :agent_pid)
+
+      # Write content only (no summary) — fetch_notifications filters by summary IS NOT NULL,
+      # so the frontend won't reload yet. The notification fires after master has responded.
+      MasterBuffer.append(session_id, user_id, message, nil, worker_id)
+
+      if agent_pid do
+        send(agent_pid, {:midjob_notify, session_id, user_id, worker_id, summary})
+      end
+
+      {:ok, "Notification queued. The master agent will deliver it to the user."}
     end
-
-    {:ok, "Notification queued. The master agent will deliver it to the user."}
   end
 
   @impl true

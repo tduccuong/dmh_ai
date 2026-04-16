@@ -17,7 +17,7 @@ defmodule Dmhai.Agent.ContextEngine do
   """
 
   import Ecto.Adapters.SQL, only: [query!: 3]
-  alias Dmhai.{Repo, Agent.LLM, Agent.SystemPrompt}
+  alias Dmhai.{Repo, Agent.AgentSettings, Agent.LLM, Agent.SystemPrompt}
   require Logger
 
   # ─── Constants ────────────────────────────────────────────────────────────
@@ -26,15 +26,9 @@ defmodule Dmhai.Agent.ContextEngine do
   # Large context is critical so the model can see the full history it summarises.
   @compactor_model "ollama::cloud::gemini-3-flash-preview:cloud"
 
-  # Compact when the number of recent turns (since last summary) exceeds this.
-  # At ~90 turns the history is long enough that old context starts being lost anyway.
-  @turn_threshold 90
-
   # Simple token estimate: chars / 4 ≈ tokens.
-  # Compact when recent history exceeds this fraction of the estimated budget.
   @chars_per_token 4
   @estimated_context_tokens 8_192     # conservative default (works for all models)
-  @compact_threshold 0.45             # trigger at 45% of the estimated token budget
 
   # Number of the most-recent messages to leave untouched during compaction
   # so the model always has fresh context.
@@ -157,8 +151,8 @@ defmodule Dmhai.Agent.ContextEngine do
     recent_chars = estimate_chars(recent)
     token_budget = @estimated_context_tokens * @chars_per_token
 
-    recent_turns > @turn_threshold or
-      recent_chars > token_budget * @compact_threshold
+    recent_turns > AgentSettings.master_compact_turn_threshold() or
+      recent_chars > token_budget * AgentSettings.master_compact_fraction()
   end
 
   @doc """

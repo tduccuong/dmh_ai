@@ -204,8 +204,12 @@ const UIManager = {
         if (window.visualViewport) {
             window.visualViewport.addEventListener('resize', function() {
                 document.documentElement.style.height = window.visualViewport.height + 'px';
-                var chat = document.getElementById('chat-container');
-                chat.scrollTop = chat.scrollHeight;
+                // Only scroll to bottom while actively streaming — not after completion,
+                // where stop-button/status-bar layout changes would override the scroll fix.
+                if (self.isStreaming) {
+                    var chat = document.getElementById('chat-container');
+                    chat.scrollTop = chat.scrollHeight;
+                }
             });
         }
         document.getElementById('new-session-btn').addEventListener('click', function() { self.createNewSession(); });

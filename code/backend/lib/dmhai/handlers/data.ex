@@ -5,7 +5,7 @@
 
 defmodule Dmhai.Handlers.Data do
   import Plug.Conn
-  alias Dmhai.{Repo, Agent.LLM, Agent.UserAgent}
+  alias Dmhai.{Repo, Agent.LLM, Agent.TokenTracker, Agent.UserAgent}
   import Ecto.Adapters.SQL, only: [query!: 3]
   require Logger
 
@@ -420,6 +420,19 @@ defmodule Dmhai.Handlers.Data do
     else
       query!(Repo, "DELETE FROM image_descriptions WHERE session_id=?", [session_id])
       json(conn, 200, %{ok: true})
+    end
+  end
+
+  # GET /sessions/:session_id/token-stats (admin only)
+  def get_token_stats(conn, user, session_id) do
+    if user.role != "admin" do
+      json(conn, 403, %{error: "Forbidden"})
+    else
+      stats = TokenTracker.get_session_stats(session_id)
+      global = TokenTracker.get_global_stats(user.id)
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(200, Jason.encode!(%{session: stats, global: global}))
     end
   end
 
