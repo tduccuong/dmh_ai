@@ -7,10 +7,9 @@ defmodule Dmhai.Tools.DescribeVideo do
   @behaviour Dmhai.Tools.Behaviour
 
   alias Dmhai.Agent.{LLM, AgentSettings}
+  alias Dmhai.Util.Path, as: SafePath
   require Logger
 
-  @sandbox_root "/tmp/dmhai-sandbox"
-  @assets_root  "/data/user_assets"
   @frame_count  8
   @max_dim      1024
 
@@ -42,12 +41,10 @@ defmodule Dmhai.Tools.DescribeVideo do
   end
 
   @impl true
-  def execute(%{"path" => path}, context) do
-    user_id  = get_in(context, [:user, :id]) || "anon"
-    resolved = resolve_path(path, user_id)
-
-    with :ok           <- check_access(resolved, user_id),
-         {:ok, frames} <- extract_frames(resolved) do
+  def execute(%{"path" => path}, ctx) when is_binary(path) do
+    with {:ok, abs}   <- SafePath.resolve(path, ctx),
+         :ok          <- exists_check(abs),
+         {:ok, frames} <- extract_frames(abs) do
       messages = [%{role: "user", content: prompt(), images: frames}]
 
       case LLM.call(AgentSettings.video_describer_model(), messages) do
@@ -65,25 +62,8 @@ defmodule Dmhai.Tools.DescribeVideo do
 
   # ── private ────────────────────────────────────────────────────────────────
 
-  defp resolve_path(path, user_id) do
-    sandbox = Path.expand(Path.join(@sandbox_root, to_string(user_id)))
-    if String.starts_with?(path, "/"),
-      do:   Path.expand(path),
-      else: Path.expand(Path.join(sandbox, path))
-  end
-
-  defp check_access(resolved, user_id) do
-    sandbox = Path.expand(Path.join(@sandbox_root, to_string(user_id)))
-    assets  = Path.expand(Path.join(@assets_root,  to_string(user_id)))
-
-    cond do
-      not (String.starts_with?(resolved, sandbox) or String.starts_with?(resolved, assets)) ->
-        {:error, "Access denied: path is outside allowed directories"}
-      not File.exists?(resolved) ->
-        {:error, "File not found: #{resolved}"}
-      true ->
-        :ok
-    end
+  defp exists_check(abs) do
+    if File.exists?(abs), do: :ok, else: {:error, "File not found: #{abs}"}
   end
 
   defp extract_frames(video_path) do

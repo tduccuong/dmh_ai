@@ -1,0 +1,26 @@
+# Build artifacts
+/_build/
+/deps/
+*.beam
+*.ez
+erl_crash.dump
+
+# Database files
+*.db
+*.sqlite
+
+# Editor / language server
+/.elixir_ls/
+/.lexical/
+.vscode/
+.idea/
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Test coverage
+/cover/
+
+# Dialyzer
+/priv/plts/

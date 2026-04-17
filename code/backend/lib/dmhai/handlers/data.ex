@@ -12,7 +12,6 @@ defmodule Dmhai.Handlers.Data do
   # Dedicated model for session naming; fast, cheap, 1M context.
   @namer_model "ollama::cloud::gemini-3-flash-preview:cloud"
 
-  @assets_dir "/data/user_assets"
   @image_exts ~w(.png .jpg .jpeg .gif .webp .bmp)
   @video_exts ~w(.mp4 .webm .mov .avi .mkv .m4v .3gp .ogv)
 
@@ -23,10 +22,14 @@ defmodule Dmhai.Handlers.Data do
   end
 
   # GET /assets/:session_id/:file_id
+  # Serves user-uploaded files from <session_root>/data/. Worker-scratch files
+  # under <session_root>/<origin>/jobs/<job>/ are intentionally not served —
+  # the worker should persist anything user-facing via signal(result) or by
+  # writing to the data/ subdir explicitly.
   def get_asset(conn, user, session_id, file_id) do
-    session_dir = user_asset_dir(user.email, session_id)
-    file_path = Path.expand(Path.join(session_dir, file_id))
-    assets_real = Path.expand(@assets_dir)
+    data_dir    = Dmhai.Constants.session_data_dir(user.email, session_id)
+    file_path   = Path.expand(Path.join(data_dir, file_id))
+    assets_real = Path.expand(Dmhai.Constants.assets_dir())
 
     if String.starts_with?(file_path, assets_real) and File.regular?(file_path) do
       mime = guess_mime(file_path)
@@ -244,12 +247,12 @@ defmodule Dmhai.Handlers.Data do
               end
 
             ext = Path.extname(filename) |> String.downcase()
-            session_dir = user_asset_dir(user.email, session_id)
-            File.mkdir_p!(session_dir)
+            data_dir = Dmhai.Constants.session_data_dir(user.email, session_id)
+            File.mkdir_p!(data_dir)
 
             ts = :os.system_time(:millisecond)
             safe_name = "#{ts}_#{Regex.replace(~r/[^\w.\-]/, filename, "_")}"
-            File.write!(Path.join(session_dir, safe_name), raw)
+            File.write!(Path.join(data_dir, safe_name), raw)
 
             result = %{id: safe_name, name: filename, size: byte_size(raw)}
 
@@ -486,8 +489,7 @@ defmodule Dmhai.Handlers.Data do
   end
 
   defp user_asset_dir(email, session_id) do
-    safe_session = Regex.replace(~r/[^\w\-]/, session_id, "_")
-    Path.join([@assets_dir, email, safe_session])
+    Dmhai.Constants.session_root(email, session_id)
   end
 
   defp guess_mime(filename_or_path) do

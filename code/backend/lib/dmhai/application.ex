@@ -25,7 +25,8 @@ defmodule Dmhai.Application do
       {Registry, keys: :unique, name: Dmhai.Agent.Registry},
       Dmhai.Agent.Supervisor,
       {Task.Supervisor, name: Dmhai.Agent.TaskSupervisor},
-      {Task.Supervisor, name: Dmhai.Agent.WorkerSupervisor}
+      {Task.Supervisor, name: Dmhai.Agent.WorkerSupervisor},
+      Dmhai.Agent.JobRuntime
     ] ++
       (if Application.get_env(:dmhai, :start_http, true) do
         [{Bandit, plug: Dmhai.Router, scheme: :http, ip: {0, 0, 0, 0}, port: 8080}]

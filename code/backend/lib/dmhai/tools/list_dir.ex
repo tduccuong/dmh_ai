@@ -6,13 +6,16 @@
 defmodule Dmhai.Tools.ListDir do
   @behaviour Dmhai.Tools.Behaviour
 
-  @sandbox_root "/tmp/dmhai-sandbox"
+  alias Dmhai.Util.Path, as: SafePath
 
   @impl true
   def name, do: "list_dir"
 
   @impl true
-  def description, do: "List files and subdirectories in the user's sandbox. Useful after bash or write_file to see what was created."
+  def description,
+    do:
+      "List files and subdirectories in the session sandbox. Default is the job workspace. " <>
+      "Pass 'data' to list user uploads, or any relative/absolute path under the session root."
 
   @impl true
   def definition do
@@ -24,7 +27,7 @@ defmodule Dmhai.Tools.ListDir do
         properties: %{
           path: %{
             type: "string",
-            description: "Subdirectory to list, relative to sandbox root (default: sandbox root)"
+            description: "Directory to list. Defaults to the job workspace."
           }
         },
         required: []
@@ -33,50 +36,42 @@ defmodule Dmhai.Tools.ListDir do
   end
 
   @impl true
-  def execute(args, context) do
-    user_id = get_in(context, [:user, :id]) || "anon"
-    sandbox = Path.expand(Path.join(@sandbox_root, to_string(user_id)))
-    File.mkdir_p!(sandbox)
-
+  def execute(args, ctx) do
     subpath = Map.get(args, "path", "")
 
-    target =
+    resolved =
       if subpath == "" do
-        sandbox
+        {:ok, Map.get(ctx, :workspace_dir) || Map.get(ctx, :session_root) || Path.expand(".")}
       else
-        Path.expand(Path.join(sandbox, subpath))
+        SafePath.resolve(subpath, ctx)
       end
 
-    if String.starts_with?(target, sandbox) do
-      case File.ls(target) do
+    with {:ok, abs} <- resolved do
+      File.mkdir_p!(abs)
+
+      case File.ls(abs) do
         {:ok, entries} ->
           items =
             Enum.map(entries, fn name ->
-              full = Path.join(target, name)
-
+              full = Path.join(abs, name)
               case File.stat(full) do
                 {:ok, stat} ->
-                  %{
-                    name: name,
+                  %{name: name,
                     type: if(stat.type == :directory, do: "dir", else: "file"),
-                    size: stat.size
-                  }
-
+                    size: stat.size}
                 _ ->
                   %{name: name, type: "unknown", size: 0}
               end
             end)
 
-          {:ok, %{path: target, entries: items, count: length(items)}}
+          {:ok, %{path: abs, entries: items, count: length(items)}}
 
         {:error, :enoent} ->
-          {:ok, %{path: target, entries: [], count: 0}}
+          {:ok, %{path: abs, entries: [], count: 0}}
 
         {:error, reason} ->
-          {:error, "Cannot list #{target}: #{reason}"}
+          {:error, "Cannot list #{abs}: #{reason}"}
       end
-    else
-      {:error, "Access denied"}
     end
   rescue
     e -> {:error, Exception.message(e)}

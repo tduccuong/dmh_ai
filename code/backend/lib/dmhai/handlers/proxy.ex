@@ -7,7 +7,7 @@ defmodule Dmhai.Handlers.Proxy do
   import Plug.Conn
   alias Dmhai.Repo
   alias Dmhai.DomainBlocker
-  alias Dmhai.Html
+  alias Dmhai.Util.Html
   import Ecto.Adapters.SQL, only: [query!: 3]
   require Logger
 

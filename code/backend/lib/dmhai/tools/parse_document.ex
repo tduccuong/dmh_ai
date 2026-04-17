@@ -6,10 +6,9 @@
 defmodule Dmhai.Tools.ParseDocument do
   @behaviour Dmhai.Tools.Behaviour
 
+  alias Dmhai.Util.Path, as: SafePath
   require Logger
 
-  @sandbox_root "/tmp/dmhai-sandbox"
-  @assets_root  "/data/user_assets"
   @max_chars    200_000
 
   # Extensions handled by pandoc (docx, odt, pptx, etc.)
@@ -48,12 +47,10 @@ defmodule Dmhai.Tools.ParseDocument do
   end
 
   @impl true
-  def execute(%{"path" => path}, context) do
-    user_id  = get_in(context, [:user, :id]) || "anon"
-    resolved = resolve_path(path, user_id)
-
-    with :ok         <- check_access(resolved, user_id),
-         {:ok, text} <- do_parse(resolved) do
+  def execute(%{"path" => path}, ctx) when is_binary(path) do
+    with {:ok, abs}  <- SafePath.resolve(path, ctx),
+         :ok         <- exists_check(abs),
+         {:ok, text} <- do_parse(abs) do
       truncated = String.length(text) > @max_chars
       result    = String.slice(text, 0, @max_chars)
       result    = if truncated, do: result <> "\n\n[truncated: document exceeds #{@max_chars} characters]", else: result
@@ -65,25 +62,8 @@ defmodule Dmhai.Tools.ParseDocument do
 
   # ── private ────────────────────────────────────────────────────────────────
 
-  defp resolve_path(path, user_id) do
-    sandbox = Path.expand(Path.join(@sandbox_root, to_string(user_id)))
-    if String.starts_with?(path, "/"),
-      do:   Path.expand(path),
-      else: Path.expand(Path.join(sandbox, path))
-  end
-
-  defp check_access(resolved, user_id) do
-    sandbox = Path.expand(Path.join(@sandbox_root, to_string(user_id)))
-    assets  = Path.expand(Path.join(@assets_root,  to_string(user_id)))
-
-    cond do
-      not (String.starts_with?(resolved, sandbox) or String.starts_with?(resolved, assets)) ->
-        {:error, "Access denied: path is outside allowed directories"}
-      not File.exists?(resolved) ->
-        {:error, "File not found: #{resolved}"}
-      true ->
-        :ok
-    end
+  defp exists_check(abs) do
+    if File.exists?(abs), do: :ok, else: {:error, "File not found: #{abs}"}
   end
 
   defp do_parse(path) do

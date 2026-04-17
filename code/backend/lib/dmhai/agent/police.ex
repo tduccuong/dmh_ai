@@ -11,10 +11,11 @@ defmodule Dmhai.Agent.Police do
   Bad behaviors detected:
     1. Text mimicry — model writes tool calls as plain text (e.g. `[used: bash(...)]`)
        instead of using the tool-calling mechanism.
-    2. No tool call in periodic mode — model returned plain text when it should
-       always be scheduling the next cycle via tools.
-    3. Repeated identical tool calls — model calls the same tool with the same
+    2. Repeated identical tool calls — model calls the same tool with the same
        arguments as a previous iteration, indicating an infinite loop.
+    3. Path safety — explicit-path tool calls must stay under the session root;
+       bash/spawn_task deletion commands (`rm`/`rmdir`/`unlink`) must stay
+       within the job's workspace directory.
   """
 
   require Logger
@@ -28,28 +29,49 @@ defmodule Dmhai.Agent.Police do
     ~r/\[called tools:/
   ]
 
-  # Tools allowed to repeat with the same args (periodic scheduling is intentional).
-  @repeatable_tools MapSet.new(["spawn_task", "declare_periodic", "midjob_notify", "datetime"])
+  # Tools allowed to repeat with the same args (scheduling/utility tools are intentional).
+  @repeatable_tools MapSet.new(["spawn_task", "datetime"])
 
   @doc "Rejection message to inject."
   def rejection_msg, do: @rejection_msg
+
+  @doc """
+  Validate a worker's submitted plan for policy violations.
+  Returns `:ok` or `{:rejected, reason_string}`.
+  """
+  @spec check_plan(String.t(), map()) :: :ok | {:rejected, String.t()}
+  def check_plan(plan_text, ctx) when is_binary(plan_text) do
+    session_root = Map.get(ctx, :session_root)
+
+    cond do
+      dangerous_plan?(plan_text) ->
+        Logger.warning("[Police] dangerous_plan detected")
+        Dmhai.SysLog.log("[POLICE] REJECTED dangerous_plan")
+        {:rejected, "plan contains dangerous operations (e.g. unrestricted deletion or system-wide destructive commands)"}
+
+      is_binary(session_root) and plan_escapes_session?(plan_text, session_root) ->
+        Logger.warning("[Police] plan_path_escape detected")
+        Dmhai.SysLog.log("[POLICE] REJECTED plan_path_escape")
+        {:rejected, "plan references filesystem paths outside the session root"}
+
+      true ->
+        :ok
+    end
+  end
+
+  def check_plan(_plan_text, _ctx), do: :ok
 
   @doc """
   Check a text response for bad behavior.
   Returns `:ok` or `{:rejected, reason_string}`.
   """
   @spec check_text(String.t(), map()) :: :ok | {:rejected, String.t()}
-  def check_text(text, ctx) do
+  def check_text(text, _ctx) do
     cond do
       text_mimicry?(text) ->
         Logger.warning("[Police] text_mimicry detected: #{String.slice(text, 0, 120)}")
         Dmhai.SysLog.log("[POLICE] REJECTED text_mimicry: #{String.slice(text, 0, 200)}")
         {:rejected, "text_mimicry"}
-
-      periodic_no_tool?(text, ctx) ->
-        Logger.warning("[Police] no_tool_in_periodic: model returned text in periodic mode")
-        Dmhai.SysLog.log("[POLICE] REJECTED no_tool_in_periodic: #{String.slice(text, 0, 200)}")
-        {:rejected, "no_tool_in_periodic"}
 
       true ->
         :ok
@@ -57,33 +79,64 @@ defmodule Dmhai.Agent.Police do
   end
 
   @doc """
-  Check tool calls for repeated identical calls against prior history.
+  Check tool calls for repeated identical calls against prior history,
+  path-safety violations, and deletion scope.
+
   `messages` is the full history *before* this iteration's tool calls are appended.
+  `ctx` carries `:session_root` / `:workspace_dir` for path checks; if absent,
+  path checks are skipped.
+
   Returns `:ok` or `{:rejected, reason_string}`.
   """
-  @spec check_tool_calls(list(), list()) :: :ok | {:rejected, String.t()}
-  def check_tool_calls(calls, messages) do
-    if repeated_identical_calls?(calls, messages) do
-      names = Enum.map_join(calls, ", ", fn c -> get_in(c, ["function", "name"]) || "?" end)
-      Logger.warning("[Police] repeated_identical_tool_calls: #{names}")
-      Dmhai.SysLog.log("[POLICE] REJECTED repeated_identical_tool_calls: #{names}")
-      {:rejected, "repeated_identical_tool_calls"}
-    else
-      :ok
+  @spec check_tool_calls(list(), list(), map()) :: :ok | {:rejected, String.t()}
+  def check_tool_calls(calls, messages, ctx \\ %{}) do
+    cond do
+      repeated_identical_calls?(calls, messages) ->
+        names = Enum.map_join(calls, ", ", fn c -> get_in(c, ["function", "name"]) || "?" end)
+        Logger.warning("[Police] repeated_identical_tool_calls: #{names}")
+        Dmhai.SysLog.log("[POLICE] REJECTED repeated_identical_tool_calls: #{names}")
+        {:rejected, "repeated_identical_tool_calls"}
+
+      (reason = path_violation(calls, ctx)) != nil ->
+        Logger.warning("[Police] path_violation: #{reason}")
+        Dmhai.SysLog.log("[POLICE] REJECTED path_violation: #{reason}")
+        {:rejected, "path_violation: #{reason}"}
+
+      true ->
+        :ok
     end
   end
 
   # ── private ──────────────────────────────────────────────────────────────────
 
-  defp text_mimicry?(text) do
-    Enum.any?(@mimicry_patterns, fn pat -> Regex.match?(pat, text) end)
+  # Patterns that indicate the plan describes operations that should be blocked.
+  @dangerous_plan_patterns [
+    ~r/\brm\s+-rf\s+\//,           # rm -rf /
+    ~r/\brm\s+-rf\s+~/,            # rm -rf ~
+    ~r/\bdd\b.*\bof=\/dev\//,      # dd to raw device
+    ~r/:\(\)\{.*:\|:&\}/,          # fork bomb
+    ~r/\/etc\/passwd/,             # writing to system files
+    ~r/\/etc\/shadow/
+  ]
+
+  defp dangerous_plan?(text) do
+    Enum.any?(@dangerous_plan_patterns, fn pat -> Regex.match?(pat, text) end)
   end
 
-  # In periodic mode the model should ALWAYS call tools (spawn_task / midjob_notify).
-  # A short text response (< 300 chars) strongly indicates the model drifted.
-  # Long text (>= 300 chars) might be a legitimate mid-cycle summary — allow it.
-  defp periodic_no_tool?(text, ctx) do
-    Map.get(ctx, :periodic, false) and String.length(text) < 300
+  # Look for absolute paths in the plan text that escape the session root.
+  defp plan_escapes_session?(plan_text, session_root) do
+    ~r{/[a-zA-Z][^\s"'`]+}
+    |> Regex.scan(plan_text)
+    |> List.flatten()
+    |> Enum.any?(fn candidate ->
+      expanded = Path.expand(candidate)
+      String.starts_with?(expanded, "/") and
+        not Dmhai.Util.Path.within?(expanded, session_root)
+    end)
+  end
+
+  defp text_mimicry?(text) do
+    Enum.any?(@mimicry_patterns, fn pat -> Regex.match?(pat, text) end)
   end
 
   # For each current call that is NOT in @repeatable_tools, check whether the
@@ -123,4 +176,114 @@ defmodule Dmhai.Agent.Police do
 
   defp normalize_args(args) when is_binary(args), do: args
   defp normalize_args(_), do: ""
+
+  # ── path safety ─────────────────────────────────────────────────────────
+
+  # Tools whose arguments include an explicit filesystem path.
+  @path_tools ["read_file", "write_file", "list_dir",
+               "describe_image", "describe_video", "parse_document"]
+
+  # Tools whose `command` arg is a shell script — we scan for rm/rmdir/unlink.
+  @shell_tools ["bash", "spawn_task"]
+
+  # Returns a reason string if any call in the batch violates path rules,
+  # else nil. Skips all checks if ctx doesn't carry a session_root
+  # (non-worker callers / legacy paths).
+  defp path_violation(calls, ctx) do
+    session_root  = Map.get(ctx, :session_root)
+    workspace_dir = Map.get(ctx, :workspace_dir)
+
+    cond do
+      is_nil(session_root) -> nil
+      true ->
+        Enum.find_value(calls, nil, fn call ->
+          name = get_in(call, ["function", "name"]) || ""
+          args = get_in(call, ["function", "arguments"]) || %{}
+          args = if is_binary(args), do: decode_or_empty(args), else: args
+
+          cond do
+            name in @path_tools -> check_path_arg(name, args, ctx, session_root)
+            name in @shell_tools -> check_shell_deletion(name, args, workspace_dir)
+            true -> nil
+          end
+        end)
+    end
+  end
+
+  defp check_path_arg(_name, args, ctx, session_root) do
+    path = Map.get(args, "path")
+
+    case path do
+      p when is_binary(p) ->
+        case Dmhai.Util.Path.resolve(p, ctx) do
+          {:ok, abs} ->
+            if Dmhai.Util.Path.within?(abs, session_root) do
+              nil
+            else
+              "path '#{p}' escapes session root (#{session_root})"
+            end
+
+          {:error, reason} -> reason
+        end
+
+      _ -> nil
+    end
+  end
+
+  defp check_shell_deletion(_name, args, workspace_dir) do
+    case Map.get(args, "command") do
+      cmd when is_binary(cmd) ->
+        case extract_deletion_targets(cmd) do
+          [] -> nil
+          targets ->
+            bad =
+              Enum.find(targets, fn t ->
+                not looks_inside_workspace?(t, workspace_dir)
+              end)
+
+            if bad do
+              "destructive command targets '#{bad}' outside the job workspace (#{workspace_dir})"
+            else
+              nil
+            end
+        end
+
+      _ -> nil
+    end
+  end
+
+  # Heuristic: find tokens after `rm`, `rmdir`, `unlink`, or `del` that look
+  # like paths (ignoring shell flags). Not airtight — a determined model could
+  # hide deletions behind eval/variable expansion. Catches the common cases.
+  defp extract_deletion_targets(cmd) do
+    pattern = ~r/\b(?:rm|rmdir|unlink|del)\b([^&|;<>\n]*)/
+    Regex.scan(pattern, cmd, capture: :all_but_first)
+    |> List.flatten()
+    |> Enum.flat_map(fn tail ->
+      tail
+      |> String.split(~r/\s+/)
+      |> Enum.reject(fn t -> t == "" or String.starts_with?(t, "-") end)
+    end)
+  end
+
+  # Accept bare relative paths (model likely means workspace-relative) and
+  # absolute paths under the workspace. Reject absolute paths outside.
+  defp looks_inside_workspace?(_target, nil), do: true  # no workspace context → don't block
+  defp looks_inside_workspace?(target, workspace) do
+    expanded =
+      if String.starts_with?(target, "/") do
+        Path.expand(target)
+      else
+        Path.expand(Path.join(workspace, target))
+      end
+
+    Dmhai.Util.Path.within?(expanded, workspace)
+  end
+
+  defp decode_or_empty(binary) do
+    case Jason.decode(binary) do
+      {:ok, m} when is_map(m) -> m
+      _ -> %{}
+    end
+  end
 end

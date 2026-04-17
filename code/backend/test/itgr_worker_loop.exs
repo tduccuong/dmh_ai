@@ -1,237 +1,180 @@
-# Integration tests: Worker.run and Worker.run_from_checkpoint with stubbed LLM.
+# Integration tests for the one-off Worker loop with stubbed LLM.
 # Run with: MIX_ENV=test mix test test/itgr_worker_loop.exs
 
 defmodule Itgr.WorkerLoop do
   use ExUnit.Case, async: false
 
-  alias Dmhai.Agent.{Worker, WorkerState}
+  alias Dmhai.Agent.{Jobs, Worker}
   import Ecto.Adapters.SQL, only: [query!: 3]
 
   defp uid, do: T.uid()
 
-  # Minimal context map that Worker.run requires.
-  defp make_ctx(overrides \\ []) do
-    %{
-      user_id:     Keyword.get(overrides, :user_id,     uid()),
-      session_id:  Keyword.get(overrides, :session_id,  uid()),
-      worker_id:   Keyword.get(overrides, :worker_id,   uid()),
-      agent_pid:   Keyword.get(overrides, :agent_pid,   self()),
-      description: "test task"
+  # Seed a jobs row and return ctx + job_id for Worker.run.
+  defp seed_job(opts \\ []) do
+    user_id    = Keyword.get(opts, :user_id, uid())
+    session_id = Keyword.get(opts, :session_id, uid())
+    worker_id  = Keyword.get(opts, :worker_id, uid())
+
+    job_id =
+      Jobs.insert(
+        user_id:    user_id,
+        session_id: session_id,
+        job_type:   "one_off",
+        intvl_sec:  0,
+        job_title:  "test job",
+        job_spec:   Keyword.get(opts, :job_spec, "do something"),
+        job_status: "running"
+      )
+
+    ctx = %{
+      user_id:     user_id,
+      session_id:  session_id,
+      worker_id:   worker_id,
+      job_id:      job_id,
+      agent_pid:   self(),
+      description: "test job"
     }
+
+    {ctx, job_id}
   end
 
-  defp db_status(worker_id) do
-    r = query!(Dmhai.Repo, "SELECT status FROM worker_state WHERE worker_id=?", [worker_id])
+  defp final_row(job_id) do
+    r = query!(Dmhai.Repo,
+      "SELECT kind, content, signal_status FROM worker_status WHERE job_id=? AND kind='final' ORDER BY id DESC LIMIT 1",
+      [job_id])
     case r.rows do
-      [[s]] -> s
-      [] -> nil
+      [[k, c, s]] -> %{kind: k, content: c, signal_status: s}
+      _ -> nil
     end
   end
 
-  defp buffer_contents(session_id) do
+  defp status_count(job_id, kind) do
     r = query!(Dmhai.Repo,
-      "SELECT content FROM master_buffer WHERE session_id=? ORDER BY created_at",
-      [session_id])
-    Enum.map(r.rows, fn [c] -> c end)
+      "SELECT COUNT(*) FROM worker_status WHERE job_id=? AND kind=?",
+      [job_id, kind])
+    [[n]] = r.rows
+    n
   end
 
-  # ─── One-shot response ────────────────────────────────────────────────────
+  # ─── Signal contract ──────────────────────────────────────────────────────
 
-  test "one-shot: LLM returns text immediately → result in MasterBuffer" do
-    ctx = make_ctx()
-    T.stub_llm_call(fn _model, _msgs, _opts -> {:ok, "Task finished successfully."} end)
-
-    assert {:ok, "Task finished successfully."} == Worker.run("complete this task", ctx)
-    assert "Task finished successfully." in buffer_contents(ctx.session_id)
-  end
-
-  test "one-shot: worker_state marked done after completion" do
-    ctx = make_ctx()
-    T.stub_llm_call(fn _model, _msgs, _opts -> {:ok, "Done."} end)
-
-    Worker.run("task", ctx)
-    assert db_status(ctx.worker_id) == "done"
-  end
-
-  test "one-shot: worker_state row created with status='running' then transitions to 'done'" do
-    ctx = make_ctx()
-    # Verify row doesn't exist yet
-    assert db_status(ctx.worker_id) == nil
+  test "worker exits cleanly when signal(JOB_DONE) is called" do
+    {ctx, job_id} = seed_job()
 
     T.stub_llm_call(fn _model, _msgs, _opts ->
-      # During the run, the row should already be 'running'
-      send(self(), {:mid_status, db_status(ctx.worker_id)})
-      {:ok, "Done."}
+      {:ok, {:tool_calls, [
+        T.tool_call("signal", %{"status" => "JOB_DONE", "result" => "all done"})
+      ]}}
     end)
 
-    Worker.run("task", ctx)
+    assert {:ok, {:signal, "JOB_DONE", "all done"}} = Worker.run("task", ctx)
 
-    assert_received {:mid_status, "running"}
-    assert db_status(ctx.worker_id) == "done"
+    final = final_row(job_id)
+    assert final.signal_status == "JOB_DONE"
+    assert final.content == "all done"
   end
 
-  # ─── Tool-call loop ───────────────────────────────────────────────────────
+  test "worker exits cleanly when signal(BLOCKED) is called" do
+    {ctx, job_id} = seed_job()
 
-  test "tool-call then text: final result in MasterBuffer, status=done" do
-    ctx = make_ctx()
+    T.stub_llm_call(fn _model, _msgs, _opts ->
+      {:ok, {:tool_calls, [
+        T.tool_call("signal", %{"status" => "BLOCKED", "reason" => "API down"})
+      ]}}
+    end)
+
+    assert {:ok, {:signal, "BLOCKED", "API down"}} = Worker.run("task", ctx)
+
+    final = final_row(job_id)
+    assert final.signal_status == "BLOCKED"
+    assert final.content == "API down"
+  end
+
+  test "missing job_id in ctx causes immediate error" do
+    ctx = %{user_id: uid(), session_id: uid(), worker_id: uid()}
+    assert {:error, :missing_job_id} = Worker.run("task", ctx)
+  end
+
+  # ─── Protocol violation: plain text instead of signal ─────────────────────
+
+  test "plain text response is nudged, then BLOCKED after max nudges" do
+    {ctx, job_id} = seed_job()
+
+    # Always return text — never calls signal. Should nudge then force BLOCKED.
+    T.stub_llm_call(fn _model, _msgs, _opts -> {:ok, "Here's my answer."} end)
+
+    assert {:error, :no_signal_after_nudges} = Worker.run("task", ctx)
+
+    final = final_row(job_id)
+    assert final.signal_status == "BLOCKED"
+    assert String.contains?(final.content, "refused to call signal")
+  end
+
+  # ─── Worker_status progress rows ──────────────────────────────────────────
+
+  test "each tool call produces tool_call + tool_result rows" do
+    {ctx, job_id} = seed_job()
     {:ok, counter} = Agent.start_link(fn -> 0 end)
 
     T.stub_llm_call(fn _model, _msgs, _opts ->
       n = Agent.get_and_update(counter, fn n -> {n, n + 1} end)
       if n == 0 do
-        # Unknown tool → ToolRegistry returns {:error, "Unknown tool: ..."} → becomes "Error: ..." content
-        {:ok, {:tool_calls, [T.tool_call("noop_tool", %{})]}}
+        {:ok, {:tool_calls, [T.tool_call("datetime", %{})]}}
       else
-        {:ok, "All done after tool call."}
+        {:ok, {:tool_calls, [
+          T.tool_call("signal", %{"status" => "JOB_DONE", "result" => "done"})
+        ]}}
       end
     end)
 
-    result = Worker.run("use a tool then finish", ctx)
+    Worker.run("task", ctx)
 
-    assert {:ok, "All done after tool call."} == result
-    assert db_status(ctx.worker_id) == "done"
-    assert "All done after tool call." in buffer_contents(ctx.session_id)
+    # iter 1: 1 tool_call + 1 tool_result.
+    # iter 2: 1 tool_call (signal) + 1 tool_result + 1 final.
+    assert status_count(job_id, "tool_call")   == 2
+    assert status_count(job_id, "tool_result") == 2
+    assert status_count(job_id, "final")       == 1
   end
 
-  test "tool-call loop: checkpoint written after each tool-call iteration" do
-    ctx = make_ctx()
-    {:ok, counter} = Agent.start_link(fn -> 0 end)
+  # ─── LLM error ────────────────────────────────────────────────────────────
 
-    T.stub_llm_call(fn _model, _msgs, _opts ->
-      n = Agent.get_and_update(counter, fn n -> {n, n + 1} end)
-      case n do
-        0 -> {:ok, {:tool_calls, [T.tool_call("noop1", %{})]}}
-        1 -> {:ok, {:tool_calls, [T.tool_call("noop2", %{})]}}
-        _ -> {:ok, "Finished after 2 tool calls."}
-      end
-    end)
-
-    Worker.run("multi-step task", ctx)
-
-    r = query!(Dmhai.Repo, "SELECT iter FROM worker_state WHERE worker_id=?", [ctx.worker_id])
-    [[iter]] = r.rows
-    assert iter == 2
-  end
-
-  # ─── LLM error ───────────────────────────────────────────────────────────
-
-  test "LLM error → error message in MasterBuffer, worker marked done" do
-    ctx = make_ctx()
+  test "LLM error synthesizes a BLOCKED final row" do
+    {ctx, job_id} = seed_job()
     T.stub_llm_call(fn _model, _msgs, _opts -> {:error, "API unavailable"} end)
 
     assert {:error, _} = Worker.run("task", ctx)
-    assert db_status(ctx.worker_id) == "done"
 
-    [content] = buffer_contents(ctx.session_id)
-    assert String.contains?(content, "Worker error")
+    final = final_row(job_id)
+    assert final.signal_status == "BLOCKED"
+    assert String.contains?(final.content, "API unavailable")
   end
 
-  # ─── run_from_checkpoint ─────────────────────────────────────────────────
+  test "empty LLM response synthesizes a BLOCKED final row" do
+    {ctx, job_id} = seed_job()
+    T.stub_llm_call(fn _model, _msgs, _opts -> {:ok, ""} end)
 
-  test "run_from_checkpoint: resumes from existing messages, result in buffer" do
-    user_id = uid(); wid = uid(); sid = uid()
+    assert {:error, :empty_response} = Worker.run("task", ctx)
 
-    prior_msgs = [
-      %{"role" => "system",    "content" => "sys prompt"},
-      %{"role" => "user",      "content" => "resume this task"},
-      %{"role" => "assistant", "content" => "",
-        "tool_calls" => [%{"id" => "tc1", "function" => %{"name" => "bash", "arguments" => %{}}}]},
-      %{"role" => "tool",      "content" => "step 1 done", "tool_call_id" => "tc1"}
-    ]
-
-    checkpoint = %{
-      worker_id:       wid,
-      session_id:      sid,
-      user_id:         user_id,
-      task:            "resume this task",
-      messages:        prior_msgs,
-      rolling_summary: nil,
-      iter:            1,
-      periodic:        false
-    }
-
-    # Pre-insert the DB row (simulates the row left by the crash)
-    WorkerState.upsert(wid, sid, user_id, "resume this task", prior_msgs, 1, false, nil, "recovering")
-
-    T.stub_llm_call(fn _model, _msgs, _opts -> {:ok, "Resumed and completed."} end)
-
-    result = Worker.run_from_checkpoint(checkpoint, self())
-
-    assert {:ok, "Resumed and completed."} == result
-    assert db_status(wid) == "done"
-    assert "Resumed and completed." in buffer_contents(sid)
+    final = final_row(job_id)
+    assert final.signal_status == "BLOCKED"
   end
 
-  test "run_from_checkpoint: rolling summary is injected into effective messages" do
-    user_id = uid(); wid = uid(); sid = uid()
+  # ─── Signal tool validation ───────────────────────────────────────────────
 
-    prior_msgs = [
-      %{"role" => "system", "content" => "sys"},
-      %{"role" => "user",   "content" => "task"}
-    ]
-
-    checkpoint = %{
-      worker_id:       wid,
-      session_id:      sid,
-      user_id:         user_id,
-      task:            "task",
-      messages:        prior_msgs,
-      rolling_summary: "Prior work: finished step A",
-      iter:            3,
-      periodic:        false
-    }
-
-    WorkerState.upsert(wid, sid, user_id, "task", prior_msgs, 3, false, "Prior work: finished step A", "recovering")
-
-    test_pid = self()
-    T.stub_llm_call(fn _model, msgs, _opts ->
-      # The rolling summary should appear as a transient prefix message
-      has_summary = Enum.any?(msgs, fn m ->
-        role = m[:role] || m.role
-        content = m[:content] || m.content || ""
-        role == "user" and String.contains?(content, "Prior work: finished step A")
-      end)
-      send(test_pid, {:saw_rolling_summary, has_summary})
-      {:ok, "done"}
-    end)
-
-    Worker.run_from_checkpoint(checkpoint, self())
-
-    assert_received {:saw_rolling_summary, true}
-  end
-
-  test "run_from_checkpoint: iter from checkpoint is preserved in context" do
-    user_id = uid(); wid = uid(); sid = uid()
-
-    prior_msgs = [
-      %{"role" => "system", "content" => "sys"},
-      %{"role" => "user",   "content" => "task"}
-    ]
-
-    checkpoint = %{
-      worker_id:       wid,
-      session_id:      sid,
-      user_id:         user_id,
-      task:            "task",
-      messages:        prior_msgs,
-      rolling_summary: nil,
-      iter:            7,
-      periodic:        false
-    }
-
-    WorkerState.upsert(wid, sid, user_id, "task", prior_msgs, 7, false, nil, "recovering")
-
-    # One tool call → iter should be 8 in the checkpoint written during recovery
+  test "signal with invalid status returns tool error (loops for retry)" do
+    {ctx, _job_id} = seed_job()
     {:ok, counter} = Agent.start_link(fn -> 0 end)
+
     T.stub_llm_call(fn _model, _msgs, _opts ->
       n = Agent.get_and_update(counter, fn n -> {n, n + 1} end)
-      if n == 0, do: {:ok, {:tool_calls, [T.tool_call("noop", %{})]}}, else: {:ok, "done"}
+      if n == 0 do
+        # Invalid status → Signal.execute returns {:error, ...} → content="Error: ..."
+        {:ok, {:tool_calls, [T.tool_call("signal", %{"status" => "WEIRD"})]}}
+      else
+        {:ok, {:tool_calls, [T.tool_call("signal", %{"status" => "JOB_DONE", "result" => "ok"})]}}
+      end
     end)
 
-    Worker.run_from_checkpoint(checkpoint, self())
-
-    r = query!(Dmhai.Repo, "SELECT iter FROM worker_state WHERE worker_id=?", [wid])
-    [[iter]] = r.rows
-    assert iter == 8
+    assert {:ok, {:signal, "JOB_DONE", "ok"}} = Worker.run("task", ctx)
   end
 end

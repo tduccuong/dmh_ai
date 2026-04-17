@@ -48,4 +48,51 @@ defmodule Dmhai.Constants do
   def log_file, do: @log_file
 
   def image_exts, do: ~w(.png .jpg .jpeg .gif .webp .bmp)
+
+  # ── Filesystem layout for user assets ────────────────────────────────────
+  #
+  #   /data/user_assets/<email>/<session_id>/
+  #     ├── data/                          ← user uploads
+  #     ├── assistant/jobs/<job_id>/       ← worker/resolver scratch (assistant-origin)
+  #     └── confidant/jobs/<job_id>/       ← confidant-origin scratch
+  #
+  # `origin` reflects the session's mode; `pipeline` reflects the execution
+  # path (assistant=worker, confidant=resolver). Filesystem is keyed by
+  # `origin`, not `pipeline`.
+
+  @doc """
+  Make a filesystem-safe slug (alphanumerics, dash, underscore only).
+  Used for session_id / job_id / any untrusted path segment.
+  Emails are intentionally NOT sanitised via this — they're used as-is
+  (preserves `@` and `.` so paths remain human-recognisable).
+  """
+  @spec sanitize(String.t()) :: String.t()
+  def sanitize(v) when is_binary(v), do: Regex.replace(~r/[^\w\-]/, v, "_")
+  def sanitize(v), do: sanitize(to_string(v))
+
+  @doc "Root directory for a user's session (all uploads + job workspaces live under this)."
+  @spec session_root(String.t(), String.t()) :: String.t()
+  def session_root(email, session_id) do
+    Path.join([@assets_dir, to_string(email), sanitize(session_id)])
+  end
+
+  @doc "User-upload directory for a session."
+  @spec session_data_dir(String.t(), String.t()) :: String.t()
+  def session_data_dir(email, session_id) do
+    Path.join(session_root(email, session_id), "data")
+  end
+
+  @doc "Root directory for all jobs belonging to a given origin within a session."
+  @spec session_origin_root(String.t(), String.t(), String.t()) :: String.t()
+  def session_origin_root(email, session_id, origin)
+      when origin in ["assistant", "confidant"] do
+    Path.join([session_root(email, session_id), origin, "jobs"])
+  end
+
+  @doc "Workspace directory for a specific job (worker scratch: web fetches, temp files, etc.)."
+  @spec job_workspace_dir(String.t(), String.t(), String.t(), String.t()) :: String.t()
+  def job_workspace_dir(email, session_id, origin, job_id)
+      when origin in ["assistant", "confidant"] do
+    Path.join(session_origin_root(email, session_id, origin), sanitize(job_id))
+  end
 end

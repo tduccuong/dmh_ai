@@ -19,3 +19,6 @@ config :logger, level: :warning
 # (no SSL cert exists in the test environment).
 config :dmhai, :start_https, false
 config :dmhai, :start_http,  false
+config :dmhai, :enable_job_rehydrate, false
+# Tight poll cadence so JobRuntime tests finish in seconds rather than tens of seconds.
+config :dmhai, :job_poll_override_ms, 100

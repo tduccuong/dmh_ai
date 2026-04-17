@@ -6,14 +6,17 @@
 defmodule Dmhai.Tools.WriteFile do
   @behaviour Dmhai.Tools.Behaviour
 
-  @sandbox_root "/tmp/dmhai-sandbox"
+  alias Dmhai.Util.Path, as: SafePath
 
   @impl true
   def name, do: "write_file"
 
   @impl true
   def description,
-    do: "Write content to a file in the user's sandbox directory. Creates parent directories as needed."
+    do:
+      "Write content to a file in the session sandbox. Creates parent directories. " <>
+      "Writes default to the job workspace. Use 'data/<file>' to write into the user's " <>
+      "upload directory. Writes are rejected if they escape the session root."
 
   @impl true
   def definition do
@@ -23,11 +26,9 @@ defmodule Dmhai.Tools.WriteFile do
       parameters: %{
         type: "object",
         properties: %{
-          path: %{
-            type: "string",
-            description: "Filename or relative path within the sandbox (e.g. \"report.txt\" or \"data/output.csv\")"
-          },
-          content: %{type: "string", description: "Text content to write"}
+          path:    %{type: "string",
+                     description: "Filename or relative path. Defaults to the job workspace."},
+          content: %{type: "string", description: "Text content to write."}
         },
         required: ["path", "content"]
       }
@@ -35,32 +36,20 @@ defmodule Dmhai.Tools.WriteFile do
   end
 
   @impl true
-  def execute(%{"path" => path, "content" => content}, context) do
-    user_id = get_in(context, [:user, :id]) || "anon"
-    sandbox = Path.expand(Path.join(@sandbox_root, to_string(user_id)))
-    File.mkdir_p!(sandbox)
+  def execute(%{"path" => path, "content" => content}, ctx) when is_binary(path) do
+    with {:ok, abs} <- SafePath.resolve(path, ctx) do
+      File.mkdir_p!(Path.dirname(abs))
 
-    # Resolve relative to sandbox; strip any leading "/" to prevent traversal
-    safe_relative = path |> String.replace(~r"^/+", "") |> Path.expand("/") |> String.replace_prefix("/", "")
-    target = Path.expand(Path.join(sandbox, safe_relative))
-
-    if String.starts_with?(target, sandbox) do
-      File.mkdir_p!(Path.dirname(target))
-
-      case File.write(target, content) do
+      case File.write(abs, content) do
         :ok ->
-          {:ok,
-           %{
-             path: target,
-             relative_path: Path.relative_to(target, sandbox),
-             bytes_written: byte_size(content)
-           }}
+          {:ok, %{
+            path:          abs,
+            bytes_written: byte_size(content)
+          }}
 
         {:error, reason} ->
           {:error, "Cannot write #{path}: #{reason}"}
       end
-    else
-      {:error, "Access denied: path traversal not allowed"}
     end
   end
 

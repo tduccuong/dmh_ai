@@ -3,17 +3,22 @@
 # See the LICENSE file in the repository root for full details.
 # For commercial inquiries, contact: tduccuong@gmail.com
 
-defmodule Dmhai.Html do
+defmodule Dmhai.Util.Html do
   @moduledoc """
-  HTML to text extraction using Floki, replicating Python's _html_to_text.
+  HTML → plain-text extraction using Floki.
+
+  Shared cross-concern helper (web_fetch, web_search, proxy handler).
+  Dumps all non-chrome content to a flat text stream. For structured
+  article extraction (title, main body, byline), use
+  `Dmhai.Web.ReaderExtractor` instead.
   """
 
   @skip_tags ~w(script style nav header footer aside noscript iframe svg button form meta link)
 
   @doc """
-  Convert raw HTML bytes to plain text, stripping unwanted tags.
-  Replicates Python _html_to_text behavior.
+  Convert raw HTML bytes to plain text, stripping tags listed in @skip_tags.
   """
+  @spec html_to_text(binary() | any()) :: String.t()
   def html_to_text(raw_bytes) when is_binary(raw_bytes) do
     html =
       case :unicode.characters_to_binary(raw_bytes, :utf8) do
@@ -35,37 +40,27 @@ defmodule Dmhai.Html do
           ""
       end
 
-    text
-    |> fix_digit_letter_spacing()
+    fix_digit_letter_spacing(text)
   end
 
   def html_to_text(_), do: ""
+
+  # ── private ─────────────────────────────────────────────────────────────
 
   defp remove_skip_tags(nodes) when is_list(nodes) do
     Enum.flat_map(nodes, &remove_skip_tags/1)
   end
 
-  defp remove_skip_tags({tag, _attrs, _children}) when tag in @skip_tags do
-    []
-  end
-
-  defp remove_skip_tags({tag, attrs, children}) do
-    [{tag, attrs, remove_skip_tags(children)}]
-  end
-
-  defp remove_skip_tags(text) when is_binary(text) do
-    [text]
-  end
-
+  defp remove_skip_tags({tag, _attrs, _children}) when tag in @skip_tags, do: []
+  defp remove_skip_tags({tag, attrs, children}), do: [{tag, attrs, remove_skip_tags(children)}]
+  defp remove_skip_tags(text) when is_binary(text), do: [text]
   defp remove_skip_tags(_), do: []
 
   defp extract_text(nodes) when is_list(nodes) do
     Enum.flat_map(nodes, &extract_text/1)
   end
 
-  defp extract_text({_tag, _attrs, children}) do
-    extract_text(children)
-  end
+  defp extract_text({_tag, _attrs, children}), do: extract_text(children)
 
   defp extract_text(text) when is_binary(text) do
     t = String.trim(text)

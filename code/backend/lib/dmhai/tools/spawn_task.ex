@@ -40,7 +40,6 @@ defmodule Dmhai.Tools.SpawnTask do
   def execute(%{"command" => cmd} = args, ctx) do
     delay_ms = Map.get(args, "delay_ms", 0)
     worker_pid = Map.get(ctx, :worker_pid)
-    agent_pid = Map.get(ctx, :agent_pid)
     worker_id = Map.get(ctx, :worker_id, "unknown")
 
     timeout_s = AgentSettings.spawn_task_timeout_secs()
@@ -62,10 +61,6 @@ defmodule Dmhai.Tools.SpawnTask do
           end
 
         if worker_pid, do: send(worker_pid, {:subtask_result, output})
-
-        if agent_pid do
-          send(agent_pid, {:worker_progress, worker_id, "spawn_task: #{String.slice(output, 0, 150)}"})
-        end
       rescue
         e ->
           msg = "spawn_task error: #{Exception.message(e)}"

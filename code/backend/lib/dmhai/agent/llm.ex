@@ -168,8 +168,8 @@ defmodule Dmhai.Agent.LLM do
   end
 
   defp parse_response(body, model_str, on_tokens) when is_map(body) do
-    rx = body["eval_count"] || 0
-    tx = body["prompt_eval_count"] || 0
+    rx = body["prompt_eval_count"] || 0
+    tx = body["eval_count"] || 0
     if on_tokens && (rx > 0 or tx > 0), do: on_tokens.(rx, tx)
     msg = body["message"] || %{}
     tool_calls = msg["tool_calls"]
@@ -390,8 +390,8 @@ defmodule Dmhai.Agent.LLM do
 
                   {:ok, decoded} ->
                     if decoded["done"] do
-                      rx = decoded["eval_count"] || 0
-                      tx = decoded["prompt_eval_count"] || 0
+                      rx = decoded["prompt_eval_count"] || 0
+                      tx = decoded["eval_count"] || 0
                       if on_tokens && (rx > 0 or tx > 0), do: on_tokens.(rx, tx)
                     end
                     Logger.debug("[LLM] unmatched line keys=#{inspect(Map.keys(decoded))}")

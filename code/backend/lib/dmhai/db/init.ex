@@ -8,14 +8,13 @@ defmodule Dmhai.DB.Init do
   alias Dmhai.Repo
   import Ecto.Adapters.SQL, only: [query!: 2, query!: 3]
 
-  @assets_dir "/data/user_assets"
   @db_dir "/data/db"
 
   def run do
     # mkdir_p may fail in test/CI environments (no /data mount) — that is fine
     # because the DB path is configured to a writable temp location in those cases.
     File.mkdir_p(@db_dir)
-    File.mkdir_p(@assets_dir)
+    File.mkdir_p(Dmhai.Constants.assets_dir())
 
     create_tables()
     run_migrations()
@@ -149,22 +148,52 @@ defmodule Dmhai.DB.Init do
       PRIMARY KEY (session_id, worker_id)
     )
     """)
+    # worker_state was the old per-worker checkpoint/recovery store. The
+    # job-based runtime (jobs + worker_status tables) replaced it. Drop
+    # the table if a legacy deployment still has it; harmless otherwise.
+    alter_table_safe("DROP TABLE IF EXISTS worker_state")
+
     alter_table_safe("""
-    CREATE TABLE IF NOT EXISTS worker_state (
-      worker_id TEXT PRIMARY KEY,
-      session_id TEXT NOT NULL,
+    CREATE TABLE IF NOT EXISTS jobs (
+      job_id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
-      task TEXT,
-      messages TEXT DEFAULT '[]',
-      rolling_summary TEXT,
-      iter INTEGER DEFAULT 0,
-      periodic INTEGER DEFAULT 0,
-      status TEXT DEFAULT 'running',
+      session_id TEXT NOT NULL,
+      job_type TEXT NOT NULL,                 -- 'one_off' | 'periodic'
+      intvl_sec INTEGER NOT NULL DEFAULT 0,
+      job_title TEXT,
+      job_spec TEXT NOT NULL,
+      job_status TEXT NOT NULL DEFAULT 'pending',
+      job_result TEXT,
       created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
+      updated_at INTEGER NOT NULL,
+      last_run_started_at INTEGER,
+      last_run_completed_at INTEGER,
+      next_run_at INTEGER,
+      last_reported_status_id INTEGER DEFAULT 0,
+      current_worker_id TEXT
     )
     """)
-    alter_table_safe("CREATE INDEX IF NOT EXISTS idx_worker_state_user_status ON worker_state (user_id, status)")
+    alter_table_safe("CREATE INDEX IF NOT EXISTS idx_jobs_session ON jobs (session_id, job_status)")
+    alter_table_safe("CREATE INDEX IF NOT EXISTS idx_jobs_user ON jobs (user_id, job_status)")
+    alter_table_safe("CREATE INDEX IF NOT EXISTS idx_jobs_next_run ON jobs (job_status, next_run_at)")
+    alter_table_safe("ALTER TABLE jobs ADD COLUMN last_summarized_status_id INTEGER DEFAULT 0")
+    alter_table_safe("ALTER TABLE jobs ADD COLUMN last_summarized_at INTEGER DEFAULT 0")
+    alter_table_safe("ALTER TABLE jobs ADD COLUMN language TEXT NOT NULL DEFAULT 'en'")
+    alter_table_safe("ALTER TABLE jobs ADD COLUMN pipeline TEXT NOT NULL DEFAULT 'assistant'")
+    alter_table_safe("ALTER TABLE jobs ADD COLUMN origin TEXT NOT NULL DEFAULT 'assistant'")
+
+    alter_table_safe("""
+    CREATE TABLE IF NOT EXISTS worker_status (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_id TEXT NOT NULL,
+      worker_id TEXT NOT NULL,
+      kind TEXT NOT NULL,                     -- 'thinking' | 'tool_call' | 'tool_result' | 'final' | 'error'
+      content TEXT,
+      signal_status TEXT,                     -- 'JOB_DONE' | 'BLOCKED' (only for kind='final')
+      ts INTEGER NOT NULL
+    )
+    """)
+    alter_table_safe("CREATE INDEX IF NOT EXISTS idx_worker_status_job ON worker_status (job_id, id)")
   end
 
   defp alter_table_safe(sql) do

@@ -22,10 +22,6 @@ defmodule Dmhai.Agent.ContextEngine do
 
   # ─── Constants ────────────────────────────────────────────────────────────
 
-  # Dedicated compaction model; 1M context window, fast, cheap.
-  # Large context is critical so the model can see the full history it summarises.
-  @compactor_model "ollama::cloud::gemini-3-flash-preview:cloud"
-
   # Simple token estimate: chars / 4 ≈ tokens.
   @chars_per_token 4
   @estimated_context_tokens 8_192     # conservative default (works for all models)
@@ -76,6 +72,7 @@ defmodule Dmhai.Agent.ContextEngine do
     web_context        = Keyword.get(opts, :web_context)
     buffer_context     = Keyword.get(opts, :buffer_context)
     mode               = Keyword.get(opts, :mode, "confidant")
+    language           = Keyword.get(opts, :language)
 
     messages = session_data["messages"] || []
     ctx      = session_data["context"] || %{}
@@ -88,7 +85,8 @@ defmodule Dmhai.Agent.ContextEngine do
                      profile:            profile,
                      has_video:          has_video,
                      image_descriptions: image_descriptions,
-                     video_descriptions: video_descriptions
+                     video_descriptions: video_descriptions,
+                     language:           language
                    )}
 
     # Messages after the compaction cutoff — sent in full to the LLM
@@ -202,7 +200,7 @@ defmodule Dmhai.Agent.ContextEngine do
             }
           ]
 
-      case LLM.call(@compactor_model, compaction_messages) do
+      case LLM.call(AgentSettings.compactor_model(), compaction_messages) do
         {:ok, summary} when is_binary(summary) and summary != "" ->
           new_ctx = %{
             "summary"              => summary,

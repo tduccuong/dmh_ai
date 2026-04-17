@@ -17,17 +17,11 @@ defmodule Dmhai.Agent.WebSearch do
   alias Dmhai.DomainBlocker
   require Logger
 
-  @max_fetch_pages 6
-  @fetch_content_budget 18_000
-  @searxng_url "http://127.0.0.1:8888"
-
   # ─── Step 1: Category detection ────────────────────────────────────────────
 
   @doc """
-  Detect whether the user's message needs web search and which category.
-  Returns `{:search, category}` where category is "news", "it", or "news,general",
-  or `:no_search`.
-
+  Detect whether the user's message needs live web search.
+  Returns `{:search, category}` or `:no_search`.
   Sends a blank chunk to reply_pid to show detection is in progress.
   """
   @spec detect_category(String.t(), String.t(), pid()) ::
@@ -44,13 +38,17 @@ defmodule Dmhai.Agent.WebSearch do
 
     prompt =
       """
-      #{context_block}
-
-      New message: #{content}
+      #{context_block}New message: #{content}
 
       Does this message need a live web search?
 
-      **Hard rule**: judge the user's INTENT (what they are asking you to do), not words embedded in content they want processed. Example: "translate this: ...search the web..." → intent is translation → no need for live web search.
+      **Web search is EXPENSIVE.** Only answer with a category when genuinely needed.
+      When URLs have been pre-fetched, the default answer should be NO unless the
+      user explicitly requires additional information beyond what those URLs contain.
+
+      **Hard rule**: judge the user's INTENT (what they are asking you to do),
+      not words embedded in content they want processed. Example: "translate this:
+      ...search the web..." → intent is translation → no search.
 
       Answer with a category name where category is one of:
       1. NEWS: breaking news, sports scores, stock/crypto prices, weather, "what happened", headlines
@@ -67,6 +65,7 @@ defmodule Dmhai.Agent.WebSearch do
         - anything that you do NOT know or are UNSURE about
 
       Answer NO if user's intent is about:
+        - summarising / translating / reformatting / analysing content the user has provided (inline or via URL)
         - translation, summarization, reformatting, writing help
         - coding help, science/how things work, history, math/logic, geography, well-known concepts, opinions/debates
         - anything else that you know well from your training data.
@@ -86,10 +85,12 @@ defmodule Dmhai.Agent.WebSearch do
            options: %{temperature: 0, num_predict: 500}
          ) do
       {:ok, response} ->
+        # Split on whitespace OR the trailing colon — the LLM reply format
+        # is "NEWS: <reason>", and the first *token* must be the bare label.
         answer =
           response
           |> String.trim()
-          |> String.split(~r/\s/)
+          |> String.split(~r/[\s:]/)
           |> List.first()
           |> String.upcase()
 
@@ -240,7 +241,7 @@ defmodule Dmhai.Agent.WebSearch do
 
     all_results =
       search_tasks
-      |> Task.await_many(20_000)
+      |> Task.await_many(AgentSettings.web_search_total_timeout_ms())
       |> Enum.reduce({[], MapSet.new()}, fn results, {acc, seen} ->
         Enum.reduce(results, {acc, seen}, fn r, {a, s} ->
           if MapSet.member?(s, r.url) do
@@ -256,7 +257,7 @@ defmodule Dmhai.Agent.WebSearch do
       Logger.info("[WebSearch] no results for queries=#{inspect(Enum.map(queries, & &1.text))}")
       %{snippets: [], pages: []}
     else
-      top = Enum.take(all_results, @max_fetch_pages)
+      top = Enum.take(all_results, AgentSettings.web_search_max_fetch_pages())
       Logger.info("[WebSearch] #{length(all_results)} total results, fetching top #{length(top)}")
 
       fetch_tasks =
@@ -270,9 +271,9 @@ defmodule Dmhai.Agent.WebSearch do
 
       pages =
         fetch_tasks
-        |> Task.await_many(15_000)
+        |> Task.await_many(AgentSettings.web_search_total_timeout_ms())
         |> Enum.reduce({[], 0}, fn {result, text}, {acc, budget_used} ->
-          remaining = @fetch_content_budget - budget_used
+          remaining = AgentSettings.web_search_fetch_content_budget() - budget_used
 
           if remaining <= 0 do
             {acc, budget_used}
@@ -308,12 +309,12 @@ defmodule Dmhai.Agent.WebSearch do
       pageno: 1
     }
 
-    url = @searxng_url <> "/search?" <> URI.encode_query(params)
+    url = AgentSettings.searxng_url() <> "/search?" <> URI.encode_query(params)
 
     try do
       case Req.get(url,
-             headers: [{"User-Agent", "Mozilla/5.0"}],
-             receive_timeout: 20_000,
+             headers: [{"User-Agent", AgentSettings.http_user_agent()}],
+             receive_timeout: AgentSettings.web_search_total_timeout_ms(),
              retry: false,
              finch: Dmhai.Finch
            ) do
@@ -349,49 +350,34 @@ defmodule Dmhai.Agent.WebSearch do
   end
 
   defp direct_fetch(url) do
-    try do
-      case Req.get(url,
-             headers: [
-               {"User-Agent", "Mozilla/5.0 (compatible; DMH-AI/1.0)"},
-               {"Accept", "text/html,text/plain"}
-             ],
-             receive_timeout: 6_000,
-             max_redirects: 5,
-             retry: false,
-             finch: Dmhai.Finch
-           ) do
-        {:ok, %{status: 200, headers: headers, body: body}} ->
-          ct =
-            Enum.find_value(headers, "", fn {k, v} ->
-              if String.downcase(k) == "content-type", do: v
-            end)
+    case Req.get(url,
+           headers: [{"User-Agent", AgentSettings.http_user_agent()}],
+           receive_timeout: AgentSettings.web_search_direct_timeout_ms(),
+           retry: false,
+           finch: Dmhai.Finch
+         ) do
+      {:ok, %{status: 200, body: body}} ->
+        raw = if is_binary(body), do: body, else: to_string(body)
+        Dmhai.Util.Html.html_to_text(raw)
 
-          if String.contains?(ct, "html") or String.contains?(ct, "text/plain") do
-            raw = if is_binary(body), do: body, else: to_string(body)
-            Dmhai.Html.html_to_text(String.slice(raw, 0, 120_000))
-          else
-            ""
-          end
-
-        _ ->
-          ""
-      end
-    rescue
-      e ->
-        if timeout_error?(e), do: DomainBlocker.record_timeout(url)
+      _ ->
         ""
     end
+  rescue
+    e ->
+      if timeout_error?(e), do: DomainBlocker.record_timeout(url)
+      ""
   end
 
   defp jina_fetch(url) do
     try do
-      case Req.get("https://r.jina.ai/" <> url,
+      case Req.get(AgentSettings.jina_base_url() <> url,
              headers: [
-               {"User-Agent", "Mozilla/5.0"},
+               {"User-Agent", AgentSettings.http_user_agent()},
                {"Accept", "text/plain"},
                {"X-No-Cache", "true"}
              ],
-             receive_timeout: 7_000,
+             receive_timeout: AgentSettings.web_search_jina_timeout_ms(),
              retry: false,
              finch: Dmhai.Finch
            ) do

@@ -6,7 +6,8 @@
 defmodule Dmhai.Tools.WebSearch do
   @behaviour Dmhai.Tools.Behaviour
 
-  @searxng_url "http://127.0.0.1:8888"
+  alias Dmhai.Agent.AgentSettings
+
   @max_results 8
   @max_snippet_chars 500
 
@@ -63,12 +64,12 @@ defmodule Dmhai.Tools.WebSearch do
       pageno:     1
     }
 
-    url = @searxng_url <> "/search?" <> URI.encode_query(params)
+    url = AgentSettings.searxng_url() <> "/search?" <> URI.encode_query(params)
 
     try do
       case Req.get(url,
-             headers: [{"User-Agent", "Mozilla/5.0"}],
-             receive_timeout: 20_000,
+             headers: [{"User-Agent", AgentSettings.http_user_agent()}],
+             receive_timeout: AgentSettings.web_search_total_timeout_ms(),
              retry: false,
              finch: Dmhai.Finch
            ) do

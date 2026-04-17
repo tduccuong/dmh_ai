@@ -6,7 +6,6 @@
 defmodule Dmhai.Tools.Bash do
   @behaviour Dmhai.Tools.Behaviour
 
-  @sandbox_root "/tmp/dmhai-sandbox"
   @default_timeout 30
   @max_timeout 120
   @max_output 50_000
@@ -17,8 +16,11 @@ defmodule Dmhai.Tools.Bash do
   @impl true
   def description,
     do:
-      "Execute a shell command in an isolated sandbox directory per user. " <>
-        "Output is capped at 50 KB. Default timeout is 30s, max 120s."
+      "Execute a shell command inside the job's workspace directory. " <>
+      "Output is capped at 50 KB. Default timeout is 30s, max 120s. " <>
+      "The current working directory is the job workspace — fetched files, " <>
+      "temp output, etc. land there. Access user uploads via the 'data/' " <>
+      "relative path (e.g. `cat ../../data/photo.jpg`)."
 
   @impl true
   def definition do
@@ -40,10 +42,9 @@ defmodule Dmhai.Tools.Bash do
   end
 
   @impl true
-  def execute(%{"command" => command} = args, context) do
+  def execute(%{"command" => command} = args, ctx) do
     timeout_s = min(Map.get(args, "timeout", @default_timeout), @max_timeout)
-    user_id = get_in(context, [:user, :id]) || "anon"
-    workdir = Path.join(@sandbox_root, to_string(user_id))
+    workdir   = resolve_workdir(ctx)
     File.mkdir_p!(workdir)
 
     task =
@@ -53,25 +54,34 @@ defmodule Dmhai.Tools.Bash do
 
     case Task.yield(task, timeout_s * 1_000) || Task.shutdown(task, :brutal_kill) do
       {:ok, {output, exit_code}} ->
-        {:ok,
-         %{
-           output: String.slice(output, 0, @max_output),
-           exit_code: exit_code,
-           workdir: workdir
-         }}
+        {:ok, %{
+          output:    String.slice(output, 0, @max_output),
+          exit_code: exit_code,
+          workdir:   workdir
+        }}
 
       nil ->
-        {:ok,
-         %{
-           output: "(command timed out after #{timeout_s}s)",
-           exit_code: 124,
-           timed_out: true,
-           workdir: workdir
-         }}
+        {:ok, %{
+          output:    "(command timed out after #{timeout_s}s)",
+          exit_code: 124,
+          timed_out: true,
+          workdir:   workdir
+        }}
     end
   rescue
     e -> {:error, Exception.message(e)}
   end
 
   def execute(_, _), do: {:error, "Missing required argument: command"}
+
+  # ── private ─────────────────────────────────────────────────────────────
+
+  # Preference order: job workspace → session_root → /tmp fallback.
+  defp resolve_workdir(ctx) do
+    cond do
+      is_binary(Map.get(ctx, :workspace_dir)) -> ctx.workspace_dir
+      is_binary(Map.get(ctx, :session_root))  -> ctx.session_root
+      true -> "/tmp/dmhai-bash-" <> Integer.to_string(System.unique_integer([:positive]))
+    end
+  end
 end

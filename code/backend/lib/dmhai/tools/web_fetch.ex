@@ -4,16 +4,26 @@
 # For commercial inquiries, contact: tduccuong@gmail.com
 
 defmodule Dmhai.Tools.WebFetch do
+  @moduledoc """
+  Worker tool wrapper around `Dmhai.Web.Fetcher`. CMP-aware — if the
+  primary response is a GDPR consent wall, transparently tries AMP
+  variants and then archive mirrors.
+  """
+
   @behaviour Dmhai.Tools.Behaviour
 
-  @max_chars 20_000
-  @user_agent "Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/115.0"
+  alias Dmhai.Web.Fetcher
 
   @impl true
   def name, do: "web_fetch"
 
   @impl true
-  def description, do: "Fetch and read the text content of any URL. HTML is stripped to plain text."
+  def description,
+    do:
+      "Fetch and read the text content of any URL. " <>
+      "Automatically handles GDPR/cookie walls by falling back to AMP variants " <>
+      "and archive mirrors when detected. HTML is extracted to article-focused " <>
+      "text (title + body), with chrome/consent overlays stripped."
 
   @impl true
   def definition do
@@ -23,7 +33,10 @@ defmodule Dmhai.Tools.WebFetch do
       parameters: %{
         type: "object",
         properties: %{
-          url: %{type: "string", description: "The full URL to fetch (must start with http:// or https://)"}
+          url: %{
+            type: "string",
+            description: "The full URL to fetch (must start with http:// or https://)."
+          }
         },
         required: ["url"]
       }
@@ -31,23 +44,29 @@ defmodule Dmhai.Tools.WebFetch do
   end
 
   @impl true
-  def execute(%{"url" => url}, _context) do
-    case Req.get(url,
-           headers: [{"user-agent", @user_agent}],
-           redirect: true,
-           receive_timeout: 15_000,
-           decode_body: false
-         ) do
-      {:ok, %{status: status, body: body}} when status in 200..299 ->
-        text =
-          body
-          |> Dmhai.Html.html_to_text()
-          |> String.slice(0, @max_chars)
+  def execute(%{"url" => url}, _context) when is_binary(url) do
+    case Fetcher.fetch(url) do
+      {:ok, %{content: content} = result} ->
+        {:ok, %{
+          url:       result.url,
+          final_url: result.final_url,
+          title:     result.title,
+          content:   content,
+          truncated: result.truncated,
+          source:    result.source,   # :direct | :amp_or_mirror | :archive_today | :wayback
+          cmp:       result.cmp,      # nil | :onetrust | :sourcepoint | …
+          tried:     result.tried
+        }}
 
-        {:ok, %{url: url, content: text, truncated: byte_size(body) > @max_chars}}
+      {:error, {:cmp_wall, u, cmp: vendor, tried: tried}} ->
+        {:error, "GDPR/CMP wall (#{vendor}) for #{u}. Tried fallbacks: #{inspect(tried)}. " <>
+                 "Consider using web_search for a snippet instead."}
 
-      {:ok, %{status: status}} ->
-        {:error, "HTTP #{status} fetching #{url}"}
+      {:error, {:fetch_failed, reason, u, tried}} ->
+        {:error, "Fetch failed for #{u}: #{inspect(reason)}. Tried: #{inspect(tried)}."}
+
+      {:error, {:invalid_url, u}} ->
+        {:error, "Invalid URL: #{inspect(u)}. Must start with http:// or https://."}
 
       {:error, reason} ->
         {:error, "Fetch failed: #{inspect(reason)}"}

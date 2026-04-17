@@ -9,12 +9,7 @@ build/
 *.so
 *.dll
 
-# Elixir / Mix
-code/backend/_build/
-code/backend/deps/
-code/backend/*.db
-code/backend/erl_crash.dump
-code/backend/.elixir_ls/
+# Elixir / Mix (detailed rules live in code/backend/.gitignore)
 *.beam
 *.app
 

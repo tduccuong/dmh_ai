@@ -17,6 +17,7 @@ defmodule Dmhai.Agent.AgentSettings do
     "assistantModel"       => "ministral-3:14b-cloud",
     "workerModel"          => "qwen3-coder-next:cloud",
     "compactorModel"       => "gemini-3-flash-preview:cloud",
+    "summarizerModel"      => "gemini-3-flash-preview:cloud",
     "webSearchModel"       => "ministral-3:14b-cloud",
     "imageDescriberModel"  => "gemini-3-flash-preview:cloud",
     "videoDescriberModel"  => "gemini-3-flash-preview:cloud",
@@ -30,6 +31,23 @@ defmodule Dmhai.Agent.AgentSettings do
   @max_tool_result_chars_default 8_000
   @master_compact_turn_threshold_default 90
   @master_compact_fraction_default 0.45
+  @job_poll_min_interval_sec_default 5
+  @job_poll_samples_per_cycle_default 10
+  @job_orphan_timeout_sec_default 300
+  @job_progress_summary_every_n_rows_default 6
+  @job_progress_summary_min_interval_sec_default 30
+
+  # Web / HTTP defaults
+  @http_user_agent_default "Mozilla/5.0 (compatible; DMH-AI/1.0)"
+  @searxng_url_default "http://127.0.0.1:8888"
+  @jina_base_url_default "https://r.jina.ai/"
+  @web_search_max_fetch_pages_default 6
+  @web_search_fetch_content_budget_default 18_000
+  @web_search_direct_timeout_ms_default 6_000
+  @web_search_jina_timeout_ms_default 7_000
+  @web_search_total_timeout_ms_default 20_000
+  @synthesis_threshold_default 45_000
+  @synthesis_fallback_chars_default 8_000
 
   @doc "Get the model string for a given agent role. Returns the default if unset."
   @spec model_for(String.t()) :: String.t()
@@ -57,6 +75,7 @@ defmodule Dmhai.Agent.AgentSettings do
   def assistant_model,        do: model_for("assistantModel")
   def worker_model,           do: model_for("workerModel")
   def compactor_model,        do: model_for("compactorModel")
+  def summarizer_model,       do: model_for("summarizerModel")
   def web_search_model,       do: model_for("webSearchModel")
   def image_describer_model,  do: model_for("imageDescriberModel")
   def video_describer_model,  do: model_for("videoDescriberModel")
@@ -90,6 +109,66 @@ defmodule Dmhai.Agent.AgentSettings do
   @spec master_compact_fraction() :: float()
   def master_compact_fraction, do: float_setting("masterCompactFraction", @master_compact_fraction_default)
 
+  @doc "Minimum seconds between job progress polls (K floor). Never poll faster than this."
+  @spec job_poll_min_interval_sec() :: pos_integer()
+  def job_poll_min_interval_sec, do: int_setting("jobPollMinIntervalSec", @job_poll_min_interval_sec_default)
+
+  @doc "Target samples per periodic cycle (M). Poll interval = max(K, intvl/M)."
+  @spec job_poll_samples_per_cycle() :: pos_integer()
+  def job_poll_samples_per_cycle, do: int_setting("jobPollSamplesPerCycle", @job_poll_samples_per_cycle_default)
+
+  @doc "Consider a running job orphaned if no progress written in this many seconds."
+  @spec job_orphan_timeout_sec() :: pos_integer()
+  def job_orphan_timeout_sec, do: int_setting("jobOrphanTimeoutSec", @job_orphan_timeout_sec_default)
+
+  @doc "Fire a progress summary every N new worker_status rows."
+  @spec job_progress_summary_every_n_rows() :: pos_integer()
+  def job_progress_summary_every_n_rows, do: int_setting("jobProgressSummaryEveryNRows", @job_progress_summary_every_n_rows_default)
+
+  @doc "Minimum seconds between unsolicited progress summaries (rate limit)."
+  @spec job_progress_summary_min_interval_sec() :: pos_integer()
+  def job_progress_summary_min_interval_sec, do: int_setting("jobProgressSummaryMinIntervalSec", @job_progress_summary_min_interval_sec_default)
+
+  @doc "HTTP User-Agent string for outbound web requests."
+  @spec http_user_agent() :: String.t()
+  def http_user_agent, do: string_setting("httpUserAgent", @http_user_agent_default)
+
+  @doc "SearXNG base URL."
+  @spec searxng_url() :: String.t()
+  def searxng_url, do: string_setting("searxngUrl", @searxng_url_default)
+
+  @doc "Jina reader base URL (appended with the target URL)."
+  @spec jina_base_url() :: String.t()
+  def jina_base_url, do: string_setting("jinaBaseUrl", @jina_base_url_default)
+
+  @doc "Max number of search-result pages fetched per web search cycle."
+  @spec web_search_max_fetch_pages() :: pos_integer()
+  def web_search_max_fetch_pages, do: int_setting("webSearchMaxFetchPages", @web_search_max_fetch_pages_default)
+
+  @doc "Character budget for accumulated page content per web search cycle."
+  @spec web_search_fetch_content_budget() :: pos_integer()
+  def web_search_fetch_content_budget, do: int_setting("webSearchFetchContentBudget", @web_search_fetch_content_budget_default)
+
+  @doc "HTTP receive timeout (ms) for direct page fetches in web_search."
+  @spec web_search_direct_timeout_ms() :: pos_integer()
+  def web_search_direct_timeout_ms, do: int_setting("webSearchDirectTimeoutMs", @web_search_direct_timeout_ms_default)
+
+  @doc "HTTP receive timeout (ms) for Jina reader fetches."
+  @spec web_search_jina_timeout_ms() :: pos_integer()
+  def web_search_jina_timeout_ms, do: int_setting("webSearchJinaTimeoutMs", @web_search_jina_timeout_ms_default)
+
+  @doc "Task.await_many timeout (ms) for the parallel fetch phase."
+  @spec web_search_total_timeout_ms() :: pos_integer()
+  def web_search_total_timeout_ms, do: int_setting("webSearchTotalTimeoutMs", @web_search_total_timeout_ms_default)
+
+  @doc "Raw result character count above which synthesis is triggered before injection."
+  @spec synthesis_threshold() :: pos_integer()
+  def synthesis_threshold, do: int_setting("synthesisThreshold", @synthesis_threshold_default)
+
+  @doc "Character limit for the truncated fallback when synthesis fails."
+  @spec synthesis_fallback_chars() :: pos_integer()
+  def synthesis_fallback_chars, do: int_setting("synthesisFallbackChars", @synthesis_fallback_chars_default)
+
   @doc "User's chosen video detail level from admin settings. Returns 'low', 'medium', or 'high'."
   @spec video_detail() :: String.t()
   def video_detail do
@@ -107,6 +186,14 @@ defmodule Dmhai.Agent.AgentSettings do
     |> Map.values()
     |> Enum.uniq()
     |> Enum.filter(fn m -> String.ends_with?(m, ":cloud") or String.ends_with?(m, "-cloud") end)
+  end
+
+  defp string_setting(key, default) do
+    settings = load()
+    case settings[key] do
+      s when is_binary(s) and s != "" -> s
+      _ -> default
+    end
   end
 
   defp float_setting(key, default) do

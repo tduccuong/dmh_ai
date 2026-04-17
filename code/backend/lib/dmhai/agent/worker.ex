@@ -5,101 +5,114 @@
 
 defmodule Dmhai.Agent.Worker do
   @moduledoc """
-  Agentic tool-calling loop used by detached worker tasks.
+  Agentic tool-calling loop for ONE-OFF job execution.
 
-  Uses a dedicated tool-compatible model configured via
-  admin_cloud_settings["workerModel"] (format: "provider::model").
+  The worker is fully one-off. Periodicity is the runtime scheduler's
+  concern — the scheduler re-spawns a fresh worker for each cycle. The
+  worker never knows whether its parent job is periodic.
+
+  PROTOCOL contract: every task MUST end with a call to
+  `signal(status, result | reason)`. The signal tool writes a
+  `kind='final'` row to worker_status; the runtime picks that up as
+  the job's terminal state.
 
   Loop:
-    1. Drain any {:subtask_result, output} messages from the mailbox.
-       In periodic mode, history is reset to [system + task + latest_result]
-       at each drain so prior-cycle tool calls do not accumulate.
+    1. Drain any {:subtask_result, output} messages from the mailbox
+       (from async spawn_task calls). Append as user messages.
     2. Apply rolling-summary compaction if messages exceed system + N + M + 5.
-       The rolling summary lives in ctx[:rolling_summary], never in the message
-       list, so it is never re-summarised on the next compaction pass.
     3. Inject the rolling summary as a transient prefix before the LLM call.
     4. Call LLM with the message list and all available tools.
-    5. tool_calls → execute tools, checkpoint state to DB, loop.
-       - If declare_periodic is called, iteration cap is lifted.
-       - Otherwise, capped at AgentSettings.worker_max_iter() (default 20).
-    6. Text response → return {:ok, text}.
+    5. tool_calls → write worker_status rows (tool_call + tool_result),
+       execute tools, loop. If the batch includes `signal`, exit.
+    6. Text response → Police nudges the model to call signal; after
+       @max_consecutive_rejections the runtime synthesises BLOCKED.
 
-  State is persisted to worker_state table after every iteration so a
-  crash or restart can resume from the last checkpoint.
+  The ctx map MUST contain :job_id. All worker_status rows are keyed by it.
   """
 
-  alias Dmhai.Agent.{AgentSettings, LLM, MasterBuffer, Police, TokenTracker, WorkerState}
+  alias Dmhai.Agent.{AgentSettings, LLM, Police, TokenTracker, WorkerStatus}
   alias Dmhai.Tools.Registry, as: ToolRegistry
   require Logger
 
   # Max consecutive Police rejections before giving up.
   @max_consecutive_rejections 3
 
-  defp compactor_model, do: AgentSettings.compactor_model()
-
-  # How long to block waiting for a {:subtask_result} before giving up.
-  @subtask_wait_ms :timer.minutes(5)
-
   # Summarise tool results larger than this before injecting into history.
   @summarize_threshold Application.compile_env(:dmhai, [:worker, :summarize_threshold], 5_000)
 
+  defp compactor_model, do: AgentSettings.compactor_model()
+
+  @doc false
+  def build_system_prompt(language \\ "en") do
+    lang = language || "en"
+
+    """
+    You are a focused worker agent, operating within the scope of DMH-AI ecosystem.
+    Complete the task given to you using the tools available.
+
+    Available tools:
+    - plan — PLAN PHASE: submit your execution plan before taking any action.
+    - bash, read_file, write_file, list_dir — shell & file operations. Prefer concise commands (grep/awk/head/cut) over verbose dumps.
+    - web_fetch — fetch and read a URL (CMP/GDPR-aware; handles cookie walls via AMP and archive fallbacks).
+    - web_search — live web lookups (EXPENSIVE; use only for time-sensitive data not obtainable via web_fetch).
+    - calculator — math.
+    - datetime — current date/time.
+    - describe_image, describe_video, parse_document — media/doc understanding by file path.
+    - spawn_task — spawn an async bash command with optional delay; result arrives in a later step.
+    - signal — TERMINAL CONTRACT. See PROTOCOL below.
+
+    PROTOCOL (mandatory, enforced by the runtime):
+      0. PLAN FIRST: Before taking any other action, you MUST call:
+             plan(steps: ["step 1", "step 2", ...], rationale: "brief explanation")
+         List every step you intend to take — including which URLs to fetch, which tools
+         to use, and what the final answer will cover. The runtime will approve or reject.
+         If rejected, revise and resubmit. Only after approval may you proceed.
+         MID-EXECUTION REPLAN: If you discover during execution that the plan is
+         impossible or must change significantly (e.g. a URL is down, a tool fails
+         unexpectedly, findings contradict your assumptions), call plan(...) again
+         with the updated steps. The runtime re-approves before you continue.
+         Do NOT replan for minor deviations — only when the overall approach must change.
+      1. EXECUTE: Carry out your plan step by step using the available tools.
+         - For any URL in the task: call web_fetch first. This is deterministic and free.
+         - For additional live data not at those URLs: call web_search (EXPENSIVE).
+         - Compile all gathered information into a coherent final answer.
+      2. When finished, you MUST call:
+             signal(status: "JOB_DONE", result: <final answer in Markdown>)
+      3. If blocked by an error you cannot proceed past, you MUST call:
+             signal(status: "BLOCKED", reason: <verbatim error message>)
+      4. After calling signal, do not call any other tool. The runtime terminates you.
+
+    Not calling signal means your work is lost. Returning plain text instead of
+    a tool call as your final action is a protocol violation — the runtime
+    will nudge you to call signal, and then abort with BLOCKED if you refuse.
+
+    CRITICAL RULES:
+      1. Language: the user's language is "#{lang}" (ISO 639-1). Every piece of
+         user-facing output you produce — including the signal(result=...) text,
+         signal(reason=...) text, and any tool arguments that will be echoed to
+         the user — MUST be written in "#{lang}". Do not switch languages.
+      2. Tool calls: ALWAYS via the tool-calling mechanism. Plain text that mimics tool calls (e.g. `[used: bash(...)]`) is FORBIDDEN.
+      3. web_search is EXPENSIVE. Use only for: breaking news, sports/stock/weather, current status of a service, figures that change over time, latest versions, or anything you are unsure about.
+         Do NOT call web_search for: translation, summarisation, writing help, coding questions you can answer, science, history, math, geography, or well-known stable concepts.
+    """
+  end
+
   # ─── Public API ────────────────────────────────────────────────────────────
 
-  @system_prompt """
-  You are a focused worker agent, operating within the scope of DMH-AI ecosystem. Complete the task given to you using the tools available.
-
-  Available tools and when to use them:
-  - bash             — run shell commands; always write commands that produce concise output — use grep, awk, head -n, cut to filter verbose dumps; avoid commands that print large raw tables
-  - write_file / read_file / list_dir — file operations
-  - web_search       — search the Web using keywords
-  - web_fetch        — fetch a URL and read the content
-  - calculator       — evaluate math expressions
-  - datetime         — get current date/time
-  - describe_image   — describe the visual content of an image file (pass the file path); use when you need to understand what an image contains
-  - describe_video   — describe the visual content of a video file (pass the file path); extracts frames and returns a structured description
-  - parse_document   — extract text from a document file (.pdf, .docx, .odt, .pptx, .epub, .html, etc.) and return it as Markdown
-  - spawn_task       — spawn a short-lived background process to run a bash command after an optional delay; the result is returned to you in the NEXT step
-  - midjob_notify    — push an update/report to the user mid-task (appears in chat + external platforms)
-  - declare_periodic — declare that this is a long-running repeating task; lifts the iteration cap
-
-  **Rules for ONE-OFF tasks**:
-  1. Work through the task step by step using bash, web_search, web_fetch, file tools, etc.
-  2. Return a clear final summary when done.
-
-  **Rules for PERIODIC tasks** (monitoring, polling, scheduled reports):
-  1. Call declare_periodic FIRST — before anything else.
-  2. ONLY generate exactly ONE item per cycle on-demand (e.g. one joke, one report) via `spawn_task` e.g., `spawn_task(command: "...", delay_ms: 10000)`. The result WILL be available automatically.
-  3. When the result arrives, call `midjob_notify` to deliver it to the user.
-  4. Then call `spawn_task` again with the same delay to schedule the next iteration.
-  5. NEVER use `sleep` in bash commands or write shell scripts with `while true; sleep N`. That blocks the process. Use `spawn_task` with delay_ms instead.
-  6. Never pre-generate content in bulk upfront.
-  7. Repeat indefinitely until the user cancels.
-
-  **CRITICAL RULES:**
-  1. Language:
-     - Always use the **SAME** language as the task description.
-     - Never switch to another language unless explicitly asked.
-  2. Tool calling:
-     - ALWAYS invoke tools via the tool-calling mechanism. Call that does NOT conform to tool schemas is FORBIDDEN.
-  3. `web_search` is EXPENSIVE: Only call `web_search` when the task genuinely requires live or recent data:
-     - Breaking news, sports scores, stock/crypto prices, weather, recent headlines
-     - Current status of a service, platform, website, or system (outages, incidents)
-     - Figures that change over time: tax rates, salary tables, laws, regulations, prices, statistics
-     - Latest version, recent release, or recent update of a product, tool, or library
-     - Anything you are unsure about or that may have changed since your training data
-     **Do NOT call** `web_search` for: translation, summarisation, writing help, coding questions you can answer, science, history, math, geography, or well-known stable concepts.
-  """
-
   @doc """
-  Start a fresh worker from scratch.
-  `context` must contain: user_id, session_id, agent_pid, worker_id, description.
+  Start a fresh worker for a job.
+  `ctx` MUST contain: user_id, session_id, worker_id, job_id, task, agent_pid (optional).
+  Returns {:ok, {:signal, status, payload}} | {:error, reason}.
   """
-  @spec run(String.t(), map()) :: {:ok, String.t()} | {:error, term()}
+  @spec run(String.t(), map()) ::
+          {:ok, {:signal, String.t(), String.t()}} | {:error, term()}
   def run(task, context) do
     model = AgentSettings.worker_model()
     tools = ToolRegistry.all_definitions()
+    language = Map.get(context, :language, "en")
+
     messages = [
-      %{role: "system", content: @system_prompt},
+      %{role: "system", content: build_system_prompt(language)},
       %{role: "user",   content: task}
     ]
 
@@ -108,236 +121,239 @@ defmodule Dmhai.Agent.Worker do
       |> Map.put(:worker_pid, self())
       |> Map.put(:task, task)
       |> Map.put_new(:rolling_summary, nil)
+      |> Map.put_new(:language, language)
 
     worker_id = Map.get(ctx, :worker_id, "unknown")
-    WorkerState.upsert(worker_id, ctx.session_id, ctx.user_id, task, messages, 0, false, nil, "running")
+    job_id    = Map.get(ctx, :job_id)
 
-    Logger.info("[Worker] starting model=#{model} task=#{String.slice(task, 0, 80)}")
-    result = loop(messages, tools, model, ctx)
-
-    case result do
-      {:ok, text} ->
-        MasterBuffer.append(context.session_id, context.user_id, text, nil, worker_id)
-
-      {:error, reason} ->
-        MasterBuffer.append(
-          context.session_id, context.user_id,
-          "__WORKER_ERROR__\n#{worker_error_text(reason)}",
-          nil, worker_id
-        )
+    if is_nil(job_id) do
+      Logger.error("[Worker] missing :job_id in ctx — refusing to run")
+      {:error, :missing_job_id}
+    else
+      Logger.info("[Worker] starting model=#{model} job=#{job_id} worker=#{worker_id}")
+      loop(messages, tools, model, ctx)
     end
-
-    WorkerState.mark_done(worker_id)
-    result
-  end
-
-  @doc """
-  Resume a worker from a DB checkpoint after a crash or restart.
-  `checkpoint` is a map from WorkerState.fetch_running/1.
-  `agent_pid` is the UserAgent GenServer PID for progress reporting.
-  """
-  @spec run_from_checkpoint(map(), pid()) :: {:ok, String.t()} | {:error, term()}
-  def run_from_checkpoint(checkpoint, agent_pid) do
-    model = AgentSettings.worker_model()
-    tools = ToolRegistry.all_definitions()
-    messages = normalize_messages(checkpoint.messages)
-
-    ctx = %{
-      user_id:         checkpoint.user_id,
-      session_id:      checkpoint.session_id,
-      worker_pid:      self(),
-      agent_pid:       agent_pid,
-      worker_id:       checkpoint.worker_id,
-      description:     checkpoint.task,
-      task:            checkpoint.task,
-      iter:            checkpoint.iter,
-      periodic:        checkpoint.periodic,
-      rolling_summary: checkpoint.rolling_summary
-    }
-
-    Logger.info("[Worker] resuming checkpoint id=#{checkpoint.worker_id} iter=#{checkpoint.iter}")
-    result = loop(messages, tools, model, ctx)
-
-    case result do
-      {:ok, text} ->
-        MasterBuffer.append(checkpoint.session_id, checkpoint.user_id, text, nil, checkpoint.worker_id)
-
-      {:error, reason} ->
-        MasterBuffer.append(
-          checkpoint.session_id, checkpoint.user_id,
-          "__WORKER_ERROR__\n#{worker_error_text(reason)}",
-          nil, checkpoint.worker_id
-        )
-    end
-
-    WorkerState.mark_done(checkpoint.worker_id)
-    result
   end
 
   # ─── Private ───────────────────────────────────────────────────────────────
 
-  # ctx carries loop-control state:
-  #   :iter            — tool-call rounds completed (default 0)
-  #   :periodic        — true once declare_periodic has been called (default false)
-  #   :worker_pid      — this process's PID
-  #   :task            — original task text (for periodic history reset)
-  #   :rolling_summary — accumulated compaction summary (nil initially)
-
   defp loop(messages, tools, model, ctx) do
-    messages = drain_subtask_results(messages, ctx)
+    {messages, ctx} = drain_subtask_results(messages, ctx)
     {messages, ctx} = maybe_compact_worker_messages(messages, ctx)
 
     iter     = Map.get(ctx, :iter, 0)
-    periodic = Map.get(ctx, :periodic, false)
     max_iter = AgentSettings.worker_max_iter()
 
-    if not periodic and iter >= max_iter do
-      Logger.warning("[Worker] max iterations (#{max_iter}) reached model=#{model}")
-      {:ok, "I reached the maximum number of tool-call steps (#{max_iter}). The task may be incomplete."}
+    if iter >= max_iter do
+      Logger.warning("[Worker] max iterations (#{max_iter}) reached — forcing BLOCKED")
+      lang = Map.get(ctx, :language, "en")
+      emit_synthetic_final(ctx, "BLOCKED", Dmhai.I18n.t("max_iter_reached", lang, %{max: max_iter}))
+      {:error, :max_iter_without_signal}
     else
-      worker_id   = Map.get(ctx, :worker_id, "unknown")
+      worker_id = Map.get(ctx, :worker_id, "unknown")
+      job_id    = Map.get(ctx, :job_id)
       description = Map.get(ctx, :description, "")
 
       on_tokens = fn rx, tx ->
         TokenTracker.add_worker(ctx.session_id, ctx.user_id, worker_id, description, rx, tx)
       end
 
-      Dmhai.SysLog.log("[WORKER] iter=#{iter} id=#{worker_id} periodic=#{periodic} msgs=#{length(messages)} summary=#{inspect(Map.get(ctx, :rolling_summary))|> String.slice(0,80)}\n  #{log_worker_messages(messages)}")
+      Dmhai.SysLog.log("[WORKER] iter=#{iter} id=#{worker_id} job=#{job_id} msgs=#{length(messages)}\n  #{log_worker_messages(messages)}")
 
       # Inject rolling summary as a transient prefix — not stored in messages.
       effective_messages = inject_rolling_summary(messages, ctx)
 
       case LLM.call(model, effective_messages, tools: tools, on_tokens: on_tokens) do
         {:ok, {:tool_calls, calls}} ->
-          Logger.info("[Worker] executing #{length(calls)} tool(s) iter=#{iter} periodic=#{periodic}")
-          call_names = Enum.map_join(calls, ", ", fn c -> get_in(c, ["function", "name"]) || "?" end)
-          Dmhai.SysLog.log("[WORKER] id=#{worker_id} iter=#{iter} → tool_calls=[#{call_names}]")
-
-          case Police.check_tool_calls(calls, messages) do
-            {:rejected, reason} ->
-              consec = Map.get(ctx, :consecutive_rejections, 0) + 1
-              if consec >= @max_consecutive_rejections do
-                Logger.error("[Worker] Police: max rejections reached (#{reason}), stopping")
-                {:error, "Repeated policy violation: #{reason}"}
-              else
-                rejection_msg = %{role: "user", content: Police.rejection_msg()}
-                new_ctx = Map.put(ctx, :consecutive_rejections, consec)
-                loop(messages ++ [rejection_msg], tools, model, new_ctx)
-              end
-
-            :ok ->
-          declaring_periodic = Enum.any?(calls, fn c ->
-            get_in(c, ["function", "name"]) == "declare_periodic"
-          end)
-
-          new_periodic = periodic or declaring_periodic
-
-          if declaring_periodic and not periodic do
-            Logger.info("[Worker] periodic mode declared — iteration cap lifted")
-          end
-
-          assistant_msg = %{role: "assistant", content: "", tool_calls: calls}
-
-          tool_result_msgs =
-            Enum.map(calls, fn call ->
-              name         = get_in(call, ["function", "name"]) || ""
-              args         = get_in(call, ["function", "arguments"]) || %{}
-              tool_call_id = call["id"] || ""
-
-              Logger.info("[Worker] tool=#{name} args=#{inspect(args, limit: 200)}")
-
-              args_str = Jason.encode!(args) |> String.slice(0, 200)
-              Dmhai.SysLog.log("[WORKER] id=#{worker_id} tool=#{name} args=#{args_str}")
-
-              content =
-                case ToolRegistry.execute(name, args, ctx) do
-                  {:ok, result}    -> maybe_summarize_result(format_tool_result(result))
-                  {:error, reason} -> "Error: #{reason}"
-                end
-
-              Dmhai.SysLog.log("[WORKER] id=#{worker_id} tool=#{name} result=#{String.slice(content, 0, 300)}")
-
-              if agent_pid = Map.get(ctx, :agent_pid) do
-                send(agent_pid, {:worker_progress, worker_id, "#{name}: #{String.slice(content, 0, 150)}"})
-              end
-
-              %{role: "tool", content: content, tool_call_id: tool_call_id}
-            end)
-
-          new_messages = messages ++ [assistant_msg] ++ tool_result_msgs
-          new_ctx      =
-            ctx
-            |> Map.put(:iter, iter + 1)
-            |> Map.put(:periodic, new_periodic)
-            |> Map.put(:consecutive_rejections, 0)
-
-          # Checkpoint to DB so a restart can resume from here.
-          # Uses checkpoint/5 (not upsert) so status is not clobbered —
-          # 'recovering' stays 'recovering', preventing double-claim on idle-timeout restart.
-          WorkerState.checkpoint(
-            worker_id, new_messages,
-            iter + 1, new_periodic, Map.get(new_ctx, :rolling_summary)
-          )
-
-          loop(new_messages, tools, model, new_ctx)
-          end  # case Police.check_tool_calls
+          handle_tool_calls(calls, messages, tools, model, ctx, iter)
 
         {:ok, text} when is_binary(text) and text != "" ->
-          Dmhai.SysLog.log("[WORKER] id=#{worker_id} iter=#{iter} → text(#{String.length(text)} chars): #{String.slice(text, 0, 200)}")
-
-          case Police.check_text(text, ctx) do
-            {:rejected, reason} ->
-              consec = Map.get(ctx, :consecutive_rejections, 0) + 1
-              if consec >= @max_consecutive_rejections do
-                Logger.error("[Worker] Police: max rejections reached (#{reason}), stopping")
-                {:error, "Repeated policy violation: #{reason}"}
-              else
-                rejection_msg = %{role: "user", content: Police.rejection_msg()}
-                assistant_msg = %{role: "assistant", content: text}
-                new_ctx = Map.put(ctx, :consecutive_rejections, consec)
-                loop(messages ++ [assistant_msg, rejection_msg], tools, model, new_ctx)
-              end
-
-            :ok ->
-          if Map.get(ctx, :periodic, false) do
-            # In periodic mode the LLM sometimes returns a text summary after
-            # scheduling the next spawn_task. Block until the result arrives.
-            Logger.info("[Worker] periodic: LLM returned text, waiting for next subtask result")
-            assistant_msg = %{role: "assistant", content: text}
-            deadline = System.monotonic_time(:millisecond) + @subtask_wait_ms
-
-            case await_subtask_result(deadline) do
-              {:ok, output} ->
-                user_msg = %{role: "user", content: "[Scheduled task result]\n#{output}"}
-                loop(messages ++ [assistant_msg, user_msg], tools, model, ctx)
-
-              :timeout ->
-                Logger.warning("[Worker] periodic: timed out waiting for subtask result, stopping")
-                {:ok, text}
-            end
-          else
-            Logger.info("[Worker] done chars=#{String.length(text)}")
-            {:ok, text}
-          end
-          end  # case Police.check_text
+          handle_text_response(text, messages, tools, model, ctx)
 
         {:ok, ""} ->
-          Logger.warning("[Worker] empty response, stopping")
-          {:ok, "The agent finished but produced no output."}
+          Logger.warning("[Worker] empty response — forcing BLOCKED")
+          lang = Map.get(ctx, :language, "en")
+          emit_synthetic_final(ctx, "BLOCKED", Dmhai.I18n.t("llm_empty_response", lang))
+          {:error, :empty_response}
 
         {:error, reason} ->
           Logger.error("[Worker] LLM error: #{inspect(reason)}")
           Dmhai.SysLog.log("[WORKER] id=#{worker_id} iter=#{iter} → ERROR: #{inspect(reason)}")
+          lang = Map.get(ctx, :language, "en")
+          emit_synthetic_final(ctx, "BLOCKED", Dmhai.I18n.t("llm_error", lang, %{reason: inspect(reason)}))
           {:error, inspect(reason)}
       end
     end
   end
 
+  # ── tool_calls branch ─────────────────────────────────────────────────────
+
+  defp handle_tool_calls(calls, messages, tools, model, ctx, iter) do
+    worker_id = Map.get(ctx, :worker_id, "unknown")
+    job_id    = Map.get(ctx, :job_id)
+
+    call_names = Enum.map_join(calls, ", ", fn c -> get_in(c, ["function", "name"]) || "?" end)
+    Logger.info("[Worker] executing #{length(calls)} tool(s) iter=#{iter}: #{call_names}")
+    Dmhai.SysLog.log("[WORKER] id=#{worker_id} iter=#{iter} → tool_calls=[#{call_names}]")
+
+    case Police.check_tool_calls(calls, messages, ctx) do
+      {:rejected, reason} ->
+        handle_rejection(ctx, messages, tools, model, reason, nil)
+
+      :ok ->
+        # Write one worker_status row per pending tool call (BEFORE execution)
+        Enum.each(calls, fn call ->
+          name = get_in(call, ["function", "name"]) || ""
+          args = get_in(call, ["function", "arguments"]) || %{}
+          args_preview = Jason.encode!(args) |> String.slice(0, 600)
+          WorkerStatus.append(job_id, worker_id, "tool_call", "#{name}(#{args_preview})")
+        end)
+
+        assistant_msg = %{role: "assistant", content: "", tool_calls: calls}
+
+        {tool_result_msgs, signal_result} = execute_tools(calls, ctx)
+
+        new_messages = messages ++ [assistant_msg] ++ tool_result_msgs
+
+        new_ctx =
+          ctx
+          |> Map.put(:iter, iter + 1)
+          |> Map.put(:consecutive_rejections, 0)
+
+        case signal_result do
+          {:terminate, status, payload} ->
+            Logger.info("[Worker] signal received status=#{status} — exiting loop")
+            {:ok, {:signal, status, payload}}
+
+          nil ->
+            loop(new_messages, tools, model, new_ctx)
+        end
+    end
+  end
+
+  # Execute each tool call sequentially. Returns {tool_result_messages, signal_or_nil}.
+  # If the batch contains a `signal` call, capture its status/payload and return
+  # {:terminate, status, payload} so the loop can exit cleanly.
+  defp execute_tools(calls, ctx) do
+    worker_id = Map.get(ctx, :worker_id, "unknown")
+    job_id    = Map.get(ctx, :job_id)
+
+    Enum.reduce(calls, {[], nil}, fn call, {acc_msgs, signal_acc} ->
+      name         = get_in(call, ["function", "name"]) || ""
+      args         = get_in(call, ["function", "arguments"]) || %{}
+      tool_call_id = call["id"] || ""
+
+      args_str = Jason.encode!(args) |> String.slice(0, 200)
+      Dmhai.SysLog.log("[WORKER] id=#{worker_id} tool=#{name} args=#{args_str}")
+
+      exec_result = ToolRegistry.execute(name, args, ctx)
+
+      content =
+        case exec_result do
+          {:ok, result}    -> maybe_summarize_result(format_tool_result(result))
+          {:error, reason} -> "Error: #{reason}"
+        end
+
+      WorkerStatus.append(job_id, worker_id, "tool_result", "#{name} → #{String.slice(content, 0, 300)}")
+
+      # Only treat `signal` as terminal if the tool actually SUCCEEDED.
+      # A failed signal call (bad args) is a normal tool error — let the
+      # model see the error and retry with correct args.
+      new_signal =
+        if name == "signal" and match?({:ok, _}, exec_result) do
+          status  = String.upcase(to_string(args["status"] || ""))
+          payload = args["result"] || args["reason"] || ""
+          {:terminate, status, payload}
+        else
+          signal_acc
+        end
+
+      tool_msg = %{role: "tool", content: content, tool_call_id: tool_call_id}
+      {acc_msgs ++ [tool_msg], new_signal}
+    end)
+  end
+
+  # ── text-response branch ──────────────────────────────────────────────────
+
+  defp handle_text_response(text, messages, tools, model, ctx) do
+    worker_id = Map.get(ctx, :worker_id, "unknown")
+    iter = Map.get(ctx, :iter, 0)
+    Dmhai.SysLog.log("[WORKER] id=#{worker_id} iter=#{iter} → text(#{String.length(text)} chars): #{String.slice(text, 0, 200)}")
+
+    case Police.check_text(text, ctx) do
+      {:rejected, reason} ->
+        handle_rejection(ctx, messages, tools, model, reason, text)
+
+      :ok ->
+        # Text WITHOUT calling signal = protocol violation. Nudge, then fail hard.
+        consec = Map.get(ctx, :consecutive_rejections, 0) + 1
+
+        if consec >= @max_consecutive_rejections do
+          Logger.error("[Worker] refused to call signal after #{consec} nudges — forcing BLOCKED")
+          lang = Map.get(ctx, :language, "en")
+          reason = Dmhai.I18n.t("worker_refused_signal", lang, %{
+            count: consec,
+            text: String.slice(text, 0, 800)
+          })
+          emit_synthetic_final(ctx, "BLOCKED", reason)
+          {:error, :no_signal_after_nudges}
+        else
+          nudge = %{role: "user", content: protocol_nudge_msg()}
+          assistant_msg = %{role: "assistant", content: text}
+          new_ctx = Map.put(ctx, :consecutive_rejections, consec)
+          loop(messages ++ [assistant_msg, nudge], tools, model, new_ctx)
+        end
+    end
+  end
+
+  defp protocol_nudge_msg do
+    "PROTOCOL VIOLATION: You returned plain text instead of calling signal. " <>
+      "End your work by calling signal(status: \"JOB_DONE\", result: <answer>) " <>
+      "or signal(status: \"BLOCKED\", reason: <error>). Call signal now — do not repeat your text."
+  end
+
+  # Shared rejection handler: inject Police's rejection message + increment counter.
+  defp handle_rejection(ctx, messages, tools, model, reason, last_assistant_text) do
+    consec = Map.get(ctx, :consecutive_rejections, 0) + 1
+
+    if consec >= @max_consecutive_rejections do
+      Logger.error("[Worker] Police: max rejections reached (#{reason}) — forcing BLOCKED")
+      lang = Map.get(ctx, :language, "en")
+      localized = Dmhai.I18n.t("policy_violation", lang, %{reason: reason})
+      emit_synthetic_final(ctx, "BLOCKED", localized)
+      {:error, "Repeated policy violation: #{reason}"}
+    else
+      rejection_msg = %{role: "user", content: Police.rejection_msg()}
+
+      extra =
+        if last_assistant_text do
+          [%{role: "assistant", content: last_assistant_text}]
+        else
+          []
+        end
+
+      new_ctx = Map.put(ctx, :consecutive_rejections, consec)
+      loop(messages ++ extra ++ [rejection_msg], tools, model, new_ctx)
+    end
+  end
+
+  # ── synthetic final ──────────────────────────────────────────────────────
+
+  # Used when the runtime needs to force a BLOCKED/JOB_DONE row on the worker's
+  # behalf (model refused signal, LLM error, iter cap hit).
+  defp emit_synthetic_final(ctx, status, payload) do
+    job_id    = Map.get(ctx, :job_id)
+    worker_id = Map.get(ctx, :worker_id, "unknown")
+
+    if job_id do
+      WorkerStatus.append(job_id, worker_id, "final", payload, status)
+    else
+      Logger.error("[Worker] emit_synthetic_final called without job_id")
+    end
+  end
+
   # ─── Context compaction ────────────────────────────────────────────────────
 
-  # Rolling-summary compaction. Triggered when messages grow beyond system + N + M + 5.
-  # Old spillover messages are incorporated into a rolling_summary stored in ctx,
-  # never injected back into the message list — so they are never re-summarised.
   defp maybe_compact_worker_messages(messages, ctx) do
     n     = AgentSettings.worker_context_n()
     m     = AgentSettings.worker_context_m()
@@ -354,15 +370,22 @@ defmodule Dmhai.Agent.Worker do
 
       Logger.info("[Worker] compacting context old=#{old_count} middle=#{n} recent=#{m}")
 
-      new_summary  = update_rolling_summary(old, Map.get(ctx, :rolling_summary))
-      new_messages = [system_msg] ++ stub_tool_results(middle) ++ recent
-      new_ctx      = Map.put(ctx, :rolling_summary, new_summary)
-      {new_messages, new_ctx}
+      # Only DROP the old messages if the summariser successfully folded them
+      # into the rolling summary. On failure we keep the old list in place so
+      # no information is silently lost — compaction will retry next iteration.
+      case update_rolling_summary(old, Map.get(ctx, :rolling_summary)) do
+        {:ok, new_summary} ->
+          new_messages = [system_msg] ++ stub_tool_results(middle) ++ recent
+          new_ctx      = Map.put(ctx, :rolling_summary, new_summary)
+          {new_messages, new_ctx}
+
+        :failed ->
+          Logger.warning("[Worker] compaction failed — keeping full message list (no context loss)")
+          {messages, ctx}
+      end
     end
   end
 
-  # Inject the rolling summary as a transient message pair right after the system
-  # prompt so the LLM has context of prior work. Not stored in the message list.
   defp inject_rolling_summary(messages, ctx) do
     case Map.get(ctx, :rolling_summary) do
       s when s in [nil, ""] ->
@@ -377,10 +400,10 @@ defmodule Dmhai.Agent.Worker do
     end
   end
 
-  # Incorporate old spillover messages into the rolling summary.
-  # Passes only the new messages to the compactor; the existing summary is
-  # provided as context so it is updated rather than regenerated from scratch.
-  defp update_rolling_summary([], current_summary), do: current_summary
+  # Returns {:ok, new_summary} on success or :failed if every retry of the
+  # compactor LLM came back empty/errored. The caller must NOT drop the
+  # spillover messages on :failed — that would silently lose context.
+  defp update_rolling_summary([], current_summary), do: {:ok, current_summary}
 
   defp update_rolling_summary(old_messages, current_summary) do
     flat = flatten_for_compaction(old_messages)
@@ -399,15 +422,14 @@ defmodule Dmhai.Agent.Worker do
 
     case LLM.call(compactor_model(), compaction_msgs) do
       {:ok, new_summary} when is_binary(new_summary) and new_summary != "" ->
-        new_summary
+        {:ok, new_summary}
 
-      _ ->
-        Logger.warning("[Worker] rolling summary update failed, keeping old summary")
-        current_summary
+      other ->
+        Logger.warning("[Worker] rolling summary update failed: #{inspect(other)}")
+        :failed
     end
   end
 
-  # Flatten messages to simple role/content pairs for the compactor LLM.
   defp flatten_for_compaction(messages) do
     Enum.flat_map(messages, fn msg ->
       role    = msg[:role]       || msg["role"]       || "user"
@@ -431,8 +453,6 @@ defmodule Dmhai.Agent.Worker do
     end)
   end
 
-  # Replace tool result content with a size stub to save context tokens.
-  # Handles both atom-keyed and string-keyed maps (latter from DB recovery).
   defp stub_tool_results(messages) do
     Enum.map(messages, fn msg ->
       role = msg[:role] || msg["role"]
@@ -450,9 +470,10 @@ defmodule Dmhai.Agent.Worker do
     end)
   end
 
-  # Drain pending subtask results (non-blocking). In periodic mode, reset the
-  # full message history to [system + task + latest_result] so prior-cycle
-  # tool calls do not accumulate across iterations.
+  # ─── Subtask result draining ─────────────────────────────────────────────
+
+  # spawn_task delivers async bash output via {:subtask_result, output}.
+  # We drain non-blockingly at the top of each loop and append as user messages.
   defp drain_subtask_results(messages, ctx) do
     collect_results(messages, ctx, [])
   end
@@ -463,41 +484,12 @@ defmodule Dmhai.Agent.Worker do
         collect_results(messages, ctx, results ++ [maybe_summarize_result(output)])
     after 0 ->
       if results == [] do
-        messages
+        {messages, ctx}
       else
-        periodic = Map.get(ctx, :periodic, false)
-        if periodic do
-          # Drop all accumulated history — each cycle starts fresh.
-          [system_msg | _] = messages
-          task_text  = Map.get(ctx, :task, "")
-          last_output = List.last(results)
-          [
-            system_msg,
-            %{role: "user", content: task_text},
-            %{role: "user", content: "[Scheduled task result]\n#{last_output}"}
-          ]
-        else
-          extra = Enum.map(results, fn r ->
-            %{role: "user", content: "[Scheduled task result]\n#{r}"}
-          end)
-          messages ++ extra
-        end
-      end
-    end
-  end
-
-  # Block waiting for a single {:subtask_result} with a wall-clock deadline.
-  defp await_subtask_result(deadline) do
-    remaining = deadline - System.monotonic_time(:millisecond)
-
-    if remaining <= 0 do
-      :timeout
-    else
-      receive do
-        {:subtask_result, output} -> {:ok, output}
-        _other                    -> await_subtask_result(deadline)
-      after
-        remaining -> :timeout
+        extra = Enum.map(results, fn r ->
+          %{role: "user", content: "[Scheduled task result]\n#{r}"}
+        end)
+        {messages ++ extra, ctx}
       end
     end
   end
@@ -509,8 +501,6 @@ defmodule Dmhai.Agent.Worker do
 
   defp format_tool_result(result), do: inspect(result)
 
-  # Summarise large tool results before injecting into history.
-  # Falls back to hard truncation if the summariser fails.
   defp maybe_summarize_result(text) when is_binary(text) do
     max_chars = AgentSettings.max_tool_result_chars()
     if String.length(text) <= @summarize_threshold do
@@ -545,38 +535,6 @@ defmodule Dmhai.Agent.Worker do
       text
     end
   end
-
-  # Convert DB-loaded messages (string-keyed maps from Jason.decode) back to
-  # atom-keyed maps so pattern matching in loop and tools works correctly.
-  defp normalize_messages(messages) when is_list(messages) do
-    Enum.map(messages, fn
-      %{"role" => role} = msg ->
-        normalized = %{
-          role:    role,
-          content: msg["content"] || ""
-        }
-
-        normalized =
-          case msg["tool_calls"] do
-            nil -> normalized
-            tc  -> Map.put(normalized, :tool_calls, tc)
-          end
-
-        case msg["tool_call_id"] do
-          nil -> normalized
-          id  -> Map.put(normalized, :tool_call_id, id)
-        end
-
-      msg ->
-        # Already atom-keyed or unknown format — pass through.
-        msg
-    end)
-  end
-
-  defp normalize_messages(_), do: []
-
-  defp worker_error_text(reason) when is_binary(reason), do: reason
-  defp worker_error_text(reason), do: inspect(reason)
 
   defp log_worker_messages(messages) do
     non_sys = Enum.reject(messages, fn m -> (m[:role] || m["role"]) == "system" end)
