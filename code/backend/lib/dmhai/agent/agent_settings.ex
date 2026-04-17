@@ -13,8 +13,9 @@ defmodule Dmhai.Agent.AgentSettings do
   import Ecto.Adapters.SQL, only: [query!: 3]
 
   @defaults %{
-    "confidantModel"       => "gemini-3-flash-preview:cloud",
-    "assistantModel"       => "ministral-3:14b-cloud",
+    "confidantModel"         => "gemini-3-flash-preview:cloud",
+    "assistantModel"         => "ministral-3:14b-cloud",
+    "languageDetectorModel"  => "ministral-3:8b-cloud",
     "workerModel"          => "qwen3-coder-next:cloud",
     "compactorModel"       => "gemini-3-flash-preview:cloud",
     "summarizerModel"      => "gemini-3-flash-preview:cloud",
@@ -71,8 +72,9 @@ defmodule Dmhai.Agent.AgentSettings do
   end
 
   @doc "Shortcut accessors."
-  def confidant_model,        do: model_for("confidantModel")
-  def assistant_model,        do: model_for("assistantModel")
+  def confidant_model,          do: model_for("confidantModel")
+  def assistant_model,          do: model_for("assistantModel")
+  def language_detector_model,  do: model_for("languageDetectorModel")
   def worker_model,           do: model_for("workerModel")
   def compactor_model,        do: model_for("compactorModel")
   def summarizer_model,       do: model_for("summarizerModel")

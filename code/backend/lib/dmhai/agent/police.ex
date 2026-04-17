@@ -32,6 +32,11 @@ defmodule Dmhai.Agent.Police do
   # Tools allowed to repeat with the same args (scheduling/utility tools are intentional).
   @repeatable_tools MapSet.new(["spawn_task", "datetime"])
 
+  # Path tools that only READ — allowed anywhere within session_root.
+  @read_path_tools ["read_file", "list_dir", "describe_image", "describe_video", "parse_document"]
+  # Path tools that WRITE — restricted to workspace_dir.
+  @write_path_tools ["write_file"]
+
   @doc "Rejection message to inject."
   def rejection_msg, do: @rejection_msg
 
@@ -40,22 +45,14 @@ defmodule Dmhai.Agent.Police do
   Returns `:ok` or `{:rejected, reason_string}`.
   """
   @spec check_plan(String.t(), map()) :: :ok | {:rejected, String.t()}
-  def check_plan(plan_text, ctx) when is_binary(plan_text) do
-    session_root = Map.get(ctx, :session_root)
+  def check_plan(plan_text, _ctx) when is_binary(plan_text) do
 
-    cond do
-      dangerous_plan?(plan_text) ->
-        Logger.warning("[Police] dangerous_plan detected")
-        Dmhai.SysLog.log("[POLICE] REJECTED dangerous_plan")
-        {:rejected, "plan contains dangerous operations (e.g. unrestricted deletion or system-wide destructive commands)"}
-
-      is_binary(session_root) and plan_escapes_session?(plan_text, session_root) ->
-        Logger.warning("[Police] plan_path_escape detected")
-        Dmhai.SysLog.log("[POLICE] REJECTED plan_path_escape")
-        {:rejected, "plan references filesystem paths outside the session root"}
-
-      true ->
-        :ok
+    if dangerous_plan?(plan_text) do
+      Logger.warning("[Police] dangerous_plan detected")
+      Dmhai.SysLog.log("[POLICE] REJECTED dangerous_plan")
+      {:rejected, "plan contains dangerous operations (e.g. unrestricted deletion or system-wide destructive commands)"}
+    else
+      :ok
     end
   end
 
@@ -123,18 +120,6 @@ defmodule Dmhai.Agent.Police do
     Enum.any?(@dangerous_plan_patterns, fn pat -> Regex.match?(pat, text) end)
   end
 
-  # Look for absolute paths in the plan text that escape the session root.
-  defp plan_escapes_session?(plan_text, session_root) do
-    ~r{/[a-zA-Z][^\s"'`]+}
-    |> Regex.scan(plan_text)
-    |> List.flatten()
-    |> Enum.any?(fn candidate ->
-      expanded = Path.expand(candidate)
-      String.starts_with?(expanded, "/") and
-        not Dmhai.Util.Path.within?(expanded, session_root)
-    end)
-  end
-
   defp text_mimicry?(text) do
     Enum.any?(@mimicry_patterns, fn pat -> Regex.match?(pat, text) end)
   end
@@ -179,9 +164,6 @@ defmodule Dmhai.Agent.Police do
 
   # ── path safety ─────────────────────────────────────────────────────────
 
-  # Tools whose arguments include an explicit filesystem path.
-  @path_tools ["read_file", "write_file", "list_dir",
-               "describe_image", "describe_video", "parse_document"]
 
   # Tools whose `command` arg is a shell script — we scan for rm/rmdir/unlink.
   @shell_tools ["bash", "spawn_task"]
@@ -202,54 +184,97 @@ defmodule Dmhai.Agent.Police do
           args = if is_binary(args), do: decode_or_empty(args), else: args
 
           cond do
-            name in @path_tools -> check_path_arg(name, args, ctx, session_root)
-            name in @shell_tools -> check_shell_deletion(name, args, workspace_dir)
+            name in @read_path_tools  -> check_path_arg_read(args, ctx, session_root)
+            name in @write_path_tools -> check_path_arg_write(args, ctx, workspace_dir)
+            name in @shell_tools      -> check_shell_command(name, args, workspace_dir, session_root)
             true -> nil
           end
         end)
     end
   end
 
-  defp check_path_arg(_name, args, ctx, session_root) do
-    path = Map.get(args, "path")
+  # Read tools: path must be within session_root.
+  defp check_path_arg_read(args, ctx, session_root) do
+    check_resolved_path(args, ctx, session_root, "session root")
+  end
 
-    case path do
+  # Write tools: path must be within workspace_dir (stricter).
+  defp check_path_arg_write(args, ctx, workspace_dir) do
+    check_resolved_path(args, ctx, workspace_dir, "job workspace")
+  end
+
+  defp check_resolved_path(args, ctx, boundary, label) do
+    case Map.get(args, "path") do
       p when is_binary(p) ->
         case Dmhai.Util.Path.resolve(p, ctx) do
           {:ok, abs} ->
-            if Dmhai.Util.Path.within?(abs, session_root) do
+            if Dmhai.Util.Path.within?(abs, boundary) do
               nil
             else
-              "path '#{p}' escapes session root (#{session_root})"
+              "path '#{p}' escapes the #{label} (#{boundary})"
             end
-
           {:error, reason} -> reason
         end
-
       _ -> nil
     end
   end
 
-  defp check_shell_deletion(_name, args, workspace_dir) do
+  # Regex to extract literal absolute path tokens from a shell command.
+  # Matches /... tokens that appear after whitespace, shell operators, or quotes.
+  @abs_path_regex ~r{(?:^|\s|[=<>|;`'"(])(/[^\s"'`;&|<>()\$\\]+)}
+
+  # Shell output redirect targets: `> path` and `>> path`.
+  @redirect_regex ~r{>>?\s+(/[^\s"'`;&|<>()\$\\]+)}
+
+  # Write-like commands whose first non-flag argument is a write target.
+  @write_cmd_regex ~r{\b(?:tee|touch|mkdir|truncate)\s+(?:-\S+\s+)*(/[^\s"'`;&|<>()\$\\]+)}
+
+  defp check_shell_command(_name, args, workspace_dir, session_root) do
     case Map.get(args, "command") do
       cmd when is_binary(cmd) ->
-        case extract_deletion_targets(cmd) do
-          [] -> nil
-          targets ->
-            bad =
-              Enum.find(targets, fn t ->
-                not looks_inside_workspace?(t, workspace_dir)
-              end)
-
-            if bad do
-              "destructive command targets '#{bad}' outside the job workspace (#{workspace_dir})"
-            else
-              nil
-            end
-        end
-
-      _ -> nil
+        check_absolute_paths(cmd, session_root)
+        || check_deletion_scope(cmd, workspace_dir)
+        || check_write_targets(cmd, workspace_dir)
+      _ ->
+        nil
     end
+  end
+
+  defp check_write_targets(cmd, workspace_dir) do
+    targets =
+      (Regex.scan(@redirect_regex, cmd, capture: :all_but_first) ++
+       Regex.scan(@write_cmd_regex, cmd, capture: :all_but_first))
+      |> List.flatten()
+
+    bad = Enum.find(targets, fn p ->
+      expanded = Path.expand(p)
+      not Dmhai.Util.Path.within?(expanded, workspace_dir)
+    end)
+
+    if bad, do: "write operation targets '#{bad}' outside the job workspace (#{workspace_dir})"
+  end
+
+  defp check_deletion_scope(cmd, workspace_dir) do
+    case extract_deletion_targets(cmd) do
+      [] -> nil
+      targets ->
+        bad = Enum.find(targets, fn t -> not looks_inside_workspace?(t, workspace_dir) end)
+        if bad, do: "destructive command targets '#{bad}' outside the job workspace (#{workspace_dir})"
+    end
+  end
+
+  defp check_absolute_paths(_cmd, nil), do: nil
+  defp check_absolute_paths(cmd, session_root) do
+    bad =
+      @abs_path_regex
+      |> Regex.scan(cmd, capture: :all_but_first)
+      |> List.flatten()
+      |> Enum.find(fn p ->
+        expanded = Path.expand(p)
+        not Dmhai.Util.Path.within?(expanded, session_root)
+      end)
+
+    if bad, do: "bash command references path '#{bad}' outside the session root (#{session_root})"
   end
 
   # Heuristic: find tokens after `rm`, `rmdir`, `unlink`, or `del` that look

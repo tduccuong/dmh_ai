@@ -10,10 +10,7 @@ defmodule Dmhai.Tools.Calculator do
   def name, do: "calculator"
 
   @impl true
-  def description,
-    do:
-      "Evaluate a mathematical expression. Supports arithmetic, trig, logarithms, constants (pi, e, inf), " <>
-        "and complex numbers. Examples: '2 ** 32', 'sqrt(2)', 'log(1000, 10)', 'sin(pi/4)'."
+  def description, do: "Evaluate a math expression (arithmetic, trig, log, complex; constants: pi, e)."
 
   @impl true
   def definition do
@@ -23,11 +20,7 @@ defmodule Dmhai.Tools.Calculator do
       parameters: %{
         type: "object",
         properties: %{
-          expression: %{
-            type: "string",
-            description:
-              "Math expression to evaluate, e.g. '2 + 2', 'sqrt(144)', 'sin(pi / 4)', '(1 + 1/n) ** n'"
-          }
+          expression: %{type: "string", description: "Expression to evaluate, e.g. 'sqrt(2)', 'sin(pi/4)'."}
         },
         required: ["expression"]
       }

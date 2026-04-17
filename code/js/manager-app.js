@@ -255,17 +255,20 @@ UIManager.clearSession = async function() {
     if (!this.currentSession) return;
     const ok = await Modal.confirm(t('clearSession'), t('clearConfirm1') + this.currentSession.name + t('clearConfirm2'), t('clear'));
     if (!ok) return;
-    // Cancel any running workers and flush pending buffer entries before clearing messages
-    apiFetch('/sessions/' + this.currentSession.id + '/cancel-workers', { method: 'POST' }).catch(function() {});
-    this.currentSession.messages = [];
-    this.currentSession.context = { summary: null, summaryUpToIndex: -1 };
-    await SessionStore.updateSession(this.currentSession);
+    var oldSessionId = this.currentSession.id;
+    var currentMode = this._currentMode || 'confidant';
+    apiFetch('/sessions/' + oldSessionId + '/cancel-workers', { method: 'POST' }).catch(function() {});
+    await SessionStore.deleteSession(oldSessionId);
+    var newSession = await SessionStore.createSession(t('newChat'), currentMode);
+    await SessionStore.setCurrentSessionId(newSession.id);
+    this.currentSession = newSession;
     this._imageDescriptions = {};
     this._videoDescriptions = {};
-    ImageDescriptionStore.deleteForSession(this.currentSession.id);
-    VideoDescriptionStore.deleteForSession(this.currentSession.id);
+    ImageDescriptionStore.deleteForSession(oldSessionId);
+    VideoDescriptionStore.deleteForSession(oldSessionId);
     this.attachedFiles = [];
     this.renderAttachments();
+    await this.renderSessions();
     this.renderChat();
 };
 

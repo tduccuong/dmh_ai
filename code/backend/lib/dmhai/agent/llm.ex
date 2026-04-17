@@ -173,8 +173,15 @@ defmodule Dmhai.Agent.LLM do
     if on_tokens && (rx > 0 or tx > 0), do: on_tokens.(rx, tx)
     msg = body["message"] || %{}
     tool_calls = msg["tool_calls"]
-    content = msg["content"] || ""
-    thinking = msg["thinking"]
+    raw_content = msg["content"] || ""
+
+    # Unified thinking extraction: prefer dedicated field (Gemini), fall back to
+    # stripping <think>...</think> from content (Qwen3 and others).
+    {thinking, content} =
+      case msg["thinking"] do
+        t when is_binary(t) and t != "" -> {t, raw_content}
+        _ -> extract_think_tags(raw_content)
+      end
 
     if is_binary(thinking) and thinking != "" do
       Logger.debug("[LLM] thinking len=#{String.length(thinking)} #{model_str}: #{String.slice(thinking, 0, 200)}")
@@ -186,14 +193,59 @@ defmodule Dmhai.Agent.LLM do
         {:ok, {:tool_calls, normalize_tool_calls(tool_calls)}}
 
       true ->
-        Logger.info("[LLM] call done chars=#{String.length(to_string(content))} #{model_str}")
-        {:ok, to_string(content)}
+        Logger.info("[LLM] call done chars=#{String.length(content)} #{model_str}")
+        {:ok, content}
     end
   end
 
   defp parse_response(body, _model_str, _on_tokens) do
     {:error, "Unexpected response: #{inspect(body, limit: 200)}"}
   end
+
+  # Extract <think>...</think> blocks from content (Qwen3-style embedded thinking).
+  # Returns {thinking_text, clean_content}.
+  defp extract_think_tags(content) when is_binary(content) do
+    thinking = Regex.scan(~r/<think>(.*?)<\/think>/s, content, capture: :all_but_first)
+               |> List.flatten()
+               |> Enum.join("\n")
+    clean = Regex.replace(~r/<think>.*?<\/think>/s, content, "") |> String.trim()
+    {if(thinking == "", do: nil, else: thinking), clean}
+  end
+
+  # Split a streaming content token into {think_part, content_part} by tracking
+  # whether we're currently inside a <think>...</think> block across tokens.
+  defp split_think_token(token, think_key, in_think_key) do
+    combined = Process.get(think_key) <> token
+    in_think = Process.get(in_think_key)
+
+    {think_out, content_out, new_think_buf, new_in_think} =
+      parse_think_stream(combined, in_think, "", "")
+
+    Process.put(think_key, new_think_buf)
+    Process.put(in_think_key, new_in_think)
+    {think_out, content_out}
+  end
+
+  defp parse_think_stream(<<>>, in_think, think_acc, content_acc),
+    do: {think_acc, content_acc, "", in_think}
+
+  defp parse_think_stream(<<"<think>", rest::binary>>, false, think_acc, content_acc),
+    do: parse_think_stream(rest, true, think_acc, content_acc)
+
+  defp parse_think_stream(<<"</think>", rest::binary>>, true, think_acc, content_acc),
+    do: parse_think_stream(rest, false, think_acc, content_acc)
+
+  defp parse_think_stream(<<"<think", _::binary>> = buf, false, think_acc, content_acc),
+    do: {think_acc, content_acc, buf, false}
+
+  defp parse_think_stream(<<"</think", _::binary>> = buf, true, think_acc, content_acc),
+    do: {think_acc, content_acc, buf, true}
+
+  defp parse_think_stream(<<char::utf8, rest::binary>>, true, think_acc, content_acc),
+    do: parse_think_stream(rest, true, think_acc <> <<char::utf8>>, content_acc)
+
+  defp parse_think_stream(<<char::utf8, rest::binary>>, false, think_acc, content_acc),
+    do: parse_think_stream(rest, false, think_acc, content_acc <> <<char::utf8>>)
 
   # ─── Tool call normalization ────────────────────────────────────────────────
 
@@ -336,14 +388,18 @@ defmodule Dmhai.Agent.LLM do
   end
 
   defp do_stream_request(url, headers, body, reply_pid, model_str, on_tokens) do
-    text_key  = {__MODULE__, :text,  self()}
-    calls_key = {__MODULE__, :calls, self()}
-    buf_key   = {__MODULE__, :buf,   self()}
-    err_key   = {__MODULE__, :err,   self()}
+    text_key    = {__MODULE__, :text,       self()}
+    calls_key   = {__MODULE__, :calls,      self()}
+    buf_key     = {__MODULE__, :buf,        self()}
+    err_key     = {__MODULE__, :err,        self()}
+    think_key   = {__MODULE__, :think_buf,  self()}
+    in_think_key = {__MODULE__, :in_think,  self()}
 
-    Process.put(text_key,  "")
-    Process.put(calls_key, [])
-    Process.put(buf_key,   "")
+    Process.put(text_key,     "")
+    Process.put(calls_key,    [])
+    Process.put(buf_key,      "")
+    Process.put(think_key,    "")
+    Process.put(in_think_key, false)
     Process.delete(err_key)
 
     result =
@@ -368,8 +424,15 @@ defmodule Dmhai.Agent.LLM do
                 case Jason.decode(line) do
                   {:ok, %{"message" => %{"content" => token}}}
                   when is_binary(token) and token != "" ->
-                    Process.put(text_key, Process.get(text_key) <> token)
-                    send(reply_pid, {:chunk, token})
+                    {think_tok, content_tok} = split_think_token(token, think_key, in_think_key)
+                    if think_tok != "" do
+                      Logger.debug("[LLM] thinking token len=#{String.length(think_tok)}")
+                      send(reply_pid, {:thinking, think_tok})
+                    end
+                    if content_tok != "" do
+                      Process.put(text_key, Process.get(text_key) <> content_tok)
+                      send(reply_pid, {:chunk, content_tok})
+                    end
                     {:cont, false}
 
                   {:ok, %{"message" => %{"thinking" => token}}}
@@ -490,6 +553,7 @@ defmodule Dmhai.Agent.LLM do
            json: body,
            headers: headers,
            receive_timeout: :infinity,
+           pool_timeout: 30_000,
            retry: false,
            finch: Dmhai.Finch
          ) do

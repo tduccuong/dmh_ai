@@ -23,11 +23,13 @@ defmodule Dmhai.Web.Fetcher do
 
   require Logger
 
+  alias Dmhai.Agent.AgentSettings
   alias Dmhai.Util.{Html, Url}
   alias Dmhai.Web.{CmpDetector, ConsentSeeder, Fallback, ReaderExtractor}
 
   @user_agent "Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/115.0"
   @default_timeout_ms 15_000
+  @jina_timeout_ms    10_000
   @max_chars 20_000
 
   @doc """
@@ -61,14 +63,14 @@ defmodule Dmhai.Web.Fetcher do
 
       {:cmp, vendor, state} ->
         Logger.info("[Web.Fetcher] CMP=#{vendor} detected for #{url} — trying fallbacks")
-        walk_fallbacks(Fallback.all_variants(url), %{state | cmp: vendor})
+        state = %{state | cmp: vendor}
+        case walk_fallbacks(Fallback.all_variants(url), state) do
+          {:ok, _} = ok -> ok
+          {:error, _}   -> try_jina(url, state)
+        end
 
       {:error, reason, state} ->
-        if Map.get(state, :cmp) do
-          walk_fallbacks(Fallback.all_variants(url), state)
-        else
-          {:error, {:fetch_failed, reason, url, Enum.reverse(state.tried)}}
-        end
+        {:error, {:fetch_failed, reason, url, Enum.reverse(state.tried)}}
     end
   end
 
@@ -139,8 +141,8 @@ defmodule Dmhai.Web.Fetcher do
 
     source =
       cond do
-        state.cmp == nil             -> :direct
-        origin_url == state.original_url -> :direct
+        state.cmp == nil                                -> :direct
+        origin_url == state.original_url                -> :direct
         String.contains?(final_url, "archive.ph")       -> :archive_today
         String.contains?(final_url, "web.archive.org")  -> :wayback
         true                                            -> :amp_or_mirror
@@ -156,6 +158,60 @@ defmodule Dmhai.Web.Fetcher do
       cmp:        state.cmp,
       tried:      Enum.reverse(state.tried)
     }
+  end
+
+  # ── Jina reader — last-resort fallback after all URL variants fail ──────────
+
+  defp try_jina(url, state) do
+    jina_url = AgentSettings.jina_base_url() <> url
+    Logger.info("[Web.Fetcher] trying Jina reader for #{url}")
+
+    headers = [
+      {"User-Agent", user_agent(state.opts)},
+      {"Accept", "text/plain"},
+      {"X-No-Cache", "true"}
+    ]
+
+    result =
+      try do
+        Req.get(jina_url,
+          headers:         headers,
+          receive_timeout: @jina_timeout_ms,
+          decode_body:     false
+        )
+      rescue
+        _ -> {:error, :jina_error}
+      end
+
+    case result do
+      {:ok, %{status: status, body: body}} when status in 200..299 ->
+        text = if is_binary(body), do: body, else: to_string(body)
+
+        if String.length(text) < 200 do
+          cmp_wall_error(url, state)
+        else
+          truncated? = String.length(text) > state.max_chars
+          content    = if truncated?, do: String.slice(text, 0, state.max_chars), else: text
+
+          {:ok, %{
+            url:       state.original_url,
+            final_url: jina_url,
+            title:     nil,
+            content:   content,
+            truncated: truncated?,
+            source:    :jina_reader,
+            cmp:       state.cmp,
+            tried:     Enum.reverse([jina_url | state.tried])
+          }}
+        end
+
+      _ ->
+        cmp_wall_error(url, state)
+    end
+  end
+
+  defp cmp_wall_error(url, state) do
+    {:error, {:cmp_wall, url, cmp: state.cmp, tried: Enum.reverse(state.tried)}}
   end
 
   # ── options / injection ──────────────────────────────────────────────

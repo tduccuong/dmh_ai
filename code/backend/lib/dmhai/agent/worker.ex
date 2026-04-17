@@ -45,21 +45,12 @@ defmodule Dmhai.Agent.Worker do
   @doc false
   def build_system_prompt(language \\ "en") do
     lang = language || "en"
+    now  = DateTime.utc_now() |> DateTime.to_iso8601() |> String.slice(0, 16)
 
     """
     You are a focused worker agent, operating within the scope of DMH-AI ecosystem.
+    Current date/time: #{now} UTC
     Complete the task given to you using the tools available.
-
-    Available tools:
-    - plan — PLAN PHASE: submit your execution plan before taking any action.
-    - bash, read_file, write_file, list_dir — shell & file operations. Prefer concise commands (grep/awk/head/cut) over verbose dumps.
-    - web_fetch — fetch and read a URL (CMP/GDPR-aware; handles cookie walls via AMP and archive fallbacks).
-    - web_search — live web lookups (EXPENSIVE; use only for time-sensitive data not obtainable via web_fetch).
-    - calculator — math.
-    - datetime — current date/time.
-    - describe_image, describe_video, parse_document — media/doc understanding by file path.
-    - spawn_task — spawn an async bash command with optional delay; result arrives in a later step.
-    - signal — TERMINAL CONTRACT. See PROTOCOL below.
 
     PROTOCOL (mandatory, enforced by the runtime):
       0. PLAN FIRST: Before taking any other action, you MUST call:
@@ -74,7 +65,7 @@ defmodule Dmhai.Agent.Worker do
          Do NOT replan for minor deviations — only when the overall approach must change.
       1. EXECUTE: Carry out your plan step by step using the available tools.
          - For any URL in the task: call web_fetch first. This is deterministic and free.
-         - For additional live data not at those URLs: call web_search (EXPENSIVE).
+         - For time-sensitive or live data you cannot know from training (current events, prices, versions): call web_search (EXPENSIVE — check rule 3 before using).
          - Compile all gathered information into a coherent final answer.
       2. When finished, you MUST call:
              signal(status: "JOB_DONE", result: <final answer in Markdown>)
@@ -92,8 +83,10 @@ defmodule Dmhai.Agent.Worker do
          signal(reason=...) text, and any tool arguments that will be echoed to
          the user — MUST be written in "#{lang}". Do not switch languages.
       2. Tool calls: ALWAYS via the tool-calling mechanism. Plain text that mimics tool calls (e.g. `[used: bash(...)]`) is FORBIDDEN.
-      3. web_search is EXPENSIVE. Use only for: breaking news, sports/stock/weather, current status of a service, figures that change over time, latest versions, or anything you are unsure about.
-         Do NOT call web_search for: translation, summarisation, writing help, coding questions you can answer, science, history, math, geography, or well-known stable concepts.
+      3. `web_search` is EXPENSIVE — the default is you do NOT need it.
+        Before planning a search, ask: "Can I answer this from training data?" If yes, skip it.
+        - NEVER for: translation, summarisation, writing, coding help, science, history, math, geography, astronomy, or any well-known stable concept.
+        - Use ONLY for: breaking news, sports scores, stock/crypto prices, weather, current service status, software release versions, or anything that changes frequently and you genuinely do not know.
     """
   end
 
@@ -131,7 +124,16 @@ defmodule Dmhai.Agent.Worker do
       {:error, :missing_job_id}
     else
       Logger.info("[Worker] starting model=#{model} job=#{job_id} worker=#{worker_id}")
-      loop(messages, tools, model, ctx)
+      try do
+        loop(messages, tools, model, ctx)
+      rescue
+        e ->
+          lang = Map.get(context, :language, "en")
+          msg  = Dmhai.I18n.t("internal_error", lang)
+          Logger.error("[Worker] unhandled exception job=#{job_id}: #{Exception.message(e)}")
+          WorkerStatus.append(job_id, worker_id, "final", msg, "BLOCKED")
+          {:error, :internal_exception}
+      end
     end
   end
 

@@ -15,8 +15,6 @@ defmodule Dmhai.Tools.Registry do
     Dmhai.Tools.Bash,
     Dmhai.Tools.ReadFile,
     Dmhai.Tools.WriteFile,
-    Dmhai.Tools.ListDir,
-    Dmhai.Tools.DatetimeTool,
     Dmhai.Tools.Calculator,
     Dmhai.Tools.DescribeImage,
     Dmhai.Tools.DescribeVideo,

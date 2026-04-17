@@ -6,9 +6,8 @@
 defmodule Dmhai.Tools.WebSearch do
   @behaviour Dmhai.Tools.Behaviour
 
-  alias Dmhai.Agent.AgentSettings
+  alias Dmhai.Web.Search, as: WebSearchEngine
 
-  @max_results 8
   @max_snippet_chars 500
 
   @impl true
@@ -16,9 +15,7 @@ defmodule Dmhai.Tools.WebSearch do
 
   @impl true
   def description,
-    do:
-      "Search the web using SearXNG. Returns titles, URLs, and snippets for the top results. " <>
-        "Use web_fetch to read the full content of any result URL."
+    do: "Live web search. EXPENSIVE — use only for time-sensitive or frequently-changing data."
 
   @impl true
   def definition do
@@ -30,14 +27,7 @@ defmodule Dmhai.Tools.WebSearch do
         properties: %{
           query: %{
             type: "string",
-            description: "Search keywords (4-8 words, no filler words)."
-          },
-          category: %{
-            type: "string",
-            enum: ["general", "news", "it"],
-            description:
-              "Search category. Use 'news' for breaking news/prices/scores, " <>
-                "'it' for code/programming/docs, 'general' for everything else. Defaults to 'news,general'."
+            description: "Your search intent in plain language or keywords."
           }
         },
         required: ["query"]
@@ -46,69 +36,32 @@ defmodule Dmhai.Tools.WebSearch do
   end
 
   @impl true
-  def execute(%{"query" => query} = args, _context) do
-    category = Map.get(args, "category", "news,general")
-
-    searxng_cats =
-      case category do
-        "news"        -> "news"
-        "it"          -> "it"
-        "news,general" -> "news,general"
-        _             -> "news,general"
-      end
-
-    params = %{
-      q:          query,
-      format:     "json",
-      categories: searxng_cats,
-      pageno:     1
-    }
-
-    url = AgentSettings.searxng_url() <> "/search?" <> URI.encode_query(params)
-
-    try do
-      case Req.get(url,
-             headers: [{"User-Agent", AgentSettings.http_user_agent()}],
-             receive_timeout: AgentSettings.web_search_total_timeout_ms(),
-             retry: false,
-             finch: Dmhai.Finch
-           ) do
-        {:ok, %{status: 200, body: body}} ->
-          data = if is_binary(body), do: Jason.decode!(body), else: body
-          results = data["results"] || []
-
-          filtered =
-            results
-            |> Enum.reject(fn r -> Dmhai.DomainBlocker.blocked?(r["url"] || "") end)
-            |> Enum.uniq_by(fn r -> r["url"] end)
-            |> Enum.take(@max_results)
-
-          if filtered == [] do
-            {:ok, "No results found for: #{query}"}
-          else
-            text =
-              filtered
-              |> Enum.with_index(1)
-              |> Enum.map_join("\n\n", fn {r, i} ->
-                title   = r["title"] || ""
-                link    = r["url"] || ""
-                snippet = r["content"] || "" |> String.slice(0, @max_snippet_chars)
-                "#{i}. #{title}\n#{link}\n#{snippet}"
-              end)
-
-            {:ok, text}
-          end
-
-        {:ok, %{status: status}} ->
-          {:error, "SearXNG returned HTTP #{status}"}
-
-        {:error, reason} ->
-          {:error, "Search failed: #{inspect(reason)}"}
-      end
-    rescue
-      e -> {:error, "Search error: #{Exception.message(e)}"}
-    end
+  def execute(%{"query" => query}, _context) do
+    {:ok, format_result(WebSearchEngine.search(query, [], :assistant))}
   end
 
   def execute(_, _), do: {:error, "Missing required argument: query"}
+
+  # ── private ──────────────────────────────────────────────────────────────
+
+  defp format_result(%{snippets: [], pages: []}), do: "No results found."
+
+  defp format_result(%{snippets: snippets, pages: pages}) do
+    pages_by_url = Map.new(pages, fn p -> {p.url, p.content} end)
+
+    text =
+      snippets
+      |> Enum.with_index(1)
+      |> Enum.flat_map(fn {s, i} ->
+        content = Map.get(pages_by_url, s.url) || String.slice(s.snippet, 0, @max_snippet_chars)
+        if content != "" do
+          ["#{i}. #{s.title}\n#{s.url}\n#{content}"]
+        else
+          []
+        end
+      end)
+      |> Enum.join("\n\n")
+
+    if text == "", do: "No usable content found.", else: text
+  end
 end

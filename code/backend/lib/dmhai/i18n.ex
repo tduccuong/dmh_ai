@@ -113,6 +113,17 @@ defmodule Dmhai.I18n do
       "fr" => "Le LLM a renvoyé une réponse vide.",
       "ja" => "LLM が空の応答を返しました。"
     },
+    "internal_error" => %{
+      "en" => "An internal error occurred. I'll look into it and report back to you.",
+      "vi" => "Đã xảy ra lỗi nội bộ. Tôi sẽ xem xét và phản hồi lại cho bạn.",
+      "es" => "Ocurrió un error interno. Lo investigaré y te informaré.",
+      "fr" => "Une erreur interne s'est produite. Je vais l'examiner et vous en informer.",
+      "ja" => "内部エラーが発生しました。調査して報告します。",
+      "de" => "Ein interner Fehler ist aufgetreten. Ich werde ihn untersuchen und Sie informieren.",
+      "zh" => "发生了内部错误。我将进行调查并向您报告。",
+      "ko" => "내부 오류가 발생했습니다. 조사 후 보고드리겠습니다.",
+      "pt" => "Ocorreu um erro interno. Vou investigar e informar você."
+    },
     "policy_violation" => %{
       "en" => "Repeated policy violation: %{reason}",
       "vi" => "Vi phạm quy tắc lặp lại: %{reason}",

@@ -35,6 +35,8 @@ defmodule Dmhai.Agent.UserAgent do
   require Logger
 
   alias Dmhai.Agent.{AgentSettings, Command, ContextEngine, Jobs, LLM, ProfileExtractor, Supervisor, TokenTracker, WebSearch}
+  alias Dmhai.Web.Search, as: WebSearchEngine
+  # WebSearch kept for synthesize_results used in build_web_context
   alias Dmhai.Repo
   import Ecto.Adapters.SQL, only: [query!: 3]
 
@@ -231,17 +233,10 @@ defmodule Dmhai.Agent.UserAgent do
 
     web_context =
       if command.content != "" do
-        recent = extract_recent_context(session_data)
-
-        case WebSearch.detect_category(command.content, recent, reply_pid) do
-          {:search, category} ->
-            user_msgs = extract_user_messages(session_data)
-            queries   = WebSearch.build_queries(command.content, user_msgs)
-            result    = WebSearch.search_and_fetch(queries, category, reply_pid)
-            build_web_context(command.content, result, reply_pid)
-
-          :no_search ->
-            nil
+        user_msgs = extract_user_messages(session_data)
+        case WebSearchEngine.search(command.content, user_msgs, :confidant, reply_pid: reply_pid) do
+          :no_search -> nil
+          result     -> build_web_context(command.content, result, reply_pid)
         end
       else
         nil
@@ -323,6 +318,11 @@ defmodule Dmhai.Agent.UserAgent do
     # Use pre-computed description when available; fall back to raw images for master.
     images = effective_images(command, image_descriptions, video_descriptions)
 
+    # Detect language from URL-stripped prose so the master can't be misled by
+    # URL domains (e.g. "summarize this: https://vnexpress.net/..." → "en").
+    # Returns nil on UNKNOWN so the master falls back to its own detection.
+    detected_language = detect_content_language(command.content)
+
     llm_messages =
       ContextEngine.build_messages(session_data,
         mode:               "assistant",
@@ -332,7 +332,8 @@ defmodule Dmhai.Agent.UserAgent do
         files:              command.files,
         image_descriptions: image_descriptions,
         video_descriptions: video_descriptions,
-        buffer_context:     combined_buffer
+        buffer_context:     combined_buffer,
+        language:           detected_language
       )
 
     tools = [
@@ -698,6 +699,57 @@ defmodule Dmhai.Agent.UserAgent do
   end
   defp normalise_lang(_), do: "en"
 
+  # ── Language detection ────────────────────────────────────────────────────
+
+  # Strip http(s) URLs from text, then ask a tiny LLM to identify the language.
+  # Returns an ISO 639-1 code (e.g. "en", "vi") or nil when the model returns
+  # UNKNOWN — nil means the master will fall back to its own detection.
+  @url_strip_regex ~r{https?://\S+}
+
+  defp detect_content_language(content) when is_binary(content) and content != "" do
+    stripped = Regex.replace(@url_strip_regex, content, "") |> String.trim()
+
+    if stripped == "" do
+      nil
+    else
+      model = AgentSettings.language_detector_model()
+
+      prompt =
+        "Detect the language of the following text.\n" <>
+          "Reply with ONLY the ISO 639-1 two-letter code (e.g. en, vi, es, fr, ja, zh, de, ko, pt, it).\n" <>
+          "If you cannot determine the language, reply with UNKNOWN.\n" <>
+          "Do not include any explanation, punctuation, or extra words — just the code.\n\n" <>
+          "Text: #{stripped}"
+
+      try do
+        case LLM.call(model, [%{role: "user", content: prompt}],
+               options: %{temperature: 0, num_predict: 10}
+             ) do
+          {:ok, response} -> parse_language_code(response)
+          {:error, _}     -> nil
+        end
+      rescue
+        _ -> nil
+      end
+    end
+  end
+
+  defp detect_content_language(_), do: nil
+
+  defp parse_language_code(response) do
+    code =
+      response
+      |> String.trim()
+      |> String.downcase()
+      |> String.replace(~r/[^a-z]/, "")
+
+    cond do
+      code == "unknown"                    -> nil
+      String.length(code) in 2..3         -> code
+      true                                 -> nil
+    end
+  end
+
   defp short_title(nil), do: "Untitled job"
   defp short_title(""),  do: "Untitled job"
   defp short_title(content) do
@@ -739,15 +791,6 @@ defmodule Dmhai.Agent.UserAgent do
   # ─── Helpers for pipeline context ─────────────────────────────────────────
 
   # Extract last few messages as plain text for web search detection context.
-  defp extract_recent_context(session_data) do
-    messages = session_data["messages"] || []
-
-    messages
-    |> Enum.take(-4)
-    |> Enum.map(fn m -> "#{m["role"]}: #{String.slice(m["content"] || "", 0, 500)}" end)
-    |> Enum.join("\n")
-  end
-
   # Extract last 10 user messages (300 chars each) for search query generation.
   defp extract_user_messages(session_data) do
     messages = session_data["messages"] || []
