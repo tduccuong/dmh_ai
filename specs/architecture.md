@@ -63,7 +63,8 @@ Dmhai.Agent.*     — agent runtime: UserAgent, Worker, JobRuntime, Jobs,
 Dmhai.Tools.*     — worker-facing tools: Bash, ReadFile, WriteFile,
                     WebFetch, WebSearch, Calculator,
                     DescribeImage, DescribeVideo, ParseDocument,
-                    SpawnTask, Signal, Plan, Registry
+                    ExtractContent, SpawnTask, Plan, JobSignal,
+                    StepSignal, Registry
 
 Dmhai.Web.*       — web-fetch subsystem (see §Web Fetch):
                     CmpDetector, ConsentSeeder, ReaderExtractor,
@@ -173,7 +174,9 @@ start_job(job_id)
                       end)
 ```
 
-**Cursor initialisation:** the poller starts at `job.last_reported_status_id` (not 0). For periodic jobs this means each new cycle's poller skips all historical rows from prior cycles — preventing old final rows from being re-processed and re-reported.
+**Cursor initialisation:** the poller starts at `job.last_reported_status_id` (defaulting to 0 when NULL via `row_to_map`). For periodic jobs this means each new cycle's poller skips all historical rows from prior cycles — preventing old final rows from being re-processed and re-reported.
+
+**`advance_cursor` / `advance_summary_cursor`** use `IS NULL OR < ?` so the first update after insert (column defaults NULL) is never silently skipped.
 
 ```
 ```
@@ -187,66 +190,97 @@ The worker NEVER knows about periodicity. Every invocation is one-off — for pe
 ```
 Worker.run(task, ctx)
    │
-   ├── system prompt = build_system_prompt(ctx.language)
-   │     header: "Current date/time: <ISO8601> UTC" (static injection — no datetime tool)
-   │     (language interpolated — model told explicitly, not inferred)
+   ├── stored messages[0] = placeholder (per-turn prompt injected each iteration)
    │
    └── loop(messages, tools, model, ctx)
          │
          ├── drain_subtask_results   (spawn_task async results)
          ├── maybe_compact_worker_messages (rolling-summary compaction)
-         │     — on compactor LLM failure, OLD MESSAGES ARE KEPT so no
-         │       silent context loss (fix #6).
+         │     — on compactor LLM failure, OLD MESSAGES ARE KEPT (no silent context loss)
          │
-         ├── LLM.call(model, messages, tools)
+         ├── compute effective_tools  (phase-gated + adaptive selection)
+         │     plan phase:       [plan] only
+         │     execution phase:  all tools except job_signal; media tools
+         │                       gated on context signals (@tool_scan_window)
+         │     post-steps phase: [job_signal] only
+         │
+         ├── build_turn_prompt  (per-turn, matches phase + effective_tools)
+         │     plan phase:    tool catalogue + terse step format rules
+         │     execution:     full plan as bullet list + "You are on step [N]"
+         │                    + step_signal instructions
+         │     post-steps:    "All steps complete, call job_signal(JOB_DONE)"
+         │
+         ├── LLM.call(model, effective_messages, effective_tools)
          │     ↓
-         │  ┌──{:ok, {:tool_calls, calls}}──┐
-         │  │                               │
-         │  │  Police.check_tool_calls       │   {rejected} → nudge + retry
-         │  │     ↓                          │   (max 3 → synthetic BLOCKED)
-         │  │  WorkerStatus.append(tool_call)│
-         │  │  execute each tool              │
-         │  │  WorkerStatus.append(tool_result)│
-         │  │                                │
-         │  │  if 'signal' tool succeeded:    │
-         │  │     Signal.execute writes        │
-         │  │     kind='final' row             │
-         │  │     → exit loop                  │
-         │  │                                 │
-         │  │  else loop(…new_messages)       │
-         │  └──────────────────────────────┘
+         │  ┌──{:ok, {:tool_calls, calls}}──────────────────────────┐
+         │  │                                                        │
+         │  │  Police.check_tool_calls                               │
+         │  │    — text mimicry, repeated identical, path safety     │
+         │  │    — step_signal must not be batched with other tools  │
+         │  │     ↓ rejected → nudge + retry (max 3 → JOB_BLOCKED)  │
+         │  │                                                        │
+         │  │  execute each tool                                     │
+         │  │                                                        │
+         │  │  step_signal results (non-terminal):                   │
+         │  │    STEP_DONE {id}      → advance current_step          │
+         │  │    STEP_BLOCKED {id,r} → inject retry msg or JOB_BLOCKED│
+         │  │    PLAN_REVISE  → re-validate + restart step 1  │
+         │  │                                                        │
+         │  │  job_signal results (terminal):                        │
+         │  │    JOB_DONE / JOB_BLOCKED → exit loop                 │
+         │  │                                                        │
+         │  └────────────────────────────────────────────────────────┘
          │
          └──{:ok, text} (no tool call) → PROTOCOL violation
-               Police.check_text → nudge ("call signal!")
-               after 3 nudges → synthetic BLOCKED final row
+               Police.check_text → nudge ("call step_signal or job_signal!")
+               after 3 nudges → synthetic JOB_BLOCKED final row
 ```
 
 ### PROTOCOL contract (mandatory)
 
-Every job MUST end with a `signal` call:
+**Phase 1 — Planning** (`plan_approved = false`):
+Model calls `plan(steps, rationale)`. Runtime validates (step count bounds, dangerous content). On approval, `ctx.plan_steps` and `ctx.current_step = 1` are set.
 
+**Phase 2 — Step execution** (`plan_approved = true`, steps remaining):
+For each step, model uses available tools then calls one of:
 ```
-signal(status: "JOB_DONE", result: <markdown answer>)
-  — or —
-signal(status: "BLOCKED", reason: <verbatim error>)
+step_signal(status: "STEP_DONE",            id: N)
+step_signal(status: "STEP_BLOCKED",         id: N, reason: "...")
+step_signal(status: "PLAN_REVISE",   new_plan: [...], reason: "...")
 ```
+`step_signal` must be the only tool call in its turn (Police enforced).
 
-The `Signal` tool validates args, writes `kind='final'` to `worker_status`, and returns `{:ok, _}`. The worker loop detects the successful signal and exits with `{:ok, {:signal, STATUS, PAYLOAD}}`.
+On `STEP_BLOCKED`: runtime injects "Step [N] blocked: \<reason\>. Retry step [N]." and loops. After `plan_step_max_retries` exhausted → synthetic `JOB_BLOCKED` (reason taken from last STEP_BLOCKED, no LLM call).
+
+On `PLAN_REVISE`: same Police validation as initial plan. If approved, `ctx.plan_steps` replaced, `ctx.current_step` reset to 1.
+
+**Phase 3 — Post-steps** (all steps done):
+Only `job_signal` is callable. Model calls:
+```
+job_signal(status: "JOB_DONE",    result: "final report for the user")
+job_signal(status: "JOB_BLOCKED", reason: "verbatim error message")
+```
+`result` is **required** (non-empty, non-whitespace) on JOB_DONE — the worker must compile the deliverable before signalling. The runtime passes it directly to the user; no extra LLM call is made.
+
+If the model calls `step_signal(STEP_DONE)` on the last step instead of `job_signal`, the runtime injects a nudge ("All steps complete — compile and call job_signal now") and loops once more. **There is no implicit JOB_DONE with empty result.**
+
+Mid-execution replans (via `plan()` or `PLAN_REVISE`) always reset `plan_steps`, `current_step` to 1, and `step_retries`.
 
 ### Synthetic finals (runtime-enforced failure modes)
 
 Situations where the runtime writes a `kind='final'` row on the worker's behalf (so jobs never hang):
 
-| Cause | Final signal_status | Reason text (via I18n) |
-|-------|---------------------|------------------------|
-| Worker hit iter cap without signal | BLOCKED | `max_iter_reached` |
-| Worker returned plain text after 3 nudges | BLOCKED | `worker_refused_signal` |
-| Police: 3 consecutive rejections OR any single violation type reaches 3 total | BLOCKED | `policy_violation` |
-| LLM returned empty | BLOCKED | `llm_empty_response` |
-| LLM errored | BLOCKED | `llm_error` |
-| Worker OS process died without signal | BLOCKED | `worker_exited_no_signal` |
-| Job cancelled by user | BLOCKED | `job_cancelled_by_user` |
-| Orphaned 'running' on app restart | BLOCKED | `worker_orphaned` |
+| Cause | Final signal_status | Reason text |
+|-------|---------------------|-------------|
+| Worker hit iter cap without job_signal | JOB_BLOCKED | `max_iter_reached` (I18n) |
+| Worker returned plain text after 3 nudges | JOB_BLOCKED | `worker_refused_signal` (I18n) |
+| Police: 3 consecutive rejections OR any violation type reaches 3 total | JOB_BLOCKED | `policy_violation` (I18n) |
+| Step retries exhausted | JOB_BLOCKED | last STEP_BLOCKED reason (no LLM call) |
+| LLM returned empty | JOB_BLOCKED | `llm_empty_response` (I18n) |
+| LLM errored | JOB_BLOCKED | `llm_error` (I18n) |
+| Worker OS process died without signal | JOB_BLOCKED | `worker_exited_no_signal` (I18n) |
+| Job cancelled by user | JOB_BLOCKED | `job_cancelled_by_user` (I18n) |
+| Orphaned 'running' on app restart | JOB_BLOCKED | `worker_orphaned` (I18n) |
 
 ---
 
@@ -321,20 +355,20 @@ Delta-only: prior progress_summary rows are **excluded** from the summariser's i
 ## Completion Flow
 
 ```
-Worker calls signal(JOB_DONE, result=markdown_answer)
+Worker calls job_signal(JOB_DONE, result: "final report…")
     │
     ▼
-Signal.execute writes WorkerStatus row:
-    kind='final', signal_status='JOB_DONE', content=<result>
+JobSignal.execute writes WorkerStatus row:
+    kind='final', signal_status='JOB_DONE'
     │
     ▼
 Poller sees final row in next poll:
-    Jobs.mark_done(job_id, result)
-    emit_final_message(job, JOB_DONE, result):
-      body = "**<job_title>**\n\n<result>"           ← LLM-produced, already in user's lang
-      UserAgentMessages.append(session, body)        ← to sessions.messages
+    Jobs.mark_done(job_id)
+    emit_final_message(job, JOB_DONE, final_row.content):
+      body = "**<job_title>**\n\n<result>"   ← result compiled by the worker
+      UserAgentMessages.append(session, body)
       MasterBuffer.append_notification(I18n.t("notify_done", lang, title: ...))
-      MsgGateway.notify(user_id, notify_text)        ← external push
+      MsgGateway.notify(user_id, notify_text)
     │
     ▼
 Frontend polls GET /notifications?since=<ts>
@@ -346,9 +380,9 @@ If job.job_type == "periodic" and status ≠ "cancelled":
     → fresh spawn via start_job on timer fire (no memory of prior cycles)
 ```
 
-BLOCKED completion uses the same path; the body uses a red-span HTML prefix + `I18n.t("blocked_label", lang, reason: ...)`.
+**JOB_BLOCKED completion:** same path; `final_row.content` is the reason string from `job_signal(JOB_BLOCKED, reason: "...")` — passed directly to `emit_final_message`. No extra LLM call.
 
-**BLOCKED forces a progress summary first:** before marking the job blocked and emitting the final message, the runtime calls `do_summarize_and_announce(job_id, force: true)` so the user always sees the last known progress before the failure banner.
+**JOB_BLOCKED forces a progress summary first:** runtime calls `do_summarize_and_announce(job_id, force: true)` before emitting the failure banner.
 
 ---
 
@@ -411,23 +445,27 @@ forward_and_capture loop:
 
 ## Worker Tool Set
 
-Registered in `Dmhai.Tools.Registry` (12 tools):
+Registered in `Dmhai.Tools.Registry` (14 tools):
 
-| Tool | Purpose |
-|------|---------|
-| `plan` | Submit a step-by-step plan before execution. Runtime approves or rejects. |
-| `bash` | Shell command (sync). `cwd = ctx.workspace_dir` |
-| `read_file` / `write_file` | File ops under `<session_root>/`. Paths resolve via `Dmhai.Util.Path.resolve/2` |
-| `web_search` | Live search through SearXNG. **EXPENSIVE** — see CRITICAL RULE 3 in system prompt |
-| `web_fetch` | CMP-aware URL fetch (see §Web Fetch) |
-| `calculator` | Safe math eval (arithmetic, trig, log, complex; constants: pi, e) |
-| `describe_image` / `describe_video` / `parse_document` | Media/doc understanding (paths via SafePath) |
-| `spawn_task` | Async bash with optional delay; result arrives as `{:subtask_result, output}` in a later iteration |
-| `signal` | **Terminal contract**. Every job MUST end with this. |
+| Tool | Phase available | Purpose |
+|------|----------------|---------|
+| `plan` | Plan phase only | Submit a step-by-step plan (2–10 steps). Runtime validates and approves. |
+| `step_signal` | Execution phase only | Per-step checkpoint: `STEP_DONE`, `STEP_BLOCKED`, or `PLAN_REVISE`. Must be called alone (not batched). |
+| `job_signal` | Post-steps phase only | Terminal job signal: `JOB_DONE` (requires `result`) or `JOB_BLOCKED` (requires `reason`). Ends the worker loop. |
+| `bash` | Execution | Shell command (sync). `cwd = ctx.workspace_dir` |
+| `read_file` / `write_file` | Execution | File ops under `<session_root>/`. Paths resolve via `Dmhai.Util.Path.resolve/2` |
+| `web_search` | Execution | Live search through SearXNG. **EXPENSIVE** — only for live data. |
+| `web_fetch` | Execution | CMP-aware URL fetch (see §Web Fetch) |
+| `calculator` | Execution | Safe math eval (arithmetic, trig, log, complex; constants: pi, e) |
+| `describe_image` / `describe_video` / `parse_document` | Execution (context-gated) | Media/doc understanding. Only included when task/recent messages contain media signals. |
+| `extract_content` | Execution (context-gated) | Unified extractor for Assistant-path job attachments. Routes by extension: images → ImageMagick + LLM (Description + Verbatim Content); video → ffmpeg frames + LLM; documents → pdftotext/pandoc/direct read. |
+| `spawn_task` | Execution | Async bash; result arrives as `{:subtask_result, output}` in a later iteration |
 
-**Removed tools:** `list_dir` (not needed — `bash ls` covers it), `datetime` (replaced by static UTC injected into the system prompt header: `Current date/time: <ISO8601> UTC`).
+**Phase gating** is enforced via `effective_tools` computed each turn — the model physically cannot call tools outside the current phase.
 
-Deleted in the refactor: `declare_periodic`, `midjob_notify` (replaced by the runtime's scheduler + summariser).
+**Removed tools:** `signal` (replaced by `step_signal` + `job_signal`), `list_dir` (bash ls covers it), `datetime` (static UTC in prompt header).
+
+Deleted in prior refactors: `declare_periodic`, `midjob_notify` (replaced by runtime scheduler + summariser).
 
 ---
 
@@ -502,7 +540,7 @@ Any path that escapes `session_root` after `Path.expand` → `{:error, "Access d
 
 `Dmhai.Agent.Police.check_tool_calls/3` (ctx arg is new) adds a **path violation** check alongside text mimicry + repeated identical calls:
 
-1. **Explicit-path tools** (`read_file`, `write_file`, `describe_image`, `describe_video`, `parse_document`): the `path` arg is resolved via `Util.Path.resolve/2`; rejection if it escapes `session_root`.
+1. **Explicit-path tools** (`read_file`, `write_file`, `describe_image`, `describe_video`, `parse_document`, `extract_content`): the `path` arg is resolved via `Util.Path.resolve/2`; rejection if it escapes `session_root`.
 2. **Shell tools** (`bash`, `spawn_task`): the `command` arg is scanned for `rm` / `rmdir` / `unlink` / `del`; the operand(s) must stay inside `ctx.workspace_dir`. Heuristic — not airtight (`eval` / variable expansion can evade), catches common cases.
 
 If ctx doesn't carry `session_root` (non-worker callers), path checks are skipped.
@@ -590,19 +628,20 @@ maybe_compact_worker_messages:
                    ctx      = %{ctx | rolling_summary: new}
       :failed    → leave messages intact (no loss)
 
-inject_rolling_summary (transient, not stored):
-    [system] ++ [user "[Prior work summary]\n…"]
-             ++ [asst "Understood, continuing from prior work."]
-             ++ rest_of_messages
+inject_rolling_summary + build_turn_prompt (both transient, not stored):
+    [system ← per-turn prompt (phase + step context)]
+    ++ [user "[Prior work summary]\n…"]   ← only when rolling_summary is set
+    ++ [asst "Understood, continuing from prior work."]
+    ++ rest_of_messages
 ```
 
 ---
 
 ## Internationalisation
 
-**LLM-generated content** (worker output, progress summaries, job titles, acks, signal payloads) is produced in the user's language via explicit prompt injection. The Assistant detects and supplies `language` (ISO 639-1) on every handoff; it is stored on the jobs row and threaded into:
+**LLM-generated content** (worker output, progress summaries, job titles, acks) is produced in the user's language via explicit prompt injection. The Assistant detects and supplies `language` (ISO 639-1) on every handoff; it is stored on the jobs row and threaded into:
 
-- Worker system prompt (`Worker.build_system_prompt(language)`).
+- Worker per-turn prompt (`build_turn_prompt` injects language rule each iteration).
 - Summariser prompt (explicit "write in `<lang>`" instruction).
 - Confidant pipeline (existing language-rule in prompt).
 
@@ -624,15 +663,17 @@ Shipped locales: `en`, `vi`, `es`, `fr`, `ja`. Fallback chain: `lang → en → 
 Guards against bad model behaviour inside the worker loop:
 
 1. **Text mimicry** — model writes `[used: bash(...)]` as plain text instead of calling the tool. Rejected with a nudge.
-2. **Repeated identical tool calls** — same name + args as a prior iteration, excluding `@repeatable_tools` (`spawn_task`). Indicates infinite loop. Rejected.
-3. **Path safety** — explicit-path tools must stay within `session_root`; shell commands must not target paths outside `workspace_dir`.
+2. **Repeated identical tool calls** — same name + args as a prior iteration, excluding `@repeatable_tools` (`spawn_task`). `step_signal` STEP_BLOCKED and PLAN_REVISE are also exempt (retry semantics), but STEP_DONE repeats are caught as loop bugs.
+3. **Path safety** — explicit-path tools (`read_file`, `write_file`, `describe_image`, `describe_video`, `parse_document`, `extract_content`) must stay within `session_root`; shell commands must not target paths outside `workspace_dir`.
+4. **Signal batching** — both `step_signal` and `job_signal` must each be the only tool call in their turn. Batching either with other tools is rejected.
+5. **job_done_missing_result** — `job_signal(JOB_DONE)` must carry a non-empty, non-whitespace `result` field.
 
 On rejection, injects `"REJECTED (<reason>): Fix this specific violation before continuing."` — the specific reason is always included so the model knows exactly what to fix.
 
 **Two independent kill switches** in `handle_rejection`:
 
 1. `consecutive_rejections` (in ctx) — fires after 3 *consecutive* violations with no successful non-plan tool call in between. Plan-only calls do **not** reset this counter (replanning after a violation is not progress).
-2. `violation_counts` (per-type map, never resets) — tracks total violations for each Police category (`text_mimicry`, `repeated_identical_tool_calls`, `path_violation`, etc.). When any single category reaches 3 total violations, regardless of successful tool calls between them, forces synthetic BLOCKED immediately. This prevents a model from "insisting" by alternating violations with valid calls to reset the consecutive counter.
+2. `violation_counts` (per-type map, never resets) — tracks total violations per Police category (`text_mimicry`, `repeated_identical_tool_calls`, `path_violation`, `step_signal_batched`, `job_signal_batched`, `job_done_missing_result`, etc.). When any single category reaches 3 total violations, forces synthetic JOB_BLOCKED immediately.
 
 ---
 
@@ -754,6 +795,8 @@ Models ending in `:cloud` / `-cloud` auto-route to cloud pool. Cloud keys manage
 | `workerContextN` / `workerContextM` | 8 / 6 | Rolling-summary stub tier + recent tier |
 | `maxToolResultChars` | 8000 | Truncation threshold for tool results fed back to worker |
 | `spawnTaskTimeoutSecs` | 30 | Bash command timeout inside spawn_task |
+| `planMinSteps` / `planMaxSteps` | 2 / 10 | Plan step count bounds (Police.check_plan) |
+| `planStepMaxRetries` | 3 | Max STEP_BLOCKED retries before forcing JOB_BLOCKED |
 | `masterCompactTurnThreshold` | 90 | Master compaction turn count trigger |
 | `masterCompactFraction` | 0.45 | Master compaction char-budget fraction |
 | `jobPollMinIntervalSec` | 5 | K — poller interval floor |
@@ -823,14 +866,48 @@ Auth: `POST /auth/login` → bcrypt → httpOnly cookie. `/auth/me` for session 
 
 ## Media Pipeline
 
-Images/videos pre-processed client-side:
+### Confidant path (inline session attachments)
+
+Client pre-processes before the `/agent/chat` call:
 
 ```
-Image: resize to 1568px, 100px thumb, upload original → background describe
+Image: resize to 1568px, 100px thumb, upload original to /assets → background describe
+       base64-encoded inline in the chat request (images[])
 Video: frame count from backend setting (8 cloud / 16 local × quality mult);
        client extracts evenly-spaced JPEG frames + uploads full video;
-       background describe via video_descriptions table
+       base64 frames sent inline; background describe via video_descriptions table
 ```
+
+### Assistant path (job attachments)
+
+Client does **not** pre-digest media for the worker — the worker calls tools instead.
+Three parallel operations happen before the `/agent/chat` call fires:
+
+```
+FE: GET /reserve-job-id
+        ← {job_id}  (12-char base64url, pre-allocated)
+
+then in parallel:
+  (1) POST /assets                ← save originals at data/ for permanent user access
+  (2) POST /upload-job-attachment ← save scaled copies at workspace/<name>
+        fields: file (binary), sessionId, jobId
+        writes to: job_workspace_dir(email, session_id, "assistant", job_id)/<safe_name>
+  (3) POST /agent/chat            ← fires with jobId + attachmentNames in body
+
+UserAgent.handle_handoff_to_worker:
+  if command.job_id + command.attachment_names present:
+    wait_for_attachments(workspace, names)  ← polls up to 30s
+    build_attachment_section(names)
+      → "[Attached files — use describe_image, describe_video, or extract_content
+          on these paths as needed]\n- workspace/<name>\n..."
+    appended to job_spec so the worker knows what files are available
+  else:
+    describe_command_media(...)  ← Confidant-style inline description (fallback)
+```
+
+The `extract_content` tool is the worker's primary entry point for understanding
+attachment content — it routes by extension to the appropriate extractor and returns
+a two-section response (Description + Verbatim Content) for images/video.
 
 ---
 
@@ -864,7 +941,7 @@ Test files are `test/itgr_*.exs`. Harness in `test/test_helper.exs` provides:
 - `T.tool_call/3` — build a normalised tool-call map matching `LLM.normalize_tool_calls` output.
 - `T.session_data/1` — build a session fixture.
 
-Coverage (112 tests total at last count):
+Coverage (16 worker-loop + 21 job-runtime + others, ~120 total):
 
 | Area | File |
 |------|------|

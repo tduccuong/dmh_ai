@@ -410,13 +410,31 @@ defmodule Dmhai.Agent.UserAgent do
     language   = normalise_lang(assistant_arg(calls, "handoff_to_worker", "language"))
     origin     = session_origin(session_data)
 
-    media_context = describe_command_media(command, session_id)
+    # If the FE pre-allocated a job_id and is uploading scaled-down attachments
+    # to the job workspace in parallel, wait for those files to land then inject
+    # their paths into the job_spec. Otherwise fall back to inline media description.
+    pre_job_id       = command.job_id
+    attachment_names = command.attachment_names
+
+    media_context =
+      if pre_job_id && attachment_names != [] do
+        email     = Jobs.lookup_user_email(user_id)
+        workspace = Dmhai.Constants.job_workspace_dir(email, session_id, origin, pre_job_id)
+        case wait_for_attachments(workspace, attachment_names) do
+          :ok      -> build_attachment_section(attachment_names)
+          :timeout -> build_attachment_section(attachment_names) <>
+                      "\n[Warning: some attachments may not have uploaded in time — worker will handle missing files gracefully]"
+        end
+      else
+        describe_command_media(command, session_id)
+      end
 
     full_task =
       if media_context, do: task_desc <> "\n\n" <> media_context, else: task_desc
 
     job_id =
       Jobs.insert(
+        job_id:     pre_job_id,
         user_id:    user_id,
         session_id: session_id,
         job_type:   job_type,
@@ -442,6 +460,40 @@ defmodule Dmhai.Agent.UserAgent do
 
     send(reply_pid, {:chunk, ack})
     send(reply_pid, {:done, %{}})
+  end
+
+  # Poll until all expected attachment files exist in the job workspace.
+  # Uploads are fast (scaled-down files) so this typically resolves before
+  # the LLM even responds. Logs a warning and continues on timeout rather
+  # than blocking the job indefinitely.
+  @attachment_wait_timeout_ms 30_000
+  @attachment_poll_ms 200
+
+  defp wait_for_attachments(workspace, names) do
+    deadline = System.os_time(:millisecond) + @attachment_wait_timeout_ms
+    do_wait_attachments(workspace, names, deadline)
+  end
+
+  defp do_wait_attachments(workspace, names, deadline) do
+    missing = Enum.reject(names, &File.exists?(Path.join(workspace, &1)))
+
+    cond do
+      missing == [] ->
+        :ok
+
+      System.os_time(:millisecond) >= deadline ->
+        Logger.warning("[UserAgent] attachment wait timed out; missing: #{inspect(missing)}")
+        :timeout
+
+      true ->
+        Process.sleep(@attachment_poll_ms)
+        do_wait_attachments(workspace, names, deadline)
+    end
+  end
+
+  defp build_attachment_section(names) do
+    lines = Enum.map_join(names, "\n", fn name -> "- workspace/#{name}" end)
+    "[Attached files — use describe_image, describe_video, or extract_content on these paths as needed]\n#{lines}"
   end
 
   defp handle_set_periodic(calls, command, _state) do
@@ -564,7 +616,7 @@ defmodule Dmhai.Agent.UserAgent do
           "daily research, recurring reports). For periodic tasks, set intvl_sec > 0 " <>
           "(the worker itself never sees the interval — the runtime schedules re-runs). " <>
           "The worker has tools: bash, web fetch/search, file io, calculator, date/time, media/doc parsers. " <>
-          "It signals completion via signal(JOB_DONE|BLOCKED).",
+          "It signals completion via job_signal(JOB_DONE|JOB_BLOCKED).",
       parameters: %{
         type: "object",
         properties: %{
@@ -926,8 +978,8 @@ defmodule Dmhai.Agent.UserAgent do
             else: image_describe_prompt()
 
         command.image_names
-        |> Enum.zip(Enum.chunk_every(command.images, length(command.images)))
-        |> Enum.flat_map(fn {name, imgs} ->
+        |> Enum.zip(command.images)
+        |> Enum.flat_map(fn {name, img} ->
           already = if command.has_video,
             do: Enum.any?(video_descs, &(&1.name == name)),
             else: Enum.any?(image_descs, &(&1.name == name))
@@ -936,7 +988,7 @@ defmodule Dmhai.Agent.UserAgent do
             []
           else
             Logger.info("[UserAgent] describe_command_media fallback name=#{name}")
-            messages = [%{role: "user", content: prompt, images: imgs}]
+            messages = [%{role: "user", content: prompt, images: [img]}]
 
             case LLM.call(model, messages) do
               {:ok, desc} when is_binary(desc) and desc != "" ->

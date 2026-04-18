@@ -16,8 +16,14 @@ defmodule Dmhai.Agent.Police do
     3. Path safety — explicit-path tool calls must stay under the session root;
        bash/spawn_task deletion commands (`rm`/`rmdir`/`unlink`) must stay
        within the job's workspace directory.
+    4. Plan step count — fewer than planMinSteps or more than planMaxSteps steps.
+    5. signal batching — step_signal and job_signal must each be called alone; batching
+       either with other tool calls is rejected so all work completes before signalling.
+    6. job_done_missing_result — job_signal(JOB_DONE) must carry a non-empty result
+       field containing the final report compiled by the worker for the user.
   """
 
+  alias Dmhai.Agent.AgentSettings
   require Logger
 
   # Patterns that indicate the model is reproducing internal markers as plain text.
@@ -27,15 +33,29 @@ defmodule Dmhai.Agent.Police do
     ~r/\[called tools:/
   ]
 
-  # Tools allowed to repeat with the same args (scheduling/utility tools are intentional).
+  # Tools always allowed to repeat with same args (fire-and-forget scheduling).
+  # step_signal STEP_BLOCKED is separately exempted in repeatable_call?/1 because
+  # retrying a blocked step legitimately re-sends the same args.
   @repeatable_tools MapSet.new(["spawn_task"])
 
   # Path tools that only READ — allowed anywhere within session_root.
-  @read_path_tools ["read_file", "list_dir", "describe_image", "describe_video", "parse_document"]
+  @read_path_tools ["read_file", "list_dir", "describe_image", "describe_video", "parse_document", "extract_content"]
   # Path tools that WRITE — restricted to workspace_dir.
   @write_path_tools ["write_file"]
 
   @doc "Rejection message to inject, including the specific violation reason."
+  def rejection_msg("job_done_missing_result") do
+    "REJECTED (job_done_missing_result): job_signal(JOB_DONE) requires a non-empty 'result' field. " <>
+    "Compile the final report/answer for the user and include it as the result before signalling JOB_DONE."
+  end
+  def rejection_msg("step_signal_batched") do
+    "REJECTED (step_signal_batched): step_signal must be called alone. " <>
+    "Complete your tool work first, then call step_signal in a separate turn."
+  end
+  def rejection_msg("job_signal_batched") do
+    "REJECTED (job_signal_batched): job_signal must be called alone. " <>
+    "Do not combine it with other tool calls."
+  end
   def rejection_msg(reason) do
     "REJECTED (#{reason}): Fix this specific violation before continuing. Do not repeat the same mistake."
   end
@@ -45,14 +65,31 @@ defmodule Dmhai.Agent.Police do
   Returns `:ok` or `{:rejected, reason_string}`.
   """
   @spec check_plan(String.t(), map()) :: :ok | {:rejected, String.t()}
-  def check_plan(plan_text, _ctx) when is_binary(plan_text) do
+  def check_plan(plan_text, ctx) when is_binary(plan_text) do
+    step_count = Map.get(ctx, :plan_step_count)
+    min_steps  = AgentSettings.plan_min_steps()
+    max_steps  = AgentSettings.plan_max_steps()
 
-    if dangerous_plan?(plan_text) do
-      Logger.warning("[Police] dangerous_plan detected")
-      Dmhai.SysLog.log("[POLICE] REJECTED dangerous_plan")
-      {:rejected, "plan contains dangerous operations (e.g. unrestricted deletion or system-wide destructive commands)"}
-    else
-      :ok
+    cond do
+      is_integer(step_count) and step_count < min_steps ->
+        msg = "plan must have at least #{min_steps} steps, got #{step_count}"
+        Logger.warning("[Police] plan_step_count_too_low: #{step_count}")
+        Dmhai.SysLog.log("[POLICE] REJECTED plan_step_count_too_low: #{step_count}")
+        {:rejected, msg}
+
+      is_integer(step_count) and step_count > max_steps ->
+        msg = "plan must have at most #{max_steps} steps, got #{step_count}"
+        Logger.warning("[Police] plan_step_count_too_high: #{step_count}")
+        Dmhai.SysLog.log("[POLICE] REJECTED plan_step_count_too_high: #{step_count}")
+        {:rejected, msg}
+
+      dangerous_plan?(plan_text) ->
+        Logger.warning("[Police] dangerous_plan detected")
+        Dmhai.SysLog.log("[POLICE] REJECTED dangerous_plan")
+        {:rejected, "plan contains dangerous operations (e.g. unrestricted deletion or system-wide destructive commands)"}
+
+      true ->
+        :ok
     end
   end
 
@@ -88,6 +125,21 @@ defmodule Dmhai.Agent.Police do
   @spec check_tool_calls(list(), list(), map()) :: :ok | {:rejected, String.t()}
   def check_tool_calls(calls, messages, ctx \\ %{}) do
     cond do
+      job_done_missing_result?(calls) ->
+        Logger.warning("[Police] job_done_missing_result")
+        Dmhai.SysLog.log("[POLICE] REJECTED job_done_missing_result")
+        {:rejected, "job_done_missing_result"}
+
+      step_signal_batched?(calls) ->
+        Logger.warning("[Police] step_signal_batched with #{length(calls)} tools")
+        Dmhai.SysLog.log("[POLICE] REJECTED step_signal_batched")
+        {:rejected, "step_signal_batched"}
+
+      job_signal_batched?(calls) ->
+        Logger.warning("[Police] job_signal_batched with #{length(calls)} tools")
+        Dmhai.SysLog.log("[POLICE] REJECTED job_signal_batched")
+        {:rejected, "job_signal_batched"}
+
       repeated_identical_calls?(calls, messages) ->
         names = Enum.map_join(calls, ", ", fn c -> get_in(c, ["function", "name"]) || "?" end)
         Logger.warning("[Police] repeated_identical_tool_calls: #{names}")
@@ -124,16 +176,59 @@ defmodule Dmhai.Agent.Police do
     Enum.any?(@mimicry_patterns, fn pat -> Regex.match?(pat, text) end)
   end
 
-  # For each current call that is NOT in @repeatable_tools, check whether the
-  # same (name, args) signature appeared in any prior assistant turn's tool_calls.
+  # job_signal(JOB_DONE) must carry a non-empty (non-whitespace) result.
+  defp job_done_missing_result?(calls) do
+    Enum.any?(calls, fn c ->
+      if get_in(c, ["function", "name"]) == "job_signal" do
+        args = get_in(c, ["function", "arguments"]) || %{}
+        args = if is_binary(args), do: decode_or_empty(args), else: args
+        (args["status"] || "") |> String.upcase() == "JOB_DONE" and
+          (args["result"] || "") |> String.trim() == ""
+      else
+        false
+      end
+    end)
+  end
+
+  # step_signal must be the only tool call in its turn.
+  defp step_signal_batched?(calls) when length(calls) > 1 do
+    Enum.any?(calls, fn c -> get_in(c, ["function", "name"]) == "step_signal" end)
+  end
+  defp step_signal_batched?(_), do: false
+
+  # job_signal must be the only tool call in its turn.
+  defp job_signal_batched?(calls) when length(calls) > 1 do
+    Enum.any?(calls, fn c -> get_in(c, ["function", "name"]) == "job_signal" end)
+  end
+  defp job_signal_batched?(_), do: false
+
+  # For each current call, check whether it is allowed to repeat (by name or by
+  # status). STEP_BLOCKED and PLAN_REVISE retries are exempt because they
+  # legitimately resend the same args. STEP_DONE with same args is a loop bug.
+  defp repeatable_call?(call) do
+    name = get_in(call, ["function", "name"]) || ""
+    cond do
+      MapSet.member?(@repeatable_tools, name) ->
+        true
+      name == "step_signal" ->
+        args = get_in(call, ["function", "arguments"]) || %{}
+        args = if is_binary(args), do: decode_or_empty(args), else: args
+        String.upcase(to_string(args["status"] || "")) in ["STEP_BLOCKED", "PLAN_REVISE"]
+      true ->
+        false
+    end
+  end
+
+  # For each current call that is not repeatable, check whether the same
+  # (name, args) signature appeared in any prior assistant turn's tool_calls.
   defp repeated_identical_calls?(calls, messages) do
     prev_signatures = build_prev_signatures(messages)
 
     Enum.any?(calls, fn call ->
-      name = get_in(call, ["function", "name"]) || ""
-      if MapSet.member?(@repeatable_tools, name) do
+      if repeatable_call?(call) do
         false
       else
+        name = get_in(call, ["function", "name"]) || ""
         args = get_in(call, ["function", "arguments"]) || %{}
         sig  = {name, normalize_args(args)}
         MapSet.member?(prev_signatures, sig)

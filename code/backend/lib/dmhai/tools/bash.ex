@@ -53,20 +53,14 @@ defmodule Dmhai.Tools.Bash do
       end)
 
     case Task.yield(task, timeout_s * 1_000) || Task.shutdown(task, :brutal_kill) do
+      {:ok, {output, 0}} ->
+        {:ok, %{output: String.slice(output, 0, @max_output), workdir: workdir}}
+
       {:ok, {output, exit_code}} ->
-        {:ok, %{
-          output:    String.slice(output, 0, @max_output),
-          exit_code: exit_code,
-          workdir:   workdir
-        }}
+        {:error, "exit #{exit_code}: #{String.slice(output, 0, @max_output)}"}
 
       nil ->
-        {:ok, %{
-          output:    "(command timed out after #{timeout_s}s)",
-          exit_code: 124,
-          timed_out: true,
-          workdir:   workdir
-        }}
+        {:error, "command timed out after #{timeout_s}s"}
     end
   rescue
     e -> {:error, Exception.message(e)}

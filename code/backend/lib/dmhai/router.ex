@@ -264,6 +264,18 @@ defmodule Dmhai.Router do
     end
   end
 
+  get "/reserve-job-id" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      Data.get_reserved_job_id(conn, user)
+    end
+  end
+
+  post "/upload-job-attachment" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      Data.post_job_attachment(conn, user)
+    end
+  end
+
   post "/agent/chat" do
     with {:ok, conn, user} <- check_auth(conn) do
       AgentChat.post_chat(conn, user)

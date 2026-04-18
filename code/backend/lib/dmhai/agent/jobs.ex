@@ -129,7 +129,7 @@ defmodule Dmhai.Agent.Jobs do
   def advance_cursor(job_id, last_status_id) do
     query!(Repo, """
     UPDATE jobs SET last_reported_status_id=?, updated_at=?
-    WHERE job_id=? AND last_reported_status_id < ?
+    WHERE job_id=? AND (last_reported_status_id IS NULL OR last_reported_status_id < ?)
     """, [last_status_id, System.os_time(:millisecond), job_id, last_status_id])
   end
 
@@ -137,7 +137,7 @@ defmodule Dmhai.Agent.Jobs do
     now = System.os_time(:millisecond)
     query!(Repo, """
     UPDATE jobs SET last_summarized_status_id=?, last_summarized_at=?, updated_at=?
-    WHERE job_id=? AND last_summarized_status_id < ?
+    WHERE job_id=? AND (last_summarized_status_id IS NULL OR last_summarized_status_id < ?)
     """, [last_status_id, now, now, job_id, last_status_id])
   end
 
@@ -179,6 +179,20 @@ defmodule Dmhai.Agent.Jobs do
     query!(Repo, "DELETE FROM worker_status WHERE job_id IN (SELECT job_id FROM jobs WHERE session_id=?)", [session_id])
     query!(Repo, "DELETE FROM jobs WHERE session_id=?", [session_id])
     :ok
+  end
+
+  @doc "True when the given job_id is not yet taken — used to validate pre-allocated ids."
+  def id_available?(job_id) do
+    r = query!(Repo, "SELECT 1 FROM jobs WHERE job_id=?", [job_id])
+    r.rows == []
+  end
+
+  @doc "Lookup user email by user_id. Falls back to user_id string on miss."
+  def lookup_user_email(user_id) do
+    case query!(Repo, "SELECT email FROM users WHERE id=?", [user_id]) do
+      %{rows: [[email]]} when is_binary(email) -> email
+      _ -> user_id
+    end
   end
 
   # ── private ─────────────────────────────────────────────────────────────

@@ -59,27 +59,34 @@ defmodule Itgr.Compaction do
   # Default thresholds: n=8 (middle stub tier), m=6 (recent tier).
   # Compaction fires when total messages > 1 + 8 + 6 + 5 = 20.
   #
-  # Worker.run starts with [system, user] = 2 messages.
-  # Each tool-call iteration appends 2 messages (assistant-with-calls + tool-result).
-  # After 10 iterations: 2 + 20 = 22 > 20 → compaction fires at the START of iteration 11.
+  # Worker.run starts with [system_placeholder, user] = 2 messages.
+  # Each LLM call (plan or tool) appends 2 messages (assistant + tool-result).
+  # The first call (n=0) must be a plan call (phase gate). Subsequent calls are
+  # mid-execution replans with unique args. After 10 LLM calls: 2 + 20 = 22 > 20
+  # → compaction fires at the START of the 11th main-loop iteration (LLM call n=10
+  # goes to the compactor, n=11+ resumes the main worker).
 
   test "worker: 10 tool-call iterations trigger compaction; summary is generated" do
     ctx = make_ctx()
     {:ok, counter} = Agent.start_link(fn -> 0 end)
     test_pid = self()
 
-    # Use `spawn_task` (in Police's @repeatable_tools) so identical-call detection
-    # doesn't trip during the 10-step build-up. Varying the args keeps it honest.
+    # n=0: plan call → plan approved (required by phase gate).
+    # n=1..9: mid-execution replans with unique args — different rationale
+    # each time so Police's identical-call check doesn't trip. Each adds 2
+    # messages (assistant + tool-result), accumulating to 22 > 20 threshold.
+    # n=10: the compactor LLM call fires (update_rolling_summary).
+    # n=11+: post-compaction main loop → signal.
     T.stub_llm_call(fn _model, msgs, _opts ->
       n = Agent.get_and_update(counter, fn n -> {n, n + 1} end)
       cond do
-        n < 10  -> {:ok, {:tool_calls, [T.tool_call("datetime", %{})]}}
+        n < 10  -> {:ok, {:tool_calls, [T.tool_call("plan", %{"steps" => ["step #{n}", "finalize #{n}"], "rationale" => "r#{n}"})]}}
         n == 10 ->
           instr = msgs |> List.last() |> then(&(&1[:content] || &1["content"] || ""))
           send(test_pid, {:compaction_instr, instr})
           {:ok, "Compacted: completed 10 steps, output was X."}
-        n == 11 -> {:ok, {:tool_calls, [T.tool_call("datetime", %{})]}}
-        true    -> {:ok, {:tool_calls, [T.tool_call("signal", %{"status" => "JOB_DONE", "result" => "ok"})]}}
+        n == 11 -> {:ok, {:tool_calls, [T.tool_call("plan", %{"steps" => ["final step", "wrap up"], "rationale" => "post-compact"})]}}
+        true    -> {:ok, {:tool_calls, [T.tool_call("job_signal", %{"status" => "JOB_DONE", "result" => "done"})]}}
       end
     end)
 
@@ -93,23 +100,21 @@ defmodule Itgr.Compaction do
     {:ok, counter} = Agent.start_link(fn -> 0 end)
     test_pid = self()
 
-    # 10 tool-call iterations → compaction fires. Compactor LLM returns error
-    # on the compaction call. Subsequent call 11 should see the FULL 22-msg
-    # history (not the trimmed 14-msg one).
+    # n=0..9: 10 LLM calls accumulate 22 messages (plan + 9 replans).
+    # n=10: compactor call → simulate failure.
+    # n=11: main worker call after failed compaction — must see the full history.
     T.stub_llm_call(fn _model, msgs, _opts ->
       n = Agent.get_and_update(counter, fn n -> {n, n + 1} end)
       cond do
         n < 10 ->
-          {:ok, {:tool_calls, [T.tool_call("datetime", %{})]}}
+          {:ok, {:tool_calls, [T.tool_call("plan", %{"steps" => ["step #{n}", "finalize #{n}"], "rationale" => "r#{n}"})]}}
 
         n == 10 ->
-          # Compactor call → simulate failure.
           {:error, "compactor unreachable"}
 
         true ->
-          # Main worker call after failed compaction — must see the full history.
           send(test_pid, {:post_compact_msg_count, length(msgs)})
-          {:ok, {:tool_calls, [T.tool_call("signal", %{"status" => "JOB_DONE", "result" => "ok"})]}}
+          {:ok, {:tool_calls, [T.tool_call("job_signal", %{"status" => "JOB_DONE", "result" => "done"})]}}
       end
     end)
 
@@ -130,7 +135,7 @@ defmodule Itgr.Compaction do
     T.stub_llm_call(fn _model, msgs, _opts ->
       n = Agent.get_and_update(counter, fn n -> {n, n + 1} end)
       cond do
-        n < 10  -> {:ok, {:tool_calls, [T.tool_call("datetime", %{})]}}
+        n < 10  -> {:ok, {:tool_calls, [T.tool_call("plan", %{"steps" => ["step #{n}", "finalize #{n}"], "rationale" => "r#{n}"})]}}
         n == 10 -> {:ok, "Summary of prior work: found X after 10 steps."}
         true    ->
           has_prefix = Enum.any?(msgs, fn m ->
@@ -139,7 +144,7 @@ defmodule Itgr.Compaction do
             role == "user" and String.starts_with?(content, "[Prior work summary]")
           end)
           send(test_pid, {:has_prefix, has_prefix})
-          {:ok, {:tool_calls, [T.tool_call("signal", %{"status" => "JOB_DONE", "result" => "ok"})]}}
+          {:ok, {:tool_calls, [T.tool_call("job_signal", %{"status" => "JOB_DONE", "result" => "done"})]}}
       end
     end)
 

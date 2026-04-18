@@ -13,7 +13,7 @@ defmodule Dmhai.Agent.WorkerStatus do
     - 'thinking'    — model-provided reasoning text
     - 'tool_call'   — one row per tool call about to execute, content = "<name>(<args>)"
     - 'tool_result' — tool execution result (short preview)
-    - 'final'       — signal(JOB_DONE|BLOCKED) terminal row
+    - 'final'       — job_signal(JOB_DONE|JOB_BLOCKED) terminal row; also synthesised by runtime on failure
     - 'error'       — runtime-synthesized error (crash / orphaned detection)
   """
 

@@ -80,8 +80,7 @@ defmodule Itgr.I18n do
     T.stub_llm_call(fn _model, msgs, _opts ->
       [%{role: "system", content: sys} | _] = msgs
       send(test_pid, {:saw_prompt, sys})
-      {:ok, {:tool_calls, [T.tool_call("signal",
-         %{"status" => "JOB_DONE", "result" => "完了"})]}}
+      {:ok, {:tool_calls, [T.tool_call("job_signal", %{"status" => "JOB_DONE", "result" => "done"})]}}
     end)
 
     Worker.run("task in japanese", ctx)
@@ -123,8 +122,7 @@ defmodule Itgr.I18n do
                       language: "es", job_status: "pending")
 
     T.stub_llm_call(fn _model, _msgs, _opts ->
-      {:ok, {:tool_calls, [T.tool_call("signal",
-         %{"status" => "BLOCKED", "reason" => "sin internet"})]}}
+      {:ok, {:tool_calls, [T.tool_call("job_signal", %{"status" => "JOB_BLOCKED", "reason" => "sin internet"})]}}
     end)
 
     JobRuntime.start_job(jid)

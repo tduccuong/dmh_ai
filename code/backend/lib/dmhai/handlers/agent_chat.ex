@@ -8,12 +8,14 @@ defmodule Dmhai.Handlers.AgentChat do
   POST /agent/chat — server-side LLM chat via the UserAgent pipeline.
 
   Request body (JSON):
-    sessionId  — required
-    content    — required, user's message text
-    images     — optional, list of base64 strings (photos or video frames)
-    imageNames — optional, list of filenames corresponding to each image
-    files      — optional, list of %{"name", "content"} maps (extracted text)
-    hasVideo   — optional bool, true when images are video frames
+    sessionId       — required
+    content         — required, user's message text
+    images          — optional, list of base64 strings (photos or video frames)
+    imageNames      — optional, list of filenames corresponding to each image
+    files           — optional, list of %{"name", "content"} maps (extracted text)
+    hasVideo        — optional bool, true when images are video frames
+    jobId           — optional, pre-allocated job_id (Assistant path with attachments)
+    attachmentNames — optional, list of filenames uploaded to the job workspace
 
   Response: chunked NDJSON, same format as Ollama /api/chat stream.
   """
@@ -24,20 +26,29 @@ defmodule Dmhai.Handlers.AgentChat do
   import Ecto.Adapters.SQL, only: [query!: 3]
   # 50 MB — accommodates multiple base64-encoded images in a single request
   @max_body_bytes 52_428_800
+  # Guard against excessively large attachment lists in the JSON body.
+  @max_attachments 20
 
   def post_chat(conn, user) do
     {:ok, body, conn} = read_body(conn, length: @max_body_bytes)
     d = Jason.decode!(body || "{}")
 
-    session_id  = String.trim(d["sessionId"] || "")
-    content     = String.trim(d["content"] || "")
-    images      = parse_images(d["images"])
-    image_names = parse_string_list(d["imageNames"])
-    files       = parse_files(d["files"])
-    has_video   = d["hasVideo"] == true
+    session_id       = String.trim(d["sessionId"] || "")
+    content          = String.trim(d["content"] || "")
+    images           = parse_images(d["images"])
+    image_names      = parse_string_list(d["imageNames"])
+    files            = parse_files(d["files"])
+    has_video        = d["hasVideo"] == true
+    job_id           = parse_job_id(d["jobId"])
+    # Sanitize names here so they match what post_job_attachment saves on disk.
+    attachment_names =
+      d["attachmentNames"]
+      |> parse_string_list()
+      |> Enum.take(@max_attachments)
+      |> Enum.map(&sanitize_filename/1)
 
     # Allow empty text when images or files are attached (image-only messages)
-    has_payload = content != "" or images != [] or files != []
+    has_payload = content != "" or images != [] or files != [] or attachment_names != []
 
     cond do
       session_id == "" or not has_payload ->
@@ -47,13 +58,15 @@ defmodule Dmhai.Handlers.AgentChat do
         json(conn, 403, %{error: "Forbidden"})
 
       true ->
-        do_chat(conn, user.id, session_id, content, images, image_names, files, has_video)
+        do_chat(conn, user.id, session_id, content, images, image_names, files, has_video,
+                job_id, attachment_names)
     end
   end
 
   # ─── Private ──────────────────────────────────────────────────────────────
 
-  defp do_chat(conn, user_id, session_id, content, images, image_names, files, has_video) do
+  defp do_chat(conn, user_id, session_id, content, images, image_names, files, has_video,
+               job_id, attachment_names) do
     conn =
       conn
       |> put_resp_content_type("application/x-ndjson")
@@ -62,10 +75,12 @@ defmodule Dmhai.Handlers.AgentChat do
       |> send_chunked(200)
 
     opts = [
-      images:      images,
-      image_names: image_names,
-      files:       files,
-      has_video:   has_video
+      images:           images,
+      image_names:      image_names,
+      files:            files,
+      has_video:        has_video,
+      job_id:           job_id,
+      attachment_names: attachment_names
     ]
 
     case Http.dispatch(user_id, session_id, content, self(), opts) do
@@ -116,6 +131,21 @@ defmodule Dmhai.Handlers.AgentChat do
     result = query!(Repo, "SELECT id FROM sessions WHERE id=? AND user_id=?", [session_id, user_id])
     result.rows != []
   end
+
+  # Accept jobId only when it is a non-empty string that is not already in DB
+  # (guards against replay attacks or FE bugs causing duplicate PK crashes).
+  defp parse_job_id(raw) do
+    with true <- is_binary(raw) and raw != "",
+         true <- Dmhai.Agent.Jobs.id_available?(raw) do
+      raw
+    else
+      _ -> nil
+    end
+  end
+
+  # Match the server-side sanitization in post_job_attachment so names align.
+  defp sanitize_filename(name) when is_binary(name),
+    do: Regex.replace(~r/[^\w.\-]/, name, "_")
 
   # Validate that images is a list of non-empty base64 strings; drop invalid entries.
   defp parse_images(nil), do: []

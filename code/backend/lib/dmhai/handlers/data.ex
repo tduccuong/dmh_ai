@@ -488,6 +488,74 @@ defmodule Dmhai.Handlers.Data do
     }
   end
 
+  # GET /reserve-job-id
+  # Returns a pre-allocated job_id so the FE can start uploading attachments to
+  # the job workspace before the chat message is sent. No DB row is created yet.
+  def get_reserved_job_id(conn, _user) do
+    job_id = :crypto.strong_rand_bytes(9) |> Base.url_encode64(padding: false)
+    json(conn, 200, %{job_id: job_id})
+  end
+
+  # POST /upload-job-attachment
+  # Saves a scaled-down attachment to the job workspace. The FE uploads here in
+  # parallel with the /agent/chat call so the worker has the files ready when it
+  # starts. Multipart fields: file, sessionId, jobId.
+  @max_attachment_bytes 50_000_000
+
+  def post_job_attachment(conn, user) do
+    case parse_multipart(conn) do
+      {:error, conn, :too_large} ->
+        json(conn, 413, %{error: "File too large"})
+
+      {:ok, conn, parts} ->
+        session_id = get_in(parts, ["sessionId", :data]) || ""
+        job_id     = get_in(parts, ["jobId", :data])     || ""
+        session_id = String.trim(session_id)
+        job_id     = String.trim(job_id)
+
+        cond do
+          session_id == "" or job_id == "" ->
+            json(conn, 400, %{error: "Missing sessionId or jobId"})
+
+          not owns_session?(session_id, user.id) ->
+            json(conn, 403, %{error: "Forbidden"})
+
+          true ->
+            case Map.fetch(parts, "file") do
+              {:ok, %{filename: filename, data: raw}} ->
+                if byte_size(raw) > @max_attachment_bytes do
+                  json(conn, 413, %{error: "Attachment too large (max 50 MB)"})
+                else
+                  filename  = filename || "upload"
+                  safe_name = Regex.replace(~r/[^\w.\-]/, filename, "_")
+                  origin    = session_origin(session_id)
+                  workspace = Dmhai.Constants.job_workspace_dir(
+                                user.email, session_id, origin, job_id)
+                  File.mkdir_p!(workspace)
+                  File.write!(Path.join(workspace, safe_name), raw)
+                  Logger.info("[Data] job attachment saved job=#{job_id} name=#{safe_name}")
+                  json(conn, 200, %{name: safe_name})
+                end
+
+              :error ->
+                json(conn, 400, %{error: "No file field"})
+            end
+        end
+    end
+  end
+
+  defp owns_session?(session_id, user_id) do
+    result = query!(Repo, "SELECT id FROM sessions WHERE id=? AND user_id=?", [session_id, user_id])
+    result.rows != []
+  end
+
+  defp session_origin(session_id) do
+    case query!(Repo, "SELECT mode FROM sessions WHERE id=?", [session_id]) do
+      %{rows: [[mode]]} when mode in ["assistant", "confidant"] -> mode
+      _ -> "assistant"
+    end
+  end
+
   defp user_asset_dir(email, session_id) do
     Dmhai.Constants.session_root(email, session_id)
   end

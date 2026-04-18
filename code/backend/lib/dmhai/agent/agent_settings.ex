@@ -25,6 +25,9 @@ defmodule Dmhai.Agent.AgentSettings do
     "profileExtractorModel" => "gemini-3-flash-preview:cloud"
   }
 
+  @plan_min_steps_default 2
+  @plan_max_steps_default 10
+  @plan_step_max_retries_default 3
   @worker_max_iter_default 20
   @spawn_task_timeout_secs_default 30
   @worker_context_n_default 8
@@ -70,6 +73,18 @@ defmodule Dmhai.Agent.AgentSettings do
       "ollama::#{pool}::#{model}"
     end
   end
+
+  @doc "Minimum number of steps required in a submitted plan."
+  @spec plan_min_steps() :: pos_integer()
+  def plan_min_steps, do: int_setting("planMinSteps", @plan_min_steps_default)
+
+  @doc "Maximum number of steps allowed in a submitted plan."
+  @spec plan_max_steps() :: pos_integer()
+  def plan_max_steps, do: int_setting("planMaxSteps", @plan_max_steps_default)
+
+  @doc "Max times the runtime retries a STEP_BLOCKED step before escalating to JOB_BLOCKED."
+  @spec plan_step_max_retries() :: pos_integer()
+  def plan_step_max_retries, do: int_setting("planStepMaxRetries", @plan_step_max_retries_default)
 
   @doc "Shortcut accessors."
   def confidant_model,          do: model_for("confidantModel")

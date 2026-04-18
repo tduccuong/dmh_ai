@@ -253,12 +253,7 @@ defmodule Dmhai.Agent.JobRuntime do
     end)
   end
 
-  defp lookup_user_email(user_id) do
-    case Ecto.Adapters.SQL.query!(Dmhai.Repo, "SELECT email FROM users WHERE id=?", [user_id]) do
-      %{rows: [[email]]} when is_binary(email) -> email
-      _ -> "anon"
-    end
-  end
+  defp lookup_user_email(user_id), do: Jobs.lookup_user_email(user_id)
 
   # Poller loop: tails worker_status, pushes progress to the session, detects
   # the 'final' row, and returns {:poller_done, job_id, outcome}.
@@ -373,7 +368,9 @@ defmodule Dmhai.Agent.JobRuntime do
     emit_final_message(job, "JOB_DONE", content || "")
   end
 
-  defp finalize_job(job, %{signal_status: "BLOCKED", content: content}) do
+  # Handles both model-called JOB_BLOCKED and runtime-synthesized BLOCKED.
+  defp finalize_job(job, %{signal_status: status, content: content})
+       when status in ["JOB_BLOCKED", "BLOCKED"] do
     do_summarize_and_announce(job.job_id, true)
     Jobs.mark_blocked(job.job_id, content || "(no reason)")
     emit_final_message(job, "BLOCKED", content || "(no reason)")
@@ -431,13 +428,17 @@ defmodule Dmhai.Agent.JobRuntime do
 
           true ->
             case call_summarizer(job, new_rows) do
-              {:ok, text} ->
+              {:ok, text} when is_binary(text) and text != "" ->
                 max_id = new_rows |> List.last() |> Map.get(:id)
                 WorkerStatus.append(job.job_id, job.current_worker_id || "runtime",
                   "progress_summary", text)
                 append_progress_to_session(job, text)
                 Jobs.advance_summary_cursor(job.job_id, max_id)
                 {:ok, text}
+
+              {:ok, other} ->
+                Logger.warning("[JobRuntime] summarizer returned non-text job=#{job.job_id}: #{inspect(other)}")
+                {:error, :non_text_summary}
 
               {:error, reason} ->
                 Logger.warning("[JobRuntime] summarizer failed job=#{job.job_id}: #{inspect(reason)}")

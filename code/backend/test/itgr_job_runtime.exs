@@ -5,7 +5,7 @@ defmodule Itgr.JobRuntime do
   use ExUnit.Case, async: false
 
   alias Dmhai.Agent.{Jobs, JobRuntime, WorkerStatus}
-  alias Dmhai.Tools.Signal
+  alias Dmhai.Tools.JobSignal
   import Ecto.Adapters.SQL, only: [query!: 3]
 
   defp uid, do: T.uid()
@@ -108,52 +108,52 @@ defmodule Itgr.JobRuntime do
     assert String.ends_with?(row.content, "[truncated]")
   end
 
-  # ─── Signal tool contract ────────────────────────────────────────────────
+  # ─── JobSignal tool contract ──────────────────────────────────────────────
 
-  test "Signal.execute(JOB_DONE) writes a 'final' row" do
+  test "JobSignal.execute(JOB_DONE) writes a 'final' row with the result payload" do
     jid = Jobs.insert(user_id: uid(), session_id: uid(), job_title: "x", job_spec: "s")
     ctx = %{job_id: jid, worker_id: "w1"}
 
-    assert {:ok, _} = Signal.execute(%{"status" => "JOB_DONE", "result" => "ok"}, ctx)
+    assert {:ok, _} = JobSignal.execute(%{"status" => "JOB_DONE", "result" => "all done"}, ctx)
 
     [row] = WorkerStatus.fetch_since(jid, 0)
     assert row.kind == "final"
     assert row.signal_status == "JOB_DONE"
-    assert row.content == "ok"
+    assert row.content == "all done"
   end
 
-  test "Signal.execute(BLOCKED) writes a 'final' row with BLOCKED status" do
-    jid = Jobs.insert(user_id: uid(), session_id: uid(), job_title: "x", job_spec: "s")
-    ctx = %{job_id: jid, worker_id: "w1"}
-
-    assert {:ok, _} = Signal.execute(%{"status" => "BLOCKED", "reason" => "api down"}, ctx)
-
-    [row] = WorkerStatus.fetch_since(jid, 0)
-    assert row.signal_status == "BLOCKED"
-    assert row.content == "api down"
-  end
-
-  test "Signal.execute rejects invalid status" do
+  test "JobSignal.execute rejects JOB_DONE without result" do
     ctx = %{job_id: "x", worker_id: "w1"}
-    assert {:error, reason} = Signal.execute(%{"status" => "WEIRD"}, ctx)
-    assert String.contains?(reason, "must be")
-  end
-
-  test "Signal.execute rejects JOB_DONE without result" do
-    ctx = %{job_id: "x", worker_id: "w1"}
-    assert {:error, reason} = Signal.execute(%{"status" => "JOB_DONE"}, ctx)
+    assert {:error, reason} = JobSignal.execute(%{"status" => "JOB_DONE"}, ctx)
     assert String.contains?(reason, "result")
   end
 
-  test "Signal.execute rejects BLOCKED without reason" do
+  test "JobSignal.execute(JOB_BLOCKED) writes a 'final' row with JOB_BLOCKED status" do
+    jid = Jobs.insert(user_id: uid(), session_id: uid(), job_title: "x", job_spec: "s")
+    ctx = %{job_id: jid, worker_id: "w1"}
+
+    assert {:ok, _} = JobSignal.execute(%{"status" => "JOB_BLOCKED", "reason" => "api down"}, ctx)
+
+    [row] = WorkerStatus.fetch_since(jid, 0)
+    assert row.signal_status == "JOB_BLOCKED"
+    assert row.content == "api down"
+  end
+
+  test "JobSignal.execute rejects invalid status" do
     ctx = %{job_id: "x", worker_id: "w1"}
-    assert {:error, reason} = Signal.execute(%{"status" => "BLOCKED"}, ctx)
+    assert {:error, reason} = JobSignal.execute(%{"status" => "WEIRD"}, ctx)
+    assert String.contains?(reason, "must be")
+  end
+
+  test "JobSignal.execute rejects JOB_BLOCKED without reason" do
+    ctx = %{job_id: "x", worker_id: "w1"}
+    assert {:error, reason} = JobSignal.execute(%{"status" => "JOB_BLOCKED"}, ctx)
     assert String.contains?(reason, "reason")
   end
 
-  test "Signal.execute rejects missing job_id" do
+  test "JobSignal.execute rejects missing job_id" do
     ctx = %{worker_id: "w1"}
-    assert {:error, reason} = Signal.execute(%{"status" => "JOB_DONE", "result" => "ok"}, ctx)
+    assert {:error, reason} = JobSignal.execute(%{"status" => "JOB_DONE", "result" => "x"}, ctx)
     assert String.contains?(reason, "job_id")
   end
 
@@ -169,9 +169,7 @@ defmodule Itgr.JobRuntime do
                       job_status: "pending")
 
     T.stub_llm_call(fn _model, _msgs, _opts ->
-      {:ok, {:tool_calls, [
-        T.tool_call("signal", %{"status" => "JOB_DONE", "result" => "hello world"})
-      ]}}
+      {:ok, {:tool_calls, [T.tool_call("job_signal", %{"status" => "JOB_DONE", "result" => "done"})]}}
     end)
 
     JobRuntime.start_job(jid)
@@ -180,7 +178,7 @@ defmodule Itgr.JobRuntime do
     assert wait_for(fn -> Jobs.get(jid).job_status == "done" end, 3_000)
 
     job = Jobs.get(jid)
-    assert job.job_result == "hello world"
+    assert job.job_result == "done"
     assert is_integer(job.last_run_completed_at)
   end
 
@@ -192,9 +190,7 @@ defmodule Itgr.JobRuntime do
                       job_spec: "s", job_status: "pending")
 
     T.stub_llm_call(fn _model, _msgs, _opts ->
-      {:ok, {:tool_calls, [
-        T.tool_call("signal", %{"status" => "BLOCKED", "reason" => "network error"})
-      ]}}
+      {:ok, {:tool_calls, [T.tool_call("job_signal", %{"status" => "JOB_BLOCKED", "reason" => "network error"})]}}
     end)
 
     JobRuntime.start_job(jid)

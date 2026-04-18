@@ -41,11 +41,13 @@ defmodule Dmhai.Adapters.Http do
       content: content,
       session_id: session_id,
       reply_pid: reply_pid,
-      images:      Keyword.get(opts, :images, []),
-      image_names: Keyword.get(opts, :image_names, []),
-      files:       Keyword.get(opts, :files, []),
-      has_video:   Keyword.get(opts, :has_video, false),
-      metadata:  Keyword.get(opts, :metadata, %{})
+      images:           Keyword.get(opts, :images, []),
+      image_names:      Keyword.get(opts, :image_names, []),
+      files:            Keyword.get(opts, :files, []),
+      has_video:        Keyword.get(opts, :has_video, false),
+      job_id:           Keyword.get(opts, :job_id),
+      attachment_names: Keyword.get(opts, :attachment_names, []),
+      metadata:         Keyword.get(opts, :metadata, %{})
     }
 
     UserAgent.dispatch(user_id, command)

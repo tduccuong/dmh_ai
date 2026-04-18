@@ -40,6 +40,16 @@ defmodule Dmhai.Agent.Command do
     # Triggers the video-frame hint in the system prompt.
     has_video: false,
 
+    # Pre-allocated job_id for Assistant path with attachments.
+    # FE reserves this via GET /reserve-job-id before uploading, so the
+    # workspace path is known and uploads can run in parallel with the LLM call.
+    # nil for Confidant path and attachment-less Assistant requests.
+    job_id: nil,
+
+    # Filenames of scaled-down attachments uploaded to the job workspace.
+    # Used by handle_handoff_to_worker to wait for uploads and inject paths.
+    attachment_names: [],
+
     # Adapter-specific extras (e.g. %{telegram_message_id: 42})
     metadata: %{}
   ]

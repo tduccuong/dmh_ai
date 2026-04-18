@@ -51,8 +51,9 @@ defmodule Dmhai.Tools.Plan do
   def execute(%{"steps" => steps} = args, ctx) when is_list(steps) and steps != [] do
     rationale = Map.get(args, "rationale", "")
     plan_text = format_plan(steps, rationale)
+    ctx_with_count = Map.put(ctx, :plan_step_count, length(steps))
 
-    case Dmhai.Agent.Police.check_plan(plan_text, ctx) do
+    case Dmhai.Agent.Police.check_plan(plan_text, ctx_with_count) do
       :ok ->
         {:ok, "Plan approved. Proceed with execution step by step."}
 
