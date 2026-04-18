@@ -21,20 +21,20 @@ defmodule Dmhai.Agent.TokenTracker do
   end
   def add_master(_, _, _, _), do: :ok
 
-  def add_worker(session_id, user_id, worker_id, description, rx, tx) when rx > 0 or tx > 0 do
+  def add_worker(session_id, user_id, worker_id, job_id, description, rx, tx) when rx > 0 or tx > 0 do
     now = System.os_time(:millisecond)
     query!(Repo,
-      "INSERT INTO worker_token_stats (session_id, worker_id, user_id, description, rx_tokens, tx_tokens, updated_at)
-       VALUES (?,?,?,?,?,?,?)
-       ON CONFLICT(session_id, worker_id) DO UPDATE SET
+      "INSERT INTO worker_token_stats (session_id, job_id, worker_id, user_id, description, rx_tokens, tx_tokens, updated_at)
+       VALUES (?,?,?,?,?,?,?,?)
+       ON CONFLICT(session_id, job_id, worker_id) DO UPDATE SET
          rx_tokens = rx_tokens + excluded.rx_tokens,
          tx_tokens = tx_tokens + excluded.tx_tokens,
          description = excluded.description,
          updated_at = excluded.updated_at",
-      [session_id, worker_id, user_id, description, rx, tx, now])
+      [session_id, job_id || "", worker_id, user_id, description, rx, tx, now])
     :ok
   end
-  def add_worker(_, _, _, _, _, _), do: :ok
+  def add_worker(_, _, _, _, _, _, _), do: :ok
 
   def get_session_stats(session_id) do
     master = try do
@@ -46,8 +46,14 @@ defmodule Dmhai.Agent.TokenTracker do
     rescue _ -> %{rx: 0, tx: 0} end
 
     workers = try do
-      r = query!(Repo, "SELECT worker_id, description, rx_tokens, tx_tokens FROM worker_token_stats WHERE session_id=? ORDER BY updated_at ASC", [session_id])
-      Enum.map(r.rows, fn [wid, desc, rx, tx] -> %{worker_id: wid, description: desc, rx: rx, tx: tx} end)
+      r = query!(Repo, """
+        SELECT job_id, description, SUM(rx_tokens), SUM(tx_tokens)
+        FROM worker_token_stats
+        WHERE session_id=?
+        GROUP BY job_id
+        ORDER BY MAX(updated_at) ASC
+      """, [session_id])
+      Enum.map(r.rows, fn [jid, desc, rx, tx] -> %{job_id: jid, description: desc, rx: rx, tx: tx} end)
     rescue _ -> [] end
 
     %{master: master, workers: workers}

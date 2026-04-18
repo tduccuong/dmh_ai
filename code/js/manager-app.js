@@ -324,7 +324,7 @@ UIManager.showTokenStats = async function(sessionId, sessionName) {
         var workerRows = '';
         if (s.workers.length > 0) {
             workerRows = s.workers.map(function(w) {
-                var desc = w.description ? w.description.slice(0, 50) : w.worker_id;
+                var desc = w.description ? w.description.slice(0, 50) : w.job_id;
                 return '<tr><td style="padding:4px 8px 4px 0;color:#aaa;">' + desc + '</td>' +
                        '<td style="padding:4px 0;text-align:right;white-space:nowrap;">' + fmt(w.tx) + ' / ' + fmt(w.rx) + '</td></tr>';
             }).join('');

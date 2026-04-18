@@ -158,7 +158,7 @@ defmodule Dmhai.Agent.Worker do
       description = Map.get(ctx, :description, "")
 
       on_tokens = fn rx, tx ->
-        TokenTracker.add_worker(ctx.session_id, ctx.user_id, worker_id, description, rx, tx)
+        TokenTracker.add_worker(ctx.session_id, ctx.user_id, worker_id, job_id, description, rx, tx)
       end
 
       Dmhai.SysLog.log("[WORKER] iter=#{iter} id=#{worker_id} job=#{job_id} msgs=#{length(messages)}\n  #{log_worker_messages(messages)}")

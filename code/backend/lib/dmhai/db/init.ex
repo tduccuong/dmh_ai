@@ -136,18 +136,7 @@ defmodule Dmhai.DB.Init do
       updated_at INTEGER
     )
     """)
-    alter_table_safe("""
-    CREATE TABLE IF NOT EXISTS worker_token_stats (
-      session_id TEXT,
-      worker_id TEXT,
-      user_id TEXT,
-      description TEXT,
-      rx_tokens INTEGER DEFAULT 0,
-      tx_tokens INTEGER DEFAULT 0,
-      updated_at INTEGER,
-      PRIMARY KEY (session_id, worker_id)
-    )
-    """)
+    migrate_worker_token_stats()
     # worker_state was the old per-worker checkpoint/recovery store. The
     # job-based runtime (jobs + worker_status tables) replaced it. Drop
     # the table if a legacy deployment still has it; harmless otherwise.
@@ -194,6 +183,32 @@ defmodule Dmhai.DB.Init do
     )
     """)
     alter_table_safe("CREATE INDEX IF NOT EXISTS idx_worker_status_job ON worker_status (job_id, id)")
+  end
+
+  # Wipe and recreate worker_token_stats with job_id in the PK so periodic-job
+  # cycles are grouped correctly in the stats UI. Idempotent: checks for the
+  # job_id column via PRAGMA before dropping anything.
+  defp migrate_worker_token_stats do
+    cols =
+      query!(Repo, "PRAGMA table_info(worker_token_stats)", []).rows
+      |> Enum.map(fn [_, name | _] -> name end)
+
+    unless "job_id" in cols do
+      Repo.query("DROP TABLE IF EXISTS worker_token_stats")
+      query!(Repo, """
+      CREATE TABLE worker_token_stats (
+        session_id TEXT NOT NULL,
+        job_id     TEXT NOT NULL DEFAULT '',
+        worker_id  TEXT NOT NULL,
+        user_id    TEXT,
+        description TEXT,
+        rx_tokens  INTEGER DEFAULT 0,
+        tx_tokens  INTEGER DEFAULT 0,
+        updated_at INTEGER,
+        PRIMARY KEY (session_id, job_id, worker_id)
+      )
+      """)
+    end
   end
 
   defp alter_table_safe(sql) do
