@@ -60,10 +60,10 @@ Dmhai.Agent.*     — agent runtime: UserAgent, Worker, JobRuntime, Jobs,
                     ProfileExtractor, WebSearch, SystemPrompt,
                     UserAgentMessages (shared session-message writer)
 
-Dmhai.Tools.*     — worker-facing tools: Bash, ReadFile, WriteFile, ListDir,
-                    WebFetch, WebSearch, Calculator, DatetimeTool,
+Dmhai.Tools.*     — worker-facing tools: Bash, ReadFile, WriteFile,
+                    WebFetch, WebSearch, Calculator,
                     DescribeImage, DescribeVideo, ParseDocument,
-                    SpawnTask, Signal, Registry
+                    SpawnTask, Signal, Plan, Registry
 
 Dmhai.Web.*       — web-fetch subsystem (see §Web Fetch):
                     CmpDetector, ConsentSeeder, ReaderExtractor,
@@ -168,8 +168,14 @@ start_job(job_id)
     │                 end)
     │
     └── poller_task = Task.Supervisor.async_nolink(TaskSupervisor, fn ->
-                        poller_loop(job_id, worker_task, last_cursor=0)
+                        poller_loop(job_id, worker_task,
+                          last_cursor=job.last_reported_status_id || 0)
                       end)
+```
+
+**Cursor initialisation:** the poller starts at `job.last_reported_status_id` (not 0). For periodic jobs this means each new cycle's poller skips all historical rows from prior cycles — preventing old final rows from being re-processed and re-reported.
+
+```
 ```
 
 ---
@@ -182,6 +188,7 @@ The worker NEVER knows about periodicity. Every invocation is one-off — for pe
 Worker.run(task, ctx)
    │
    ├── system prompt = build_system_prompt(ctx.language)
+   │     header: "Current date/time: <ISO8601> UTC" (static injection — no datetime tool)
    │     (language interpolated — model told explicitly, not inferred)
    │
    └── loop(messages, tools, model, ctx)
@@ -234,7 +241,7 @@ Situations where the runtime writes a `kind='final'` row on the worker's behalf 
 |-------|---------------------|------------------------|
 | Worker hit iter cap without signal | BLOCKED | `max_iter_reached` |
 | Worker returned plain text after 3 nudges | BLOCKED | `worker_refused_signal` |
-| Police: 3 consecutive rejections | BLOCKED | `policy_violation` |
+| Police: 3 consecutive rejections OR any single violation type reaches 3 total | BLOCKED | `policy_violation` |
 | LLM returned empty | BLOCKED | `llm_empty_response` |
 | LLM errored | BLOCKED | `llm_error` |
 | Worker OS process died without signal | BLOCKED | `worker_exited_no_signal` |
@@ -246,6 +253,8 @@ Situations where the runtime writes a `kind='final'` row on the worker's behalf 
 ## Poller + Progress Summariser
 
 The per-job poller Task runs inside `TaskSupervisor` and tails `worker_status` on a polling interval `max(K, intvl_sec/M)`.
+
+Cancel (`do_cancel_job`) kills **both** the worker task (via `WorkerSupervisor`) and the poller task (via `TaskSupervisor`). Killing only the worker left the poller running and could trigger a reschedule race.
 
 ```
 poller_loop(job_id, worker_task, last_cursor):
@@ -337,8 +346,9 @@ If job.job_type == "periodic" and status ≠ "cancelled":
     → fresh spawn via start_job on timer fire (no memory of prior cycles)
 ```
 
-BLOCKED completion uses the same path; the body uses a red-span HTML
-prefix + `I18n.t("blocked_label", lang, reason: ...)`.
+BLOCKED completion uses the same path; the body uses a red-span HTML prefix + `I18n.t("blocked_label", lang, reason: ...)`.
+
+**BLOCKED forces a progress summary first:** before marking the job blocked and emitting the final message, the runtime calls `do_summarize_and_announce(job_id, force: true)` so the user always sees the last known progress before the failure banner.
 
 ---
 
@@ -401,19 +411,21 @@ forward_and_capture loop:
 
 ## Worker Tool Set
 
-Registered in `Dmhai.Tools.Registry`:
+Registered in `Dmhai.Tools.Registry` (12 tools):
 
 | Tool | Purpose |
 |------|---------|
+| `plan` | Submit a step-by-step plan before execution. Runtime approves or rejects. |
 | `bash` | Shell command (sync). `cwd = ctx.workspace_dir` |
-| `read_file` / `write_file` / `list_dir` | File ops under `<session_root>/`. Paths resolve via `Dmhai.Util.Path.resolve/2` |
-| `web_search` | Live search through SearXNG |
+| `read_file` / `write_file` | File ops under `<session_root>/`. Paths resolve via `Dmhai.Util.Path.resolve/2` |
+| `web_search` | Live search through SearXNG. **EXPENSIVE** — see CRITICAL RULE 3 in system prompt |
 | `web_fetch` | CMP-aware URL fetch (see §Web Fetch) |
-| `calculator` | Safe math eval |
-| `datetime` | Current date/time |
+| `calculator` | Safe math eval (arithmetic, trig, log, complex; constants: pi, e) |
 | `describe_image` / `describe_video` / `parse_document` | Media/doc understanding (paths via SafePath) |
 | `spawn_task` | Async bash with optional delay; result arrives as `{:subtask_result, output}` in a later iteration |
 | `signal` | **Terminal contract**. Every job MUST end with this. |
+
+**Removed tools:** `list_dir` (not needed — `bash ls` covers it), `datetime` (replaced by static UTC injected into the system prompt header: `Current date/time: <ISO8601> UTC`).
 
 Deleted in the refactor: `declare_periodic`, `midjob_notify` (replaced by the runtime's scheduler + summariser).
 
@@ -490,7 +502,7 @@ Any path that escapes `session_root` after `Path.expand` → `{:error, "Access d
 
 `Dmhai.Agent.Police.check_tool_calls/3` (ctx arg is new) adds a **path violation** check alongside text mimicry + repeated identical calls:
 
-1. **Explicit-path tools** (`read_file`, `write_file`, `list_dir`, `describe_image`, `describe_video`, `parse_document`): the `path` arg is resolved via `Util.Path.resolve/2`; rejection if it escapes `session_root`.
+1. **Explicit-path tools** (`read_file`, `write_file`, `describe_image`, `describe_video`, `parse_document`): the `path` arg is resolved via `Util.Path.resolve/2`; rejection if it escapes `session_root`.
 2. **Shell tools** (`bash`, `spawn_task`): the `command` arg is scanned for `rm` / `rmdir` / `unlink` / `del`; the operand(s) must stay inside `ctx.workspace_dir`. Heuristic — not airtight (`eval` / variable expansion can evade), catches common cases.
 
 If ctx doesn't carry `session_root` (non-worker callers), path checks are skipped.
@@ -612,11 +624,15 @@ Shipped locales: `en`, `vi`, `es`, `fr`, `ja`. Fallback chain: `lang → en → 
 Guards against bad model behaviour inside the worker loop:
 
 1. **Text mimicry** — model writes `[used: bash(...)]` as plain text instead of calling the tool. Rejected with a nudge.
-2. **Repeated identical tool calls** — same name + args as a prior iteration, excluding `@repeatable_tools` (`spawn_task`, `datetime`). Indicates infinite loop. Rejected.
+2. **Repeated identical tool calls** — same name + args as a prior iteration, excluding `@repeatable_tools` (`spawn_task`). Indicates infinite loop. Rejected.
+3. **Path safety** — explicit-path tools must stay within `session_root`; shell commands must not target paths outside `workspace_dir`.
 
-On rejection, injects `"REJECTED: You VIOLATED the rules..."` user message and loops. After 3 consecutive rejections, emits a synthetic BLOCKED final.
+On rejection, injects `"REJECTED (<reason>): Fix this specific violation before continuing."` — the specific reason is always included so the model knows exactly what to fix.
 
-Known limitation (open task #7): `consecutive_rejections` is `ctx`-only and resets on any successful tool call, so a model that drifts + recovers + drifts indefinitely doesn't trip the cap.
+**Two independent kill switches** in `handle_rejection`:
+
+1. `consecutive_rejections` (in ctx) — fires after 3 *consecutive* violations with no successful non-plan tool call in between. Plan-only calls do **not** reset this counter (replanning after a violation is not progress).
+2. `violation_counts` (per-type map, never resets) — tracks total violations for each Police category (`text_mimicry`, `repeated_identical_tool_calls`, `path_violation`, etc.). When any single category reaches 3 total violations, regardless of successful tool calls between them, forces synthetic BLOCKED immediately. This prevents a model from "insisting" by alternating violations with valid calls to reset the consecutive counter.
 
 ---
 

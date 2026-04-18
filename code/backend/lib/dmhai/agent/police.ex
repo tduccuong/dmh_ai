@@ -20,8 +20,6 @@ defmodule Dmhai.Agent.Police do
 
   require Logger
 
-  @rejection_msg "REJECTED: You VIOLATED the rules. Read the rules again and follow STRICTLY."
-
   # Patterns that indicate the model is reproducing internal markers as plain text.
   @mimicry_patterns [
     ~r/\[used:\s*\w+/,
@@ -30,15 +28,17 @@ defmodule Dmhai.Agent.Police do
   ]
 
   # Tools allowed to repeat with the same args (scheduling/utility tools are intentional).
-  @repeatable_tools MapSet.new(["spawn_task", "datetime"])
+  @repeatable_tools MapSet.new(["spawn_task"])
 
   # Path tools that only READ — allowed anywhere within session_root.
   @read_path_tools ["read_file", "list_dir", "describe_image", "describe_video", "parse_document"]
   # Path tools that WRITE — restricted to workspace_dir.
   @write_path_tools ["write_file"]
 
-  @doc "Rejection message to inject."
-  def rejection_msg, do: @rejection_msg
+  @doc "Rejection message to inject, including the specific violation reason."
+  def rejection_msg(reason) do
+    "REJECTED (#{reason}): Fix this specific violation before continuing. Do not repeat the same mistake."
+  end
 
   @doc """
   Validate a worker's submitted plan for policy violations.

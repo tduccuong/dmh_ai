@@ -115,6 +115,7 @@ defmodule Dmhai.Agent.Worker do
       |> Map.put(:task, task)
       |> Map.put_new(:rolling_summary, nil)
       |> Map.put_new(:language, language)
+      |> Map.put_new(:violation_counts, %{})
 
     worker_id = Map.get(ctx, :worker_id, "unknown")
     job_id    = Map.get(ctx, :job_id)
@@ -217,10 +218,15 @@ defmodule Dmhai.Agent.Worker do
 
         new_messages = messages ++ [assistant_msg] ++ tool_result_msgs
 
+        # Only reset rejection counter when real work succeeds — not on plan-only calls
+        # (replanning after a rejection is not progress and must not reset the guard).
+        only_plan? = Enum.all?(calls, fn c -> get_in(c, ["function", "name"]) == "plan" end)
+        new_consec = if only_plan?, do: Map.get(ctx, :consecutive_rejections, 0), else: 0
+
         new_ctx =
           ctx
           |> Map.put(:iter, iter + 1)
-          |> Map.put(:consecutive_rejections, 0)
+          |> Map.put(:consecutive_rejections, new_consec)
 
         case signal_result do
           {:terminate, status, payload} ->
@@ -314,28 +320,50 @@ defmodule Dmhai.Agent.Worker do
       "or signal(status: \"BLOCKED\", reason: <error>). Call signal now — do not repeat your text."
   end
 
-  # Shared rejection handler: inject Police's rejection message + increment counter.
+  # Shared rejection handler: inject Police's rejection message + increment counters.
+  # Two independent kill switches:
+  #   1. consecutive_rejections — fires if model keeps violating with NO recovery between.
+  #   2. violation_counts (per type) — fires if total violations of the same type reach
+  #      the threshold regardless of any successful tool calls in between.
   defp handle_rejection(ctx, messages, tools, model, reason, last_assistant_text) do
     consec = Map.get(ctx, :consecutive_rejections, 0) + 1
 
-    if consec >= @max_consecutive_rejections do
-      Logger.error("[Worker] Police: max rejections reached (#{reason}) — forcing BLOCKED")
-      lang = Map.get(ctx, :language, "en")
-      localized = Dmhai.I18n.t("policy_violation", lang, %{reason: reason})
-      emit_synthetic_final(ctx, "BLOCKED", localized)
-      {:error, "Repeated policy violation: #{reason}"}
-    else
-      rejection_msg = %{role: "user", content: Police.rejection_msg()}
+    violation_type = reason |> String.split(":", parts: 2) |> hd() |> String.trim()
+    violation_counts = Map.get(ctx, :violation_counts, %{})
+    type_count = Map.get(violation_counts, violation_type, 0) + 1
+    new_violation_counts = Map.put(violation_counts, violation_type, type_count)
 
-      extra =
-        if last_assistant_text do
-          [%{role: "assistant", content: last_assistant_text}]
-        else
-          []
-        end
+    cond do
+      type_count >= @max_consecutive_rejections ->
+        Logger.error("[Worker] Police: '#{violation_type}' hit #{type_count} total violations — forcing BLOCKED")
+        lang = Map.get(ctx, :language, "en")
+        localized = Dmhai.I18n.t("policy_violation", lang, %{reason: reason})
+        emit_synthetic_final(ctx, "BLOCKED", localized)
+        {:error, "Repeated policy violation (#{type_count}×): #{reason}"}
 
-      new_ctx = Map.put(ctx, :consecutive_rejections, consec)
-      loop(messages ++ extra ++ [rejection_msg], tools, model, new_ctx)
+      consec >= @max_consecutive_rejections ->
+        Logger.error("[Worker] Police: #{consec} consecutive rejections (#{reason}) — forcing BLOCKED")
+        lang = Map.get(ctx, :language, "en")
+        localized = Dmhai.I18n.t("policy_violation", lang, %{reason: reason})
+        emit_synthetic_final(ctx, "BLOCKED", localized)
+        {:error, "Repeated policy violation: #{reason}"}
+
+      true ->
+        rejection_msg = %{role: "user", content: Police.rejection_msg(reason)}
+
+        extra =
+          if last_assistant_text do
+            [%{role: "assistant", content: last_assistant_text}]
+          else
+            []
+          end
+
+        new_ctx =
+          ctx
+          |> Map.put(:consecutive_rejections, consec)
+          |> Map.put(:violation_counts, new_violation_counts)
+
+        loop(messages ++ extra ++ [rejection_msg], tools, model, new_ctx)
     end
   end
 

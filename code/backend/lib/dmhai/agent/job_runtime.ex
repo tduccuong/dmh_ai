@@ -147,9 +147,10 @@ defmodule Dmhai.Agent.JobRuntime do
     {:noreply, state}
   end
 
+  def handle_info({:DOWN, _ref, :process, _pid, :normal}, state), do: {:noreply, state}
+
   def handle_info({:DOWN, _ref, :process, _pid, reason}, state) do
-    # Poller crashed. Log and try to mark the job blocked (orphan case).
-    Logger.error("[JobRuntime] poller DOWN reason=#{inspect(reason)}")
+    Logger.error("[JobRuntime] task crashed reason=#{inspect(reason)}")
     {:noreply, state}
   end
 
@@ -193,10 +194,13 @@ defmodule Dmhai.Agent.JobRuntime do
 
             # Spawn the poller under TaskSupervisor. When it exits, we get
             # {ref, {:poller_done, ...}} and handle rescheduling there.
+            # Start cursor at last_reported_status_id so periodic re-runs don't
+            # re-process final rows from previous cycles.
+            start_cursor = job.last_reported_status_id || 0
             poller =
               Task.Supervisor.async_nolink(
                 Dmhai.Agent.TaskSupervisor,
-                fn -> poller_loop(job_id, worker_task, 0) end
+                fn -> poller_loop(job_id, worker_task, start_cursor) end
               )
 
             record = %{
@@ -337,6 +341,11 @@ defmodule Dmhai.Agent.JobRuntime do
   end
   defp safe_shutdown_worker(_), do: :ok
 
+  defp safe_shutdown_poller(%Task{pid: pid}) when is_pid(pid) do
+    if Process.alive?(pid), do: Task.Supervisor.terminate_child(Dmhai.Agent.TaskSupervisor, pid)
+  end
+  defp safe_shutdown_poller(_), do: :ok
+
   defp poll_interval_ms(%{job_type: "periodic", intvl_sec: intvl}) when is_integer(intvl) and intvl > 0 do
     k = AgentSettings.job_poll_min_interval_sec()
     m = AgentSettings.job_poll_samples_per_cycle()
@@ -365,6 +374,7 @@ defmodule Dmhai.Agent.JobRuntime do
   end
 
   defp finalize_job(job, %{signal_status: "BLOCKED", content: content}) do
+    do_summarize_and_announce(job.job_id, true)
     Jobs.mark_blocked(job.job_id, content || "(no reason)")
     emit_final_message(job, "BLOCKED", content || "(no reason)")
   end
@@ -527,8 +537,9 @@ defmodule Dmhai.Agent.JobRuntime do
             %{state | reschedule_timers: Map.delete(state.reschedule_timers, job_id)}
         end
 
-      %{worker_task: wt} ->
+      %{worker_task: wt, poller_task: pt} ->
         safe_shutdown_worker(wt)
+        safe_shutdown_poller(pt)
         %{state | jobs: Map.delete(state.jobs, job_id)}
     end
   end
