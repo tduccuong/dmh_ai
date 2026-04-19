@@ -20,10 +20,7 @@ defmodule Dmhai.Tools.WebFetch do
   @impl true
   def description,
     do:
-      "Fetch and read the text content of any URL. " <>
-      "Automatically handles GDPR/cookie walls by falling back to AMP variants " <>
-      "and archive mirrors when detected. HTML is extracted to article-focused " <>
-      "text (title + body), with chrome/consent overlays stripped."
+      "Fetch and read the text content of a URL. Falls back to AMP/archive mirrors for paywalled pages."
 
   @impl true
   def definition do

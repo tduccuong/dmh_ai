@@ -14,9 +14,8 @@ defmodule Dmhai.Tools.WriteFile do
   @impl true
   def description,
     do:
-      "Write content to a file in the session sandbox. Creates parent directories. " <>
-      "Writes default to the job workspace. Use 'data/<file>' to write into the user's " <>
-      "upload directory. Writes are rejected if they escape the session root."
+      "Write a file in the job workspace. Creates parent dirs. " <>
+      "Use 'data/<file>' for the upload directory. Paths escaping the session root are rejected."
 
   @impl true
   def definition do

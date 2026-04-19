@@ -31,10 +31,8 @@ defmodule Dmhai.Tools.SpawnTask do
   @impl true
   def description,
     do:
-      "Spawn a short-lived process that runs a bash command, optionally after a delay. " <>
-        "The result is returned to you in the next step. " <>
-        "Use this for periodic work (e.g. check stats every 10 s) instead of sleeping in-loop — " <>
-        "you remain responsive while the sub-task runs."
+      "Run a bash command asynchronously; result arrives in your next iteration. " <>
+        "Use for deferred or periodic work instead of blocking in-loop."
 
   @impl true
   def execute(%{"command" => cmd} = args, ctx) do
@@ -87,10 +85,7 @@ defmodule Dmhai.Tools.SpawnTask do
           },
           delay_ms: %{
             type: "integer",
-            description:
-              "Milliseconds to wait before running (default: 0). " <>
-                "Use this to implement periodic scheduling — spawn_task with delay_ms=10000 " <>
-                "then re-spawn on each result."
+            description: "Milliseconds to wait before running (default 0). Use for periodic scheduling."
           }
         },
         required: ["command"]

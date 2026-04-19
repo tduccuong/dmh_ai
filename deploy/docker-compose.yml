@@ -1,17 +1,29 @@
 services:
-  dmh-ai:
+  master:
     image: dmh-ai
+    container_name: dmh_ai-master
     network_mode: host
     restart: unless-stopped
     volumes:
       - ./db:/data/db
       - ./user_assets:/data/user_assets
       - ./system_logs:/data/system_logs
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       - searxng
+      - sandbox
+
+  sandbox:
+    image: dmh-ai-sandbox
+    container_name: dmh_ai-assistant-sandbox
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - ./user_assets:/data/user_assets
 
   searxng:
     image: searxng/searxng
+    container_name: dmh_ai-searxng
     network_mode: host
     restart: unless-stopped
     environment:

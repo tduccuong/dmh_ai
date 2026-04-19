@@ -28,14 +28,16 @@ done
 BUILD_FLAGS=""
 [ "$NO_CACHE" = true ] && BUILD_FLAGS="--no-cache"
 
-echo "Building Docker image..."
+echo "Building Docker images..."
 docker build $BUILD_FLAGS -t "$IMAGE_NAME" "$SCRIPT_DIR/code"
+docker build $BUILD_FLAGS -t "dmh-ai-sandbox" "$SCRIPT_DIR/code/sandbox"
 
 mkdir -p "$DIST_DIR"
 
 if [ "$EXPORT" = true ]; then
     echo "Exporting image to dist/..."
     docker save "$IMAGE_NAME" -o "$DIST_DIR/dmh-ai.tar"
+    docker save "dmh-ai-sandbox" -o "$DIST_DIR/dmh-ai-sandbox.tar"
 
     echo "Pulling and exporting SearXNG image..."
     docker pull searxng/searxng
@@ -44,7 +46,7 @@ if [ "$EXPORT" = true ]; then
     docker rmi searxng/searxng:build-export
 else
     echo "Skipping image export (--no-export). Removing stale tars if present..."
-    rm -f "$DIST_DIR/dmh-ai.tar" "$DIST_DIR/searxng.tar"
+    rm -f "$DIST_DIR/dmh-ai.tar" "$DIST_DIR/searxng.tar" "$DIST_DIR/dmh-ai-sandbox.tar"
 fi
 
 echo "Assembling deployment package..."

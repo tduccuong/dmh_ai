@@ -16,7 +16,7 @@ defmodule Dmhai.Agent.AgentSettings do
     "confidantModel"         => "gemini-3-flash-preview:cloud",
     "assistantModel"         => "ministral-3:14b-cloud",
     "languageDetectorModel"  => "ministral-3:8b-cloud",
-    "workerModel"          => "qwen3-coder-next:cloud",
+    "workerModel"          => "nemotron-3-nano:30b-cloud",
     "compactorModel"       => "gemini-3-flash-preview:cloud",
     "summarizerModel"      => "gemini-3-flash-preview:cloud",
     "webSearchModel"       => "ministral-3:14b-cloud",
@@ -25,7 +25,7 @@ defmodule Dmhai.Agent.AgentSettings do
     "profileExtractorModel" => "gemini-3-flash-preview:cloud"
   }
 
-  @plan_min_steps_default 2
+  @plan_min_steps_default 1
   @plan_max_steps_default 10
   @plan_step_max_retries_default 3
   @worker_max_iter_default 20
@@ -38,8 +38,11 @@ defmodule Dmhai.Agent.AgentSettings do
   @job_poll_min_interval_sec_default 5
   @job_poll_samples_per_cycle_default 10
   @job_orphan_timeout_sec_default 300
+  @exec_error_streak_nudge_default 3
+  @max_worker_restarts_default 2
   @job_progress_summary_every_n_rows_default 6
   @job_progress_summary_min_interval_sec_default 30
+  @job_progress_summary_min_cycle_sec_default 1800
 
   # Web / HTTP defaults
   @http_user_agent_default "Mozilla/5.0 (compatible; DMH-AI/1.0)"
@@ -138,13 +141,25 @@ defmodule Dmhai.Agent.AgentSettings do
   @spec job_orphan_timeout_sec() :: pos_integer()
   def job_orphan_timeout_sec, do: int_setting("jobOrphanTimeoutSec", @job_orphan_timeout_sec_default)
 
+  @doc "Consecutive execution-tool failures before the worker is nudged to re-evaluate."
+  @spec exec_error_streak_nudge() :: pos_integer()
+  def exec_error_streak_nudge, do: int_setting("execErrorStreakNudge", @exec_error_streak_nudge_default)
+
+  @doc "Max automatic worker restarts per job run before permanently blocking the job."
+  @spec max_worker_restarts() :: pos_integer()
+  def max_worker_restarts, do: int_setting("maxWorkerRestarts", @max_worker_restarts_default)
+
   @doc "Fire a progress summary every N new worker_status rows."
   @spec job_progress_summary_every_n_rows() :: pos_integer()
   def job_progress_summary_every_n_rows, do: int_setting("jobProgressSummaryEveryNRows", @job_progress_summary_every_n_rows_default)
 
-  @doc "Minimum seconds between unsolicited progress summaries (rate limit)."
+  @doc "Minimum seconds (T gate) between consecutive progress summaries within the N AND T dual-threshold algorithm."
   @spec job_progress_summary_min_interval_sec() :: pos_integer()
   def job_progress_summary_min_interval_sec, do: int_setting("jobProgressSummaryMinIntervalSec", @job_progress_summary_min_interval_sec_default)
+
+  @doc "Periodic jobs whose cycle interval (intvl_sec) is shorter than this threshold never emit unsolicited interim progress summaries. One-off jobs are unaffected."
+  @spec job_progress_summary_min_cycle_sec() :: pos_integer()
+  def job_progress_summary_min_cycle_sec, do: int_setting("jobProgressSummaryMinCycleSec", @job_progress_summary_min_cycle_sec_default)
 
   @doc "HTTP User-Agent string for outbound web requests."
   @spec http_user_agent() :: String.t()

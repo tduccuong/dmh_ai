@@ -27,11 +27,9 @@ defmodule Dmhai.Tools.JobSignal do
   @impl true
   def description,
     do:
-      "Terminate the entire job by signalling completion or a hard block. " <>
-        "status='JOB_DONE' with result=<final report for the user> when all steps are finished. " <>
-        "The result field is your deliverable — compile the full answer/output to present to the user. " <>
-        "status='JOB_BLOCKED' with reason=<verbatim error> when you cannot recover. " <>
-        "After calling this, stop — no further tool calls."
+      "Terminate the job. " <>
+        "JOB_DONE: result=<your full answer/report for the user> (required, non-empty). " <>
+        "JOB_BLOCKED: reason=<verbatim error>. No further calls after this."
 
   @impl true
   def execute(%{"status" => status} = args, ctx) do

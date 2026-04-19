@@ -20,5 +20,6 @@ config :logger, level: :warning
 config :dmhai, :start_https, false
 config :dmhai, :start_http,  false
 config :dmhai, :enable_job_rehydrate, false
+config :dmhai, :run_startup_check,   false
 # Tight poll cadence so JobRuntime tests finish in seconds rather than tens of seconds.
 config :dmhai, :job_poll_override_ms, 100

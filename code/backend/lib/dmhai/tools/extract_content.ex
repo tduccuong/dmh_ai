@@ -38,9 +38,7 @@ defmodule Dmhai.Tools.ExtractContent do
 
   @impl true
   def description,
-    do: "Extract content from an uploaded file. For images and videos, returns a structured " <>
-        "description plus any embedded text. For documents (PDF, DOCX, TXT, etc.), returns " <>
-        "the parsed text. Use this on workspace/* paths that were uploaded as job attachments."
+    do: "Extract content from a job attachment. Images/video → description + embedded text; documents → parsed text."
 
   @impl true
   def definition do
@@ -61,6 +59,14 @@ defmodule Dmhai.Tools.ExtractContent do
   end
 
   @impl true
+  def execute(%{"data" => frames, "has_video" => true}, _ctx) when is_list(frames) and frames != [] do
+    describe_base64_frames(frames)
+  end
+
+  def execute(%{"data" => b64}, _ctx) when is_binary(b64) and b64 != "" do
+    describe_base64_image(b64)
+  end
+
   def execute(%{"path" => path}, ctx) when is_binary(path) do
     with {:ok, abs} <- SafePath.resolve(path, ctx),
          :ok        <- exists_check(abs) do
@@ -77,7 +83,35 @@ defmodule Dmhai.Tools.ExtractContent do
     end
   end
 
-  def execute(_, _), do: {:error, "Missing required argument: path"}
+  def execute(_, _), do: {:error, "Missing required argument: path or data"}
+
+  # ── base64 input (Confidant fallback path) ────────────────────────────────
+
+  defp describe_base64_image(b64) do
+    messages = [%{role: "user", content: image_prompt(), images: [b64]}]
+
+    case LLM.call(AgentSettings.image_describer_model(), messages) do
+      {:ok, result} when is_binary(result) and result != "" ->
+        {:ok, result}
+
+      other ->
+        Logger.warning("[ExtractContent] base64 image LLM call failed: #{inspect(other)}")
+        {:error, "Image content extraction failed"}
+    end
+  end
+
+  defp describe_base64_frames(frames) do
+    messages = [%{role: "user", content: video_prompt(), images: frames}]
+
+    case LLM.call(AgentSettings.video_describer_model(), messages) do
+      {:ok, result} when is_binary(result) and result != "" ->
+        {:ok, result}
+
+      other ->
+        Logger.warning("[ExtractContent] base64 frames LLM call failed: #{inspect(other)}")
+        {:error, "Video content extraction failed"}
+    end
+  end
 
   # ── image ──────────────────────────────────────────────────────────────────
 

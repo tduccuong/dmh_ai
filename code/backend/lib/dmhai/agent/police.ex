@@ -13,13 +13,16 @@ defmodule Dmhai.Agent.Police do
        instead of using the tool-calling mechanism.
     2. Repeated identical tool calls — model calls the same tool with the same
        arguments as a previous iteration, indicating an infinite loop.
-    3. Path safety — explicit-path tool calls must stay under the session root;
-       bash/spawn_task deletion commands (`rm`/`rmdir`/`unlink`) must stay
-       within the job's workspace directory.
+    3. Path safety — reads are allowed outside /data/ (system paths) or within own
+       session_root under /data/; writes and deletions are confined to the job's
+       workspace_dir (/data/user_assets/<email>/<session_id>/assistant/jobs/<job_id>/).
     4. Plan step count — fewer than planMinSteps or more than planMaxSteps steps.
-    5. signal batching — step_signal and job_signal must each be called alone; batching
+    5. Plan step tools — in a multi-step plan every step must list at least one
+       execution tool; a step with tools: [] is only valid as a single-step plan
+       (pure knowledge answer). Toolless steps in 2+ step plans are hard-rejected.
+    6. signal batching — step_signal and job_signal must each be called alone; batching
        either with other tool calls is rejected so all work completes before signalling.
-    6. job_done_missing_result — job_signal(JOB_DONE) must carry a non-empty result
+    7. job_done_missing_result — job_signal(JOB_DONE) must carry a non-empty result
        field containing the final report compiled by the worker for the user.
   """
 
@@ -39,7 +42,7 @@ defmodule Dmhai.Agent.Police do
   @repeatable_tools MapSet.new(["spawn_task"])
 
   # Path tools that only READ — allowed anywhere within session_root.
-  @read_path_tools ["read_file", "list_dir", "describe_image", "describe_video", "parse_document", "extract_content"]
+  @read_path_tools ["read_file", "list_dir", "parse_document", "extract_content"]
   # Path tools that WRITE — restricted to workspace_dir.
   @write_path_tools ["write_file"]
 
@@ -87,6 +90,11 @@ defmodule Dmhai.Agent.Police do
         Logger.warning("[Police] dangerous_plan detected")
         Dmhai.SysLog.log("[POLICE] REJECTED dangerous_plan")
         {:rejected, "plan contains dangerous operations (e.g. unrestricted deletion or system-wide destructive commands)"}
+
+      (reason = toolless_steps_violation(step_count, ctx)) != nil ->
+        Logger.warning("[Police] plan_step_no_tools")
+        Dmhai.SysLog.log("[POLICE] REJECTED plan_step_no_tools: #{reason}")
+        {:rejected, reason}
 
       true ->
         :ok
@@ -261,7 +269,7 @@ defmodule Dmhai.Agent.Police do
 
 
   # Tools whose `command` arg is a shell script — we scan for rm/rmdir/unlink.
-  @shell_tools ["bash", "spawn_task"]
+  @shell_tools ["run_script", "spawn_task"]
 
   # Returns a reason string if any call in the batch violates path rules,
   # else nil. Skips all checks if ctx doesn't carry a session_root
@@ -288,9 +296,21 @@ defmodule Dmhai.Agent.Police do
     end
   end
 
-  # Read tools: path must be within session_root.
+  # Read tools: allowed anywhere outside /data/, or within own session_root under /data/.
   defp check_path_arg_read(args, ctx, session_root) do
-    check_resolved_path(args, ctx, session_root, "session root")
+    case Map.get(args, "path") do
+      p when is_binary(p) ->
+        case Dmhai.Util.Path.resolve(p, ctx) do
+          {:ok, abs} ->
+            cond do
+              not String.starts_with?(abs, "/data/") -> nil
+              Dmhai.Util.Path.within?(abs, session_root) -> nil
+              true -> "path '#{p}' escapes the session root (#{session_root})"
+            end
+          {:error, reason} -> reason
+        end
+      _ -> nil
+    end
   end
 
   # Write tools: path must be within workspace_dir (stricter).
@@ -325,7 +345,7 @@ defmodule Dmhai.Agent.Police do
   @write_cmd_regex ~r{\b(?:tee|touch|mkdir|truncate)\s+(?:-\S+\s+)*(/[^\s"'`;&|<>()\$\\]+)}
 
   defp check_shell_command(_name, args, workspace_dir, session_root) do
-    case Map.get(args, "command") do
+    case Map.get(args, "script") || Map.get(args, "command") do
       cmd when is_binary(cmd) ->
         check_absolute_paths(cmd, session_root)
         || check_deletion_scope(cmd, workspace_dir)
@@ -366,7 +386,10 @@ defmodule Dmhai.Agent.Police do
       |> List.flatten()
       |> Enum.find(fn p ->
         expanded = Path.expand(p)
-        not Dmhai.Util.Path.within?(expanded, session_root)
+        # Paths outside /data/ are system paths (e.g. /usr, /etc) — always allow.
+        # Under /data/, only own session is permitted.
+        String.starts_with?(expanded, "/data/") and
+          not Dmhai.Util.Path.within?(expanded, session_root)
       end)
 
     if bad, do: "bash command references path '#{bad}' outside the session root (#{session_root})"
@@ -399,6 +422,32 @@ defmodule Dmhai.Agent.Police do
 
     Dmhai.Util.Path.within?(expanded, workspace)
   end
+
+  # Returns a rejection reason string when a multi-step plan contains steps
+  # with no execution tools, else nil.
+  # Single-step plans with tools: [] are allowed (pure knowledge answer).
+  defp toolless_steps_violation(step_count, ctx) when is_integer(step_count) and step_count > 1 do
+    steps_raw = Map.get(ctx, :plan_steps_raw, [])
+
+    toolless =
+      steps_raw
+      |> Enum.with_index(1)
+      |> Enum.filter(fn {s, _} ->
+        tools = if is_map(s), do: s["tools"] || [], else: []
+        tools == []
+      end)
+      |> Enum.map(fn {_, i} -> i end)
+
+    if toolless != [] do
+      nums = Enum.join(toolless, ", ")
+
+      "step(s) #{nums} have tools: []. " <>
+      "MERGE them into adjacent steps that do use tools, " <>
+      "or collapse ALL steps into one single step."
+    end
+  end
+
+  defp toolless_steps_violation(_, _), do: nil
 
   defp decode_or_empty(binary) do
     case Jason.decode(binary) do

@@ -240,7 +240,7 @@ defmodule Itgr.WorkerLoop do
       case n do
         0 -> {:ok, {:tool_calls, [T.tool_call("plan", %{"steps" => ["step one", "finalize"], "rationale" => "test"})]}}
         1 -> {:ok, {:tool_calls, [
-               T.tool_call("bash", %{"command" => "echo hi"}),
+               T.tool_call("run_script", %{"script" => "echo hi"}),
                T.tool_call("step_signal", %{"status" => "STEP_DONE", "id" => 1})
              ]}}
         2 -> {:ok, {:tool_calls, [T.tool_call("step_signal", %{"status" => "STEP_DONE", "id" => 1})]}}

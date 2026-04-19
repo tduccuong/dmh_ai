@@ -142,8 +142,9 @@ defmodule Dmhai.Agent.JobRuntime do
   @impl true
   def handle_info({ref, {:poller_done, job_id, outcome}}, state) do
     Process.demonitor(ref, [:flush])
-    state = update_in(state.jobs, &Map.delete(&1, job_id))
-    state = maybe_reschedule_next_run(job_id, outcome, state)
+    record = Map.get(state.jobs, job_id, %{})
+    state  = update_in(state.jobs, &Map.delete(&1, job_id))
+    state  = handle_poller_outcome(job_id, outcome, record, state)
     {:noreply, state}
   end
 
@@ -156,7 +157,7 @@ defmodule Dmhai.Agent.JobRuntime do
 
   def handle_info({:run_scheduled, job_id}, state) do
     state = update_in(state.reschedule_timers, &Map.delete(&1, job_id))
-    {:noreply, do_start_job(job_id, state)}
+    {:noreply, do_start_job(job_id, state, true)}
   end
 
   def handle_info(:rehydrate, state) do
@@ -169,7 +170,7 @@ defmodule Dmhai.Agent.JobRuntime do
 
   # ─── Private ─────────────────────────────────────────────────────────────
 
-  defp do_start_job(job_id, state) do
+  defp do_start_job(job_id, state, clean_previous \\ false) do
     cond do
       Map.has_key?(state.jobs, job_id) ->
         Logger.warning("[JobRuntime] job #{job_id} already running, skip start_job")
@@ -186,6 +187,9 @@ defmodule Dmhai.Agent.JobRuntime do
             state
 
           job ->
+            if clean_previous do
+              Dmhai.Agent.UserAgentMessages.archive_by_job_id(job.session_id, job.user_id, job.job_id)
+            end
             worker_id = gen_worker_id()
             Jobs.mark_running(job_id, worker_id)
 
@@ -204,10 +208,11 @@ defmodule Dmhai.Agent.JobRuntime do
               )
 
             record = %{
-              worker_id:    worker_id,
-              worker_task:  worker_task,
-              poller_task:  poller,
-              started_at:   System.os_time(:millisecond)
+              worker_id:     worker_id,
+              worker_task:   worker_task,
+              poller_task:   poller,
+              started_at:    System.os_time(:millisecond),
+              restart_count: Map.get(state.jobs[job_id] || %{}, :restart_count, 0)
             }
 
             %{state | jobs: Map.put(state.jobs, job_id, record)}
@@ -288,6 +293,9 @@ defmodule Dmhai.Agent.JobRuntime do
         maybe_announce_progress(job)
 
         cond do
+          final && final.signal_status == "JOB_RESTART" ->
+            {:poller_done, job_id, {:restart, final.content || "exec error restart"}}
+
           final ->
             finalize_job(job, final)
             {:poller_done, job_id, {:final, final.signal_status, final.content}}
@@ -389,21 +397,27 @@ defmodule Dmhai.Agent.JobRuntime do
   # enough time has passed since the last summary. Both thresholds must be
   # crossed to avoid spamming the user on bursty jobs.
   defp maybe_announce_progress(job) do
-    n_threshold = AgentSettings.job_progress_summary_every_n_rows()
-    t_threshold_ms = AgentSettings.job_progress_summary_min_interval_sec() * 1_000
-    now = System.os_time(:millisecond)
+    min_cycle = AgentSettings.job_progress_summary_min_cycle_sec()
 
-    new_row_count =
-      WorkerStatus.fetch_since(job.job_id, job.last_summarized_status_id || 0)
-      |> Enum.count(fn r -> r.kind != "progress_summary" end)
-
-    last_at = job.last_summarized_at || 0
-    elapsed_ms = now - last_at
-
-    if new_row_count >= n_threshold and elapsed_ms >= t_threshold_ms do
-      do_summarize_and_announce(job.job_id, false)
-    else
+    if job.job_type == "periodic" and is_integer(job.intvl_sec) and job.intvl_sec < min_cycle do
       :ok
+    else
+      n_threshold = AgentSettings.job_progress_summary_every_n_rows()
+      t_threshold_ms = AgentSettings.job_progress_summary_min_interval_sec() * 1_000
+      now = System.os_time(:millisecond)
+
+      new_row_count =
+        WorkerStatus.fetch_since(job.job_id, job.last_summarized_status_id || 0)
+        |> Enum.count(fn r -> r.kind != "progress_summary" end)
+
+      last_at = job.last_summarized_at || 0
+      elapsed_ms = now - last_at
+
+      if new_row_count >= n_threshold and elapsed_ms >= t_threshold_ms do
+        do_summarize_and_announce(job.job_id, false)
+      else
+        :ok
+      end
     end
   end
 
@@ -484,7 +498,7 @@ defmodule Dmhai.Agent.JobRuntime do
   defp emit_final_message(job, "JOB_DONE", result) do
     lang = job.language || "en"
     body = "**#{job.job_title}**\n\n#{result}"
-    append_assistant_message(job.session_id, job.user_id, body)
+    append_assistant_message(job.session_id, job.user_id, body, %{"job_id" => job.job_id})
     notify = Dmhai.I18n.t("notify_done", lang, %{title: job.job_title})
     MasterBuffer.append_notification(job.session_id, job.user_id, String.slice(notify, 0, 200))
     Dmhai.MsgGateway.notify(job.user_id, notify)
@@ -495,13 +509,13 @@ defmodule Dmhai.Agent.JobRuntime do
     blocked_label = Dmhai.I18n.t("blocked_label", lang, %{reason: reason})
     body =
       "<span style=\"color:#ef4444;font-weight:600\">🔴 #{job.job_title}:</span>\n\n#{blocked_label}"
-    append_assistant_message(job.session_id, job.user_id, body)
+    append_assistant_message(job.session_id, job.user_id, body, %{"job_id" => job.job_id})
     notify = Dmhai.I18n.t("notify_blocked", lang, %{title: job.job_title})
     MasterBuffer.append_notification(job.session_id, job.user_id, String.slice(notify, 0, 200))
     Dmhai.MsgGateway.notify(job.user_id, notify)
   end
 
-  defp append_assistant_message(session_id, user_id, content, extra \\ %{}) do
+  defp append_assistant_message(session_id, user_id, content, extra) do
     msg = Map.merge(%{
       role: "assistant",
       content: content,
@@ -511,6 +525,37 @@ defmodule Dmhai.Agent.JobRuntime do
   end
 
   # If this was a periodic job and still not cancelled, schedule the next run.
+  defp handle_poller_outcome(job_id, {:restart, reason}, record, state) do
+    restart_count = Map.get(record, :restart_count, 0)
+    max_restarts  = AgentSettings.max_worker_restarts()
+
+    if restart_count >= max_restarts do
+      Logger.error("[JobRuntime] max restarts (#{max_restarts}) reached — blocking job=#{job_id}")
+      case Jobs.get(job_id) do
+        nil -> state
+        job ->
+          msg = "Worker could not recover after #{max_restarts} restart(s). Permanently blocked."
+          WorkerStatus.append(job_id, "runtime", "final", msg, "BLOCKED")
+          Jobs.mark_blocked(job_id, msg)
+          emit_final_message(job, "BLOCKED", msg)
+          state
+      end
+    else
+      Logger.warning("[JobRuntime] restarting worker attempt=#{restart_count + 1}/#{max_restarts} job=#{job_id}: #{reason}")
+      new_state = do_start_job(job_id, state, false)
+      update_in(new_state.jobs, fn jobs ->
+        case Map.get(jobs, job_id) do
+          nil -> jobs
+          r   -> Map.put(jobs, job_id, Map.put(r, :restart_count, restart_count + 1))
+        end
+      end)
+    end
+  end
+
+  defp handle_poller_outcome(job_id, outcome, _record, state) do
+    maybe_reschedule_next_run(job_id, outcome, state)
+  end
+
   defp maybe_reschedule_next_run(job_id, _outcome, state) do
     case Jobs.get(job_id) do
       %{job_type: "periodic", intvl_sec: intvl, job_status: status}

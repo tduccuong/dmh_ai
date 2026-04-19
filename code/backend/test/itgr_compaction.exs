@@ -80,12 +80,12 @@ defmodule Itgr.Compaction do
     T.stub_llm_call(fn _model, msgs, _opts ->
       n = Agent.get_and_update(counter, fn n -> {n, n + 1} end)
       cond do
-        n < 10  -> {:ok, {:tool_calls, [T.tool_call("plan", %{"steps" => ["step #{n}", "finalize #{n}"], "rationale" => "r#{n}"})]}}
+        n < 10  -> {:ok, {:tool_calls, [T.tool_call("plan", %{"steps" => [%{"step" => "step #{n}", "tools" => []}], "rationale" => "r#{n}"})]}}
         n == 10 ->
           instr = msgs |> List.last() |> then(&(&1[:content] || &1["content"] || ""))
           send(test_pid, {:compaction_instr, instr})
           {:ok, "Compacted: completed 10 steps, output was X."}
-        n == 11 -> {:ok, {:tool_calls, [T.tool_call("plan", %{"steps" => ["final step", "wrap up"], "rationale" => "post-compact"})]}}
+        n == 11 -> {:ok, {:tool_calls, [T.tool_call("plan", %{"steps" => [%{"step" => "final step", "tools" => []}], "rationale" => "post-compact"})]}}
         true    -> {:ok, {:tool_calls, [T.tool_call("job_signal", %{"status" => "JOB_DONE", "result" => "done"})]}}
       end
     end)
@@ -107,7 +107,7 @@ defmodule Itgr.Compaction do
       n = Agent.get_and_update(counter, fn n -> {n, n + 1} end)
       cond do
         n < 10 ->
-          {:ok, {:tool_calls, [T.tool_call("plan", %{"steps" => ["step #{n}", "finalize #{n}"], "rationale" => "r#{n}"})]}}
+          {:ok, {:tool_calls, [T.tool_call("plan", %{"steps" => [%{"step" => "step #{n}", "tools" => []}], "rationale" => "r#{n}"})]}}
 
         n == 10 ->
           {:error, "compactor unreachable"}
@@ -135,7 +135,7 @@ defmodule Itgr.Compaction do
     T.stub_llm_call(fn _model, msgs, _opts ->
       n = Agent.get_and_update(counter, fn n -> {n, n + 1} end)
       cond do
-        n < 10  -> {:ok, {:tool_calls, [T.tool_call("plan", %{"steps" => ["step #{n}", "finalize #{n}"], "rationale" => "r#{n}"})]}}
+        n < 10  -> {:ok, {:tool_calls, [T.tool_call("plan", %{"steps" => [%{"step" => "step #{n}", "tools" => []}], "rationale" => "r#{n}"})]}}
         n == 10 -> {:ok, "Summary of prior work: found X after 10 steps."}
         true    ->
           has_prefix = Enum.any?(msgs, fn m ->

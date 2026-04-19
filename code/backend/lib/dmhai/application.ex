@@ -49,6 +49,7 @@ defmodule Dmhai.Application do
 
     case Supervisor.start_link(children, opts) do
       {:ok, pid} ->
+        if Application.get_env(:dmhai, :run_startup_check, true), do: Dmhai.StartupCheck.run()
         Dmhai.DB.Init.run()
         Dmhai.DomainBlocker.load_from_db()
         Logger.info("Sessions API on :3000")

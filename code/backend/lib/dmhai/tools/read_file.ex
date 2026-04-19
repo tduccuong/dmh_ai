@@ -16,10 +16,7 @@ defmodule Dmhai.Tools.ReadFile do
   @impl true
   def description,
     do:
-      "Read a file from the session sandbox. " <>
-      "Paths resolve against the job workspace by default; use 'data/<file>' " <>
-      "to reach user uploads. Absolute paths must stay under the session root. " <>
-      "Content capped at 100 KB."
+      "Read a file from the job workspace. Use 'data/<file>' for uploads; content capped at 100 KB."
 
   @impl true
   def definition do
@@ -31,9 +28,7 @@ defmodule Dmhai.Tools.ReadFile do
         properties: %{
           path: %{
             type: "string",
-            description:
-              "File path. Examples: 'report.txt' (workspace), 'data/photo.jpg' (user upload), " <>
-              "'workspace/output.csv' (explicit workspace). Relative paths default to the job workspace."
+            description: "File path. Relative paths resolve to the job workspace; use 'data/<file>' for uploads."
           }
         },
         required: ["path"]

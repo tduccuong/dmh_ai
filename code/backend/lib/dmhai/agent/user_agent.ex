@@ -493,7 +493,7 @@ defmodule Dmhai.Agent.UserAgent do
 
   defp build_attachment_section(names) do
     lines = Enum.map_join(names, "\n", fn name -> "- workspace/#{name}" end)
-    "[Attached files — use describe_image, describe_video, or extract_content on these paths as needed]\n#{lines}"
+    "[Attached files — use extract_content on these paths as needed]\n#{lines}"
   end
 
   defp handle_set_periodic(calls, command, _state) do
@@ -958,6 +958,8 @@ defmodule Dmhai.Agent.UserAgent do
   # Build a text block describing any images/videos attached to the command.
   # Loads from DB first (background describe already ran); only calls the describer
   # synchronously as a fallback when descriptions aren't stored yet.
+  # Video: all frames are sent in one LLM call via ExtractContent → one consolidated description.
+  # Images: each image is described individually (they may be distinct photos).
   # Uses INSERT OR IGNORE so a late-arriving background describe doesn't duplicate.
   defp describe_command_media(%Command{images: [], files: []}, _session_id), do: nil
 
@@ -967,38 +969,43 @@ defmodule Dmhai.Agent.UserAgent do
 
     new_descs =
       if command.images != [] do
-        model =
-          if command.has_video,
-            do: AgentSettings.video_describer_model(),
-            else: AgentSettings.image_describer_model()
+        if command.has_video do
+          video_name = List.first(command.image_names) || "video"
 
-        prompt =
-          if command.has_video,
-            do: video_describe_prompt(),
-            else: image_describe_prompt()
-
-        command.image_names
-        |> Enum.zip(command.images)
-        |> Enum.flat_map(fn {name, img} ->
-          already = if command.has_video,
-            do: Enum.any?(video_descs, &(&1.name == name)),
-            else: Enum.any?(image_descs, &(&1.name == name))
-
-          if already do
+          if Enum.any?(video_descs, &(&1.name == video_name)) do
             []
           else
-            Logger.info("[UserAgent] describe_command_media fallback name=#{name}")
-            messages = [%{role: "user", content: prompt, images: [img]}]
+            Logger.info("[UserAgent] describe_command_media video fallback frames=#{length(command.images)}")
 
-            case LLM.call(model, messages) do
-              {:ok, desc} when is_binary(desc) and desc != "" ->
-                store_media_description(session_id, name, desc, command.has_video)
-                [%{name: name, description: desc}]
+            case Dmhai.Tools.ExtractContent.execute(%{"data" => command.images, "has_video" => true}, %{}) do
+              {:ok, result} ->
+                desc = extract_description_section(result)
+                store_media_description(session_id, video_name, desc, true)
+                [%{name: video_name, description: desc}]
               _ ->
                 []
             end
           end
-        end)
+        else
+          command.image_names
+          |> Enum.zip(command.images)
+          |> Enum.flat_map(fn {name, img} ->
+            if Enum.any?(image_descs, &(&1.name == name)) do
+              []
+            else
+              Logger.info("[UserAgent] describe_command_media image fallback name=#{name}")
+
+              case Dmhai.Tools.ExtractContent.execute(%{"data" => img}, %{}) do
+                {:ok, result} ->
+                  desc = extract_description_section(result)
+                  store_media_description(session_id, name, desc, false)
+                  [%{name: name, description: desc}]
+                _ ->
+                  []
+              end
+            end
+          end)
+        end
       else
         []
       end
@@ -1015,14 +1022,22 @@ defmodule Dmhai.Agent.UserAgent do
         end
       end)
 
-    parts =
-      (Enum.map(all_descs, fn d -> "[#{d.name}]: #{d.description}" end) ++ file_descs)
+    parts = Enum.map(all_descs, fn d -> "[#{d.name}]: #{d.description}" end) ++ file_descs
 
     if parts == [] do
       nil
     else
       "[Attached media and files — use these to understand the content]\n" <>
         Enum.join(parts, "\n")
+    end
+  end
+
+  # Extract only the ## Description section from extract_content's two-section output.
+  # Falls back to the full text if the section marker is absent (e.g. plain description from background path).
+  defp extract_description_section(text) do
+    case Regex.run(~r/## Description\s*\n(.*?)(?=\n## |\z)/s, text, capture: :all_but_first) do
+      [section] -> String.trim(section)
+      nil       -> text
     end
   end
 
@@ -1038,14 +1053,6 @@ defmodule Dmhai.Agent.UserAgent do
     rescue
       e -> Logger.error("[UserAgent] store_media_description failed: #{Exception.message(e)}")
     end
-  end
-
-  defp image_describe_prompt do
-    "Describe this image in detail: subjects, layout, setting, lighting, text, and mood."
-  end
-
-  defp video_describe_prompt do
-    "These are frames from a video. Describe the content: overview, timeline, subjects, setting, and any visible text."
   end
 
   # Reload session data after a response and compact if thresholds are exceeded.

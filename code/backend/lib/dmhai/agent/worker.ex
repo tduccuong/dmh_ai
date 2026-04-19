@@ -39,12 +39,20 @@ defmodule Dmhai.Agent.Worker do
   The ctx map MUST contain :job_id. All worker_status rows are keyed by it.
   """
 
-  alias Dmhai.Agent.{AgentSettings, LLM, Police, TokenTracker, WorkerStatus}
+  alias Dmhai.Agent.{AgentSettings, LLM, Police, Prompts, TokenTracker, WorkerStatus}
   alias Dmhai.Tools.Registry, as: ToolRegistry
   require Logger
 
   # Max consecutive Police rejections before giving up.
   @max_consecutive_rejections 3
+
+  # Max consecutive plan tool errors before giving up. Prevents runaway loops
+  # when a model repeatedly submits malformed plans that the tool rejects — these
+  # errors are not Police rejections so the normal kill-switch never fires.
+  @max_plan_errors 3
+
+  # Consecutive execution-tool failures trigger a nudge (threshold from AgentSettings).
+  # A second streak after the nudge requests a full worker restart.
 
   # Summarise tool results larger than this before injecting into history.
   @summarize_threshold Application.compile_env(:dmhai, [:worker, :summarize_threshold], 5_000)
@@ -61,7 +69,7 @@ defmodule Dmhai.Agent.Worker do
   @doc false
   def build_system_prompt(language \\ "en") do
     now = DateTime.utc_now() |> DateTime.to_iso8601() |> String.slice(0, 16)
-    execution_phase_prompt(language || "en", now, ToolRegistry.all_definitions(), %{})
+    Prompts.execution_phase_prompt(language || "en", now, ToolRegistry.all_definitions(), %{})
   end
 
   # ─── Public API ────────────────────────────────────────────────────────────
@@ -236,6 +244,26 @@ defmodule Dmhai.Agent.Worker do
               not MapSet.member?(new_err_msgs, result_msg)
           end)
 
+        # Track consecutive plan-tool errors to kill runaway loops. Police repeat
+        # detection can't catch these because compaction wipes old tool_calls from
+        # messages, and plan errors are not Police rejections so consecutive_rejections
+        # never fires. Reset to 0 on first approval.
+        plan_error_count =
+          cond do
+            plan_just_approved? -> 0
+            only_plan? and not plan_just_approved? ->
+              Map.get(ctx, :plan_error_count, 0) + 1
+            true ->
+              Map.get(ctx, :plan_error_count, 0)
+          end
+
+        if plan_error_count >= @max_plan_errors do
+          Logger.error("[Worker] plan failed #{plan_error_count} times in a row — forcing BLOCKED")
+          {:ok, {:signal, "JOB_BLOCKED",
+            "Plan submission failed #{plan_error_count} consecutive times. " <>
+            "The model could not produce a valid plan."}}
+        else
+
         # On ANY plan approval (first or mid-execution replan), extract the new steps
         # and reset current_step to 1. Both plan() replans and step_signal(PLAN_REVISE)
         # flow through here — the model must always re-submit via plan().
@@ -247,7 +275,10 @@ defmodule Dmhai.Agent.Worker do
              end) do
               {plan_call, _} ->
                 raw = get_in(plan_call, ["function", "arguments", "steps"]) || []
-                raw |> Enum.with_index(1) |> Enum.map(fn {label, id} -> %{id: id, label: label} end)
+                raw |> Enum.with_index(1) |> Enum.map(fn {s, id} ->
+                  label = if is_map(s), do: s["step"] || "", else: to_string(s)
+                  %{id: id, label: label}
+                end)
               nil ->
                 []
             end
@@ -255,33 +286,80 @@ defmodule Dmhai.Agent.Worker do
             Map.get(ctx, :plan_steps, [])
           end
 
-        new_ctx =
-          ctx
-          |> Map.put(:iter, iter + 1)
-          |> Map.put(:consecutive_rejections, new_consec)
-          |> Map.put(:error_msgs, merged_err_msgs)
-          |> then(fn c -> if plan_just_approved?, do: Map.put(c, :plan_approved, true), else: c end)
-          |> Map.put(:plan_steps, new_plan_steps)
-          |> then(fn c -> if plan_just_approved?, do: Map.put(c, :current_step, 1), else: c end)
-          |> then(fn c -> if plan_just_approved?, do: Map.put(c, :step_retries, %{}), else: c end)
+        # Track consecutive iterations where every execution tool errored. Kills
+        # loops where the model retries broken calls indefinitely (e.g. wrong param
+        # name). Signal/plan calls are excluded — only run_script, web_search etc.
+        # Reset on plan approval (fresh start) or when any exec tool succeeds.
+        signal_names = MapSet.new(["plan", "job_signal", "step_signal"])
+        exec_zipped  = Enum.reject(zipped, fn {c, _} ->
+          MapSet.member?(signal_names, get_in(c, ["function", "name"]) || "")
+        end)
 
-        case signal_result do
-          {:terminate, status, payload} ->
-            Logger.info("[Worker] job_signal received status=#{status} — exiting loop")
-            {:ok, {:signal, status, payload}}
+        exec_error_streak =
+          cond do
+            plan_just_approved? -> 0
+            exec_zipped == []   -> Map.get(ctx, :exec_error_streak, 0)
+            Enum.all?(exec_zipped, fn {_, r} -> MapSet.member?(new_err_msgs, r) end) ->
+              Map.get(ctx, :exec_error_streak, 0) + 1
+            true -> 0
+          end
 
-          {:step, "STEP_DONE", step_args} ->
-            handle_step_done(step_args, new_messages, tools, model, new_ctx)
+        nudge_threshold = AgentSettings.exec_error_streak_nudge()
+        nudge_sent      = Map.get(ctx, :exec_nudge_sent, false)
 
-          {:step, "STEP_BLOCKED", step_args} ->
-            handle_step_blocked(step_args, new_messages, tools, model, new_ctx)
+        cond do
+          exec_error_streak >= nudge_threshold and not nudge_sent ->
+            Logger.warning("[Worker] #{exec_error_streak} consecutive exec errors — nudging job=#{job_id}")
+            nudge_msg = %{role: "user", content: exec_error_nudge_msg()}
+            nudged_ctx =
+              ctx
+              |> Map.put(:iter, iter + 1)
+              |> Map.put(:consecutive_rejections, new_consec)
+              |> Map.put(:plan_error_count, plan_error_count)
+              |> Map.put(:exec_error_streak, 0)
+              |> Map.put(:exec_nudge_sent, true)
+              |> Map.put(:error_msgs, merged_err_msgs)
+              |> Map.put(:plan_steps, new_plan_steps)
+            loop(new_messages ++ [nudge_msg], tools, model, nudged_ctx)
 
-          {:step, "PLAN_REVISE", step_args} ->
-            handle_plan_revision(step_args, new_messages, tools, model, new_ctx)
+          exec_error_streak >= nudge_threshold ->
+            Logger.error("[Worker] exec errors persist after nudge — requesting restart job=#{job_id}")
+            reason = "Worker failed #{exec_error_streak} consecutive times after warning."
+            emit_synthetic_final(ctx, "JOB_RESTART", reason)
+            {:ok, {:signal, "JOB_RESTART", reason}}
 
-          _ ->
-            loop(new_messages, tools, model, new_ctx)
-        end
+          true ->
+            new_ctx =
+              ctx
+              |> Map.put(:iter, iter + 1)
+              |> Map.put(:consecutive_rejections, new_consec)
+              |> Map.put(:plan_error_count, plan_error_count)
+              |> Map.put(:exec_error_streak, exec_error_streak)
+              |> Map.put(:error_msgs, merged_err_msgs)
+              |> then(fn c -> if plan_just_approved?, do: Map.put(c, :plan_approved, true), else: c end)
+              |> Map.put(:plan_steps, new_plan_steps)
+              |> then(fn c -> if plan_just_approved?, do: Map.put(c, :current_step, 1), else: c end)
+              |> then(fn c -> if plan_just_approved?, do: Map.put(c, :step_retries, %{}), else: c end)
+
+            case signal_result do
+              {:terminate, status, payload} ->
+                Logger.info("[Worker] job_signal received status=#{status} — exiting loop")
+                {:ok, {:signal, status, payload}}
+
+              {:step, "STEP_DONE", step_args} ->
+                handle_step_done(step_args, new_messages, tools, model, new_ctx)
+
+              {:step, "STEP_BLOCKED", step_args} ->
+                handle_step_blocked(step_args, new_messages, tools, model, new_ctx)
+
+              {:step, "PLAN_REVISE", step_args} ->
+                handle_plan_revision(step_args, new_messages, tools, model, new_ctx)
+
+              _ ->
+                loop(new_messages, tools, model, new_ctx)
+            end
+        end  # cond exec_error_streak
+        end  # plan_error_count guard
     end
   end
 
@@ -303,7 +381,8 @@ defmodule Dmhai.Agent.Worker do
       args         = get_in(call, ["function", "arguments"]) || %{}
       tool_call_id = call["id"] || ""
 
-      args_str = Jason.encode!(args) |> String.slice(0, 200)
+      args_encoded = Jason.encode!(args)
+      args_str = if name == "plan", do: args_encoded, else: String.slice(args_encoded, 0, 200)
       Dmhai.SysLog.log("[WORKER] id=#{worker_id} tool=#{name} args=#{args_str}")
 
       exec_result = ToolRegistry.execute(name, args, ctx)
@@ -369,7 +448,7 @@ defmodule Dmhai.Agent.Worker do
           emit_synthetic_final(ctx, "BLOCKED", reason)
           {:error, :no_signal_after_nudges}
         else
-          nudge = %{role: "user", content: protocol_nudge_msg()}
+          nudge = %{role: "user", content: protocol_nudge_msg(ctx)}
           assistant_msg = %{role: "assistant", content: text}
           new_ctx = Map.put(ctx, :consecutive_rejections, consec)
           loop(messages ++ [assistant_msg, nudge], tools, model, new_ctx)
@@ -377,10 +456,22 @@ defmodule Dmhai.Agent.Worker do
     end
   end
 
-  defp protocol_nudge_msg do
-    "PROTOCOL VIOLATION: You returned plain text instead of calling job_signal. " <>
-      "End your work by calling job_signal(status: \"JOB_DONE\") " <>
-      "or job_signal(status: \"JOB_BLOCKED\", reason: <error>). Call job_signal now — do not repeat your text."
+  defp protocol_nudge_msg(ctx) do
+    if Map.get(ctx, :plan_approved, false) do
+      "PROTOCOL VIOLATION: You returned plain text instead of calling job_signal. " <>
+        "End your work by calling job_signal(status: \"JOB_DONE\", result: \"...\") " <>
+        "or job_signal(status: \"JOB_BLOCKED\", reason: \"...\"). Call job_signal now — do not repeat your text."
+    else
+      "PROTOCOL VIOLATION: You returned plain text instead of calling plan(). " <>
+        "You must call plan(steps: [...], rationale: \"...\") to submit your plan. " <>
+        "Call plan() now — do not repeat your text."
+    end
+  end
+
+  defp exec_error_nudge_msg do
+    "WARNING: You have failed #{AgentSettings.exec_error_streak_nudge()} consecutive tool calls in a row. " <>
+      "Re-evaluate your entire approach — your current strategy is not working. " <>
+      "Try a fundamentally different method. If you continue to fail, the job will be restarted."
   end
 
   # Shared rejection handler: inject Police's rejection message + increment counters.
@@ -738,9 +829,9 @@ defmodule Dmhai.Agent.Worker do
 
     Enum.filter(tools, fn t ->
       case t[:name] || t["name"] do
-        "describe_image" -> Regex.match?(~r/\.(jpg|jpeg|png|gif|webp|bmp)|image|photo|screenshot/i, scan)
-        "describe_video" -> Regex.match?(~r/\.(mp4|mov|avi|mkv|webm)|video/i, scan)
-        "parse_document" -> Regex.match?(~r/\.(pdf|docx|odt|pptx|epub)|document|parse_document/i, scan)
+        "plan"            -> false  # plan phase only; removed from execution to prevent gratuitous replanning
+        "extract_content" -> Regex.match?(~r/\.(jpg|jpeg|png|gif|webp|bmp|mp4|mov|avi|mkv|webm)|image|photo|screenshot|video|attachment|workspace\//i, scan)
+        "parse_document"  -> Regex.match?(~r/\.(pdf|docx|odt|pptx|epub)|document|parse_document/i, scan)
         _                -> true
       end
     end)
@@ -769,8 +860,8 @@ defmodule Dmhai.Agent.Worker do
     phase = if Map.get(ctx, :plan_approved, false), do: :execute, else: :plan
 
     case phase do
-      :plan    -> plan_phase_prompt(lang, now, all_tools)
-      :execute -> execution_phase_prompt(lang, now, effective_tools, ctx)
+      :plan    -> Prompts.plan_phase_prompt(lang, now, all_tools)
+      :execute -> Prompts.execution_phase_prompt(lang, now, effective_tools, ctx)
     end
   end
 
@@ -778,146 +869,6 @@ defmodule Dmhai.Agent.Worker do
   #
   # Why minimal: the model cannot call any execution tool yet, so detailed
   # execution rules waste tokens. We only need: task framing, terse step format,
-  # and a catalogue of all execution tools (by name + one-sentence description)
-  # so the model knows what to reference in plan steps.
-  #
-  # Tool catalogue comes from all_tools (full registry), minus `plan` itself.
-  # The first sentence of each tool's description is used to keep it concise.
-  defp plan_phase_prompt(lang, now, all_tools) do
-    catalogue =
-      all_tools
-      |> Enum.reject(fn t -> (t[:name] || t["name"]) == "plan" end)
-      |> Enum.map_join("\n", fn t ->
-        name = t[:name] || t["name"] || "?"
-        desc = t[:description] || t["description"] || ""
-        # Take only the first sentence so the catalogue stays compact.
-        blurb = desc |> String.split(~r/\.\s/, parts: 2) |> hd() |> String.trim()
-        "  #{name} — #{blurb}"
-      end)
-
-    """
-    You are a focused worker agent in the DMH-AI ecosystem.
-    Current date/time: #{now} UTC
-
-    PLANNING PHASE: You MUST call plan(steps: [...], rationale: "...") now.
-    Do NOT call any other tool. Do NOT return plain text.
-
-    Step format (strictly enforced — the runtime rejects verbose plans):
-      - Short imperative phrase only: "web_fetch <url>", "bash ls data/", "write_file report.md"
-      - FORBIDDEN: "I will ...", "I think ...", "First I plan to ...", narrative sentences.
-      - Each step names exactly ONE tool and its target or action. Nothing more.
-
-    Execution tools available for planning (not callable in this phase):
-    #{catalogue}
-
-    CRITICAL RULES:
-      1. Language: user's language is "#{lang}". All user-facing output — including
-         signal result/reason — MUST be written in "#{lang}". Do not switch languages.
-      2. Tool calls: ALWAYS via the tool-calling mechanism. Plain text that mimics
-         tool calls (e.g. `[used: bash(...)]`) is FORBIDDEN.
-    """
-  end
-
-  # Full execution-phase prompt.
-  #
-  # Includes per-tool guidance ONLY for tools present in effective_tools —
-  # absent tools don't need their rules loaded into context, saving tokens.
-  # The web_search critical rule (~120 tokens) is conditional on the tool being
-  # active. web_fetch hint (~20 tokens) is conditional similarly.
-  #
-  # Step tracking: injects the approved plan + current step each turn so the
-  # model stays oriented. On the last step the prompt says to call job_signal
-  # directly (skipping step_signal) to save one LLM round-trip.
-  defp execution_phase_prompt(lang, now, effective_tools, ctx) do
-    tool_names = MapSet.new(Enum.map(effective_tools, fn t -> t[:name] || t["name"] end))
-
-    plan_steps   = Map.get(ctx, :plan_steps, [])
-    current_step = Map.get(ctx, :current_step, 1)
-
-    # Integer comparison — both current_step and step .id are integers (1-based index).
-    last_step_id    = if plan_steps != [], do: List.last(plan_steps).id, else: nil
-    all_steps_done? = is_integer(last_step_id) and is_integer(current_step) and
-                      current_step > last_step_id
-    is_last_step?   = is_integer(last_step_id) and is_integer(current_step) and
-                      current_step == last_step_id
-
-    plan_section =
-      case plan_steps do
-        [] ->
-          ""
-        steps ->
-          step_lines =
-            Enum.map_join(steps, "\n", fn %{id: id, label: label} ->
-              if id == current_step, do: "  → #{id}. #{label}", else: "    #{id}. #{label}"
-            end)
-          call_note =
-            cond do
-              all_steps_done? ->
-                "job_signal(status: \"JOB_DONE\", result: \"<final report>\") — ALL steps done. Compile and deliver now."
-              is_last_step? ->
-                "job_signal(status: \"JOB_DONE\", result: \"<final report>\") -- last step, skip step_signal."
-              true ->
-                "step_signal(status: \"STEP_DONE\", id: \"#{current_step}\")"
-            end
-          header = if all_steps_done?,
-            do: "ALL STEPS COMPLETE — deliver your report now.\n",
-            else: "Executing step #{current_step}/#{length(steps)}. On completion: #{call_note}\n"
-          "APPROVED PLAN:\n#{step_lines}\n\n#{header}\n"
-      end
-
-    # Included only when web_fetch is callable — avoids dead text in tool-limited turns.
-    web_fetch_hint =
-      if MapSet.member?(tool_names, "web_fetch") do
-        "\n       - For any URL in the task: call web_fetch first. Deterministic and free."
-      else
-        ""
-      end
-
-    # Included only when web_search is callable — this rule is ~120 tokens and
-    # only meaningful when the expensive tool is actually available this turn.
-    web_search_rule =
-      if MapSet.member?(tool_names, "web_search") do
-        """
-
-            3. `web_search` is EXPENSIVE — default is you do NOT need it.
-               Before planning a search, ask: "Can I answer this from training data?" If yes, skip it.
-               - NEVER for: translation, summarisation, writing, coding, science, history, math, geography, astronomy.
-               - Use ONLY for: breaking news, sports scores, stock/crypto prices, weather,
-                 current service status, software release versions, or any live data you
-                 genuinely cannot know from training.
-        """
-      else
-        ""
-      end
-
-    """
-    You are a focused worker agent in the DMH-AI ecosystem.
-    Current date/time: #{now} UTC
-    Plan approved — proceed with execution.
-
-    #{plan_section}PROTOCOL (mandatory, enforced by the runtime):
-      1. EXECUTE: Carry out the current step using the available tools.#{web_fetch_hint}
-      2. MID-EXECUTION REPLAN: If execution becomes impossible or the approach must change
-         significantly (URL down, tool fails, findings contradict assumptions), call plan(...)
-         again with updated steps. Wait for re-approval before continuing.
-         Do NOT replan for minor deviations — only when the overall approach must change.
-      3. When finished, call:
-             job_signal(status: "JOB_DONE")
-      4. If blocked by an error you cannot recover from, call:
-             job_signal(status: "JOB_BLOCKED", reason: <verbatim error message>)
-      5. After calling job_signal, do not call any other tool. The runtime terminates you.
-
-    Not calling job_signal means your work is lost. Plain text as your final action is a
-    protocol violation — the runtime nudges then aborts with JOB_BLOCKED.
-
-    CRITICAL RULES:
-      1. Language: user's language is "#{lang}". All user-facing output — including
-         signal result/reason and any tool arguments echoed to the user — MUST be
-         written in "#{lang}". Do not switch languages.
-      2. Tool calls: ALWAYS via the tool-calling mechanism. Plain text that mimics
-         tool calls (e.g. `[used: bash(...)]`) is FORBIDDEN.#{web_search_rule}
-    """
-  end
 
   defp log_worker_messages(messages) do
     non_sys = Enum.reject(messages, fn m -> (m[:role] || m["role"]) == "system" end)

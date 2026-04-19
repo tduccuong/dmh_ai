@@ -160,12 +160,12 @@ defmodule Itgr.AssetsLayout do
     end
 
     test "accepts bash rm inside the workspace" do
-      call = T.tool_call("bash", %{"command" => "rm -rf tmp/cache"})
+      call = T.tool_call("run_script", %{"script" => "rm -rf tmp/cache"})
       assert :ok = Police.check_tool_calls([call], [], path_ctx())
     end
 
     test "rejects bash rm on an absolute path outside the workspace" do
-      call = T.tool_call("bash", %{"command" => "rm -rf /data/user_assets/u/S/data/photo.jpg"})
+      call = T.tool_call("run_script", %{"script" => "rm -rf /data/user_assets/u/S/data/photo.jpg"})
       assert {:rejected, reason} = Police.check_tool_calls([call], [], path_ctx())
       assert String.contains?(reason, "path_violation")
       assert String.contains?(reason, "outside the job workspace")

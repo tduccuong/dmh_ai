@@ -14,12 +14,10 @@ defmodule Dmhai.Tools.Registry do
     Dmhai.Tools.JobSignal,
     Dmhai.Tools.WebSearch,
     Dmhai.Tools.WebFetch,
-    Dmhai.Tools.Bash,
+    Dmhai.Tools.RunScript,
     Dmhai.Tools.ReadFile,
     Dmhai.Tools.WriteFile,
     Dmhai.Tools.Calculator,
-    Dmhai.Tools.DescribeImage,
-    Dmhai.Tools.DescribeVideo,
     Dmhai.Tools.ParseDocument,
     Dmhai.Tools.ExtractContent,
     Dmhai.Tools.SpawnTask

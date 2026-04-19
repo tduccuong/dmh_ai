@@ -74,7 +74,9 @@ defmodule Dmhai.Agent.ContextEngine do
     mode               = Keyword.get(opts, :mode, "confidant")
     language           = Keyword.get(opts, :language)
 
-    messages = session_data["messages"] || []
+    # Exclude archived messages (previous periodic-job cycles) — visible in FE
+    # but not relevant to the LLM's context.
+    messages = (session_data["messages"] || []) |> Enum.reject(&(&1["_archived"] == true))
     ctx      = session_data["context"] || %{}
     summary  = ctx["summary"]
     cutoff   = ctx["summary_up_to_index"] || -1

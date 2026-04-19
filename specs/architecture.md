@@ -49,6 +49,13 @@ Application
       └── Dmhai.Router (Plug.Router)
 ```
 
+After the supervisor tree starts, `application.ex` runs three sequential steps:
+1. `Dmhai.StartupCheck.run/0` — checks docker socket, sandbox container running + exec,
+   data-path writability (FATAL), and Ollama reachability + internet from sandbox (WARN).
+   Raises on any FATAL failure so the process exits immediately with a clear error.
+2. `Dmhai.DB.Init.run/0` — DB schema migrations.
+3. `Dmhai.DomainBlocker.load_from_db/0` — loads abuse blocklist into ETS.
+
 ---
 
 ## Module Namespaces
@@ -60,11 +67,10 @@ Dmhai.Agent.*     — agent runtime: UserAgent, Worker, JobRuntime, Jobs,
                     ProfileExtractor, WebSearch, SystemPrompt,
                     UserAgentMessages (shared session-message writer)
 
-Dmhai.Tools.*     — worker-facing tools: Bash, ReadFile, WriteFile,
+Dmhai.Tools.*     — worker-facing tools: RunScript, ReadFile, WriteFile,
                     WebFetch, WebSearch, Calculator,
-                    DescribeImage, DescribeVideo, ParseDocument,
-                    ExtractContent, SpawnTask, Plan, JobSignal,
-                    StepSignal, Registry
+                    ParseDocument, ExtractContent, SpawnTask,
+                    Plan, JobSignal, StepSignal, Registry
 
 Dmhai.Web.*       — web-fetch subsystem (see §Web Fetch):
                     CmpDetector, ConsentSeeder, ReaderExtractor,
@@ -205,7 +211,7 @@ Worker.run(task, ctx)
          │     post-steps phase: [job_signal] only
          │
          ├── build_turn_prompt  (per-turn, matches phase + effective_tools)
-         │     plan phase:    tool catalogue + terse step format rules
+         │     plan phase:    tool catalogue + step format rules (plain strings, fewer is better)
          │     execution:     full plan as bullet list + "You are on step [N]"
          │                    + step_signal instructions
          │     post-steps:    "All steps complete, call job_signal(JOB_DONE)"
@@ -239,7 +245,7 @@ Worker.run(task, ctx)
 ### PROTOCOL contract (mandatory)
 
 **Phase 1 — Planning** (`plan_approved = false`):
-Model calls `plan(steps, rationale)`. Runtime validates (step count bounds, dangerous content). On approval, `ctx.plan_steps` and `ctx.current_step = 1` are set.
+Model calls `plan(steps, rationale)`. Each step is an object `{"step": "...", "tools": ["tool1"]}`. Runtime validates (step count bounds, dangerous content, tool declarations). On approval, `ctx.plan_steps` and `ctx.current_step = 1` are set. Prompt enforces: strictly 1 step when answerable from training data or requiring ≤2 tool calls; multiple steps only when step N's output is the required input to step N+1. Police hard-rejects any multi-step plan where any step has `tools: []` — a step with no tool calls is only valid as a single-step plan.
 
 **Phase 2 — Step execution** (`plan_approved = true`, steps remaining):
 For each step, model uses available tools then calls one of:
@@ -281,6 +287,25 @@ Situations where the runtime writes a `kind='final'` row on the worker's behalf 
 | Worker OS process died without signal | JOB_BLOCKED | `worker_exited_no_signal` (I18n) |
 | Job cancelled by user | JOB_BLOCKED | `job_cancelled_by_user` (I18n) |
 | Orphaned 'running' on app restart | JOB_BLOCKED | `worker_orphaned` (I18n) |
+| Exec error streak persists after nudge | JOB_RESTART → spawn new worker (same job_id) | runtime-generated |
+| JOB_RESTART exceeds `maxWorkerRestarts` | JOB_BLOCKED | runtime-generated |
+
+**Exec error recovery flow:**
+
+```
+exec tools all fail N times (execErrorStreakNudge, default 3)
+    → inject nudge: "re-evaluate your approach"
+    → reset exec_error_streak to 0, set exec_nudge_sent=true, loop
+
+exec tools all fail N times AGAIN (nudge_sent=true)
+    → emit JOB_RESTART final row
+    → JobRuntime.handle_poller_outcome: restart_count < maxWorkerRestarts
+        → spawn new worker (same job_id, fresh ctx)
+        → increment restart_count in in-memory record
+    → restart_count >= maxWorkerRestarts → JOB_BLOCKED
+```
+
+**Plan tool availability:** `plan` is only offered in the plan phase (when `plan_approved=false`). `select_tools` always excludes it from the execution phase tool set to prevent gratuitous mid-execution replanning. Use `step_signal(PLAN_REVISE)` to trigger a plan revision if the approach must change mid-execution.
 
 ---
 
@@ -316,7 +341,9 @@ poller_loop(job_id, worker_task, last_cursor):
 
 ### Mid-job progress summariser (delta-only)
 
-Fires when two thresholds are crossed:
+Skipped entirely for periodic jobs whose `intvl_sec < jobProgressSummaryMinCycleSec` (default 1800 s) — short-cycle jobs finish too quickly for interim reports to be useful.
+
+For all other jobs, fires when **both** thresholds are crossed (N AND T):
 
 1. New non-summary rows since `last_summarized_status_id` ≥ `jobProgressSummaryEveryNRows` (default 6).
 2. Seconds since `last_summarized_at` ≥ `jobProgressSummaryMinIntervalSec` (default 30).
@@ -445,25 +472,25 @@ forward_and_capture loop:
 
 ## Worker Tool Set
 
-Registered in `Dmhai.Tools.Registry` (14 tools):
+Registered in `Dmhai.Tools.Registry` (12 tools):
 
 | Tool | Phase available | Purpose |
 |------|----------------|---------|
-| `plan` | Plan phase only | Submit a step-by-step plan (2–10 steps). Runtime validates and approves. |
+| `plan` | Plan phase only | Submit a step-by-step plan (1–10 steps). Runtime validates and approves. |
 | `step_signal` | Execution phase only | Per-step checkpoint: `STEP_DONE`, `STEP_BLOCKED`, or `PLAN_REVISE`. Must be called alone (not batched). |
 | `job_signal` | Post-steps phase only | Terminal job signal: `JOB_DONE` (requires `result`) or `JOB_BLOCKED` (requires `reason`). Ends the worker loop. |
-| `bash` | Execution | Shell command (sync). `cwd = ctx.workspace_dir` |
+| `run_script` | Execution | Write and run a complete Linux shell script in one call. Use for HTTP requests (curl/wget), system queries, file ops, scripting. `cwd = ctx.workspace_dir` |
 | `read_file` / `write_file` | Execution | File ops under `<session_root>/`. Paths resolve via `Dmhai.Util.Path.resolve/2` |
 | `web_search` | Execution | Live search through SearXNG. **EXPENSIVE** — only for live data. |
 | `web_fetch` | Execution | CMP-aware URL fetch (see §Web Fetch) |
 | `calculator` | Execution | Safe math eval (arithmetic, trig, log, complex; constants: pi, e) |
-| `describe_image` / `describe_video` / `parse_document` | Execution (context-gated) | Media/doc understanding. Only included when task/recent messages contain media signals. |
-| `extract_content` | Execution (context-gated) | Unified extractor for Assistant-path job attachments. Routes by extension: images → ImageMagick + LLM (Description + Verbatim Content); video → ffmpeg frames + LLM; documents → pdftotext/pandoc/direct read. |
+| `parse_document` | Execution (context-gated) | Parse document files (.pdf, .docx, etc.). Only included when task/messages contain document signals. |
+| `extract_content` | Execution (context-gated) | Unified extractor. Accepts a `path` (file on disk) or `data` (base64). Routes by extension: images → ImageMagick + LLM; video → ffmpeg frames + LLM; documents → pdftotext/pandoc/direct read. Returns two sections: `## Description` + `## Verbatim Content`. Only included when task/messages contain media/attachment signals. |
 | `spawn_task` | Execution | Async bash; result arrives as `{:subtask_result, output}` in a later iteration |
 
 **Phase gating** is enforced via `effective_tools` computed each turn — the model physically cannot call tools outside the current phase.
 
-**Removed tools:** `signal` (replaced by `step_signal` + `job_signal`), `list_dir` (bash ls covers it), `datetime` (static UTC in prompt header).
+**Removed tools:** `signal` (replaced by `step_signal` + `job_signal`), `list_dir` (run_script ls covers it), `datetime` (static UTC in prompt header), `describe_image` / `describe_video` (unified into `extract_content`).
 
 Deleted in prior refactors: `declare_periodic`, `midjob_notify` (replaced by runtime scheduler + summariser).
 
@@ -540,8 +567,9 @@ Any path that escapes `session_root` after `Path.expand` → `{:error, "Access d
 
 `Dmhai.Agent.Police.check_tool_calls/3` (ctx arg is new) adds a **path violation** check alongside text mimicry + repeated identical calls:
 
-1. **Explicit-path tools** (`read_file`, `write_file`, `describe_image`, `describe_video`, `parse_document`, `extract_content`): the `path` arg is resolved via `Util.Path.resolve/2`; rejection if it escapes `session_root`.
-2. **Shell tools** (`bash`, `spawn_task`): the `command` arg is scanned for `rm` / `rmdir` / `unlink` / `del`; the operand(s) must stay inside `ctx.workspace_dir`. Heuristic — not airtight (`eval` / variable expansion can evade), catches common cases.
+1. **Explicit-path read tools** (`read_file`, `parse_document`, `extract_content`): allowed if the resolved path does **not** start with `/data/` (system paths inside the sandbox) or if it falls within `session_root` under `/data/`. Rejected if it targets another user's or session's tree under `/data/`.
+2. **Explicit-path write tools** (`write_file`): must stay within `workspace_dir` (`/data/user_assets/<email>/<session_id>/assistant/jobs/<job_id>/`).
+3. **Shell tools** (`run_script`): absolute paths in the command are scanned; those under `/data/` must be within `session_root`. Deletion targets (`rm` / `rmdir` / `unlink`) must be within `workspace_dir`.
 
 If ctx doesn't carry `session_root` (non-worker callers), path checks are skipped.
 
@@ -662,11 +690,12 @@ Shipped locales: `en`, `vi`, `es`, `fr`, `ja`. Fallback chain: `lang → en → 
 
 Guards against bad model behaviour inside the worker loop:
 
-1. **Text mimicry** — model writes `[used: bash(...)]` as plain text instead of calling the tool. Rejected with a nudge.
+1. **Text mimicry** — model writes `[used: run_script(...)]` as plain text instead of calling the tool. Rejected with a nudge.
 2. **Repeated identical tool calls** — same name + args as a prior iteration, excluding `@repeatable_tools` (`spawn_task`). `step_signal` STEP_BLOCKED and PLAN_REVISE are also exempt (retry semantics), but STEP_DONE repeats are caught as loop bugs.
-3. **Path safety** — explicit-path tools (`read_file`, `write_file`, `describe_image`, `describe_video`, `parse_document`, `extract_content`) must stay within `session_root`; shell commands must not target paths outside `workspace_dir`.
-4. **Signal batching** — both `step_signal` and `job_signal` must each be the only tool call in their turn. Batching either with other tools is rejected.
-5. **job_done_missing_result** — `job_signal(JOB_DONE)` must carry a non-empty, non-whitespace `result` field.
+3. **Path safety** — reads allowed anywhere outside `/data/` (sandbox system paths) or within own `session_root`; writes confined to `workspace_dir`; shell deletions confined to `workspace_dir`.
+4. **Plan step tools** — in a multi-step plan every step must declare at least one execution tool (`tools: [...]`). A step with `tools: []` is only valid in a single-step plan (pure knowledge answer). Hard-rejected with a specific instruction to collapse to 1 step.
+5. **Signal batching** — both `step_signal` and `job_signal` must each be the only tool call in their turn. Batching either with other tools is rejected.
+6. **job_done_missing_result** — `job_signal(JOB_DONE)` must carry a non-empty, non-whitespace `result` field.
 
 On rejection, injects `"REJECTED (<reason>): Fix this specific violation before continuing."` — the specific reason is always included so the model knows exactly what to fix.
 
@@ -795,15 +824,18 @@ Models ending in `:cloud` / `-cloud` auto-route to cloud pool. Cloud keys manage
 | `workerContextN` / `workerContextM` | 8 / 6 | Rolling-summary stub tier + recent tier |
 | `maxToolResultChars` | 8000 | Truncation threshold for tool results fed back to worker |
 | `spawnTaskTimeoutSecs` | 30 | Bash command timeout inside spawn_task |
-| `planMinSteps` / `planMaxSteps` | 2 / 10 | Plan step count bounds (Police.check_plan) |
+| `planMinSteps` / `planMaxSteps` | 1 / 10 | Plan step count bounds (Police.check_plan); 1 step is valid for simple jobs |
 | `planStepMaxRetries` | 3 | Max STEP_BLOCKED retries before forcing JOB_BLOCKED |
 | `masterCompactTurnThreshold` | 90 | Master compaction turn count trigger |
 | `masterCompactFraction` | 0.45 | Master compaction char-budget fraction |
 | `jobPollMinIntervalSec` | 5 | K — poller interval floor |
 | `jobPollSamplesPerCycle` | 10 | M — target samples per periodic cycle |
 | `jobOrphanTimeoutSec` | 300 | Orphan detection window |
-| `jobProgressSummaryEveryNRows` | 6 | Summariser row-count trigger |
-| `jobProgressSummaryMinIntervalSec` | 30 | Summariser rate limit |
+| `execErrorStreakNudge` | 3 | Consecutive exec-tool failures before nudging the model |
+| `maxWorkerRestarts` | 2 | Max automatic worker restarts per job before permanent block |
+| `jobProgressSummaryEveryNRows` | 6 | Summariser row-count trigger (N gate) |
+| `jobProgressSummaryMinIntervalSec` | 30 | Minimum seconds between summaries (T gate in N AND T algorithm) |
+| `jobProgressSummaryMinCycleSec` | 1800 | Periodic jobs with intvl_sec below this skip interim summaries entirely |
 
 ---
 
@@ -898,16 +930,17 @@ UserAgent.handle_handoff_to_worker:
   if command.job_id + command.attachment_names present:
     wait_for_attachments(workspace, names)  ← polls up to 30s
     build_attachment_section(names)
-      → "[Attached files — use describe_image, describe_video, or extract_content
-          on these paths as needed]\n- workspace/<name>\n..."
+      → "[Attached files — use extract_content on these paths as needed]\n- workspace/<name>\n..."
     appended to job_spec so the worker knows what files are available
   else:
     describe_command_media(...)  ← Confidant-style inline description (fallback)
 ```
 
 The `extract_content` tool is the worker's primary entry point for understanding
-attachment content — it routes by extension to the appropriate extractor and returns
-a two-section response (Description + Verbatim Content) for images/video.
+attachment content. For the Confidant fallback path (`describe_command_media`),
+it is called with base64 `data` instead of a `path`; only the `## Description`
+section is injected into the session context (Verbatim Content is discarded).
+For video, all frames are sent in a single LLM call (not one call per frame).
 
 ---
 
@@ -916,13 +949,17 @@ a two-section response (Description + Verbatim Content) for images/video.
 ```
 docker-compose up
     │
-    ├── dmh-ai container
+    ├── dmh_ai-master container (image: dmh-ai)
     │     FROM elixir:1.18-alpine
-    │     apk add: ffmpeg imagemagick poppler-utils pandoc  ← for media/doc tools
+    │     apk add: ffmpeg imagemagick poppler-utils pandoc docker-cli
     │     mix release → /app
     │     Bandit :8080 (HTTP), :8443 (HTTPS self-signed)
     │
-    └── searxng container (internal, not exposed)
+    ├── dmh_ai-assistant-sandbox container (image: dmh-ai-sandbox)
+    │     FROM alpine:3 + bash curl wget python3 jq git nodejs npm
+    │     Stays running permanently; run_script tool routes commands here via docker exec
+    │
+    └── dmh_ai-searxng container (internal, not exposed)
 ```
 
 Volume `/data`:
