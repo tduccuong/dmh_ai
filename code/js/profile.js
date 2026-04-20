@@ -66,6 +66,9 @@ const Settings = {
     get maxToolResultChars() { return this._maxToolResultChars; },
     get workerContextN() { return this._workerContextN; },
     get workerContextM() { return this._workerContextM; },
+    // Diagnostics
+    _logTrace: false,
+    get logTrace() { return this._logTrace; },
 
     _persist: function() {
         return apiFetch('/admin/settings', {
@@ -83,7 +86,8 @@ const Settings = {
                 profileExtractorModel: this._profileExtractorModel,
                 maxToolResultChars: this._maxToolResultChars,
                 workerContextN: this._workerContextN,
-                workerContextM: this._workerContextM
+                workerContextM: this._workerContextM,
+                logTrace: this._logTrace
             })
         }).catch(function() {});
     },
@@ -126,6 +130,7 @@ const Settings = {
                 if (d.maxToolResultChars !== undefined) this._maxToolResultChars = parseInt(d.maxToolResultChars) || 8000;
                 if (d.workerContextN !== undefined) this._workerContextN = parseInt(d.workerContextN) || 8;
                 if (d.workerContextM !== undefined) this._workerContextM = parseInt(d.workerContextM) || 6;
+                if (d.logTrace !== undefined) this._logTrace = d.logTrace === true;
             }
         } catch(e) {}
     }
@@ -187,6 +192,7 @@ const SettingsModal = {
         document.getElementById('settings-max-tool-result-chars').value = Settings._maxToolResultChars;
         document.getElementById('settings-worker-context-n').value = Settings._workerContextN;
         document.getElementById('settings-worker-context-m').value = Settings._workerContextM;
+        document.getElementById('settings-log-trace').checked = Settings._logTrace;
         document.getElementById('settings-condense-facts').value = Settings._condenseFacts;
         document.getElementById('settings-video-detail').value = Settings._videoDetail;
         var targetPage = page || 'page-model';
@@ -477,6 +483,10 @@ const SettingsModal = {
             var val = parseInt(document.getElementById('settings-worker-context-m').value);
             if (!val || val < 2) return;
             Settings._workerContextM = val;
+            Settings._persist();
+        });
+        document.getElementById('settings-log-trace').addEventListener('change', function() {
+            Settings._logTrace = this.checked;
             Settings._persist();
         });
         document.getElementById('settings-profile-clear-btn').addEventListener('click', async function() {

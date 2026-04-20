@@ -110,6 +110,25 @@ defmodule Dmhai.Agent.Jobs do
     """, [now, job_id])
   end
 
+  def mark_paused(job_id) do
+    now = System.os_time(:millisecond)
+    query!(Repo, """
+    UPDATE jobs SET job_status='paused',
+                    current_worker_id=NULL,
+                    updated_at=?
+    WHERE job_id=?
+    """, [now, job_id])
+  end
+
+  def mark_pending(job_id) do
+    now = System.os_time(:millisecond)
+    query!(Repo, """
+    UPDATE jobs SET job_status='pending',
+                    updated_at=?
+    WHERE job_id=?
+    """, [now, job_id])
+  end
+
   def set_periodic(job_id, intvl_sec) do
     now = System.os_time(:millisecond)
     query!(Repo, """
@@ -166,11 +185,11 @@ defmodule Dmhai.Agent.Jobs do
     Enum.map(r.rows, &row_to_map/1)
   end
 
-  @doc "Active (not terminal) jobs for a session — used for cancellation on session delete."
+  @doc "Active (not terminal) jobs for a session — used for context injection and session-level cancellation."
   def active_for_session(session_id) do
     r = query!(Repo, """
     SELECT #{@select_cols} FROM jobs
-    WHERE session_id=? AND job_status IN ('pending', 'running')
+    WHERE session_id=? AND job_status IN ('pending', 'running', 'paused')
     """, [session_id])
     Enum.map(r.rows, &row_to_map/1)
   end

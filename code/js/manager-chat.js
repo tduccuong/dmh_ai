@@ -197,6 +197,70 @@ UIManager.renderChat = function() {
     container.scrollTop = container.scrollHeight;
 };
 
+// Scale a video down to VIDEO_WORKSPACE_MAX_PX resolution at VIDEO_WORKSPACE_BITRATE
+// using MediaRecorder + canvas. Runs in real-time (1:1 with video duration).
+// Returns a Promise<Blob> (video/webm).
+UIManager.scaleVideo = function(file) {
+    return new Promise(function(resolve, reject) {
+        var video = document.createElement('video');
+        video.muted = true;
+        video.src = URL.createObjectURL(file);
+
+        video.onloadedmetadata = function() {
+            var MAX_PX = VIDEO_WORKSPACE_MAX_PX;
+            var scale  = Math.min(1, MAX_PX / Math.max(video.videoWidth || 1, video.videoHeight || 1));
+            var tw = Math.max(2, Math.round((video.videoWidth  || MAX_PX) * scale));
+            var th = Math.max(2, Math.round((video.videoHeight || Math.round(MAX_PX * 9 / 16)) * scale));
+
+            var canvas = document.createElement('canvas');
+            canvas.width  = tw;
+            canvas.height = th;
+            var ctx = canvas.getContext('2d');
+
+            var mimeType = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']
+                .find(function(m) { return MediaRecorder.isTypeSupported(m); }) || 'video/webm';
+
+            var recorder = new MediaRecorder(canvas.captureStream(15), {
+                mimeType: mimeType,
+                videoBitsPerSecond: VIDEO_WORKSPACE_BITRATE
+            });
+            var chunks = [];
+            recorder.ondataavailable = function(e) { if (e.data.size > 0) chunks.push(e.data); };
+
+            var stopped = false;
+            function stopRecording() {
+                if (!stopped) { stopped = true; recorder.stop(); }
+            }
+
+            recorder.onstop = function() {
+                URL.revokeObjectURL(video.src);
+                resolve(new Blob(chunks, { type: 'video/webm' }));
+            };
+
+            recorder.start(200);
+
+            function drawFrame() {
+                if (stopped) return;
+                ctx.drawImage(video, 0, 0, tw, th);
+                requestAnimationFrame(drawFrame);
+            }
+
+            video.onended = stopRecording;
+            video.onerror = function(e) { stopRecording(); reject(e); };
+            video.play().then(drawFrame).catch(function(e) { stopRecording(); reject(e); });
+        };
+
+        video.onerror = reject;
+    });
+};
+
+UIManager.base64ToBlob = function(b64, mime) {
+    var bytes = atob(b64);
+    var buf = new Uint8Array(bytes.length);
+    for (var i = 0; i < bytes.length; i++) buf[i] = bytes.charCodeAt(i);
+    return new Blob([buf], { type: mime });
+};
+
 UIManager.fileToBase64 = function(file) {
     return new Promise(function(resolve) {
         var reader = new FileReader();
@@ -404,15 +468,16 @@ UIManager.handleFileSelect = async function(files) {
             }
 
             if (isVideo) {
-                // _pendingVideo already incremented before the try block
                 var videoFile = file;
+                var videoMode = (self.currentSession && self.currentSession.mode) || 'confidant';
                 var videoFormData = new FormData();
                 videoFormData.append('file', videoFile);
                 videoFormData.append('sessionId', sessionId);
-                var entry = { id: null, name: videoFile.name, type: 'video', mime: videoFile.type, frames: [] };
+                var entry = { id: null, name: videoFile.name, type: 'video', mime: videoFile.type, frames: [], _file: videoFile, _scaledBlob: null };
                 self.attachedFiles.push(entry);
                 self.renderAttachments();
-                // Upload runs in background — does not gate the send button
+
+                // Upload original to /assets for permanent user reference (both modes)
                 apiFetch('/assets', { method: 'POST', body: videoFormData })
                     .then(function(r) { return r.json(); })
                     .then(function(d) {
@@ -421,8 +486,6 @@ UIManager.handleFileSelect = async function(files) {
                             entry._onUploadDone(d.id);
                             entry._onUploadDone = null;
                         } else if (self.currentSession) {
-                            // Race condition fallback: sendMessage registered _onUploadDone after upload
-                            // already completed (during an await). Patch fileId directly in session messages.
                             (self.currentSession.messages || []).forEach(function(msg) {
                                 (msg.videos || []).forEach(function(v) {
                                     if (v.name === videoFile.name && !v.fileId) v.fileId = d.id;
@@ -433,30 +496,47 @@ UIManager.handleFileSelect = async function(files) {
                         }
                     })
                     .catch(function(e) { console.error('Video upload failed:', e); });
-                // Ask backend how many frames to extract, then extract, then pre-describe in background
-                var capturedVideoFile = videoFile;
-                var capturedSessionId = sessionId;
-                var extractionPromise = apiFetch('/video-frame-count')
-                    .then(function(r) { return r.json(); })
-                    .then(function(d) { return UIManager.extractVideoFrames(capturedVideoFile, d.count || 8); })
-                    .then(function(frames) {
-                        entry.frames = frames;
-                        if (frames && frames.length > 0) {
-                            // Fire description in background — does not gate the send button
-                            apiFetch('/describe-video', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ sessionId: capturedSessionId, name: capturedVideoFile.name, frames: frames })
-                            }).catch(function(e) { console.error('Video description failed:', e); });
-                        }
-                    })
-                    .catch(function(e) { console.error('Frame extraction failed:', e); });
-                // Gate send button on frame extraction only (description is non-blocking)
-                extractionPromise.finally(function() {
-                    self._pendingVideo--;
-                    if (self._pendingVideo === 0 && self._pendingDesc === 0) self.setStatus('');
-                    self.updateSendBtn();
-                });
+
+                if (videoMode === 'assistant') {
+                    // Assistant path: scale video down to workspace resolution.
+                    // Send button is gated until scaling completes (same pattern as image resize).
+                    self.setStatus(t('processingImage'));
+                    var capturedEntry = entry;
+                    UIManager.scaleVideo(videoFile)
+                        .then(function(scaledBlob) { capturedEntry._scaledBlob = scaledBlob; })
+                        .catch(function(e) {
+                            console.error('Video scaling failed, falling back to original:', e);
+                            capturedEntry._scaledBlob = new Blob([videoFile], { type: videoFile.type });
+                        })
+                        .finally(function() {
+                            self._pendingVideo--;
+                            if (self._pendingVideo === 0 && self._pendingDesc === 0) self.setStatus('');
+                            self.updateSendBtn();
+                        });
+                } else {
+                    // Confidant path: extract frames for inline base64 sending + pre-describe.
+                    var capturedVideoFile = videoFile;
+                    var capturedSessionId = sessionId;
+                    var extractionPromise = apiFetch('/video-frame-count')
+                        .then(function(r) { return r.json(); })
+                        .then(function(d) { return UIManager.extractVideoFrames(capturedVideoFile, d.count || 8); })
+                        .then(function(frames) {
+                            entry.frames = frames;
+                            if (frames && frames.length > 0) {
+                                apiFetch('/describe-video', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ sessionId: capturedSessionId, name: capturedVideoFile.name, frames: frames })
+                                }).catch(function(e) { console.error('Video description failed:', e); });
+                            }
+                        })
+                        .catch(function(e) { console.error('Frame extraction failed:', e); });
+                    extractionPromise.finally(function() {
+                        self._pendingVideo--;
+                        if (self._pendingVideo === 0 && self._pendingDesc === 0) self.setStatus('');
+                        self.updateSendBtn();
+                    });
+                }
                 continue;
             }
 

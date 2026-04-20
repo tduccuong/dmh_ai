@@ -118,7 +118,9 @@ UIManager.switchMode = async function(mode) {
         await SessionStore.setCurrentSessionId(newSession.id);
         this.currentSession = newSession;
         await this.renderSessions();
+        this.clearJobStatusArea();
         this.renderChat();
+        if (mode === 'assistant') this.showAssistantHint();
     }
 };
 
@@ -206,6 +208,7 @@ UIManager.renderSessions = async function() {
 UIManager.createNewSession = async function() {
     // If already in an empty session, just focus input
     if (this.currentSession && (!this.currentSession.messages || this.currentSession.messages.length === 0)) {
+        if ((this._currentMode || 'confidant') === 'assistant') this.showAssistantHint();
         document.getElementById('message-input').focus();
         return;
     }
@@ -222,6 +225,7 @@ UIManager.createNewSession = async function() {
     this.currentSession = empty;
     await this.renderSessions();
     this.renderChat();
+    if (currentMode === 'assistant') this.showAssistantHint();
     document.getElementById('message-input').focus();
 };
 
@@ -231,7 +235,9 @@ UIManager.switchSession = async function(id) {
     });
     this.currentSession = await SessionStore.getSession(id);
     await SessionStore.setCurrentSessionId(id);
+    this.clearJobStatusArea();
     this.renderChat();
+    if ((this.currentSession.mode || 'confidant') === 'assistant') this.showAssistantHint();
 };
 
 UIManager.savePrefs = function(partial) {
@@ -372,6 +378,50 @@ UIManager.autoNameSession = async function(session) {
         this._namingInProgress.delete(session.id);
         if (this._namingController === controller) this._namingController = null;
     }
+};
+
+UIManager.showJobStatusArea = function() {
+    var area = document.getElementById('job-status-area');
+    if (!area) return;
+    area.innerHTML = '';
+    var item = document.createElement('div');
+    item.className = 'job-status-item job-status-waiting';
+    item.textContent = 'Waiting for update from Assistant...';
+    area.appendChild(item);
+    area.style.display = 'block';
+};
+
+UIManager.appendJobStatusUpdate = function(text) {
+    var area = document.getElementById('job-status-area');
+    if (!area) return;
+    var waiting = area.querySelector('.job-status-waiting');
+    if (waiting) waiting.remove();
+    var item = document.createElement('div');
+    item.className = 'job-status-item';
+    item.textContent = text;
+    area.appendChild(item);
+    area.style.display = 'block';
+};
+
+UIManager.clearJobStatusArea = function() {
+    var area = document.getElementById('job-status-area');
+    if (!area) return;
+    area.innerHTML = '';
+    area.style.display = 'none';
+};
+
+UIManager.showAssistantHint = function() {
+    var el = document.getElementById('assistant-hint');
+    if (!el) return;
+    el.innerHTML = 'Note: For <strong>quick answers</strong>, talk to Confidant. Assistant is meant only for <strong>heavy tasks</strong>.';
+    el.classList.remove('fade-out');
+    el.style.display = 'block';
+    var self = this;
+    clearTimeout(self._assistantHintTimer);
+    self._assistantHintTimer = setTimeout(function() {
+        el.classList.add('fade-out');
+        setTimeout(function() { el.style.display = 'none'; el.classList.remove('fade-out'); }, 400);
+    }, 5000);
 };
 
 UIManager.retryLastMessage = function() {

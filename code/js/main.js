@@ -118,9 +118,10 @@ const UIManager = {
             }
         }
         if (_isTouchDevice) setTimeout(_triggerHamburgerGlow, 600);
+        var _AWAY_THRESHOLD_MS = 30 * 60 * 1000;
         document.addEventListener('visibilitychange', function() {
             if (document.visibilityState === 'hidden') { _lastHiddenAt = Date.now(); }
-            else if (Date.now() - _lastHiddenAt >= 60 * 60 * 1000) {
+            else if (Date.now() - _lastHiddenAt >= _AWAY_THRESHOLD_MS) {
                 _triggerHamburgerGlow();
                 UIManager.createNewSession();
             }

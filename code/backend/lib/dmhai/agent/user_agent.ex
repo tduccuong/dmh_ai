@@ -305,7 +305,7 @@ defmodule Dmhai.Agent.UserAgent do
     # status/cancel/set-periodic queries using real job_ids.
     session_jobs = Jobs.list_for_session(session_id)
     combined_buffer =
-      case Enum.filter(session_jobs, fn j -> j.job_status in ["pending", "running"] end) do
+      case Enum.filter(session_jobs, fn j -> j.job_status in ["pending", "running", "paused"] end) do
         [] -> nil
         active ->
           lines =
@@ -339,6 +339,8 @@ defmodule Dmhai.Agent.UserAgent do
     tools = [
       handoff_to_worker_json_schema_def(),
       set_periodic_for_job_json_schema_def(),
+      pause_job_json_schema_def(),
+      resume_job_json_schema_def(),
       cancel_job_json_schema_def(),
       read_job_status_json_schema_def()
     ]
@@ -385,6 +387,8 @@ defmodule Dmhai.Agent.UserAgent do
     case tool_name do
       "handoff_to_worker"      -> handle_handoff_to_worker(calls, command, state, session_data)
       "set_periodic_for_job"   -> handle_set_periodic(calls, command, state)
+      "pause_job"              -> handle_pause_job(calls, command, state)
+      "resume_job"             -> handle_resume_job(calls, command, state)
       "cancel_job"             -> handle_cancel_job(calls, command, state)
       "read_job_status"        -> handle_read_job_status(calls, command, state)
       _                        ->
@@ -410,23 +414,36 @@ defmodule Dmhai.Agent.UserAgent do
     language   = normalise_lang(assistant_arg(calls, "handoff_to_worker", "language"))
     origin     = session_origin(session_data)
 
-    # If the FE pre-allocated a job_id and is uploading scaled-down attachments
-    # to the job workspace in parallel, wait for those files to land then inject
-    # their paths into the job_spec. Otherwise fall back to inline media description.
+    # Build the attachment section for the job_spec.
+    # Path 1 (normal): FE pre-allocated a job_id and uploaded files to the job workspace.
+    #   → wait for those files and inject workspace/<name> paths.
+    # Path 2 (fallback): reservation failed and the FE sent inline base64 images.
+    #   → save them to the session data_dir and inject data/<name> paths.
+    # In both cases the job_spec contains ONLY file paths — never inline descriptions.
     pre_job_id       = command.job_id
     attachment_names = command.attachment_names
 
     media_context =
-      if pre_job_id && attachment_names != [] do
-        email     = Jobs.lookup_user_email(user_id)
-        workspace = Dmhai.Constants.job_workspace_dir(email, session_id, origin, pre_job_id)
-        case wait_for_attachments(workspace, attachment_names) do
-          :ok      -> build_attachment_section(attachment_names)
-          :timeout -> build_attachment_section(attachment_names) <>
-                      "\n[Warning: some attachments may not have uploaded in time — worker will handle missing files gracefully]"
-        end
-      else
-        describe_command_media(command, session_id)
+      cond do
+        pre_job_id && attachment_names != [] ->
+          email     = Jobs.lookup_user_email(user_id)
+          workspace = Dmhai.Constants.job_workspace_dir(email, session_id, origin, pre_job_id)
+          case wait_for_attachments(workspace, attachment_names) do
+            :ok      -> build_attachment_section("workspace", attachment_names)
+            :timeout -> build_attachment_section("workspace", attachment_names) <>
+                        "\n[Warning: some attachments may not have uploaded in time — worker will handle missing files gracefully]"
+          end
+
+        command.images != [] ->
+          email    = Jobs.lookup_user_email(user_id)
+          data_dir = Dmhai.Constants.session_data_dir(email, session_id)
+          File.mkdir_p(data_dir)
+          saved = save_inline_images(command.images, command.image_names, data_dir)
+          Logger.warning("[UserAgent] FE did not pre-upload #{length(saved)} image(s); saved to data_dir as fallback")
+          build_attachment_section("data", saved)
+
+        true ->
+          nil
       end
 
     full_task =
@@ -491,9 +508,26 @@ defmodule Dmhai.Agent.UserAgent do
     end
   end
 
-  defp build_attachment_section(names) do
-    lines = Enum.map_join(names, "\n", fn name -> "- workspace/#{name}" end)
+  defp build_attachment_section(prefix, names) do
+    lines = Enum.map_join(names, "\n", fn name -> "- #{prefix}/#{name}" end)
     "[Attached files — use extract_content on these paths as needed]\n#{lines}"
+  end
+
+  defp save_inline_images(images, names, data_dir) do
+    images
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {b64, i} ->
+      name = Enum.at(names, i) || "image_#{i + 1}.jpg"
+      path = Path.join(data_dir, name)
+      case Base.decode64(b64, ignore: :whitespace) do
+        {:ok, bin} ->
+          File.write!(path, bin)
+          [name]
+        :error ->
+          Logger.warning("[UserAgent] could not decode inline image #{name} — skipping")
+          []
+      end
+    end)
   end
 
   defp handle_set_periodic(calls, command, _state) do
@@ -555,6 +589,64 @@ defmodule Dmhai.Agent.UserAgent do
     send(reply_pid, {:done, %{}})
   end
 
+  defp handle_pause_job(calls, command, _state) do
+    %Command{reply_pid: reply_pid, session_id: session_id} = command
+    job_id = assistant_arg(calls, "pause_job", "job_id")
+    ack    = assistant_arg(calls, "pause_job", "ack")
+    job    = job_id && Jobs.get(job_id)
+    lang   = (job && job.language) || "en"
+
+    msg =
+      case job do
+        nil  -> Dmhai.I18n.t("no_such_job", lang)
+        _job ->
+          Dmhai.Agent.JobRuntime.pause_job(job_id)
+          ack || Dmhai.I18n.t("job_paused", lang, %{title: job.job_title})
+      end
+
+    user_id = job && job.user_id
+
+    if user_id do
+      append_session_message(session_id, user_id, %{
+        role: "assistant",
+        content: msg,
+        ts: System.os_time(:millisecond)
+      })
+    end
+
+    send(reply_pid, {:chunk, msg})
+    send(reply_pid, {:done, %{}})
+  end
+
+  defp handle_resume_job(calls, command, _state) do
+    %Command{reply_pid: reply_pid, session_id: session_id} = command
+    job_id = assistant_arg(calls, "resume_job", "job_id")
+    ack    = assistant_arg(calls, "resume_job", "ack")
+    job    = job_id && Jobs.get(job_id)
+    lang   = (job && job.language) || "en"
+
+    msg =
+      case job do
+        nil  -> Dmhai.I18n.t("no_such_job", lang)
+        _job ->
+          Dmhai.Agent.JobRuntime.resume_job(job_id)
+          ack || Dmhai.I18n.t("job_resumed", lang, %{title: job.job_title})
+      end
+
+    user_id = job && job.user_id
+
+    if user_id do
+      append_session_message(session_id, user_id, %{
+        role: "assistant",
+        content: msg,
+        ts: System.os_time(:millisecond)
+      })
+    end
+
+    send(reply_pid, {:chunk, msg})
+    send(reply_pid, {:done, %{}})
+  end
+
   # User explicitly asked about a job — reuse the same summarizer path as the
   # runtime's unsolicited push. force: true so we always produce output (even
   # "no new activity since the last update"). The summarizer appends a
@@ -572,9 +664,9 @@ defmodule Dmhai.Agent.UserAgent do
 
       job ->
         lang = job.language || "en"
-        # Terminal jobs: render stored result directly, no LLM call.
+        # Terminal/quiescent jobs: render stored result directly, no LLM call.
         case job.job_status do
-          status when status in ["done", "blocked", "cancelled"] ->
+          status when status in ["done", "blocked", "cancelled", "paused"] ->
             status_label = Dmhai.I18n.t("status_#{status}", lang)
             result_text  = job.job_result || Dmhai.I18n.t("no_result", lang)
             body = Dmhai.I18n.t("job_status_rendered", lang, %{
@@ -627,9 +719,10 @@ defmodule Dmhai.Agent.UserAgent do
           task: %{
             type: "string",
             description:
-              "A fully self-contained task brief in the user's language. The worker has NO access to the chat history. " <>
-                "Include goal, key steps, and any relevant context. Do NOT mention the schedule " <>
-                "or interval — the worker runs as if this is a one-off each time."
+              "The verbatim user message — copy it exactly as written. " <>
+                "Do NOT rephrase, summarise, or interpret. " <>
+                "Attached file paths (if any) are appended automatically by the system. " <>
+                "For periodic tasks, do NOT mention the schedule — the worker runs as a one-off each cycle."
           },
           intvl_sec: %{
             type: "integer",
@@ -669,10 +762,46 @@ defmodule Dmhai.Agent.UserAgent do
     }
   end
 
+  defp pause_job_json_schema_def do
+    %{
+      name: "pause_job",
+      description:
+        "Temporarily pause a running or pending job. The worker is stopped but job data is " <>
+          "preserved — the job can be resumed later with resume_job. Use for 'pause X', 'hold X', 'stop X for now'.",
+      parameters: %{
+        type: "object",
+        properties: %{
+          job_id: %{type: "string", description: "The job_id to pause."},
+          ack:    %{type: "string", description: "Confirmation shown to the user, in their language."}
+        },
+        required: ["job_id", "ack"]
+      }
+    }
+  end
+
+  defp resume_job_json_schema_def do
+    %{
+      name: "resume_job",
+      description:
+        "Resume a previously paused job. The worker restarts from the beginning of its task spec. " <>
+          "Use for 'resume X', 'continue X', 'restart X'.",
+      parameters: %{
+        type: "object",
+        properties: %{
+          job_id: %{type: "string", description: "The job_id to resume."},
+          ack:    %{type: "string", description: "Confirmation shown to the user, in their language."}
+        },
+        required: ["job_id", "ack"]
+      }
+    }
+  end
+
   defp cancel_job_json_schema_def do
     %{
       name: "cancel_job",
-      description: "Cancel a running or scheduled job by id. Stops any in-flight worker and prevents future runs.",
+      description:
+        "Permanently cancel a job by id. Stops any in-flight worker and prevents future runs. " <>
+          "Cannot be undone. Use for 'stop X', 'cancel X', 'kill X'.",
       parameters: %{
         type: "object",
         properties: %{
@@ -955,105 +1084,6 @@ defmodule Dmhai.Agent.UserAgent do
     end
   end
 
-  # Build a text block describing any images/videos attached to the command.
-  # Loads from DB first (background describe already ran); only calls the describer
-  # synchronously as a fallback when descriptions aren't stored yet.
-  # Video: all frames are sent in one LLM call via ExtractContent → one consolidated description.
-  # Images: each image is described individually (they may be distinct photos).
-  # Uses INSERT OR IGNORE so a late-arriving background describe doesn't duplicate.
-  defp describe_command_media(%Command{images: [], files: []}, _session_id), do: nil
-
-  defp describe_command_media(%Command{} = command, session_id) do
-    image_descs = load_image_descriptions(session_id)
-    video_descs = load_video_descriptions(session_id)
-
-    new_descs =
-      if command.images != [] do
-        if command.has_video do
-          video_name = List.first(command.image_names) || "video"
-
-          if Enum.any?(video_descs, &(&1.name == video_name)) do
-            []
-          else
-            Logger.info("[UserAgent] describe_command_media video fallback frames=#{length(command.images)}")
-
-            case Dmhai.Tools.ExtractContent.execute(%{"data" => command.images, "has_video" => true}, %{}) do
-              {:ok, result} ->
-                desc = extract_description_section(result)
-                store_media_description(session_id, video_name, desc, true)
-                [%{name: video_name, description: desc}]
-              _ ->
-                []
-            end
-          end
-        else
-          command.image_names
-          |> Enum.zip(command.images)
-          |> Enum.flat_map(fn {name, img} ->
-            if Enum.any?(image_descs, &(&1.name == name)) do
-              []
-            else
-              Logger.info("[UserAgent] describe_command_media image fallback name=#{name}")
-
-              case Dmhai.Tools.ExtractContent.execute(%{"data" => img}, %{}) do
-                {:ok, result} ->
-                  desc = extract_description_section(result)
-                  store_media_description(session_id, name, desc, false)
-                  [%{name: name, description: desc}]
-                _ ->
-                  []
-              end
-            end
-          end)
-        end
-      else
-        []
-      end
-
-    all_descs = image_descs ++ video_descs ++ new_descs
-
-    file_descs =
-      Enum.flat_map(command.files || [], fn f ->
-        case f do
-          %{"name" => name, "content" => content} when is_binary(content) and content != "" ->
-            ["[File: #{name}]\n#{String.slice(content, 0, 8_000)}"]
-          _ ->
-            []
-        end
-      end)
-
-    parts = Enum.map(all_descs, fn d -> "[#{d.name}]: #{d.description}" end) ++ file_descs
-
-    if parts == [] do
-      nil
-    else
-      "[Attached media and files — use these to understand the content]\n" <>
-        Enum.join(parts, "\n")
-    end
-  end
-
-  # Extract only the ## Description section from extract_content's two-section output.
-  # Falls back to the full text if the section marker is absent (e.g. plain description from background path).
-  defp extract_description_section(text) do
-    case Regex.run(~r/## Description\s*\n(.*?)(?=\n## |\z)/s, text, capture: :all_but_first) do
-      [section] -> String.trim(section)
-      nil       -> text
-    end
-  end
-
-  defp store_media_description(session_id, name, desc, is_video) do
-    table = if is_video, do: "video_descriptions", else: "image_descriptions"
-    file_id = :crypto.strong_rand_bytes(8) |> Base.url_encode64(padding: false)
-    now = System.os_time(:millisecond)
-
-    try do
-      query!(Repo,
-        "INSERT OR IGNORE INTO #{table} (session_id, file_id, name, description, created_at) VALUES (?,?,?,?,?)",
-        [session_id, file_id, name, desc, now])
-    rescue
-      e -> Logger.error("[UserAgent] store_media_description failed: #{Exception.message(e)}")
-    end
-  end
 
   # Reload session data after a response and compact if thresholds are exceeded.
   # Runs in a background Task — failures are logged but do not affect the user.

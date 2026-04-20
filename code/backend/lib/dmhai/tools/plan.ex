@@ -49,9 +49,8 @@ defmodule Dmhai.Tools.Plan do
               required: ["step", "tools"]
             },
             description:
-              "Ordered list of steps. Each step is an object with 'step' (description) and 'tools' (list). " <>
-              "Example: [{\"step\": \"fetch the docs\", \"tools\": [\"web_fetch\"]}, {\"step\": \"save the result\", \"tools\": [\"write_file\"]}]. " <>
-              "Single-step plans may have tools: [] (pure knowledge answer). " <>
+              "Ordered list of steps. Each step must have a 'step' string and a 'tools' array. " <>
+              "Single-step plans may have tools: [] for pure knowledge answers. " <>
               "Multi-step plans MUST have at least one tool per step — runtime rejects any step with tools: []."
           },
           rationale: %{

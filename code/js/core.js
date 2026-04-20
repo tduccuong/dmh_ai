@@ -443,20 +443,28 @@ const NotificationPoller = {
     _handleNotification: function(entry) {
         var isCurrentSession = typeof UIManager !== 'undefined' && UIManager.currentSession &&
             UIManager.currentSession.id === entry.session_id;
+        var isProgress = entry.content && entry.content !== '';
 
-        if (isCurrentSession) {
-            // User is already in this session — reload chat silently, no toast needed
-            SessionStore.getSession(entry.session_id).then(function(session) {
-                if (session) {
-                    UIManager.currentSession = session;
-                    UIManager.renderChat();
-                }
-            });
+        if (isProgress) {
+            // Progress status update — show as stacked status phrase, don't reload session
+            if (isCurrentSession) UIManager.appendJobStatusUpdate(entry.content);
+            // No toast for other-session progress — too noisy
         } else {
-            // User is elsewhere — show toast so they know an update arrived
-            if (entry.summary) {
-                UIManager.setStatus('🔔 ' + entry.summary);
-                setTimeout(function() { UIManager.setStatus(''); }, 8000);
+            // Session-updated sentinel — reload session, clear status area
+            if (isCurrentSession) {
+                SessionStore.getSession(entry.session_id).then(function(session) {
+                    if (session) {
+                        UIManager.currentSession = session;
+                        UIManager.clearJobStatusArea();
+                        UIManager.renderChat();
+                    }
+                });
+            } else {
+                // User is elsewhere — show toast so they know the result arrived
+                if (entry.summary) {
+                    UIManager.setStatus('🔔 ' + entry.summary);
+                    setTimeout(function() { UIManager.setStatus(''); }, 8000);
+                }
             }
         }
     }

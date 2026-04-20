@@ -39,7 +39,7 @@ defmodule Dmhai.Agent.Worker do
   The ctx map MUST contain :job_id. All worker_status rows are keyed by it.
   """
 
-  alias Dmhai.Agent.{AgentSettings, LLM, Police, Prompts, TokenTracker, WorkerStatus}
+  alias Dmhai.Agent.{AgentSettings, LLM, LogTrace, Police, Prompts, TokenTracker, WorkerStatus}
   alias Dmhai.Tools.Registry, as: ToolRegistry
   require Logger
 
@@ -114,6 +114,7 @@ defmodule Dmhai.Agent.Worker do
       {:error, :missing_job_id}
     else
       Logger.info("[Worker] starting model=#{model} job=#{job_id} worker=#{worker_id}")
+      LogTrace.init_log(ctx)
       try do
         loop(messages, tools, model, ctx)
       rescue
@@ -175,7 +176,11 @@ defmodule Dmhai.Agent.Worker do
         |> inject_rolling_summary(ctx)
         |> List.update_at(0, fn _ -> %{role: "system", content: turn_prompt} end)
 
-      case LLM.call(model, effective_messages, tools: effective_tools, on_tokens: on_tokens) do
+      LogTrace.trace_call(ctx, iter, effective_messages, effective_tools)
+      result = LLM.call(model, effective_messages, tools: effective_tools, on_tokens: on_tokens)
+      LogTrace.trace_response(ctx, iter, result)
+
+      case result do
         {:ok, {:tool_calls, calls}} ->
           handle_tool_calls(calls, messages, tools, model, ctx, iter)
 
@@ -523,28 +528,31 @@ defmodule Dmhai.Agent.Worker do
 
   # ── step signal handlers ─────────────────────────────────────────────────
 
-  # Advance to next step. If model called STEP_DONE on the last step (should
-  # have called job_signal directly per the prompt), nudge it to compile and
-  # deliver the final report — never emit a synthetic JOB_DONE with empty result.
+  # Advance to next step. The runtime's current_step is the source of truth —
+  # the model's reported id is checked for logging but never drives advancement.
+  # If model called STEP_DONE on the last step (should have called job_signal
+  # directly per the prompt), nudge it to compile the final report.
   defp handle_step_done(step_args, messages, tools, model, ctx) do
     plan_steps   = Map.get(ctx, :plan_steps, [])
-    step_id      = parse_step_id(step_args["id"])
+    current_step = Map.get(ctx, :current_step)
+    reported_id  = parse_step_id(step_args["id"])
     last_step_id = if plan_steps != [], do: List.last(plan_steps).id, else: nil
 
-    if is_integer(last_step_id) and step_id == last_step_id do
-      Logger.info("[Worker] step_signal(STEP_DONE) on last step #{step_id} — nudging to call job_signal with result")
+    if reported_id != current_step do
+      Logger.warning("[Worker] step_signal STEP_DONE reported id=#{reported_id}, corrected to current_step=#{current_step}")
+    end
+
+    if is_integer(last_step_id) and current_step == last_step_id do
+      Logger.info("[Worker] step_signal(STEP_DONE) on last step #{current_step} — nudging to call job_signal with result")
       nudge = %{
         role: "user",
         content: "All steps are now complete. Compile your final deliverable and call " <>
                  "job_signal(status: \"JOB_DONE\", result: \"<your full report/answer>\") now. " <>
                  "Do not call step_signal again."
       }
-      loop(messages ++ [nudge], tools, model, Map.put(ctx, :current_step, step_id + 1))
+      loop(messages ++ [nudge], tools, model, Map.put(ctx, :current_step, current_step + 1))
     else
-      if step_id != Map.get(ctx, :current_step) do
-        Logger.warning("[Worker] STEP_DONE id=#{step_id} does not match current_step=#{Map.get(ctx, :current_step)}")
-      end
-      loop(messages, tools, model, Map.put(ctx, :current_step, step_id + 1))
+      loop(messages, tools, model, Map.put(ctx, :current_step, current_step + 1))
     end
   end
 

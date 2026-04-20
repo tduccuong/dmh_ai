@@ -15,6 +15,14 @@ defmodule Dmhai.Handlers.Data do
   @image_exts ~w(.png .jpg .jpeg .gif .webp .bmp)
   @video_exts ~w(.mp4 .webm .mov .avi .mkv .m4v .3gp .ogv)
 
+  # Max size for original video uploads to <session>/data/ (permanent user storage).
+  # Must match MEDIA_MAX_SIZE_BYTES on the frontend.
+  @max_original_video_bytes 300_000_000
+
+  # Max size for scaled attachments uploaded to the worker workspace.
+  # Scaled videos at 800 kbps: ~6 MB/min → covers clips up to ~30 min.
+  @max_workspace_attachment_bytes 200_000_000
+
   def json(conn, status, data) do
     conn
     |> put_resp_content_type("application/json")
@@ -247,39 +255,45 @@ defmodule Dmhai.Handlers.Data do
               end
 
             ext = Path.extname(filename) |> String.downcase()
-            data_dir = Dmhai.Constants.session_data_dir(user.email, session_id)
-            File.mkdir_p!(data_dir)
 
-            ts = :os.system_time(:millisecond)
-            safe_name = "#{ts}_#{Regex.replace(~r/[^\w.\-]/, filename, "_")}"
-            File.write!(Path.join(data_dir, safe_name), raw)
+            if ext in @video_exts and byte_size(raw) > @max_original_video_bytes do
+              max_mb = div(@max_original_video_bytes, 1_000_000)
+              json(conn, 413, %{error: "Video too large — maximum supported size is #{max_mb} MB"})
+            else
+              data_dir = Dmhai.Constants.session_data_dir(user.email, session_id)
+              File.mkdir_p!(data_dir)
 
-            result = %{id: safe_name, name: filename, size: byte_size(raw)}
+              ts = :os.system_time(:millisecond)
+              safe_name = "#{ts}_#{Regex.replace(~r/[^\w.\-]/, filename, "_")}"
+              File.write!(Path.join(data_dir, safe_name), raw)
 
-            result =
-              cond do
-                ext in @image_exts ->
-                  mime = guess_mime(filename)
-                  Map.merge(result, %{
-                    type: "image",
-                    mime: mime,
-                    base64: Base.encode64(raw)
-                  })
+              result = %{id: safe_name, name: filename, size: byte_size(raw)}
 
-                ext in @video_exts ->
-                  Map.merge(result, %{type: "video"})
+              result =
+                cond do
+                  ext in @image_exts ->
+                    mime = guess_mime(filename)
+                    Map.merge(result, %{
+                      type: "image",
+                      mime: mime,
+                      base64: Base.encode64(raw)
+                    })
 
-                true ->
-                  content =
-                    case :unicode.characters_to_binary(raw, :utf8) do
-                      str when is_binary(str) -> str
-                      _ -> raw |> :binary.bin_to_list() |> List.to_string()
-                    end
+                  ext in @video_exts ->
+                    Map.merge(result, %{type: "video"})
 
-                  Map.merge(result, %{type: "text", content: content})
-              end
+                  true ->
+                    content =
+                      case :unicode.characters_to_binary(raw, :utf8) do
+                        str when is_binary(str) -> str
+                        _ -> raw |> :binary.bin_to_list() |> List.to_string()
+                      end
 
-            json(conn, 200, result)
+                    Map.merge(result, %{type: "text", content: content})
+                end
+
+              json(conn, 200, result)
+            end
 
           :error ->
             json(conn, 400, %{error: "No file field"})
@@ -500,8 +514,6 @@ defmodule Dmhai.Handlers.Data do
   # Saves a scaled-down attachment to the job workspace. The FE uploads here in
   # parallel with the /agent/chat call so the worker has the files ready when it
   # starts. Multipart fields: file, sessionId, jobId.
-  @max_attachment_bytes 50_000_000
-
   def post_job_attachment(conn, user) do
     case parse_multipart(conn) do
       {:error, conn, :too_large} ->
@@ -523,8 +535,9 @@ defmodule Dmhai.Handlers.Data do
           true ->
             case Map.fetch(parts, "file") do
               {:ok, %{filename: filename, data: raw}} ->
-                if byte_size(raw) > @max_attachment_bytes do
-                  json(conn, 413, %{error: "Attachment too large (max 50 MB)"})
+                if byte_size(raw) > @max_workspace_attachment_bytes do
+                  max_mb = div(@max_workspace_attachment_bytes, 1_000_000)
+                  json(conn, 413, %{error: "Attachment too large (max #{max_mb} MB)"})
                 else
                   filename  = filename || "upload"
                   safe_name = Regex.replace(~r/[^\w.\-]/, filename, "_")

@@ -25,6 +25,8 @@ defmodule Dmhai.Agent.AgentSettings do
     "profileExtractorModel" => "gemini-3-flash-preview:cloud"
   }
 
+  @log_trace_default false
+
   @plan_min_steps_default 1
   @plan_max_steps_default 10
   @plan_step_max_retries_default 3
@@ -76,6 +78,10 @@ defmodule Dmhai.Agent.AgentSettings do
       "ollama::#{pool}::#{model}"
     end
   end
+
+  @doc "Whether to write verbatim LLM call traces to <session_root>/log_traces/<job_id>.log."
+  @spec log_trace() :: boolean()
+  def log_trace, do: bool_setting("logTrace", @log_trace_default)
 
   @doc "Minimum number of steps required in a submitted plan."
   @spec plan_min_steps() :: pos_integer()
@@ -239,6 +245,17 @@ defmodule Dmhai.Agent.AgentSettings do
           _ -> default
         end
       _ -> default
+    end
+  end
+
+  defp bool_setting(key, default) do
+    settings = load()
+    case settings[key] do
+      true    -> true
+      false   -> false
+      "true"  -> true
+      "false" -> false
+      _       -> default
     end
   end
 

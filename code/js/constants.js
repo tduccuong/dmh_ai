@@ -39,7 +39,7 @@ const LIGHTBOX_MAX_ZOOM = 10;
 // Maximum file size for image and video uploads (300 MB).
 const MEDIA_MAX_SIZE_BYTES = 300 * 1024 * 1024;
 
-// ─── Video frame extraction ─────────────────────────────────────────────────
+// ─── Video frame extraction (Confidant inline path) ────────────────────────
 // Max width/height when scaling video frames before sending to LLM (360p).
 const VIDEO_FRAME_MAX_WIDTH = 640;
 const VIDEO_FRAME_MAX_HEIGHT = 360;
@@ -49,6 +49,14 @@ const VIDEO_FRAME_JPEG_QUALITY = 0.75;
 
 // Minimum gap between sampled frames (seconds).
 const VIDEO_FRAME_MIN_INTERVAL = 2;
+
+// ─── Video workspace scaling (Assistant path) ───────────────────────────────
+// Target bitrate when scaling a video down for the worker workspace (bits/s).
+// At 800 kbps: ~6 MB/min → a 5-minute clip produces ~30 MB.
+const VIDEO_WORKSPACE_BITRATE = 800_000;
+
+// Max pixel dimension for workspace-scaled video (matches frame width above).
+const VIDEO_WORKSPACE_MAX_PX = 640;
 
 // ─── UI limits ──────────────────────────────────────────────────────────────
 // Maximum lines shown in a file attachment snippet preview.

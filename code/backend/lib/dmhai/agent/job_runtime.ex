@@ -47,6 +47,16 @@ defmodule Dmhai.Agent.JobRuntime do
     GenServer.call(@name, {:cancel_job, job_id})
   end
 
+  @doc "Pause a job: stop worker, preserve job data so it can be resumed later."
+  def pause_job(job_id) when is_binary(job_id) do
+    GenServer.call(@name, {:pause_job, job_id})
+  end
+
+  @doc "Resume a paused job: re-spawn the worker from scratch."
+  def resume_job(job_id) when is_binary(job_id) do
+    GenServer.call(@name, {:resume_job, job_id})
+  end
+
   @doc "List currently running jobs (for debugging / admin)."
   def list_running do
     GenServer.call(@name, :list_running)
@@ -130,6 +140,24 @@ defmodule Dmhai.Agent.JobRuntime do
     state = do_cancel_job(job_id, state)
     Jobs.mark_cancelled(job_id)
     {:reply, :ok, state}
+  end
+
+  def handle_call({:pause_job, job_id}, _from, state) do
+    state = do_pause_job(job_id, state)
+    Jobs.mark_paused(job_id)
+    {:reply, :ok, state}
+  end
+
+  def handle_call({:resume_job, job_id}, _from, state) do
+    case Jobs.get(job_id) do
+      %{job_status: "paused"} ->
+        Jobs.mark_pending(job_id)
+        state = do_start_job(job_id, state)
+        {:reply, :ok, state}
+
+      _ ->
+        {:reply, {:error, :not_paused}, state}
+    end
   end
 
   def handle_call(:list_running, _from, state) do
@@ -243,7 +271,8 @@ defmodule Dmhai.Agent.JobRuntime do
         pipeline:      job.pipeline  || "assistant",
         session_root:  session_root,
         data_dir:      data_dir,
-        workspace_dir: workspace_dir
+        workspace_dir: workspace_dir,
+        log_trace:     AgentSettings.log_trace()
       }
 
       try do
@@ -274,6 +303,10 @@ defmodule Dmhai.Agent.JobRuntime do
         WorkerStatus.append(job_id, "runtime", "final",
           Dmhai.I18n.t("job_cancelled_by_user", lang), "BLOCKED")
         {:poller_done, job_id, {:cancelled, nil}}
+
+      %{job_status: "paused"} ->
+        safe_shutdown_worker(worker_task)
+        {:poller_done, job_id, {:paused, nil}}
 
       job ->
         new_rows = WorkerStatus.fetch_since(job_id, last_cursor)
@@ -474,8 +507,10 @@ defmodule Dmhai.Agent.JobRuntime do
         "You are the progress reporter for a background job. " <>
         "Job title: \"#{job.job_title}\". Job spec: \"#{String.slice(job.job_spec, 0, 400)}\".\n\n" <>
         "Below is the activity log since the last update. " <>
-        "Write a SHORT (1-3 sentences), human-friendly update describing ONLY what is in this log slice. " <>
-        "Do not speculate beyond what the log shows. Do not describe prior activity.\n\n" <>
+        "Write a status update in EXACTLY this format: \"<title>: <detail>\"\n" <>
+        "  - <title>: 2–6 words, noun phrase describing the current action (e.g. \"Downloading report\", \"Running analysis\")\n" <>
+        "  - <detail>: 1–2 sentences max, describing ONLY what the log slice shows. No speculation, no prior activity.\n" <>
+        "Output ONLY the single line — no explanation, no bullet, no markdown.\n\n" <>
         "IMPORTANT: write the update in the user's language, ISO 639-1 code \"#{lang}\". " <>
         "Do not use any other language.\n\n" <>
         "Activity:\n#{flat}"}
@@ -486,13 +521,8 @@ defmodule Dmhai.Agent.JobRuntime do
 
   defp append_progress_to_session(job, text) do
     lang = job.language || "en"
-    body = "_#{job.job_title}: #{text}_"
-    append_assistant_message(job.session_id, job.user_id, body, %{
-      kind: "progress",
-      job_id: job.job_id
-    })
     notify = Dmhai.I18n.t("notify_progress", lang, %{title: job.job_title})
-    MasterBuffer.append_notification(job.session_id, job.user_id, String.slice(notify, 0, 200))
+    MasterBuffer.append_progress_notification(job.session_id, job.user_id, text, String.slice(notify, 0, 200))
   end
 
   defp emit_final_message(job, "JOB_DONE", result) do
@@ -552,6 +582,8 @@ defmodule Dmhai.Agent.JobRuntime do
     end
   end
 
+  defp handle_poller_outcome(_job_id, {:paused, _}, _record, state), do: state
+
   defp handle_poller_outcome(job_id, outcome, _record, state) do
     maybe_reschedule_next_run(job_id, outcome, state)
   end
@@ -559,7 +591,7 @@ defmodule Dmhai.Agent.JobRuntime do
   defp maybe_reschedule_next_run(job_id, _outcome, state) do
     case Jobs.get(job_id) do
       %{job_type: "periodic", intvl_sec: intvl, job_status: status}
-          when status != "cancelled" and is_integer(intvl) and intvl > 0 ->
+          when status not in ["cancelled", "paused"] and is_integer(intvl) and intvl > 0 ->
         next_at = System.os_time(:millisecond) + intvl * 1_000
         Jobs.schedule_next_run(job_id, next_at)
 
@@ -583,6 +615,26 @@ defmodule Dmhai.Agent.JobRuntime do
             %{state | reschedule_timers: Map.delete(state.reschedule_timers, job_id)}
         end
 
+      %{worker_task: wt, poller_task: pt} ->
+        safe_shutdown_worker(wt)
+        safe_shutdown_poller(pt)
+        %{state | jobs: Map.delete(state.jobs, job_id)}
+    end
+  end
+
+  # Same as do_cancel_job but without marking DB — caller marks paused separately.
+  # Also cancels any pending reschedule timer so periodic jobs don't re-fire while paused.
+  defp do_pause_job(job_id, state) do
+    state =
+      case Map.get(state.reschedule_timers, job_id) do
+        nil -> state
+        ref ->
+          Process.cancel_timer(ref)
+          %{state | reschedule_timers: Map.delete(state.reschedule_timers, job_id)}
+      end
+
+    case Map.get(state.jobs, job_id) do
+      nil -> state
       %{worker_task: wt, poller_task: pt} ->
         safe_shutdown_worker(wt)
         safe_shutdown_poller(pt)

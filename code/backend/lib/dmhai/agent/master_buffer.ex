@@ -7,11 +7,12 @@ defmodule Dmhai.Agent.MasterBuffer do
   @moduledoc """
   Notification bus used by JobRuntime to ping the frontend polling loop.
 
-  Each `append_notification/3` row is visible to `fetch_notifications/2` —
-  the frontend polls that endpoint and reloads the session when a new row
-  appears. After the runtime refactor the table no longer holds worker
-  results (those live in `jobs` and `sessions.messages`); the rows here
-  are pure sentinels.
+  Two notification kinds:
+  - Sentinel (append_notification/3): content="", signals the FE to reload the session.
+  - Progress (append_progress_notification/4): content=progress_text, signals the FE to
+    display a status-phrase update without reloading the session.
+
+  The FE distinguishes by checking whether `content` is non-empty.
 
   NOTE: the table still has a `worker_id` column from the old schema but
   nothing writes to it any more. It is left in place to avoid a SQLite
@@ -33,20 +34,32 @@ defmodule Dmhai.Agent.MasterBuffer do
       [session_id, user_id, "", summary, now])
   end
 
+  @doc """
+  Write a progress-status notification — carries the 2-sentence status text so
+  the frontend can display it as a status phrase without reloading the session.
+  """
+  def append_progress_notification(session_id, user_id, progress_text, summary) do
+    now = System.os_time(:millisecond)
+
+    query!(Repo,
+      "INSERT INTO master_buffer (session_id, user_id, content, summary, consumed, created_at) VALUES (?,?,?,?,1,?)",
+      [session_id, user_id, progress_text, summary, now])
+  end
+
   @doc "Fetch notification rows for a user across all sessions since `since_ms`."
   def fetch_notifications(user_id, since_ms) do
     result =
       query!(Repo,
         """
-        SELECT mb.id, mb.session_id, mb.summary, mb.created_at
+        SELECT mb.id, mb.session_id, mb.summary, mb.created_at, mb.content
         FROM master_buffer mb
         WHERE mb.user_id=? AND mb.created_at > ? AND mb.summary IS NOT NULL
         ORDER BY mb.created_at ASC
         """,
         [user_id, since_ms])
 
-    Enum.map(result.rows, fn [id, session_id, summary, created_at] ->
-      %{id: id, session_id: session_id, summary: summary, created_at: created_at}
+    Enum.map(result.rows, fn [id, session_id, summary, created_at, content] ->
+      %{id: id, session_id: session_id, summary: summary, created_at: created_at, content: content || ""}
     end)
   end
 

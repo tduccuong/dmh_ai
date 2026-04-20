@@ -9,7 +9,7 @@ defmodule Dmhai.I18n do
   runtime (not by the worker / Assistant / summarizer — those emit in
   the user's language directly via LLM prompts).
 
-  Languages currently shipped: en (source), vi, es, fr, ja.
+  Languages currently shipped: en (source), de, vi, es, fr, ja.
   Other languages fall back to the en source automatically.
 
   Usage:
@@ -24,6 +24,7 @@ defmodule Dmhai.I18n do
   @messages %{
     "blocked_label" => %{
       "en" => "Blocked: %{reason}",
+      "de" => "Blockiert: %{reason}",
       "vi" => "Bị chặn: %{reason}",
       "es" => "Bloqueado: %{reason}",
       "fr" => "Bloqué : %{reason}",
@@ -31,6 +32,7 @@ defmodule Dmhai.I18n do
     },
     "notify_done" => %{
       "en" => "✓ %{title}",
+      "de" => "✓ %{title}",
       "vi" => "✓ %{title}",
       "es" => "✓ %{title}",
       "fr" => "✓ %{title}",
@@ -38,6 +40,7 @@ defmodule Dmhai.I18n do
     },
     "notify_blocked" => %{
       "en" => "🔴 %{title} — blocked",
+      "de" => "🔴 %{title} — blockiert",
       "vi" => "🔴 %{title} — bị chặn",
       "es" => "🔴 %{title} — bloqueado",
       "fr" => "🔴 %{title} — bloqué",
@@ -45,6 +48,7 @@ defmodule Dmhai.I18n do
     },
     "notify_progress" => %{
       "en" => "↻ %{title}",
+      "de" => "↻ %{title}",
       "vi" => "↻ %{title}",
       "es" => "↻ %{title}",
       "fr" => "↻ %{title}",
@@ -52,6 +56,7 @@ defmodule Dmhai.I18n do
     },
     "worker_exited_no_signal" => %{
       "en" => "Worker process exited without calling signal().",
+      "de" => "Worker-Prozess beendet ohne signal() aufzurufen.",
       "vi" => "Tiến trình worker đã thoát mà không gọi signal().",
       "es" => "El proceso del worker terminó sin llamar a signal().",
       "fr" => "Le processus du worker s'est terminé sans appeler signal().",
@@ -59,6 +64,7 @@ defmodule Dmhai.I18n do
     },
     "job_cancelled_by_user" => %{
       "en" => "Job cancelled by user.",
+      "de" => "Auftrag vom Benutzer abgebrochen.",
       "vi" => "Công việc đã bị huỷ bởi người dùng.",
       "es" => "Tarea cancelada por el usuario.",
       "fr" => "Tâche annulée par l'utilisateur.",
@@ -66,6 +72,7 @@ defmodule Dmhai.I18n do
     },
     "worker_orphaned" => %{
       "en" => "Worker orphaned by app restart.",
+      "de" => "Worker nach App-Neustart verwaist.",
       "vi" => "Worker bị gián đoạn do ứng dụng khởi động lại.",
       "es" => "Worker huérfano por reinicio de la aplicación.",
       "fr" => "Worker orphelin après redémarrage de l'application.",
@@ -73,6 +80,7 @@ defmodule Dmhai.I18n do
     },
     "no_new_activity" => %{
       "en" => "No new activity for **%{title}** since the last update.",
+      "de" => "Keine neue Aktivität für **%{title}** seit dem letzten Update.",
       "vi" => "Không có hoạt động mới cho **%{title}** kể từ lần cập nhật trước.",
       "es" => "Sin actividad nueva para **%{title}** desde la última actualización.",
       "fr" => "Aucune nouvelle activité pour **%{title}** depuis la dernière mise à jour.",
@@ -80,6 +88,7 @@ defmodule Dmhai.I18n do
     },
     "summary_already_being_prepared" => %{
       "en" => "A progress update is already being prepared — it will appear in chat shortly.",
+      "de" => "Ein Fortschrittsbericht wird bereits erstellt — er erscheint gleich im Chat.",
       "vi" => "Đang chuẩn bị bản cập nhật tiến độ — sẽ xuất hiện trong hộp chat ngay.",
       "es" => "Ya se está preparando una actualización de progreso — aparecerá en el chat en breve.",
       "fr" => "Une mise à jour de progression est déjà en préparation — elle apparaîtra dans le chat sous peu.",
@@ -87,6 +96,7 @@ defmodule Dmhai.I18n do
     },
     "max_iter_reached" => %{
       "en" => "Max iterations (%{max}) reached without calling signal().",
+      "de" => "Maximale Iterationsanzahl (%{max}) erreicht ohne signal() aufzurufen.",
       "vi" => "Đã đạt giới hạn số vòng lặp (%{max}) mà không gọi signal().",
       "es" => "Se alcanzó el máximo de iteraciones (%{max}) sin llamar a signal().",
       "fr" => "Nombre maximal d'itérations (%{max}) atteint sans appeler signal().",
@@ -94,6 +104,7 @@ defmodule Dmhai.I18n do
     },
     "worker_refused_signal" => %{
       "en" => "Worker refused to call signal after %{count} nudges. Last text: %{text}",
+      "de" => "Worker hat signal nach %{count} Hinweisen nicht aufgerufen. Letzter Text: %{text}",
       "vi" => "Worker không chịu gọi signal sau %{count} lần nhắc. Văn bản cuối: %{text}",
       "es" => "El worker no llamó a signal tras %{count} avisos. Último texto: %{text}",
       "fr" => "Le worker a refusé d'appeler signal après %{count} rappels. Dernier texte : %{text}",
@@ -101,6 +112,7 @@ defmodule Dmhai.I18n do
     },
     "llm_error" => %{
       "en" => "LLM error: %{reason}",
+      "de" => "LLM-Fehler: %{reason}",
       "vi" => "Lỗi LLM: %{reason}",
       "es" => "Error de LLM: %{reason}",
       "fr" => "Erreur LLM : %{reason}",
@@ -108,6 +120,7 @@ defmodule Dmhai.I18n do
     },
     "llm_empty_response" => %{
       "en" => "LLM returned empty response.",
+      "de" => "LLM hat eine leere Antwort zurückgegeben.",
       "vi" => "LLM trả về phản hồi rỗng.",
       "es" => "El LLM devolvió una respuesta vacía.",
       "fr" => "Le LLM a renvoyé une réponse vide.",
@@ -115,17 +128,18 @@ defmodule Dmhai.I18n do
     },
     "internal_error" => %{
       "en" => "An internal error occurred. I'll look into it and report back to you.",
+      "de" => "Ein interner Fehler ist aufgetreten. Ich werde ihn untersuchen und Sie informieren.",
       "vi" => "Đã xảy ra lỗi nội bộ. Tôi sẽ xem xét và phản hồi lại cho bạn.",
       "es" => "Ocurrió un error interno. Lo investigaré y te informaré.",
       "fr" => "Une erreur interne s'est produite. Je vais l'examiner et vous en informer.",
       "ja" => "内部エラーが発生しました。調査して報告します。",
-      "de" => "Ein interner Fehler ist aufgetreten. Ich werde ihn untersuchen und Sie informieren.",
       "zh" => "发生了内部错误。我将进行调查并向您报告。",
       "ko" => "내부 오류가 발생했습니다. 조사 후 보고드리겠습니다.",
       "pt" => "Ocorreu um erro interno. Vou investigar e informar você."
     },
     "policy_violation" => %{
       "en" => "Repeated policy violation: %{reason}",
+      "de" => "Wiederholter Regelverstoß: %{reason}",
       "vi" => "Vi phạm quy tắc lặp lại: %{reason}",
       "es" => "Violación de política repetida: %{reason}",
       "fr" => "Violation de politique répétée : %{reason}",
@@ -133,6 +147,7 @@ defmodule Dmhai.I18n do
     },
     "job_not_found" => %{
       "en" => "No job found for id=%{id}.",
+      "de" => "Kein Auftrag mit id=%{id} gefunden.",
       "vi" => "Không tìm thấy công việc với id=%{id}.",
       "es" => "No se encontró ninguna tarea con id=%{id}.",
       "fr" => "Aucune tâche trouvée pour id=%{id}.",
@@ -140,6 +155,7 @@ defmodule Dmhai.I18n do
     },
     "no_such_job" => %{
       "en" => "No such job.",
+      "de" => "Diesen Auftrag gibt es nicht.",
       "vi" => "Không có công việc nào như vậy.",
       "es" => "No existe tal tarea.",
       "fr" => "Cette tâche n'existe pas.",
@@ -147,6 +163,7 @@ defmodule Dmhai.I18n do
     },
     "no_job_id" => %{
       "en" => "No job_id provided.",
+      "de" => "Keine job_id angegeben.",
       "vi" => "Chưa cung cấp job_id.",
       "es" => "No se proporcionó job_id.",
       "fr" => "Aucun job_id fourni.",
@@ -154,6 +171,7 @@ defmodule Dmhai.I18n do
     },
     "bad_interval" => %{
       "en" => "intvl_sec must be > 0.",
+      "de" => "intvl_sec muss > 0 sein.",
       "vi" => "intvl_sec phải lớn hơn 0.",
       "es" => "intvl_sec debe ser > 0.",
       "fr" => "intvl_sec doit être > 0.",
@@ -161,6 +179,7 @@ defmodule Dmhai.I18n do
     },
     "job_status_rendered" => %{
       "en" => "Job **%{title}** — %{status}.\n\n%{result}",
+      "de" => "Auftrag **%{title}** — %{status}.\n\n%{result}",
       "vi" => "Công việc **%{title}** — %{status}.\n\n%{result}",
       "es" => "Tarea **%{title}** — %{status}.\n\n%{result}",
       "fr" => "Tâche **%{title}** — %{status}.\n\n%{result}",
@@ -168,6 +187,7 @@ defmodule Dmhai.I18n do
     },
     "status_done" => %{
       "en" => "done",
+      "de" => "abgeschlossen",
       "vi" => "đã xong",
       "es" => "completada",
       "fr" => "terminée",
@@ -175,6 +195,7 @@ defmodule Dmhai.I18n do
     },
     "status_blocked" => %{
       "en" => "blocked",
+      "de" => "blockiert",
       "vi" => "bị chặn",
       "es" => "bloqueada",
       "fr" => "bloquée",
@@ -182,13 +203,39 @@ defmodule Dmhai.I18n do
     },
     "status_cancelled" => %{
       "en" => "cancelled",
+      "de" => "abgebrochen",
       "vi" => "đã huỷ",
       "es" => "cancelada",
       "fr" => "annulée",
       "ja" => "キャンセル済み"
     },
+    "status_paused" => %{
+      "en" => "paused",
+      "de" => "pausiert",
+      "vi" => "tạm dừng",
+      "es" => "pausada",
+      "fr" => "en pause",
+      "ja" => "一時停止中"
+    },
+    "job_paused" => %{
+      "en" => "Job **%{title}** has been paused. Resume it anytime.",
+      "de" => "Auftrag **%{title}** wurde pausiert. Du kannst ihn jederzeit fortsetzen.",
+      "vi" => "Công việc **%{title}** đã tạm dừng. Bạn có thể tiếp tục bất cứ lúc nào.",
+      "es" => "La tarea **%{title}** ha sido pausada. Reanúdala cuando quieras.",
+      "fr" => "La tâche **%{title}** a été mise en pause. Reprenez-la quand vous voulez.",
+      "ja" => "ジョブ **%{title}** を一時停止しました。いつでも再開できます。"
+    },
+    "job_resumed" => %{
+      "en" => "Job **%{title}** has been resumed.",
+      "de" => "Auftrag **%{title}** wurde fortgesetzt.",
+      "vi" => "Công việc **%{title}** đã được tiếp tục.",
+      "es" => "La tarea **%{title}** ha sido reanudada.",
+      "fr" => "La tâche **%{title}** a été reprise.",
+      "ja" => "ジョブ **%{title}** を再開しました。"
+    },
     "no_result" => %{
       "en" => "(no result)",
+      "de" => "(kein Ergebnis)",
       "vi" => "(không có kết quả)",
       "es" => "(sin resultado)",
       "fr" => "(aucun résultat)",
@@ -216,7 +263,7 @@ defmodule Dmhai.I18n do
 
   @doc "Language codes we ship built-in translations for."
   @spec supported_langs() :: [String.t()]
-  def supported_langs, do: ["en", "vi", "es", "fr", "ja"]
+  def supported_langs, do: ["en", "de", "vi", "es", "fr", "ja"]
 
   @doc "All known keys (for coverage tests)."
   @spec keys() :: [String.t()]

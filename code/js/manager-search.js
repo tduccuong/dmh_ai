@@ -65,7 +65,7 @@ UIManager.sendMessage = async function() {
             imagesForStorage.push({ thumbnail: f.thumbnailBase64, mime: f.mime, fileId: f.id, name: f.name });
         } else if (f.type === 'video') {
             if (f.frames && f.frames.length > 0) videosForAPI = videosForAPI.concat(f.frames);
-            var vidStorage = { mime: f.mime, fileId: f.id, name: f.name };
+            var vidStorage = { mime: f.mime, fileId: f.id, name: f.name, _file: f._file, _scaledBlob: f._scaledBlob };
             videosForStorage.push(vidStorage);
             if (!f.id) pendingUploadEntries.push({ entry: f, storage: vidStorage });
         }
@@ -259,6 +259,7 @@ UIManager.sendMessage = async function() {
         self.updateSendBtn();
         self.setStatus('');
         document.getElementById('stop-gen-btn').style.display = 'none';
+        if (sessionAtSend.mode === 'assistant') UIManager.showJobStatusArea();
         if (self.currentSession && self.currentSession.id === sessionAtSend.id) {
             self.currentSession = sessionAtSend;
             // Do NOT call renderChat() here — it resets scrollTop to scrollHeight, and the
@@ -325,6 +326,51 @@ UIManager.sendMessage = async function() {
         document.getElementById('stop-gen-btn').style.display = 'none';
     }
 
+    // --- Assistant path: reserve job_id and upload images to workspace ---
+    // The worker needs file paths, not inline base64. Reserve a job_id first
+    // (fast — no DB write yet), then fire uploads in parallel with the chat
+    // request. The backend wait_for_attachments polls up to 30s for them to land.
+    var reservedJobId = null;
+    var attachmentNamesForJob = [];
+    var hasAssistantAttachments = sessionAtSend.mode === 'assistant' && (imagesForAPI.length > 0 || videosForStorage.length > 0);
+    if (hasAssistantAttachments) {
+        try {
+            var jobRes = await apiFetch('/reserve-job-id').then(function(r) { return r.json(); });
+            reservedJobId = jobRes.job_id;
+            // Upload photos to workspace (base64 → binary)
+            imagesForAPI.forEach(function(b64, i) {
+                var fd = new FormData();
+                fd.append('file', UIManager.base64ToBlob(b64, 'image/jpeg'), imageNamesForAPI[i]);
+                fd.append('sessionId', sessionAtSend.id);
+                fd.append('jobId', reservedJobId);
+                apiFetch('/upload-job-attachment', { method: 'POST', body: fd })
+                    .catch(function(e) { console.error('Workspace image upload failed:', e); });
+                attachmentNamesForJob.push(imageNamesForAPI[i]);
+            });
+            // Upload scaled video to workspace — worker calls extract_content on the path.
+            // scaleVideo produces video/webm so we use a .webm extension for correct routing.
+            videosForStorage.forEach(function(vid) {
+                if (!vid._scaledBlob) return;
+                var scaledName = vid.name.replace(/\.[^.]+$/, '') + '.webm';
+                var fd = new FormData();
+                fd.append('file', vid._scaledBlob, scaledName);
+                fd.append('sessionId', sessionAtSend.id);
+                fd.append('jobId', reservedJobId);
+                apiFetch('/upload-job-attachment', { method: 'POST', body: fd })
+                    .catch(function(e) { console.error('Workspace video upload failed:', e); });
+                attachmentNamesForJob.push(scaledName);
+            });
+            // Don't send inline base64 — worker uses extract_content on workspace paths
+            allImages = [];
+            imageNamesForAPI = [];
+            hasVideo = false;
+        } catch (e) {
+            console.error('Job reservation failed, falling back to inline:', e);
+            reservedJobId = null;
+            attachmentNamesForJob = [];
+        }
+    }
+
     // --- POST to /agent/chat and stream NDJSON response ---
     apiFetch('/agent/chat', {
         method: 'POST',
@@ -335,7 +381,9 @@ UIManager.sendMessage = async function() {
             images: allImages,
             imageNames: imageNamesForAPI,
             files: filesForAPI,
-            hasVideo: hasVideo
+            hasVideo: hasVideo,
+            jobId: reservedJobId,
+            attachmentNames: attachmentNamesForJob
         }),
         signal: pipelineController.signal
     }).then(async function(response) {

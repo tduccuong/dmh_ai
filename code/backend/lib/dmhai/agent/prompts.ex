@@ -56,28 +56,21 @@ defmodule Dmhai.Agent.Prompts do
        Format: `[{"step": "Reasoning and final response generation", "tools": []}]`
     3. **If tools required:** you may use multiple steps.
        Every step in a multi-step plan MUST have at least one tool — the runtime rejects multi-step plans where any step has `tools: []`.
+    4. **Never plan a `write_file` step to format or stage output.** Final results always go directly in `job_signal(result: "...")`. Only include `write_file` when the user explicitly asks to save or create a file.
 
     ## Examples
 
     User: "What is the capital of France?"
-    Plan: `[{"step": "Identify capital from internal knowledge and respond", "tools": []}]`
+    → 1 step, no tools needed (pure knowledge answer).
 
-    User: "Check what is news in stock market and email me the report."
-    Plan:
-    ```json
-    [
-      {"step": "Fetch current stock market news", "tools": ["web_search"]},
-      {"step": "Compile report and email user", "tools": ["email"]}
-    ]
-    ```
+    User: "Check stock market news and email me the report."
+    → 2 steps: step 1 uses web_search to fetch news; step 2 uses email to send the report.
 
     ## Rules
 
     1. **Language:** User's language is "#{lang}". All user-facing output — including signal result/reason — MUST be written in "#{lang}".
     2. **Tool calls:** ALWAYS via the tool-calling mechanism. Plain text that mimics tool calls (e.g. `[used: run_script(...)]`) is FORBIDDEN.
-    3. **steps argument:** Pass as a native JSON array — do NOT JSON-encode it into a string.
-       - WRONG: `steps: "[{\\"step\\": \\"...\\"}]"` ← string, will be rejected
-       - RIGHT: `steps: [{"step": "...", "tools": [...]}]` ← array
+    3. **steps argument:** Pass as a native array in the tool call — do NOT JSON-encode it into a string.
     4. **Step descriptions:** Use imperative, concise language. Merge sequential logical thoughts into a single step when no tool transition occurs.
 
     Call `plan(steps: [...], rationale: "...")` now.
@@ -109,11 +102,11 @@ defmodule Dmhai.Agent.Prompts do
           status_line =
             cond do
               all_steps_done? ->
-                "ALL STEPS COMPLETE — compile and deliver your final report now."
+                "ALL STEPS COMPLETE. Compile your deliverable and call `job_signal(status: \"JOB_DONE\", result: \"<full answer>\")`."
               is_last_step? ->
-                "Current: step #{current_step}/#{length(steps)} (last step). When done, call `job_signal(JOB_DONE)` directly — do NOT call `step_signal`."
+                "Current: step #{current_step}/#{length(steps)}. When done, call `job_signal(status: \"JOB_DONE\", result: \"<full answer>\")`."
               true ->
-                "Current: step #{current_step}/#{length(steps)}. When done, call `step_signal(STEP_DONE, id: #{current_step})`."
+                "Current: step #{current_step}/#{length(steps)}. When done, call `step_signal(status: \"STEP_DONE\", id: #{current_step})`."
             end
           "## Approved Plan\n\n#{step_lines}\n\n#{status_line}\n"
       end
@@ -158,18 +151,16 @@ defmodule Dmhai.Agent.Prompts do
     Plan approved — proceed with execution.
 
     #{plan_section}
+    ## Available Tools
+
+    Look at the tool schemas definition in the tools section.
+
     ## Protocol
 
     1. **Execute** the current step using the available tools.#{web_fetch_hint}#{bash_hint}
     2. **If a tool fails**, fix the approach and retry directly — do NOT re-plan for script errors or minor failures.
-    3. **When finished**, call:
-       `job_signal(status: "JOB_DONE", result: "<your full answer/report>")`
-       Your answer goes in `result`. NEVER output plain text — call `job_signal` directly.
-    4. **If blocked** by an unrecoverable error, call:
-       `job_signal(status: "JOB_BLOCKED", reason: "<verbatim error message>")`
-    5. After calling `job_signal`, do not call any other tool — the runtime terminates you.
-
-    > Not calling `job_signal` means your work is lost. Plain text as a final action is a protocol violation — the runtime nudges then aborts with JOB_BLOCKED.
+    3. **If blocked** by an unrecoverable error, call `job_signal(status: "JOB_BLOCKED", reason: "<verbatim error message>")`.
+    4. After calling `job_signal` or `step_signal`, do not call any other tool.
 
     ## Rules
 
