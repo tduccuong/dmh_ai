@@ -11,13 +11,10 @@ defmodule Dmhai.DB.Init do
   @db_dir "/data/db"
 
   def run do
-    # mkdir_p may fail in test/CI environments (no /data mount) — that is fine
-    # because the DB path is configured to a writable temp location in those cases.
     File.mkdir_p(@db_dir)
     File.mkdir_p(Dmhai.Constants.assets_dir())
 
     create_tables()
-    run_migrations()
     seed_admin()
   end
 
@@ -29,7 +26,10 @@ defmodule Dmhai.DB.Init do
       model TEXT,
       messages TEXT DEFAULT '[]',
       context TEXT,
-      created_at INTEGER
+      user_id TEXT DEFAULT '',
+      mode TEXT DEFAULT 'confidant',
+      created_at INTEGER,
+      updated_at INTEGER DEFAULT 0
     )
     """)
 
@@ -47,6 +47,9 @@ defmodule Dmhai.DB.Init do
       name TEXT,
       password_hash TEXT NOT NULL,
       role TEXT NOT NULL DEFAULT 'user',
+      profile TEXT DEFAULT '',
+      password_changed INTEGER DEFAULT 0,
+      deleted INTEGER DEFAULT 0,
       created_at INTEGER
     )
     """)
@@ -88,6 +91,8 @@ defmodule Dmhai.DB.Init do
     )
     """)
 
+    query!(Repo, "CREATE UNIQUE INDEX IF NOT EXISTS idx_image_descriptions_name ON image_descriptions (session_id, name)")
+
     query!(Repo, """
     CREATE TABLE IF NOT EXISTS video_descriptions (
       session_id TEXT NOT NULL,
@@ -99,11 +104,14 @@ defmodule Dmhai.DB.Init do
     )
     """)
 
+    query!(Repo, "CREATE UNIQUE INDEX IF NOT EXISTS idx_video_descriptions_name ON video_descriptions (session_id, name)")
+
     query!(Repo, """
     CREATE TABLE IF NOT EXISTS master_buffer (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       session_id TEXT NOT NULL,
       user_id TEXT NOT NULL,
+      worker_id TEXT,
       content TEXT NOT NULL,
       summary TEXT,
       consumed INTEGER DEFAULT 0,
@@ -111,23 +119,9 @@ defmodule Dmhai.DB.Init do
     )
     """)
 
-    query!(Repo, """
-    CREATE INDEX IF NOT EXISTS idx_master_buffer_session
-    ON master_buffer (session_id, consumed, created_at)
-    """)
-  end
+    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_master_buffer_session ON master_buffer (session_id, consumed, created_at)")
 
-  defp run_migrations do
-    alter_table_safe("ALTER TABLE sessions ADD COLUMN user_id TEXT DEFAULT \"\"")
-    alter_table_safe("ALTER TABLE users ADD COLUMN password_changed INTEGER DEFAULT 0")
-    alter_table_safe("ALTER TABLE users ADD COLUMN deleted INTEGER DEFAULT 0")
-    alter_table_safe("ALTER TABLE sessions ADD COLUMN updated_at INTEGER DEFAULT 0")
-    alter_table_safe("ALTER TABLE users ADD COLUMN profile TEXT DEFAULT \"\"")
-    alter_table_safe("ALTER TABLE sessions ADD COLUMN mode TEXT DEFAULT 'confidant'")
-    alter_table_safe("ALTER TABLE master_buffer ADD COLUMN worker_id TEXT")
-    alter_table_safe("CREATE UNIQUE INDEX IF NOT EXISTS idx_image_descriptions_name ON image_descriptions (session_id, name)")
-    alter_table_safe("CREATE UNIQUE INDEX IF NOT EXISTS idx_video_descriptions_name ON video_descriptions (session_id, name)")
-    alter_table_safe("""
+    query!(Repo, """
     CREATE TABLE IF NOT EXISTS session_token_stats (
       session_id TEXT PRIMARY KEY,
       user_id TEXT,
@@ -136,86 +130,64 @@ defmodule Dmhai.DB.Init do
       updated_at INTEGER
     )
     """)
-    migrate_worker_token_stats()
-    # worker_state was the old per-worker checkpoint/recovery store. The
-    # job-based runtime (jobs + worker_status tables) replaced it. Drop
-    # the table if a legacy deployment still has it; harmless otherwise.
-    alter_table_safe("DROP TABLE IF EXISTS worker_state")
 
-    alter_table_safe("""
-    CREATE TABLE IF NOT EXISTS jobs (
-      job_id TEXT PRIMARY KEY,
+    query!(Repo, """
+    CREATE TABLE IF NOT EXISTS worker_token_stats (
+      session_id TEXT NOT NULL,
+      task_id     TEXT NOT NULL DEFAULT '',
+      worker_id  TEXT NOT NULL,
+      user_id    TEXT,
+      description TEXT,
+      rx_tokens  INTEGER DEFAULT 0,
+      tx_tokens  INTEGER DEFAULT 0,
+      updated_at INTEGER,
+      PRIMARY KEY (session_id, task_id, worker_id)
+    )
+    """)
+
+    query!(Repo, """
+    CREATE TABLE IF NOT EXISTS tasks (
+      task_id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
       session_id TEXT NOT NULL,
-      job_type TEXT NOT NULL,                 -- 'one_off' | 'periodic'
+      task_type TEXT NOT NULL,                 -- 'one_off' | 'periodic'
       intvl_sec INTEGER NOT NULL DEFAULT 0,
-      job_title TEXT,
-      job_spec TEXT NOT NULL,
-      job_status TEXT NOT NULL DEFAULT 'pending',
-      job_result TEXT,
+      task_title TEXT,
+      task_spec TEXT NOT NULL,
+      task_status TEXT NOT NULL DEFAULT 'pending',
+      task_result TEXT,
+      language TEXT NOT NULL DEFAULT 'en',
+      pipeline TEXT NOT NULL DEFAULT 'assistant',
+      origin TEXT NOT NULL DEFAULT 'assistant',
+      last_reported_status_id INTEGER DEFAULT 0,
+      last_summarized_status_id INTEGER DEFAULT 0,
+      last_summarized_at INTEGER DEFAULT 0,
+      current_worker_id TEXT,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
       last_run_started_at INTEGER,
       last_run_completed_at INTEGER,
-      next_run_at INTEGER,
-      last_reported_status_id INTEGER DEFAULT 0,
-      current_worker_id TEXT
+      next_run_at INTEGER
     )
     """)
-    alter_table_safe("CREATE INDEX IF NOT EXISTS idx_jobs_session ON jobs (session_id, job_status)")
-    alter_table_safe("CREATE INDEX IF NOT EXISTS idx_jobs_user ON jobs (user_id, job_status)")
-    alter_table_safe("CREATE INDEX IF NOT EXISTS idx_jobs_next_run ON jobs (job_status, next_run_at)")
-    alter_table_safe("ALTER TABLE jobs ADD COLUMN last_summarized_status_id INTEGER DEFAULT 0")
-    alter_table_safe("ALTER TABLE jobs ADD COLUMN last_summarized_at INTEGER DEFAULT 0")
-    alter_table_safe("ALTER TABLE jobs ADD COLUMN language TEXT NOT NULL DEFAULT 'en'")
-    alter_table_safe("ALTER TABLE jobs ADD COLUMN pipeline TEXT NOT NULL DEFAULT 'assistant'")
-    alter_table_safe("ALTER TABLE jobs ADD COLUMN origin TEXT NOT NULL DEFAULT 'assistant'")
 
-    alter_table_safe("""
+    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_tasks_session ON tasks (session_id, task_status)")
+    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks (user_id, task_status)")
+    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_tasks_next_run ON tasks (task_status, next_run_at)")
+
+    query!(Repo, """
     CREATE TABLE IF NOT EXISTS worker_status (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      job_id TEXT NOT NULL,
+      task_id TEXT NOT NULL,
       worker_id TEXT NOT NULL,
       kind TEXT NOT NULL,                     -- 'thinking' | 'tool_call' | 'tool_result' | 'final' | 'error'
       content TEXT,
-      signal_status TEXT,                     -- 'JOB_DONE' | 'BLOCKED' (only for kind='final')
+      signal_status TEXT,                     -- 'TASK_DONE' | 'TASK_BLOCKED' (only for kind='final')
       ts INTEGER NOT NULL
     )
     """)
-    alter_table_safe("CREATE INDEX IF NOT EXISTS idx_worker_status_job ON worker_status (job_id, id)")
-  end
 
-  # Wipe and recreate worker_token_stats with job_id in the PK so periodic-job
-  # cycles are grouped correctly in the stats UI. Idempotent: checks for the
-  # job_id column via PRAGMA before dropping anything.
-  defp migrate_worker_token_stats do
-    cols =
-      query!(Repo, "PRAGMA table_info(worker_token_stats)", []).rows
-      |> Enum.map(fn [_, name | _] -> name end)
-
-    unless "job_id" in cols do
-      Repo.query("DROP TABLE IF EXISTS worker_token_stats")
-      query!(Repo, """
-      CREATE TABLE worker_token_stats (
-        session_id TEXT NOT NULL,
-        job_id     TEXT NOT NULL DEFAULT '',
-        worker_id  TEXT NOT NULL,
-        user_id    TEXT,
-        description TEXT,
-        rx_tokens  INTEGER DEFAULT 0,
-        tx_tokens  INTEGER DEFAULT 0,
-        updated_at INTEGER,
-        PRIMARY KEY (session_id, job_id, worker_id)
-      )
-      """)
-    end
-  end
-
-  defp alter_table_safe(sql) do
-    Repo.query(sql)
-    :ok
-  rescue
-    _ -> :ok
+    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_worker_status_task ON worker_status (task_id, id)")
   end
 
   defp seed_admin do
@@ -240,9 +212,7 @@ defmodule Dmhai.DB.Init do
   # - hash_hex = hashlib.pbkdf2_hmac('sha256', password.encode(), salt_hex.encode(), 100_000).hex()
   # Note: salt passed to pbkdf2_hmac is salt_hex.encode() i.e. the hex string as UTF-8 bytes.
   defp hash_password(password) do
-    # Generate a 16-byte random salt and hex-encode it (32 hex chars) — matching Python's token_hex(16)
     salt_hex = :crypto.strong_rand_bytes(16) |> Base.encode16(case: :lower)
-    # Use the hex string itself as bytes for PBKDF2 — same as Python's salt.encode()
     key = :crypto.pbkdf2_hmac(:sha256, password, salt_hex, 100_000, 32)
     salt_hex <> ":" <> Base.encode16(key, case: :lower)
   end

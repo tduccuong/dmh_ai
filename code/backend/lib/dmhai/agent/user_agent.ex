@@ -34,7 +34,7 @@ defmodule Dmhai.Agent.UserAgent do
   use GenServer
   require Logger
 
-  alias Dmhai.Agent.{AgentSettings, Command, ContextEngine, Jobs, LLM, ProfileExtractor, Supervisor, TokenTracker, WebSearch}
+  alias Dmhai.Agent.{AgentSettings, Command, ContextEngine, LLM, ProfileExtractor, Supervisor, Tasks, TokenTracker, WebSearch}
   alias Dmhai.Web.Search, as: WebSearchEngine
   # WebSearch kept for synthesize_results used in build_web_context
   alias Dmhai.Repo
@@ -60,12 +60,12 @@ defmodule Dmhai.Agent.UserAgent do
     end
   end
 
-  @doc "Cancel all active jobs for a specific session (called on session delete)."
+  @doc "Cancel all active tasks for a specific session (called on session delete)."
   @spec cancel_session_workers(String.t(), String.t()) :: :ok
   def cancel_session_workers(_user_id, session_id) do
     session_id
-    |> Jobs.active_for_session()
-    |> Enum.each(fn job -> Dmhai.Agent.JobRuntime.cancel_job(job.job_id) end)
+    |> Tasks.active_for_session()
+    |> Enum.each(fn task -> Dmhai.Agent.TaskRuntime.cancel_task(task.task_id) end)
     :ok
   end
 
@@ -97,7 +97,7 @@ defmodule Dmhai.Agent.UserAgent do
   def init(user_id) do
     Logger.info("[UserAgent] started user=#{user_id}")
     # Boot rehydration (orphan detection, due-periodic spawn) is delegated to
-    # Dmhai.Agent.JobRuntime which runs at app startup and manages the scheduler.
+    # Dmhai.Agent.TaskRuntime which runs at app startup and manages the scheduler.
     {:ok, %__MODULE__{user_id: user_id}, @idle_timeout}
   end
 
@@ -155,7 +155,7 @@ defmodule Dmhai.Agent.UserAgent do
     {:noreply, %{state | current_task: nil}, @idle_timeout}
   end
 
-  # Stray DOWN — swallow. (Was used for the old worker tracking; JobRuntime owns workers now.)
+  # Stray DOWN — swallow. (Was used for the old worker tracking; TaskRuntime owns workers now.)
   def handle_info({:DOWN, _ref, _type, _pid, _reason}, state) do
     {:noreply, state, @idle_timeout}
   end
@@ -246,11 +246,11 @@ defmodule Dmhai.Agent.UserAgent do
     image_descriptions = load_image_descriptions(session_id)
     video_descriptions = load_video_descriptions(session_id)
 
-    # Use pre-computed description when available; fall back to raw images for master.
+    # Use pre-computed description when available; fall back to raw images for the Confidant LLM call.
     images = effective_images(command, image_descriptions, video_descriptions)
 
     llm_messages =
-      ContextEngine.build_messages(session_data,
+      ContextEngine.build_confidant_messages(session_data,
         profile:            profile,
         has_video:          images != [] and command.has_video,
         images:             images,
@@ -264,7 +264,8 @@ defmodule Dmhai.Agent.UserAgent do
     Dmhai.SysLog.log("[CONFIDANT] sending #{length(llm_messages)} msgs to model=#{model}\n  #{log_llm_messages(llm_messages)}")
 
     on_tokens = fn rx, tx -> TokenTracker.add_master(session_id, user_id, rx, tx) end
-    case LLM.stream(model, llm_messages, reply_pid, on_tokens: on_tokens) do
+    trace     = %{origin: "confidant", path: "UserAgent.run_confidant", role: "ConfidantMaster", phase: "single-turn"}
+    case LLM.stream(model, llm_messages, reply_pid, on_tokens: on_tokens, trace: trace) do
       {:ok, full_text} when full_text != "" ->
         Dmhai.SysLog.log("[CONFIDANT] response(#{String.length(full_text)} chars): #{String.slice(full_text, 0, 300)}")
         append_session_message(session_id, user_id, %{
@@ -297,26 +298,28 @@ defmodule Dmhai.Agent.UserAgent do
     user_id = state.user_id
     model   = AgentSettings.assistant_model()
 
-    profile            = load_user_profile(user_id)
-    image_descriptions = load_image_descriptions(session_id)
-    video_descriptions = load_video_descriptions(session_id)
+    profile = load_user_profile(user_id)
 
-    # Inject active jobs for this session so the Assistant can answer
-    # status/cancel/set-periodic queries using real job_ids.
-    session_jobs = Jobs.list_for_session(session_id)
+    # Inject active tasks for this session so the Assistant can answer
+    # status/cancel/set-periodic queries using real task_ids.
+    session_jobs = Tasks.list_for_session(session_id)
     combined_buffer =
-      case Enum.filter(session_jobs, fn j -> j.job_status in ["pending", "running", "paused"] end) do
+      case Enum.filter(session_jobs, fn j -> j.task_status in ["pending", "running", "paused"] end) do
         [] -> nil
         active ->
           lines =
             Enum.map_join(active, "\n", fn j ->
-              "- job_id: #{j.job_id}, title: #{j.job_title}, type: #{j.job_type}, status: #{j.job_status}"
+              "- task_id: #{j.task_id}, title: #{j.task_title}, type: #{j.task_type}, status: #{j.task_status}"
             end)
-          "[Active jobs for this session]\n#{lines}"
+          "[Active tasks for this session]\n#{lines}"
       end
 
-    # Use pre-computed description when available; fall back to raw images for master.
-    images = effective_images(command, image_descriptions, video_descriptions)
+    # Pass only the current message's raw images so the master can classify intent
+    # (e.g. recognise an image-analysis request). Image descriptions from previous
+    # messages are intentionally excluded — the master is a classifier, not an
+    # answerer, and descriptions in its system prompt cause it to answer directly
+    # instead of handing off to a worker.
+    images = command.images
 
     # Detect language from URL-stripped prose so the master can't be misled by
     # URL domains (e.g. "summarize this: https://vnexpress.net/..." → "en").
@@ -324,34 +327,32 @@ defmodule Dmhai.Agent.UserAgent do
     detected_language = detect_content_language(command.content)
 
     llm_messages =
-      ContextEngine.build_messages(session_data,
-        mode:               "assistant",
-        profile:            profile,
-        has_video:          images != [] and command.has_video,
-        images:             images,
-        files:              command.files,
-        image_descriptions: image_descriptions,
-        video_descriptions: video_descriptions,
-        buffer_context:     combined_buffer,
-        language:           detected_language
+      ContextEngine.build_assistant_messages(session_data,
+        profile:        profile,
+        has_video:      images != [] and command.has_video,
+        images:         images,
+        files:          command.files,
+        buffer_context: combined_buffer,
+        language:       detected_language
       )
 
     tools = [
       handoff_to_worker_json_schema_def(),
-      set_periodic_for_job_json_schema_def(),
-      pause_job_json_schema_def(),
-      resume_job_json_schema_def(),
-      cancel_job_json_schema_def(),
-      read_job_status_json_schema_def()
+      set_periodic_for_task_json_schema_def(),
+      pause_task_json_schema_def(),
+      resume_task_json_schema_def(),
+      cancel_task_json_schema_def(),
+      read_task_status_json_schema_def()
     ]
 
     Dmhai.SysLog.log("[ASSISTANT] user=#{user_id} session=#{session_id} msg=#{String.slice(command.content, 0, 200)}")
     Dmhai.SysLog.log("[ASSISTANT] sending #{length(llm_messages)} msgs to model=#{model}\n  #{log_llm_messages(llm_messages)}")
 
     on_tokens = fn rx, tx -> TokenTracker.add_master(session_id, user_id, rx, tx) end
+    trace     = %{origin: "assistant", path: "UserAgent.run_assistant", role: "AssistantMaster", phase: "classify"}
     # Pass self() so master reasoning/text does not stream to the user when a tool call is made.
     # For the rare text-only fallback, we forward full_text manually below.
-    case LLM.stream(model, llm_messages, self(), tools: tools, on_tokens: on_tokens) do
+    case LLM.stream(model, llm_messages, self(), tools: tools, on_tokens: on_tokens, trace: trace) do
       {:ok, {:tool_calls, calls}} ->
         call_names = Enum.map_join(calls, ", ", fn c -> get_in(c, ["function", "name"]) || "?" end)
         Dmhai.SysLog.log("[ASSISTANT] tool_calls=[#{call_names}]")
@@ -386,48 +387,48 @@ defmodule Dmhai.Agent.UserAgent do
 
     case tool_name do
       "handoff_to_worker"      -> handle_handoff_to_worker(calls, command, state, session_data)
-      "set_periodic_for_job"   -> handle_set_periodic(calls, command, state)
-      "pause_job"              -> handle_pause_job(calls, command, state)
-      "resume_job"             -> handle_resume_job(calls, command, state)
-      "cancel_job"             -> handle_cancel_job(calls, command, state)
-      "read_job_status"        -> handle_read_job_status(calls, command, state)
+      "set_periodic_for_task"   -> handle_set_periodic(calls, command, state)
+      "pause_task"              -> handle_pause_task(calls, command, state)
+      "resume_task"             -> handle_resume_task(calls, command, state)
+      "cancel_task"             -> handle_cancel_task(calls, command, state)
+      "read_task_status"        -> handle_read_task_status(calls, command, state)
       _                        ->
         Logger.warning("[UserAgent] unknown Assistant tool call: #{inspect(tool_name)}")
         send(command.reply_pid, {:error, "Unknown tool: #{inspect(tool_name)}"})
     end
   end
 
-  # ── Assistant tool handlers (job-based flow) ──────────────────────────────
+  # ── Assistant tool handlers (task-based flow) ──────────────────────────────
 
-  # The Assistant chose the Worker path. Insert a job row and spawn a worker
-  # bound to that job_id. The JobRuntime watches worker_status for completion.
+  # The Assistant chose the Worker path. Insert a task row and spawn a worker
+  # bound to that task_id. The TaskRuntime watches worker_status for completion.
   defp handle_handoff_to_worker(calls, command, state, session_data) do
     %Command{reply_pid: reply_pid, session_id: session_id} = command
     user_id = state.user_id
 
     task_desc  = assistant_arg(calls, "handoff_to_worker", "task")      || "Task requested by user"
-    job_title  = assistant_arg(calls, "handoff_to_worker", "job_title") || short_title(task_desc)
+    task_title  = assistant_arg(calls, "handoff_to_worker", "task_title") || short_title(task_desc)
     intvl_str  = assistant_arg(calls, "handoff_to_worker", "intvl_sec")
     intvl_sec  = parse_int(intvl_str, 0)
-    job_type   = if intvl_sec > 0, do: "periodic", else: "one_off"
+    task_type   = if intvl_sec > 0, do: "periodic", else: "one_off"
     ack        = assistant_arg(calls, "handoff_to_worker", "ack") || "Working on it — I'll report back."
     language   = normalise_lang(assistant_arg(calls, "handoff_to_worker", "language"))
     origin     = session_origin(session_data)
 
-    # Build the attachment section for the job_spec.
-    # Path 1 (normal): FE pre-allocated a job_id and uploaded files to the job workspace.
+    # Build the attachment section for the task_spec.
+    # Path 1 (normal): FE pre-allocated a task_id and uploaded files to the task workspace.
     #   → wait for those files and inject workspace/<name> paths.
     # Path 2 (fallback): reservation failed and the FE sent inline base64 images.
     #   → save them to the session data_dir and inject data/<name> paths.
-    # In both cases the job_spec contains ONLY file paths — never inline descriptions.
-    pre_job_id       = command.job_id
+    # In both cases the task_spec contains ONLY file paths — never inline descriptions.
+    pre_task_id       = command.task_id
     attachment_names = command.attachment_names
 
     media_context =
       cond do
-        pre_job_id && attachment_names != [] ->
-          email     = Jobs.lookup_user_email(user_id)
-          workspace = Dmhai.Constants.job_workspace_dir(email, session_id, origin, pre_job_id)
+        pre_task_id && attachment_names != [] ->
+          email     = Tasks.lookup_user_email(user_id)
+          workspace = Dmhai.Constants.task_workspace_dir(email, session_id, origin, pre_task_id)
           case wait_for_attachments(workspace, attachment_names) do
             :ok      -> build_attachment_section("workspace", attachment_names)
             :timeout -> build_attachment_section("workspace", attachment_names) <>
@@ -435,7 +436,7 @@ defmodule Dmhai.Agent.UserAgent do
           end
 
         command.images != [] ->
-          email    = Jobs.lookup_user_email(user_id)
+          email    = Tasks.lookup_user_email(user_id)
           data_dir = Dmhai.Constants.session_data_dir(email, session_id)
           File.mkdir_p(data_dir)
           saved = save_inline_images(command.images, command.image_names, data_dir)
@@ -449,25 +450,25 @@ defmodule Dmhai.Agent.UserAgent do
     full_task =
       if media_context, do: task_desc <> "\n\n" <> media_context, else: task_desc
 
-    job_id =
-      Jobs.insert(
-        job_id:     pre_job_id,
+    task_id =
+      Tasks.insert(
+        task_id:     pre_task_id,
         user_id:    user_id,
         session_id: session_id,
-        job_type:   job_type,
+        task_type:   task_type,
         intvl_sec:  intvl_sec,
-        job_title:  job_title,
-        job_spec:   full_task,
-        job_status: "pending",
+        task_title:  task_title,
+        task_spec:   full_task,
+        task_status: "pending",
         language:   language,
         pipeline:   "assistant",
         origin:     origin
       )
 
-    Logger.info("[UserAgent] worker job=#{job_id} type=#{job_type} intvl=#{intvl_sec} title=#{job_title}")
+    Logger.info("[UserAgent] worker task=#{task_id} type=#{task_type} intvl=#{intvl_sec} title=#{task_title}")
 
-    # Delegate to JobRuntime to spawn the worker + start watchdog/poller.
-    Dmhai.Agent.JobRuntime.start_job(job_id)
+    # Delegate to TaskRuntime to spawn the worker + start watchdog/poller.
+    Dmhai.Agent.TaskRuntime.start_task(task_id)
 
     append_session_message(session_id, user_id, %{
       role: "assistant",
@@ -476,13 +477,13 @@ defmodule Dmhai.Agent.UserAgent do
     })
 
     send(reply_pid, {:chunk, ack})
-    send(reply_pid, {:done, %{}})
+    send(reply_pid, {:done, %{task_created: true}})
   end
 
-  # Poll until all expected attachment files exist in the job workspace.
+  # Poll until all expected attachment files exist in the task workspace.
   # Uploads are fast (scaled-down files) so this typically resolves before
   # the LLM even responds. Logs a warning and continues on timeout rather
-  # than blocking the job indefinitely.
+  # than blocking the task indefinitely.
   @attachment_wait_timeout_ms 30_000
   @attachment_poll_ms 200
 
@@ -532,24 +533,24 @@ defmodule Dmhai.Agent.UserAgent do
 
   defp handle_set_periodic(calls, command, _state) do
     %Command{reply_pid: reply_pid, session_id: session_id} = command
-    job_id    = assistant_arg(calls, "set_periodic_for_job", "job_id")
-    intvl_str = assistant_arg(calls, "set_periodic_for_job", "intvl_sec")
-    ack       = assistant_arg(calls, "set_periodic_for_job", "ack") || "Scheduled."
+    task_id    = assistant_arg(calls, "set_periodic_for_task", "task_id")
+    intvl_str = assistant_arg(calls, "set_periodic_for_task", "intvl_sec")
+    ack       = assistant_arg(calls, "set_periodic_for_task", "ack") || "Scheduled."
     intvl_sec = parse_int(intvl_str, 0)
-    job       = job_id && Jobs.get(job_id)
-    lang      = (job && job.language) || "en"
+    task       = task_id && Tasks.get(task_id)
+    lang      = (task && task.language) || "en"
 
     msg =
       cond do
-        job_id in [nil, ""] -> Dmhai.I18n.t("no_job_id", lang)
+        task_id in [nil, ""] -> Dmhai.I18n.t("no_task_id", lang)
         intvl_sec <= 0      -> Dmhai.I18n.t("bad_interval", lang)
-        is_nil(job)         -> Dmhai.I18n.t("no_such_job", lang)
+        is_nil(task)         -> Dmhai.I18n.t("no_such_task", lang)
         true ->
-          Jobs.set_periodic(job_id, intvl_sec)
+          Tasks.set_periodic(task_id, intvl_sec)
           ack
       end
 
-    user_id = (job && job.user_id) || "system"
+    user_id = (task && task.user_id) || "system"
     append_session_message(session_id, user_id, %{
       role: "assistant",
       content: msg,
@@ -560,22 +561,22 @@ defmodule Dmhai.Agent.UserAgent do
     send(reply_pid, {:done, %{}})
   end
 
-  defp handle_cancel_job(calls, command, _state) do
+  defp handle_cancel_task(calls, command, _state) do
     %Command{reply_pid: reply_pid, session_id: session_id} = command
-    job_id = assistant_arg(calls, "cancel_job", "job_id")
-    ack    = assistant_arg(calls, "cancel_job", "ack") || "Job cancelled."
-    job    = job_id && Jobs.get(job_id)
-    lang   = (job && job.language) || "en"
+    task_id = assistant_arg(calls, "cancel_task", "task_id")
+    ack    = assistant_arg(calls, "cancel_task", "ack") || "Job cancelled."
+    task    = task_id && Tasks.get(task_id)
+    lang   = (task && task.language) || "en"
 
     msg =
-      case job do
-        nil  -> Dmhai.I18n.t("no_such_job", lang)
+      case task do
+        nil  -> Dmhai.I18n.t("no_such_task", lang)
         _job ->
-          Dmhai.Agent.JobRuntime.cancel_job(job_id)
+          Dmhai.Agent.TaskRuntime.cancel_task(task_id)
           ack
       end
 
-    user_id = job && job.user_id
+    user_id = task && task.user_id
 
     if user_id do
       append_session_message(session_id, user_id, %{
@@ -589,22 +590,22 @@ defmodule Dmhai.Agent.UserAgent do
     send(reply_pid, {:done, %{}})
   end
 
-  defp handle_pause_job(calls, command, _state) do
+  defp handle_pause_task(calls, command, _state) do
     %Command{reply_pid: reply_pid, session_id: session_id} = command
-    job_id = assistant_arg(calls, "pause_job", "job_id")
-    ack    = assistant_arg(calls, "pause_job", "ack")
-    job    = job_id && Jobs.get(job_id)
-    lang   = (job && job.language) || "en"
+    task_id = assistant_arg(calls, "pause_task", "task_id")
+    ack    = assistant_arg(calls, "pause_task", "ack")
+    task    = task_id && Tasks.get(task_id)
+    lang   = (task && task.language) || "en"
 
     msg =
-      case job do
-        nil  -> Dmhai.I18n.t("no_such_job", lang)
+      case task do
+        nil  -> Dmhai.I18n.t("no_such_task", lang)
         _job ->
-          Dmhai.Agent.JobRuntime.pause_job(job_id)
-          ack || Dmhai.I18n.t("job_paused", lang, %{title: job.job_title})
+          Dmhai.Agent.TaskRuntime.pause_task(task_id)
+          ack || Dmhai.I18n.t("task_paused", lang, %{title: task.task_title})
       end
 
-    user_id = job && job.user_id
+    user_id = task && task.user_id
 
     if user_id do
       append_session_message(session_id, user_id, %{
@@ -618,22 +619,22 @@ defmodule Dmhai.Agent.UserAgent do
     send(reply_pid, {:done, %{}})
   end
 
-  defp handle_resume_job(calls, command, _state) do
+  defp handle_resume_task(calls, command, _state) do
     %Command{reply_pid: reply_pid, session_id: session_id} = command
-    job_id = assistant_arg(calls, "resume_job", "job_id")
-    ack    = assistant_arg(calls, "resume_job", "ack")
-    job    = job_id && Jobs.get(job_id)
-    lang   = (job && job.language) || "en"
+    task_id = assistant_arg(calls, "resume_task", "task_id")
+    ack    = assistant_arg(calls, "resume_task", "ack")
+    task    = task_id && Tasks.get(task_id)
+    lang   = (task && task.language) || "en"
 
     msg =
-      case job do
-        nil  -> Dmhai.I18n.t("no_such_job", lang)
+      case task do
+        nil  -> Dmhai.I18n.t("no_such_task", lang)
         _job ->
-          Dmhai.Agent.JobRuntime.resume_job(job_id)
-          ack || Dmhai.I18n.t("job_resumed", lang, %{title: job.job_title})
+          Dmhai.Agent.TaskRuntime.resume_task(task_id)
+          ack || Dmhai.I18n.t("task_resumed", lang, %{title: task.task_title})
       end
 
-    user_id = job && job.user_id
+    user_id = task && task.user_id
 
     if user_id do
       append_session_message(session_id, user_id, %{
@@ -647,30 +648,30 @@ defmodule Dmhai.Agent.UserAgent do
     send(reply_pid, {:done, %{}})
   end
 
-  # User explicitly asked about a job — reuse the same summarizer path as the
+  # User explicitly asked about a task — reuse the same summarizer path as the
   # runtime's unsolicited push. force: true so we always produce output (even
   # "no new activity since the last update"). The summarizer appends a
   # progress message to the session AND pings the notification bus, so the
   # frontend reloads and renders.
-  defp handle_read_job_status(calls, command, _state) do
+  defp handle_read_task_status(calls, command, _state) do
     %Command{reply_pid: reply_pid} = command
-    job_id = assistant_arg(calls, "read_job_status", "job_id")
+    task_id = assistant_arg(calls, "read_task_status", "task_id")
 
-    case job_id && Jobs.get(job_id) do
+    case task_id && Tasks.get(task_id) do
       nil ->
-        msg = Dmhai.I18n.t("job_not_found", "en", %{id: inspect(job_id)})
+        msg = Dmhai.I18n.t("task_not_found", "en", %{id: inspect(task_id)})
         send(reply_pid, {:chunk, msg})
         send(reply_pid, {:done, %{content: msg}})
 
-      job ->
-        lang = job.language || "en"
-        # Terminal/quiescent jobs: render stored result directly, no LLM call.
-        case job.job_status do
+      task ->
+        lang = task.language || "en"
+        # Terminal/quiescent tasks: render stored result directly, no LLM call.
+        case task.task_status do
           status when status in ["done", "blocked", "cancelled", "paused"] ->
             status_label = Dmhai.I18n.t("status_#{status}", lang)
-            result_text  = job.job_result || Dmhai.I18n.t("no_result", lang)
-            body = Dmhai.I18n.t("job_status_rendered", lang, %{
-              title: job.job_title,
+            result_text  = task.task_result || Dmhai.I18n.t("no_result", lang)
+            body = Dmhai.I18n.t("task_status_rendered", lang, %{
+              title: task.task_title,
               status: status_label,
               result: result_text
             })
@@ -680,7 +681,7 @@ defmodule Dmhai.Agent.UserAgent do
           _ ->
             # Running/pending — delta-only summary via the shared summarizer.
             Task.start(fn ->
-              case Dmhai.Agent.JobRuntime.summarize_and_announce(job_id, force: true) do
+              case Dmhai.Agent.TaskRuntime.summarize_and_announce(task_id, force: true) do
                 {:ok, text} ->
                   send(reply_pid, {:chunk, text})
                   send(reply_pid, {:done, %{content: text}})
@@ -708,13 +709,13 @@ defmodule Dmhai.Agent.UserAgent do
           "daily research, recurring reports). For periodic tasks, set intvl_sec > 0 " <>
           "(the worker itself never sees the interval — the runtime schedules re-runs). " <>
           "The worker has tools: bash, web fetch/search, file io, calculator, date/time, media/doc parsers. " <>
-          "It signals completion via job_signal(JOB_DONE|JOB_BLOCKED).",
+          "It signals completion via task_signal(TASK_DONE|TASK_BLOCKED).",
       parameters: %{
         type: "object",
         properties: %{
-          job_title: %{
+          task_title: %{
             type: "string",
-            description: "A short (2-6 word) title for the job, in the user's language."
+            description: "A short (2-6 word) title for the task, in the user's language."
           },
           task: %{
             type: "string",
@@ -739,92 +740,92 @@ defmodule Dmhai.Agent.UserAgent do
             description: "ISO 639-1 code of the user's language (e.g. 'en', 'vi', 'es', 'fr', 'ja', 'zh', 'de')."
           }
         },
-        required: ["job_title", "task", "ack", "language"]
+        required: ["task_title", "task", "ack", "language"]
       }
     }
   end
 
-  defp set_periodic_for_job_json_schema_def do
+  defp set_periodic_for_task_json_schema_def do
     %{
-      name: "set_periodic_for_job",
+      name: "set_periodic_for_task",
       description:
-        "Turn an existing job into a periodic one (or update its interval). Use when the user says " <>
-          "something like 'run this every hour' or 'repeat daily' about a job that's already running.",
+        "Turn an existing task into a periodic one (or update its interval). Use when the user says " <>
+          "something like 'run this every hour' or 'repeat daily' about a task that's already running.",
       parameters: %{
         type: "object",
         properties: %{
-          job_id:    %{type: "string", description: "The job_id to update."},
+          task_id:    %{type: "string", description: "The task_id to update."},
           intvl_sec: %{type: "integer", description: "New interval in seconds (> 0)."},
           ack:       %{type: "string", description: "Confirmation shown to the user."}
         },
-        required: ["job_id", "intvl_sec", "ack"]
+        required: ["task_id", "intvl_sec", "ack"]
       }
     }
   end
 
-  defp pause_job_json_schema_def do
+  defp pause_task_json_schema_def do
     %{
-      name: "pause_job",
+      name: "pause_task",
       description:
-        "Temporarily pause a running or pending job. The worker is stopped but job data is " <>
-          "preserved — the job can be resumed later with resume_job. Use for 'pause X', 'hold X', 'stop X for now'.",
+        "Temporarily pause a running or pending task. The worker is stopped but task data is " <>
+          "preserved — the task can be resumed later with resume_job. Use for 'pause X', 'hold X', 'stop X for now'.",
       parameters: %{
         type: "object",
         properties: %{
-          job_id: %{type: "string", description: "The job_id to pause."},
+          task_id: %{type: "string", description: "The task_id to pause."},
           ack:    %{type: "string", description: "Confirmation shown to the user, in their language."}
         },
-        required: ["job_id", "ack"]
+        required: ["task_id", "ack"]
       }
     }
   end
 
-  defp resume_job_json_schema_def do
+  defp resume_task_json_schema_def do
     %{
-      name: "resume_job",
+      name: "resume_task",
       description:
-        "Resume a previously paused job. The worker restarts from the beginning of its task spec. " <>
+        "Resume a previously paused task. The worker restarts from the beginning of its task spec. " <>
           "Use for 'resume X', 'continue X', 'restart X'.",
       parameters: %{
         type: "object",
         properties: %{
-          job_id: %{type: "string", description: "The job_id to resume."},
+          task_id: %{type: "string", description: "The task_id to resume."},
           ack:    %{type: "string", description: "Confirmation shown to the user, in their language."}
         },
-        required: ["job_id", "ack"]
+        required: ["task_id", "ack"]
       }
     }
   end
 
-  defp cancel_job_json_schema_def do
+  defp cancel_task_json_schema_def do
     %{
-      name: "cancel_job",
+      name: "cancel_task",
       description:
-        "Permanently cancel a job by id. Stops any in-flight worker and prevents future runs. " <>
+        "Permanently cancel a task by id. Stops any in-flight worker and prevents future runs. " <>
           "Cannot be undone. Use for 'stop X', 'cancel X', 'kill X'.",
       parameters: %{
         type: "object",
         properties: %{
-          job_id: %{type: "string", description: "The job_id to cancel."},
+          task_id: %{type: "string", description: "The task_id to cancel."},
           ack:    %{type: "string", description: "Confirmation shown to the user."}
         },
-        required: ["job_id", "ack"]
+        required: ["task_id", "ack"]
       }
     }
   end
 
-  defp read_job_status_json_schema_def do
+  defp read_task_status_json_schema_def do
     %{
-      name: "read_job_status",
+      name: "read_task_status",
       description:
-        "Fetch status + recent progress for a job. Use when the user asks " <>
+        "Fetch status + recent progress for a task. Use when the user asks " <>
           "'how is X going?' / 'what happened to Y?' / 'show me the report'.",
       parameters: %{
         type: "object",
         properties: %{
-          job_id: %{type: "string", description: "The job_id to query."}
+          task_id: %{type: "string", description: "The task_id to query."}
         },
-        required: ["job_id"]
+        required: ["task_id"]
       }
     }
   end
@@ -855,7 +856,7 @@ defmodule Dmhai.Agent.UserAgent do
   defp parse_int(_, default), do: default
 
   # Derive the session's origin ("assistant" | "confidant") from its mode.
-  # Used to bucket jobs into the correct filesystem subtree regardless of
+  # Used to bucket tasks into the correct filesystem subtree regardless of
   # which handoff pipeline (resolver/worker) executed them.
   defp session_origin(session_data) do
     case session_data && session_data["mode"] do
@@ -889,8 +890,9 @@ defmodule Dmhai.Agent.UserAgent do
 
   defp detect_content_language(content) when is_binary(content) and content != "" do
     stripped = Regex.replace(@url_strip_regex, content, "") |> String.trim()
+    words    = String.split(stripped, ~r/\s+/, trim: true)
 
-    if stripped == "" do
+    if stripped == "" or length(words) < 5 do
       nil
     else
       model = AgentSettings.language_detector_model()
@@ -903,8 +905,10 @@ defmodule Dmhai.Agent.UserAgent do
           "Text: #{stripped}"
 
       try do
+        trace = %{origin: "assistant", path: "UserAgent.detect_content_language", role: "LanguageDetector", phase: "detect"}
         case LLM.call(model, [%{role: "user", content: prompt}],
-               options: %{temperature: 0, num_predict: 10}
+               options: %{temperature: 0, num_predict: 10},
+               trace: trace
              ) do
           {:ok, response} -> parse_language_code(response)
           {:error, _}     -> nil
@@ -931,8 +935,8 @@ defmodule Dmhai.Agent.UserAgent do
     end
   end
 
-  defp short_title(nil), do: "Untitled job"
-  defp short_title(""),  do: "Untitled job"
+  defp short_title(nil), do: "Untitled task"
+  defp short_title(""),  do: "Untitled task"
   defp short_title(content) do
     content
     |> String.split(~r/\s+/)

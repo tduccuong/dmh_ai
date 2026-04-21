@@ -229,7 +229,7 @@ UIManager.sendMessage = async function() {
         }
     }
 
-    function onComplete() {
+    function onComplete(jobCreated) {
         if (!assistantContent) {
             // Stream ended with no content — connection was cut
             var emptyBody = document.getElementById('streaming-body') || self._activeBodyDiv;
@@ -259,7 +259,7 @@ UIManager.sendMessage = async function() {
         self.updateSendBtn();
         self.setStatus('');
         document.getElementById('stop-gen-btn').style.display = 'none';
-        if (sessionAtSend.mode === 'assistant') UIManager.showJobStatusArea();
+        if (sessionAtSend.mode === 'assistant' && jobCreated) UIManager.showTaskStatusArea();
         if (self.currentSession && self.currentSession.id === sessionAtSend.id) {
             self.currentSession = sessionAtSend;
             // Do NOT call renderChat() here — it resets scrollTop to scrollHeight, and the
@@ -326,24 +326,24 @@ UIManager.sendMessage = async function() {
         document.getElementById('stop-gen-btn').style.display = 'none';
     }
 
-    // --- Assistant path: reserve job_id and upload images to workspace ---
-    // The worker needs file paths, not inline base64. Reserve a job_id first
+    // --- Assistant path: reserve task_id and upload images to workspace ---
+    // The worker needs file paths, not inline base64. Reserve a task_id first
     // (fast — no DB write yet), then fire uploads in parallel with the chat
     // request. The backend wait_for_attachments polls up to 30s for them to land.
-    var reservedJobId = null;
+    var reservedTaskId = null;
     var attachmentNamesForJob = [];
     var hasAssistantAttachments = sessionAtSend.mode === 'assistant' && (imagesForAPI.length > 0 || videosForStorage.length > 0);
     if (hasAssistantAttachments) {
         try {
-            var jobRes = await apiFetch('/reserve-job-id').then(function(r) { return r.json(); });
-            reservedJobId = jobRes.job_id;
+            var taskRes = await apiFetch('/reserve-task-id').then(function(r) { return r.json(); });
+            reservedTaskId = taskRes.task_id;
             // Upload photos to workspace (base64 → binary)
             imagesForAPI.forEach(function(b64, i) {
                 var fd = new FormData();
                 fd.append('file', UIManager.base64ToBlob(b64, 'image/jpeg'), imageNamesForAPI[i]);
                 fd.append('sessionId', sessionAtSend.id);
-                fd.append('jobId', reservedJobId);
-                apiFetch('/upload-job-attachment', { method: 'POST', body: fd })
+                fd.append('taskId', reservedTaskId);
+                apiFetch('/upload-task-attachment', { method: 'POST', body: fd })
                     .catch(function(e) { console.error('Workspace image upload failed:', e); });
                 attachmentNamesForJob.push(imageNamesForAPI[i]);
             });
@@ -355,8 +355,8 @@ UIManager.sendMessage = async function() {
                 var fd = new FormData();
                 fd.append('file', vid._scaledBlob, scaledName);
                 fd.append('sessionId', sessionAtSend.id);
-                fd.append('jobId', reservedJobId);
-                apiFetch('/upload-job-attachment', { method: 'POST', body: fd })
+                fd.append('taskId', reservedTaskId);
+                apiFetch('/upload-task-attachment', { method: 'POST', body: fd })
                     .catch(function(e) { console.error('Workspace video upload failed:', e); });
                 attachmentNamesForJob.push(scaledName);
             });
@@ -366,7 +366,7 @@ UIManager.sendMessage = async function() {
             hasVideo = false;
         } catch (e) {
             console.error('Job reservation failed, falling back to inline:', e);
-            reservedJobId = null;
+            reservedTaskId = null;
             attachmentNamesForJob = [];
         }
     }
@@ -382,7 +382,7 @@ UIManager.sendMessage = async function() {
             imageNames: imageNamesForAPI,
             files: filesForAPI,
             hasVideo: hasVideo,
-            jobId: reservedJobId,
+            taskId: reservedTaskId,
             attachmentNames: attachmentNamesForJob
         }),
         signal: pipelineController.signal
@@ -431,7 +431,7 @@ UIManager.sendMessage = async function() {
                         }
                         var msgContent = json.message && json.message.content;
                         var msgThinking = json.message && json.message.thinking;
-                        if (json.done) { onComplete(); return; }
+                        if (json.done) { onComplete(json.task_created === true); return; }
                         if (msgContent) onChunk(msgContent, false);
                         else if (msgThinking) onChunk(msgThinking, true);
                     } catch (e) {}

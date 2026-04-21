@@ -15,14 +15,14 @@ defmodule Dmhai.Agent.Police do
        arguments as a previous iteration, indicating an infinite loop.
     3. Path safety — reads are allowed outside /data/ (system paths) or within own
        session_root under /data/; writes and deletions are confined to the job's
-       workspace_dir (/data/user_assets/<email>/<session_id>/assistant/jobs/<job_id>/).
+       workspace_dir (/data/user_assets/<email>/<session_id>/assistant/tasks/<task_id>/).
     4. Plan step count — fewer than planMinSteps or more than planMaxSteps steps.
     5. Plan step tools — in a multi-step plan every step must list at least one
        execution tool; a step with tools: [] is only valid as a single-step plan
        (pure knowledge answer). Toolless steps in 2+ step plans are hard-rejected.
-    6. signal batching — step_signal and job_signal must each be called alone; batching
+    6. signal batching — step_signal and task_signal must each be called alone; batching
        either with other tool calls is rejected so all work completes before signalling.
-    7. job_done_missing_result — job_signal(JOB_DONE) must carry a non-empty result
+    7. task_done_missing_result — task_signal(TASK_DONE) must carry a non-empty result
        field containing the final report compiled by the worker for the user.
   """
 
@@ -47,16 +47,16 @@ defmodule Dmhai.Agent.Police do
   @write_path_tools ["write_file"]
 
   @doc "Rejection message to inject, including the specific violation reason."
-  def rejection_msg("job_done_missing_result") do
-    "REJECTED (job_done_missing_result): job_signal(JOB_DONE) requires a non-empty 'result' field. " <>
-    "Compile the final report/answer for the user and include it as the result before signalling JOB_DONE."
+  def rejection_msg("task_done_missing_result") do
+    "REJECTED (task_done_missing_result): task_signal(TASK_DONE) requires a non-empty 'result' field. " <>
+    "Compile the final report/answer for the user and include it as the result before signalling TASK_DONE."
   end
   def rejection_msg("step_signal_batched") do
     "REJECTED (step_signal_batched): step_signal must be called alone. " <>
     "Complete your tool work first, then call step_signal in a separate turn."
   end
-  def rejection_msg("job_signal_batched") do
-    "REJECTED (job_signal_batched): job_signal must be called alone. " <>
+  def rejection_msg("task_signal_batched") do
+    "REJECTED (task_signal_batched): task_signal must be called alone. " <>
     "Do not combine it with other tool calls."
   end
   def rejection_msg(reason) do
@@ -133,20 +133,20 @@ defmodule Dmhai.Agent.Police do
   @spec check_tool_calls(list(), list(), map()) :: :ok | {:rejected, String.t()}
   def check_tool_calls(calls, messages, ctx \\ %{}) do
     cond do
-      job_done_missing_result?(calls) ->
-        Logger.warning("[Police] job_done_missing_result")
-        Dmhai.SysLog.log("[POLICE] REJECTED job_done_missing_result")
-        {:rejected, "job_done_missing_result"}
+      task_done_missing_result?(calls) ->
+        Logger.warning("[Police] task_done_missing_result")
+        Dmhai.SysLog.log("[POLICE] REJECTED task_done_missing_result")
+        {:rejected, "task_done_missing_result"}
 
       step_signal_batched?(calls) ->
         Logger.warning("[Police] step_signal_batched with #{length(calls)} tools")
         Dmhai.SysLog.log("[POLICE] REJECTED step_signal_batched")
         {:rejected, "step_signal_batched"}
 
-      job_signal_batched?(calls) ->
-        Logger.warning("[Police] job_signal_batched with #{length(calls)} tools")
-        Dmhai.SysLog.log("[POLICE] REJECTED job_signal_batched")
-        {:rejected, "job_signal_batched"}
+      task_signal_batched?(calls) ->
+        Logger.warning("[Police] task_signal_batched with #{length(calls)} tools")
+        Dmhai.SysLog.log("[POLICE] REJECTED task_signal_batched")
+        {:rejected, "task_signal_batched"}
 
       repeated_identical_calls?(calls, messages) ->
         names = Enum.map_join(calls, ", ", fn c -> get_in(c, ["function", "name"]) || "?" end)
@@ -184,13 +184,13 @@ defmodule Dmhai.Agent.Police do
     Enum.any?(@mimicry_patterns, fn pat -> Regex.match?(pat, text) end)
   end
 
-  # job_signal(JOB_DONE) must carry a non-empty (non-whitespace) result.
-  defp job_done_missing_result?(calls) do
+  # task_signal(TASK_DONE) must carry a non-empty (non-whitespace) result.
+  defp task_done_missing_result?(calls) do
     Enum.any?(calls, fn c ->
-      if get_in(c, ["function", "name"]) == "job_signal" do
+      if get_in(c, ["function", "name"]) == "task_signal" do
         args = get_in(c, ["function", "arguments"]) || %{}
         args = if is_binary(args), do: decode_or_empty(args), else: args
-        (args["status"] || "") |> String.upcase() == "JOB_DONE" and
+        (args["status"] || "") |> String.upcase() == "TASK_DONE" and
           (args["result"] || "") |> String.trim() == ""
       else
         false
@@ -204,11 +204,11 @@ defmodule Dmhai.Agent.Police do
   end
   defp step_signal_batched?(_), do: false
 
-  # job_signal must be the only tool call in its turn.
-  defp job_signal_batched?(calls) when length(calls) > 1 do
-    Enum.any?(calls, fn c -> get_in(c, ["function", "name"]) == "job_signal" end)
+  # task_signal must be the only tool call in its turn.
+  defp task_signal_batched?(calls) when length(calls) > 1 do
+    Enum.any?(calls, fn c -> get_in(c, ["function", "name"]) == "task_signal" end)
   end
-  defp job_signal_batched?(_), do: false
+  defp task_signal_batched?(_), do: false
 
   # For each current call, check whether it is allowed to repeat (by name or by
   # status). STEP_BLOCKED and PLAN_REVISE retries are exempt because they
@@ -315,7 +315,7 @@ defmodule Dmhai.Agent.Police do
 
   # Write tools: path must be within workspace_dir (stricter).
   defp check_path_arg_write(args, ctx, workspace_dir) do
-    check_resolved_path(args, ctx, workspace_dir, "job workspace")
+    check_resolved_path(args, ctx, workspace_dir, "task workspace")
   end
 
   defp check_resolved_path(args, ctx, boundary, label) do
@@ -366,7 +366,7 @@ defmodule Dmhai.Agent.Police do
       not Dmhai.Util.Path.within?(expanded, workspace_dir)
     end)
 
-    if bad, do: "write operation targets '#{bad}' outside the job workspace (#{workspace_dir})"
+    if bad, do: "write operation targets '#{bad}' outside the task workspace (#{workspace_dir})"
   end
 
   defp check_deletion_scope(cmd, workspace_dir) do
@@ -374,7 +374,7 @@ defmodule Dmhai.Agent.Police do
       [] -> nil
       targets ->
         bad = Enum.find(targets, fn t -> not looks_inside_workspace?(t, workspace_dir) end)
-        if bad, do: "destructive command targets '#{bad}' outside the job workspace (#{workspace_dir})"
+        if bad, do: "destructive command targets '#{bad}' outside the task workspace (#{workspace_dir})"
     end
   end
 

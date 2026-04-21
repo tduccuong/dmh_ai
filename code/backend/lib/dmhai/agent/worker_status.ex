@@ -7,48 +7,48 @@ defmodule Dmhai.Agent.WorkerStatus do
   @moduledoc """
   DB helpers for the `worker_status` table — per-iteration progress
   rows written by the worker. The runtime scheduler polls this via a
-  per-job cursor stored on the jobs row (`last_reported_status_id`).
+  per-task cursor stored on the tasks row (`last_reported_status_id`).
 
   kinds:
     - 'thinking'    — model-provided reasoning text
     - 'tool_call'   — one row per tool call about to execute, content = "<name>(<args>)"
     - 'tool_result' — tool execution result (short preview)
-    - 'final'       — job_signal(JOB_DONE|JOB_BLOCKED) terminal row; also synthesised by runtime on failure
+    - 'final'       — task_signal(TASK_DONE|TASK_BLOCKED) terminal row; also synthesised by runtime on failure
     - 'error'       — runtime-synthesized error (crash / orphaned detection)
   """
 
   alias Dmhai.Repo
   import Ecto.Adapters.SQL, only: [query!: 3]
 
-  def append(job_id, worker_id, kind, content, signal_status \\ nil) do
+  def append(task_id, worker_id, kind, content, signal_status \\ nil) do
     now = System.os_time(:millisecond)
     content = truncate_content(content)
 
     query!(Repo, """
-    INSERT INTO worker_status (job_id, worker_id, kind, content, signal_status, ts)
+    INSERT INTO worker_status (task_id, worker_id, kind, content, signal_status, ts)
     VALUES (?, ?, ?, ?, ?, ?)
-    """, [job_id, worker_id, kind, content, signal_status, now])
+    """, [task_id, worker_id, kind, content, signal_status, now])
     :ok
   end
 
-  def fetch_since(job_id, after_id) do
+  def fetch_since(task_id, after_id) do
     r = query!(Repo, """
-    SELECT id, job_id, worker_id, kind, content, signal_status, ts
+    SELECT id, task_id, worker_id, kind, content, signal_status, ts
     FROM worker_status
-    WHERE job_id=? AND id > ?
+    WHERE task_id=? AND id > ?
     ORDER BY id ASC
-    """, [job_id, after_id || 0])
+    """, [task_id, after_id || 0])
 
     Enum.map(r.rows, &row_to_map/1)
   end
 
-  def latest_final(job_id) do
+  def latest_final(task_id) do
     r = query!(Repo, """
-    SELECT id, job_id, worker_id, kind, content, signal_status, ts
+    SELECT id, task_id, worker_id, kind, content, signal_status, ts
     FROM worker_status
-    WHERE job_id=? AND kind='final'
+    WHERE task_id=? AND kind='final'
     ORDER BY id DESC LIMIT 1
-    """, [job_id])
+    """, [task_id])
 
     case r.rows do
       [row] -> row_to_map(row)
@@ -56,13 +56,13 @@ defmodule Dmhai.Agent.WorkerStatus do
     end
   end
 
-  def list_recent(job_id, limit \\ 50) do
+  def list_recent(task_id, limit \\ 50) do
     r = query!(Repo, """
-    SELECT id, job_id, worker_id, kind, content, signal_status, ts
+    SELECT id, task_id, worker_id, kind, content, signal_status, ts
     FROM worker_status
-    WHERE job_id=?
+    WHERE task_id=?
     ORDER BY id DESC LIMIT ?
-    """, [job_id, limit])
+    """, [task_id, limit])
 
     r.rows |> Enum.map(&row_to_map/1) |> Enum.reverse()
   end
@@ -79,9 +79,9 @@ defmodule Dmhai.Agent.WorkerStatus do
   end
   defp truncate_content(other), do: inspect(other)
 
-  defp row_to_map([id, job_id, worker_id, kind, content, signal_status, ts]) do
+  defp row_to_map([id, task_id, worker_id, kind, content, signal_status, ts]) do
     %{
-      id: id, job_id: job_id, worker_id: worker_id,
+      id: id, task_id: task_id, worker_id: worker_id,
       kind: kind, content: content, signal_status: signal_status, ts: ts
     }
   end

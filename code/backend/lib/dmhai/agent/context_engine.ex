@@ -9,8 +9,10 @@ defmodule Dmhai.Agent.ContextEngine do
 
   Responsibilities
   ----------------
-  - Build the full message list for each LLM call:
-      [system] ++ [compaction prefix] ++ [recent history] ++ [relevant snippets] ++ [current msg]
+  - Build the full message list for each LLM call — two separate entry points:
+      build_confidant_messages/2  — Confidant pipeline (image/video descriptions, web context)
+      build_assistant_messages/2  — AssistantMaster pipeline (buffer context, language)
+    Both produce: [system] ++ [compaction prefix] ++ [history] ++ [snippets] ++ [current msg]
   - Decide when to compact (turn count or estimated token budget)
   - Run LLM-based compaction and persist the result to the session's `context` column
   - Retrieve keyword-relevant snippets from compacted (old) history
@@ -46,23 +48,22 @@ defmodule Dmhai.Agent.ContextEngine do
   # ─── Public API ───────────────────────────────────────────────────────────
 
   @doc """
-  Build the complete messages list to pass to the LLM.
+  Build the complete messages list for a Confidant LLM call.
 
   `session_data` — map with string keys loaded from the DB:
     %{"messages" => [...], "context" => %{"summary" => ..., "summary_up_to_index" => ...} | nil}
 
   opts:
-    - `:profile`   — user profile text (injected silently into the system prompt)
-    - `:has_video` — true when the current request carries video frames
+    - `:profile`            — user profile text (injected silently into the system prompt)
+    - `:has_video`          — true when the current request carries video frames
     - `:images`             — list of base64 strings for the current message
     - `:files`              — list of %{"name" => name, "content" => text} for the current message
     - `:image_descriptions` — list of %{name, description} from the image_descriptions table
     - `:video_descriptions` — list of %{name, description} from the video_descriptions table
-    - `:web_context`        — formatted web search results (Confidant pipeline)
-    - `:buffer_context`     — formatted master_buffer entries (Assistant pipeline)
+    - `:web_context`        — formatted web search results
   """
-  @spec build_messages(map(), keyword()) :: [map()]
-  def build_messages(session_data, opts \\ []) do
+  @spec build_confidant_messages(map(), keyword()) :: [map()]
+  def build_confidant_messages(session_data, opts \\ []) do
     profile            = Keyword.get(opts, :profile, "")
     has_video          = Keyword.get(opts, :has_video, false)
     images             = Keyword.get(opts, :images, [])
@@ -70,67 +71,57 @@ defmodule Dmhai.Agent.ContextEngine do
     image_descriptions = Keyword.get(opts, :image_descriptions, [])
     video_descriptions = Keyword.get(opts, :video_descriptions, [])
     web_context        = Keyword.get(opts, :web_context)
-    buffer_context     = Keyword.get(opts, :buffer_context)
-    mode               = Keyword.get(opts, :mode, "confidant")
-    language           = Keyword.get(opts, :language)
-
-    # Exclude archived messages (previous periodic-job cycles) — visible in FE
-    # but not relevant to the LLM's context.
-    messages = (session_data["messages"] || []) |> Enum.reject(&(&1["_archived"] == true))
-    ctx      = session_data["context"] || %{}
-    summary  = ctx["summary"]
-    cutoff   = ctx["summary_up_to_index"] || -1
 
     system_msg = %{role: "system",
-                   content: SystemPrompt.generate(
-                     mode:               mode,
+                   content: SystemPrompt.generate_confidant(
                      profile:            profile,
                      has_video:          has_video,
                      image_descriptions: image_descriptions,
-                     video_descriptions: video_descriptions,
-                     language:           language
+                     video_descriptions: video_descriptions
                    )}
 
-    # Messages after the compaction cutoff — sent in full to the LLM
-    recent = Enum.drop(messages, cutoff + 1)
+    {prefix, history_llm, relevant_msgs, last_msgs} =
+      build_core(session_data, images, files, web_context)
 
-    # Messages before the cutoff — only used for keyword retrieval
-    old    = Enum.take(messages, cutoff + 1)
+    [system_msg] ++ prefix ++ history_llm ++ relevant_msgs ++ last_msgs
+  end
 
-    # Retrieve relevant old snippets keyed on the current user message text
-    current_text    = last_user_content(recent)
-    relevant_msgs   = retrieve_relevant(old, current_text)
+  @doc """
+  Build the complete messages list for the AssistantMaster LLM call.
 
-    # Compaction prefix: present the summary as a user→assistant exchange so
-    # the model treats it as established context rather than a command.
-    prefix =
-      if summary do
-        [
-          %{role: "user",
-            content: "[Summary of our conversation so far]\n#{summary}"},
-          %{role: "assistant",
-            content: "Understood, I have the full context of our conversation."}
-        ]
-      else
-        []
-      end
+  `session_data` — map with string keys loaded from the DB:
+    %{"messages" => [...], "context" => %{"summary" => ..., "summary_up_to_index" => ...} | nil}
 
-    # Split recent history so we can inject relevant snippets just before the
-    # last (current) user message.
-    # Web context is merged INTO the last user message (replacing it), matching
-    # the original frontend behaviour where search results replaced the last message.
-    {history, last_msgs} =
-      case Enum.split(recent, -1) do
-        {h, [last]} -> {h, [build_current_msg(last, images, files, web_context)]}
-        {h, []}     -> {h, []}
-      end
+  opts:
+    - `:profile`        — user profile text (injected silently into the system prompt)
+    - `:has_video`      — true when the current request carries video frames
+    - `:images`         — list of base64 strings for the current message (for intent classification)
+    - `:files`          — list of %{"name" => name, "content" => text} for the current message
+    - `:buffer_context` — formatted master_buffer entries (active task updates)
+    - `:language`       — ISO 639-1 code detected from the user's message
+  """
+  @spec build_assistant_messages(map(), keyword()) :: [map()]
+  def build_assistant_messages(session_data, opts \\ []) do
+    profile        = Keyword.get(opts, :profile, "")
+    has_video      = Keyword.get(opts, :has_video, false)
+    images         = Keyword.get(opts, :images, [])
+    files          = Keyword.get(opts, :files, [])
+    buffer_context = Keyword.get(opts, :buffer_context)
+    language       = Keyword.get(opts, :language)
 
-    history_llm = Enum.map(history, &to_llm_msg/1)
+    system_msg = %{role: "system",
+                   content: SystemPrompt.generate_assistant(
+                     profile:   profile,
+                     has_video: has_video,
+                     language:  language
+                   )}
 
-    # Worker buffer (Assistant pipeline only) — injected as a context exchange.
+    {prefix, history_llm, relevant_msgs, last_msgs} =
+      build_core(session_data, images, files, nil)
+
     extra_context =
       if is_binary(buffer_context) and buffer_context != "" do
-        [%{role: "user", content: "[Worker agent updates]\n\n#{buffer_context}"},
+        [%{role: "user",      content: "[Worker agent updates]\n\n#{buffer_context}"},
          %{role: "assistant", content: "I've reviewed the worker updates and will incorporate them."}]
       else
         []
@@ -202,7 +193,8 @@ defmodule Dmhai.Agent.ContextEngine do
             }
           ]
 
-      case LLM.call(AgentSettings.compactor_model(), compaction_messages) do
+      trace = %{origin: "system", path: "ContextEngine.compact", role: "ContextCompactor", phase: "compact"}
+      case LLM.call(AgentSettings.compactor_model(), compaction_messages, trace: trace) do
         {:ok, summary} when is_binary(summary) and summary != "" ->
           new_ctx = %{
             "summary"              => summary,
@@ -226,6 +218,51 @@ defmodule Dmhai.Agent.ContextEngine do
   end
 
   # ─── Private ──────────────────────────────────────────────────────────────
+
+  # Shared message assembly used by both pipelines:
+  # summary prefix + history + keyword snippets + current message.
+  # web_context is nil for the Assistant path (no inline web search in master).
+  defp build_core(session_data, images, files, web_context) do
+    # Exclude archived messages (previous periodic-task cycles) — visible in FE
+    # but not relevant to the LLM's context.
+    messages = (session_data["messages"] || []) |> Enum.reject(&(&1["_archived"] == true))
+    ctx      = session_data["context"] || %{}
+    summary  = ctx["summary"]
+    cutoff   = ctx["summary_up_to_index"] || -1
+
+    # Messages after the compaction cutoff — sent in full to the LLM
+    recent = Enum.drop(messages, cutoff + 1)
+    # Messages before the cutoff — only used for keyword retrieval
+    old    = Enum.take(messages, cutoff + 1)
+
+    current_text  = last_user_content(recent)
+    relevant_msgs = retrieve_relevant(old, current_text)
+
+    # Compaction prefix: present the summary as a user→assistant exchange so
+    # the model treats it as established context rather than a command.
+    prefix =
+      if summary do
+        [
+          %{role: "user",      content: "[Summary of our conversation so far]\n#{summary}"},
+          %{role: "assistant", content: "Understood, I have the full context of our conversation."}
+        ]
+      else
+        []
+      end
+
+    # Split recent history so we can inject relevant snippets just before the
+    # last (current) user message. Web context is merged INTO the last user
+    # message (replacing it).
+    {history, last_msgs} =
+      case Enum.split(recent, -1) do
+        {h, [last]} -> {h, [build_current_msg(last, images, files, web_context)]}
+        {h, []}     -> {h, []}
+      end
+
+    history_llm = Enum.map(history, &to_llm_msg/1)
+
+    {prefix, history_llm, relevant_msgs, last_msgs}
+  end
 
   # Build the last (current) user message, injecting images, file content,
   # and optionally web search results.

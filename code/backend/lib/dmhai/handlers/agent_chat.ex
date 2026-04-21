@@ -14,8 +14,8 @@ defmodule Dmhai.Handlers.AgentChat do
     imageNames      — optional, list of filenames corresponding to each image
     files           — optional, list of %{"name", "content"} maps (extracted text)
     hasVideo        — optional bool, true when images are video frames
-    jobId           — optional, pre-allocated job_id (Assistant path with attachments)
-    attachmentNames — optional, list of filenames uploaded to the job workspace
+    taskId           — optional, pre-allocated task_id (Assistant path with attachments)
+    attachmentNames — optional, list of filenames uploaded to the task workspace
 
   Response: chunked NDJSON, same format as Ollama /api/chat stream.
   """
@@ -39,8 +39,8 @@ defmodule Dmhai.Handlers.AgentChat do
     image_names      = parse_string_list(d["imageNames"])
     files            = parse_files(d["files"])
     has_video        = d["hasVideo"] == true
-    job_id           = parse_job_id(d["jobId"])
-    # Sanitize names here so they match what post_job_attachment saves on disk.
+    task_id           = parse_task_id(d["taskId"])
+    # Sanitize names here so they match what post_task_attachment saves on disk.
     attachment_names =
       d["attachmentNames"]
       |> parse_string_list()
@@ -59,14 +59,14 @@ defmodule Dmhai.Handlers.AgentChat do
 
       true ->
         do_chat(conn, user.id, session_id, content, images, image_names, files, has_video,
-                job_id, attachment_names)
+                task_id, attachment_names)
     end
   end
 
   # ─── Private ──────────────────────────────────────────────────────────────
 
   defp do_chat(conn, user_id, session_id, content, images, image_names, files, has_video,
-               job_id, attachment_names) do
+               task_id, attachment_names) do
     conn =
       conn
       |> put_resp_content_type("application/x-ndjson")
@@ -79,7 +79,7 @@ defmodule Dmhai.Handlers.AgentChat do
       image_names:      image_names,
       files:            files,
       has_video:        has_video,
-      job_id:           job_id,
+      task_id:           task_id,
       attachment_names: attachment_names
     ]
 
@@ -98,8 +98,9 @@ defmodule Dmhai.Handlers.AgentChat do
             line = Jason.encode!(%{message: %{role: "assistant", thinking: token}, done: false})
             chunk(conn, line <> "\n")
 
-          {:done, _result} ->
-            line = Jason.encode!(%{message: %{role: "assistant", content: ""}, done: true})
+          {:done, result} ->
+            task_created = Map.get(result, :task_created, false)
+            line = Jason.encode!(%{message: %{role: "assistant", content: ""}, done: true, task_created: task_created})
             chunk(conn, line <> "\n")
 
           {:error, :busy} ->
@@ -132,18 +133,18 @@ defmodule Dmhai.Handlers.AgentChat do
     result.rows != []
   end
 
-  # Accept jobId only when it is a non-empty string that is not already in DB
+  # Accept taskId only when it is a non-empty string that is not already in DB
   # (guards against replay attacks or FE bugs causing duplicate PK crashes).
-  defp parse_job_id(raw) do
+  defp parse_task_id(raw) do
     with true <- is_binary(raw) and raw != "",
-         true <- Dmhai.Agent.Jobs.id_available?(raw) do
+         true <- Dmhai.Agent.Tasks.id_available?(raw) do
       raw
     else
       _ -> nil
     end
   end
 
-  # Match the server-side sanitization in post_job_attachment so names align.
+  # Match the server-side sanitization in post_task_attachment so names align.
   defp sanitize_filename(name) when is_binary(name),
     do: Regex.replace(~r/[^\w.\-]/, name, "_")
 

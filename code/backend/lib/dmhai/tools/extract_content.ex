@@ -38,7 +38,7 @@ defmodule Dmhai.Tools.ExtractContent do
 
   @impl true
   def description,
-    do: "Extract content from a job attachment. Images/video → description + embedded text; documents → parsed text."
+    do: "Extract content from a task attachment. Images/video → description + embedded text; documents → parsed text."
 
   @impl true
   def definition do
@@ -50,7 +50,7 @@ defmodule Dmhai.Tools.ExtractContent do
         properties: %{
           path: %{
             type: "string",
-            description: "Path to the uploaded file. Use 'workspace/<filename>' for job attachments."
+            description: "Path to the uploaded file. Use 'workspace/<filename>' for task attachments."
           }
         },
         required: ["path"]
@@ -89,8 +89,8 @@ defmodule Dmhai.Tools.ExtractContent do
 
   defp describe_base64_image(b64) do
     messages = [%{role: "user", content: image_prompt(), images: [b64]}]
-
-    case LLM.call(AgentSettings.image_describer_model(), messages) do
+    trace = %{origin: "assistant", path: "ExtractContent.describe_image", role: "ImageDescriber", phase: "describe"}
+    case LLM.call(AgentSettings.image_describer_model(), messages, trace: trace) do
       {:ok, result} when is_binary(result) and result != "" ->
         {:ok, result}
 
@@ -102,8 +102,8 @@ defmodule Dmhai.Tools.ExtractContent do
 
   defp describe_base64_frames(frames) do
     messages = [%{role: "user", content: video_prompt(), images: frames}]
-
-    case LLM.call(AgentSettings.video_describer_model(), messages) do
+    trace = %{origin: "assistant", path: "ExtractContent.describe_video", role: "VideoDescriber", phase: "describe"}
+    case LLM.call(AgentSettings.video_describer_model(), messages, trace: trace) do
       {:ok, result} when is_binary(result) and result != "" ->
         {:ok, result}
 
@@ -118,8 +118,8 @@ defmodule Dmhai.Tools.ExtractContent do
   defp extract_image(abs) do
     with {:ok, b64} <- scale_and_encode(abs) do
       messages = [%{role: "user", content: image_prompt(), images: [b64]}]
-
-      case LLM.call(AgentSettings.image_describer_model(), messages) do
+      trace = %{origin: "assistant", path: "ExtractContent.extract_image", role: "ImageDescriber", phase: "describe"}
+      case LLM.call(AgentSettings.image_describer_model(), messages, trace: trace) do
         {:ok, result} when is_binary(result) and result != "" ->
           {:ok, result}
 
@@ -173,8 +173,8 @@ defmodule Dmhai.Tools.ExtractContent do
   defp extract_video(abs) do
     with {:ok, frames} <- extract_frames(abs) do
       messages = [%{role: "user", content: video_prompt(), images: frames}]
-
-      case LLM.call(AgentSettings.video_describer_model(), messages) do
+      trace = %{origin: "assistant", path: "ExtractContent.extract_video", role: "VideoDescriber", phase: "describe"}
+      case LLM.call(AgentSettings.video_describer_model(), messages, trace: trace) do
         {:ok, result} when is_binary(result) and result != "" ->
           {:ok, result}
 

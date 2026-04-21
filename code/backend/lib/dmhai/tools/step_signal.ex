@@ -33,7 +33,7 @@ defmodule Dmhai.Tools.StepSignal do
 
   @impl true
   def execute(%{"status" => status} = args, ctx) do
-    job_id    = Map.get(ctx, :job_id)
+    task_id    = Map.get(ctx, :task_id)
     worker_id = Map.get(ctx, :worker_id, "unknown")
     status    = String.upcase(to_string(status))
 
@@ -54,8 +54,8 @@ defmodule Dmhai.Tools.StepSignal do
       status == "PLAN_REVISE" and args["reason"] in [nil, ""] ->
         {:error, "step_signal(PLAN_REVISE) requires a non-empty 'reason' argument"}
 
-      is_nil(job_id) ->
-        {:error, "step_signal called without job_id in context — runtime misconfiguration"}
+      is_nil(task_id) ->
+        {:error, "step_signal called without task_id in context — runtime misconfiguration"}
 
       true ->
         {kind, content} =
@@ -67,8 +67,8 @@ defmodule Dmhai.Tools.StepSignal do
               {"plan_revision", payload}
           end
 
-        WorkerStatus.append(job_id, worker_id, kind, content, status)
-        Logger.info("[StepSignal] job=#{job_id} status=#{status} id=#{args["id"] || "—"}")
+        WorkerStatus.append(task_id, worker_id, kind, content, status)
+        Logger.info("[StepSignal] task=#{task_id} status=#{status} id=#{args["id"] || "—"}")
 
         msg =
           case status do

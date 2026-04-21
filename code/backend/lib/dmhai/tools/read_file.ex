@@ -16,7 +16,7 @@ defmodule Dmhai.Tools.ReadFile do
   @impl true
   def description,
     do:
-      "Read a file from the job workspace. Use 'data/<file>' for uploads; content capped at 100 KB."
+      "Read a file from the task workspace. Use 'data/<file>' for uploads; content capped at 100 KB."
 
   @impl true
   def definition do
@@ -28,7 +28,7 @@ defmodule Dmhai.Tools.ReadFile do
         properties: %{
           path: %{
             type: "string",
-            description: "File path. Relative paths resolve to the job workspace; use 'data/<file>' for uploads."
+            description: "File path. Relative paths resolve to the task workspace; use 'data/<file>' for uploads."
           }
         },
         required: ["path"]

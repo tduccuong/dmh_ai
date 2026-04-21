@@ -6,7 +6,7 @@
 defmodule Dmhai.Agent.UserAgentMessages do
   @moduledoc """
   Shared helper for appending an assistant/user message to a session's
-  `messages` JSON column. Extracted so background processes (JobRuntime,
+  `messages` JSON column. Extracted so background processes (TaskRuntime,
   periodic completion flows) can write session messages without going
   through the per-user GenServer.
   """
@@ -40,13 +40,13 @@ defmodule Dmhai.Agent.UserAgentMessages do
     end
   end
 
-  # Mark all messages for a given job_id as _archived: true instead of deleting them.
+  # Mark all messages for a given task_id as _archived: true instead of deleting them.
   # Archived messages are:
   #   - still visible in the FE (full cycle history preserved)
   #   - filtered out by context_engine before LLM injection (keeps LLM context clean)
   # Called before each new periodic cycle so the previous cycle's messages don't
   # pollute the assistant's context on the next user interaction.
-  def archive_by_job_id(session_id, user_id, job_id) do
+  def archive_by_task_id(session_id, user_id, task_id) do
     try do
       result = query!(Repo, "SELECT messages FROM sessions WHERE id=? AND user_id=?",
                       [session_id, user_id])
@@ -55,7 +55,7 @@ defmodule Dmhai.Agent.UserAgentMessages do
         [[msgs_json]] ->
           msgs = Jason.decode!(msgs_json || "[]")
           updated = Enum.map(msgs, fn m ->
-            if m["job_id"] == job_id, do: Map.put(m, "_archived", true), else: m
+            if m["task_id"] == task_id, do: Map.put(m, "_archived", true), else: m
           end)
           if updated != msgs do
             now = System.os_time(:millisecond)
@@ -69,7 +69,7 @@ defmodule Dmhai.Agent.UserAgentMessages do
       end
     rescue
       e ->
-        Logger.error("[UserAgentMessages] archive_by_job_id failed: #{Exception.message(e)}")
+        Logger.error("[UserAgentMessages] archive_by_task_id failed: #{Exception.message(e)}")
         :ok
     end
   end

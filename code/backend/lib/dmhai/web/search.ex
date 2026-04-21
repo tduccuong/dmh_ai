@@ -114,7 +114,8 @@ defmodule Dmhai.Web.Search do
     model  = AgentSettings.web_search_model()
     prompt = build_prompt(content, recent_msgs, pipeline)
 
-    case LLM.call(model, [%{role: "user", content: prompt}], options: %{temperature: 0}) do
+    trace = %{origin: "system", path: "Web.Search.generate_queries", role: "WebQueryPlanner", phase: "plan"}
+    case LLM.call(model, [%{role: "user", content: prompt}], options: %{temperature: 0}, trace: trace) do
       {:ok, response} ->
         parse_response(response, pipeline, content)
 

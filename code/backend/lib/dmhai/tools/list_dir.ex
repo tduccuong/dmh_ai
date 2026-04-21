@@ -14,7 +14,7 @@ defmodule Dmhai.Tools.ListDir do
   @impl true
   def description,
     do:
-      "List files and subdirectories in the session sandbox. Default is the job workspace. " <>
+      "List files and subdirectories in the session sandbox. Default is the task workspace. " <>
       "Pass 'data' to list user uploads, or any relative/absolute path under the session root."
 
   @impl true
@@ -27,7 +27,7 @@ defmodule Dmhai.Tools.ListDir do
         properties: %{
           path: %{
             type: "string",
-            description: "Directory to list. Defaults to the job workspace."
+            description: "Directory to list. Defaults to the task workspace."
           }
         },
         required: []

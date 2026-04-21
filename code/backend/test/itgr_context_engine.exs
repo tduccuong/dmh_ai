@@ -1,4 +1,4 @@
-# Integration tests: ContextEngine.build_messages and should_compact?.
+# Integration tests: ContextEngine.build_confidant_messages, build_assistant_messages, should_compact?.
 # Run with: MIX_ENV=test mix test test/itgr_context_engine.exs
 
 defmodule Itgr.ContextEngine do
@@ -9,8 +9,7 @@ defmodule Itgr.ContextEngine do
   defp session(opts) do
     %{
       "messages" => Keyword.get(opts, :messages, []),
-      "context"  => Keyword.get(opts, :context, nil),
-      "mode"     => Keyword.get(opts, :mode, "confidant")
+      "context"  => Keyword.get(opts, :context, nil)
     }
   end
 
@@ -24,24 +23,24 @@ defmodule Itgr.ContextEngine do
     end)
   end
 
-  # ─── build_messages structure ─────────────────────────────────────────────
+  # ─── build_confidant_messages structure ───────────────────────────────────
 
   test "system message is always first" do
     sd = session(messages: [user_msg("hi")])
-    [first | _] = ContextEngine.build_messages(sd)
+    [first | _] = ContextEngine.build_confidant_messages(sd)
     assert first.role == "system"
   end
 
   test "no context → no compaction prefix" do
     sd = session(messages: [user_msg("hi")])
-    msgs = ContextEngine.build_messages(sd)
+    msgs = ContextEngine.build_confidant_messages(sd)
     refute find_msg(msgs, "user", &String.starts_with?(&1, "[Summary"))
   end
 
   test "with context summary → compaction prefix injected after system" do
     ctx = %{"summary" => "Prior convo summary", "summary_up_to_index" => -1}
     sd  = session(messages: [user_msg("new message")], context: ctx)
-    msgs = ContextEngine.build_messages(sd)
+    msgs = ContextEngine.build_confidant_messages(sd)
 
     summary_msg = find_msg(msgs, "user", &String.starts_with?(&1, "[Summary of our conversation so far]"))
     assert summary_msg != nil
@@ -62,7 +61,7 @@ defmodule Itgr.ContextEngine do
     ctx = %{"summary" => "summary of old", "summary_up_to_index" => 0}
     sd  = %{"messages" => [old, new], "context" => ctx}
 
-    msgs = ContextEngine.build_messages(sd)
+    msgs = ContextEngine.build_confidant_messages(sd)
 
     # "recent question" should appear as the last message (build_current_msg converts it)
     assert find_msg(msgs, "user", &(&1 == "recent question")) != nil
@@ -79,24 +78,9 @@ defmodule Itgr.ContextEngine do
     refute "very old question" in history_contents
   end
 
-  test "buffer_context injects worker update exchange" do
-    sd = session(messages: [user_msg("check status")])
-    msgs = ContextEngine.build_messages(sd, buffer_context: "Worker finished task X")
-
-    buffer_msg = find_msg(msgs, "user", &String.starts_with?(&1, "[Worker agent updates]"))
-    assert buffer_msg != nil
-    assert String.contains?(buffer_msg.content, "Worker finished task X")
-  end
-
-  test "no buffer_context → no worker update exchange" do
-    sd = session(messages: [user_msg("hello")])
-    msgs = ContextEngine.build_messages(sd, buffer_context: nil)
-    refute find_msg(msgs, "user", &String.starts_with?(&1, "[Worker agent updates]"))
-  end
-
   test "web_context frames last user message with search results" do
     sd = session(messages: [user_msg("latest news")])
-    msgs = ContextEngine.build_messages(sd, web_context: "Search result: headline A")
+    msgs = ContextEngine.build_confidant_messages(sd, web_context: "Search result: headline A")
 
     last_user = msgs |> Enum.filter(&(&1.role == "user")) |> List.last()
     assert String.contains?(last_user.content, "User request: latest news")
@@ -106,7 +90,7 @@ defmodule Itgr.ContextEngine do
   test "files are appended to the last user message" do
     sd = session(messages: [user_msg("review this")])
     files = [%{"name" => "foo.ex", "content" => "def hello, do: :world"}]
-    msgs = ContextEngine.build_messages(sd, files: files)
+    msgs = ContextEngine.build_confidant_messages(sd, files: files)
 
     last_user = msgs |> Enum.filter(&(&1.role == "user")) |> List.last()
     assert String.contains?(last_user.content, "foo.ex")
@@ -115,16 +99,39 @@ defmodule Itgr.ContextEngine do
 
   test "empty message list produces only the system message" do
     sd = session(messages: [])
-    msgs = ContextEngine.build_messages(sd)
+    msgs = ContextEngine.build_confidant_messages(sd)
     assert length(msgs) == 1
     assert hd(msgs).role == "system"
   end
 
   test "images are attached to the last user message" do
     sd = session(messages: [user_msg("describe this")])
-    msgs = ContextEngine.build_messages(sd, images: ["base64abc"])
+    msgs = ContextEngine.build_confidant_messages(sd, images: ["base64abc"])
     last_user = msgs |> Enum.filter(&(&1.role == "user")) |> List.last()
     assert Map.get(last_user, :images) == ["base64abc"]
+  end
+
+  # ─── build_assistant_messages structure ───────────────────────────────────
+
+  test "assistant: buffer_context injects worker update exchange" do
+    sd = session(messages: [user_msg("check status")])
+    msgs = ContextEngine.build_assistant_messages(sd, buffer_context: "Worker finished task X")
+
+    buffer_msg = find_msg(msgs, "user", &String.starts_with?(&1, "[Worker agent updates]"))
+    assert buffer_msg != nil
+    assert String.contains?(buffer_msg.content, "Worker finished task X")
+  end
+
+  test "assistant: nil buffer_context → no worker update exchange" do
+    sd = session(messages: [user_msg("hello")])
+    msgs = ContextEngine.build_assistant_messages(sd, buffer_context: nil)
+    refute find_msg(msgs, "user", &String.starts_with?(&1, "[Worker agent updates]"))
+  end
+
+  test "assistant: system message is always first" do
+    sd = session(messages: [user_msg("do something")])
+    [first | _] = ContextEngine.build_assistant_messages(sd)
+    assert first.role == "system"
   end
 
   # ─── keyword retrieval ────────────────────────────────────────────────────
@@ -140,7 +147,7 @@ defmodule Itgr.ContextEngine do
     ctx = %{"summary" => "prior", "summary_up_to_index" => 1}
     sd  = %{"messages" => old ++ [current], "context" => ctx}
 
-    msgs = ContextEngine.build_messages(sd)
+    msgs = ContextEngine.build_confidant_messages(sd)
 
     snippet_msg = find_msg(msgs, "user", &String.starts_with?(&1, "[Potentially relevant excerpts"))
     assert snippet_msg != nil
@@ -157,7 +164,7 @@ defmodule Itgr.ContextEngine do
     ctx = %{"summary" => "prior", "summary_up_to_index" => 1}
     sd  = %{"messages" => old ++ [current], "context" => ctx}
 
-    msgs = ContextEngine.build_messages(sd)
+    msgs = ContextEngine.build_confidant_messages(sd)
 
     # Pasta has no overlap with quantum computing (0.0 < 0.25 min_relevance)
     refute find_msg(msgs, "user", &String.starts_with?(&1, "[Potentially relevant excerpts"))

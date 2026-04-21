@@ -14,7 +14,7 @@ defmodule Dmhai.Tools.WriteFile do
   @impl true
   def description,
     do:
-      "Write a file in the job workspace. Creates parent dirs. " <>
+      "Write a file in the task workspace. Creates parent dirs. " <>
       "Use 'data/<file>' for the upload directory. Paths escaping the session root are rejected."
 
   @impl true
@@ -26,7 +26,7 @@ defmodule Dmhai.Tools.WriteFile do
         type: "object",
         properties: %{
           path:    %{type: "string",
-                     description: "Filename or relative path. Defaults to the job workspace."},
+                     description: "Filename or relative path. Defaults to the task workspace."},
           content: %{type: "string", description: "Text content to write."}
         },
         required: ["path", "content"]

@@ -264,15 +264,15 @@ defmodule Dmhai.Router do
     end
   end
 
-  get "/reserve-job-id" do
+  get "/reserve-task-id" do
     with {:ok, conn, user} <- check_auth(conn) do
-      Data.get_reserved_job_id(conn, user)
+      Data.get_reserved_task_id(conn, user)
     end
   end
 
-  post "/upload-job-attachment" do
+  post "/upload-task-attachment" do
     with {:ok, conn, user} <- check_auth(conn) do
-      Data.post_job_attachment(conn, user)
+      Data.post_task_attachment(conn, user)
     end
   end
 

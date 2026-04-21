@@ -447,7 +447,7 @@ const NotificationPoller = {
 
         if (isProgress) {
             // Progress status update — show as stacked status phrase, don't reload session
-            if (isCurrentSession) UIManager.appendJobStatusUpdate(entry.content);
+            if (isCurrentSession) UIManager.appendTaskStatusUpdate(entry.content);
             // No toast for other-session progress — too noisy
         } else {
             // Session-updated sentinel — reload session, clear status area
@@ -455,7 +455,7 @@ const NotificationPoller = {
                 SessionStore.getSession(entry.session_id).then(function(session) {
                     if (session) {
                         UIManager.currentSession = session;
-                        UIManager.clearJobStatusArea();
+                        UIManager.clearTaskStatusArea();
                         UIManager.renderChat();
                     }
                 });

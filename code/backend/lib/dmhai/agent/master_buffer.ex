@@ -5,7 +5,7 @@
 
 defmodule Dmhai.Agent.MasterBuffer do
   @moduledoc """
-  Notification bus used by JobRuntime to ping the frontend polling loop.
+  Notification bus used by TaskRuntime to ping the frontend polling loop.
 
   Two notification kinds:
   - Sentinel (append_notification/3): content="", signals the FE to reload the session.

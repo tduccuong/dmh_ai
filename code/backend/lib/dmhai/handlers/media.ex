@@ -53,7 +53,8 @@ defmodule Dmhai.Handlers.Media do
         file_id  = :crypto.strong_rand_bytes(8) |> Base.url_encode64(padding: false)
         messages = [%{role: "user", content: video_prompt(), images: frames}]
 
-        case LLM.call(AgentSettings.video_describer_model(), messages) do
+        trace = %{origin: "system", path: "Handlers.Media.describe_video", role: "VideoDescriber", phase: "describe"}
+        case LLM.call(AgentSettings.video_describer_model(), messages, trace: trace) do
           {:ok, desc} when is_binary(desc) and desc != "" ->
             store_video_description(session_id, file_id, name, desc)
             Logger.info("[Media] video description stored session=#{session_id} name=#{name}")
@@ -85,7 +86,8 @@ defmodule Dmhai.Handlers.Media do
         file_id  = :crypto.strong_rand_bytes(8) |> Base.url_encode64(padding: false)
         messages = [%{role: "user", content: image_prompt(), images: [image]}]
 
-        case LLM.call(AgentSettings.image_describer_model(), messages) do
+        trace = %{origin: "system", path: "Handlers.Media.describe_image", role: "ImageDescriber", phase: "describe"}
+        case LLM.call(AgentSettings.image_describer_model(), messages, trace: trace) do
           {:ok, desc} when is_binary(desc) and desc != "" ->
             store_image_description(session_id, file_id, name, desc)
             Logger.info("[Media] image description stored session=#{session_id} name=#{name}")

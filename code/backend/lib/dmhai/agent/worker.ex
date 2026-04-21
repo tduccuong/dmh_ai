@@ -5,16 +5,16 @@
 
 defmodule Dmhai.Agent.Worker do
   @moduledoc """
-  Agentic tool-calling loop for ONE-OFF job execution.
+  Agentic tool-calling loop for ONE-OFF task execution.
 
   The worker is fully one-off. Periodicity is the runtime scheduler's
   concern — the scheduler re-spawns a fresh worker for each cycle. The
-  worker never knows whether its parent job is periodic.
+  worker never knows whether its parent task is periodic.
 
-  PROTOCOL contract: every job MUST end with a call to
-  `job_signal(status, reason?)`. The job_signal tool writes a
+  PROTOCOL contract: every task MUST end with a call to
+  `task_signal(status, reason?)`. The task_signal tool writes a
   `kind='final'` row to worker_status; the runtime picks that up as
-  the job's terminal state.
+  the task's terminal state.
 
   Loop:
     1. Drain any {:subtask_result, output} messages from the mailbox
@@ -28,18 +28,18 @@ defmodule Dmhai.Agent.Worker do
     5. Call LLM with effective_messages and effective_tools.
     6. tool_calls → write worker_status rows (tool_call + tool_result),
        execute tools, then dispatch on any signal in the batch:
-       - job_signal           → exit loop (terminal).
+       - task_signal           → exit loop (terminal).
        - step_signal STEP_DONE → advance current_step, loop.
        - step_signal STEP_BLOCKED → retry or force BLOCKED after max retries.
        - step_signal PLAN_REVISE → reset plan_approved, inject message, loop.
        - no signal            → loop.
-    7. Text response → Police nudges the model to call job_signal; after
+    7. Text response → Police nudges the model to call task_signal; after
        @max_consecutive_rejections the runtime synthesises BLOCKED.
 
-  The ctx map MUST contain :job_id. All worker_status rows are keyed by it.
+  The ctx map MUST contain :task_id. All worker_status rows are keyed by it.
   """
 
-  alias Dmhai.Agent.{AgentSettings, LLM, LogTrace, Police, Prompts, TokenTracker, WorkerStatus}
+  alias Dmhai.Agent.{AgentSettings, LLM, Police, Prompts, TokenTracker, WorkerStatus}
   alias Dmhai.Tools.Registry, as: ToolRegistry
   require Logger
 
@@ -75,8 +75,8 @@ defmodule Dmhai.Agent.Worker do
   # ─── Public API ────────────────────────────────────────────────────────────
 
   @doc """
-  Start a fresh worker for a job.
-  `ctx` MUST contain: user_id, session_id, worker_id, job_id, task, agent_pid (optional).
+  Start a fresh worker for a task.
+  `ctx` MUST contain: user_id, session_id, worker_id, task_id, task, agent_pid (optional).
   Returns {:ok, {:signal, status, payload}} | {:error, reason}.
   """
   @spec run(String.t(), map()) ::
@@ -107,22 +107,21 @@ defmodule Dmhai.Agent.Worker do
       |> Map.put_new(:step_retries, %{})
 
     worker_id = Map.get(ctx, :worker_id, "unknown")
-    job_id    = Map.get(ctx, :job_id)
+    task_id    = Map.get(ctx, :task_id)
 
-    if is_nil(job_id) do
-      Logger.error("[Worker] missing :job_id in ctx — refusing to run")
+    if is_nil(task_id) do
+      Logger.error("[Worker] missing :task_id in ctx — refusing to run")
       {:error, :missing_job_id}
     else
-      Logger.info("[Worker] starting model=#{model} job=#{job_id} worker=#{worker_id}")
-      LogTrace.init_log(ctx)
+      Logger.info("[Worker] starting model=#{model} task=#{task_id} worker=#{worker_id}")
       try do
         loop(messages, tools, model, ctx)
       rescue
         e ->
           lang = Map.get(context, :language, "en")
           msg  = Dmhai.I18n.t("internal_error", lang)
-          Logger.error("[Worker] unhandled exception job=#{job_id}: #{Exception.message(e)}")
-          WorkerStatus.append(job_id, worker_id, "final", msg, "BLOCKED")
+          Logger.error("[Worker] unhandled exception task=#{task_id}: #{Exception.message(e)}")
+          WorkerStatus.append(task_id, worker_id, "final", msg, "BLOCKED")
           {:error, :internal_exception}
       end
     end
@@ -144,14 +143,14 @@ defmodule Dmhai.Agent.Worker do
       {:error, :max_iter_without_signal}
     else
       worker_id = Map.get(ctx, :worker_id, "unknown")
-      job_id    = Map.get(ctx, :job_id)
+      task_id    = Map.get(ctx, :task_id)
       description = Map.get(ctx, :description, "")
 
       on_tokens = fn rx, tx ->
-        TokenTracker.add_worker(ctx.session_id, ctx.user_id, worker_id, job_id, description, rx, tx)
+        TokenTracker.add_worker(ctx.session_id, ctx.user_id, worker_id, task_id, description, rx, tx)
       end
 
-      Dmhai.SysLog.log("[WORKER] iter=#{iter} id=#{worker_id} job=#{job_id} msgs=#{length(messages)}\n  #{log_worker_messages(messages)}")
+      Dmhai.SysLog.log("[WORKER] iter=#{iter} id=#{worker_id} task=#{task_id} msgs=#{length(messages)}\n  #{log_worker_messages(messages)}")
 
       # Before the first plan is approved, offer only the plan tool so the model
       # cannot skip planning. Once approved, adaptively select tools each turn
@@ -176,9 +175,8 @@ defmodule Dmhai.Agent.Worker do
         |> inject_rolling_summary(ctx)
         |> List.update_at(0, fn _ -> %{role: "system", content: turn_prompt} end)
 
-      LogTrace.trace_call(ctx, iter, effective_messages, effective_tools)
-      result = LLM.call(model, effective_messages, tools: effective_tools, on_tokens: on_tokens)
-      LogTrace.trace_response(ctx, iter, result)
+      trace  = %{origin: "assistant", path: "Worker.loop", role: "WorkerAgent", phase: worker_phase(ctx, iter)}
+      result = LLM.call(model, effective_messages, tools: effective_tools, on_tokens: on_tokens, trace: trace)
 
       case result do
         {:ok, {:tool_calls, calls}} ->
@@ -207,7 +205,7 @@ defmodule Dmhai.Agent.Worker do
 
   defp handle_tool_calls(calls, messages, tools, model, ctx, iter) do
     worker_id = Map.get(ctx, :worker_id, "unknown")
-    job_id    = Map.get(ctx, :job_id)
+    task_id    = Map.get(ctx, :task_id)
 
     call_names = Enum.map_join(calls, ", ", fn c -> get_in(c, ["function", "name"]) || "?" end)
     Logger.info("[Worker] executing #{length(calls)} tool(s) iter=#{iter}: #{call_names}")
@@ -223,7 +221,7 @@ defmodule Dmhai.Agent.Worker do
           name = get_in(call, ["function", "name"]) || ""
           args = get_in(call, ["function", "arguments"]) || %{}
           args_preview = Jason.encode!(args) |> String.slice(0, 600)
-          WorkerStatus.append(job_id, worker_id, "tool_call", "#{name}(#{args_preview})")
+          WorkerStatus.append(task_id, worker_id, "tool_call", "#{name}(#{args_preview})")
         end)
 
         assistant_msg = %{role: "assistant", content: "", tool_calls: calls}
@@ -264,7 +262,7 @@ defmodule Dmhai.Agent.Worker do
 
         if plan_error_count >= @max_plan_errors do
           Logger.error("[Worker] plan failed #{plan_error_count} times in a row — forcing BLOCKED")
-          {:ok, {:signal, "JOB_BLOCKED",
+          {:ok, {:signal, "TASK_BLOCKED",
             "Plan submission failed #{plan_error_count} consecutive times. " <>
             "The model could not produce a valid plan."}}
         else
@@ -295,7 +293,7 @@ defmodule Dmhai.Agent.Worker do
         # loops where the model retries broken calls indefinitely (e.g. wrong param
         # name). Signal/plan calls are excluded — only run_script, web_search etc.
         # Reset on plan approval (fresh start) or when any exec tool succeeds.
-        signal_names = MapSet.new(["plan", "job_signal", "step_signal"])
+        signal_names = MapSet.new(["plan", "task_signal", "step_signal"])
         exec_zipped  = Enum.reject(zipped, fn {c, _} ->
           MapSet.member?(signal_names, get_in(c, ["function", "name"]) || "")
         end)
@@ -314,7 +312,7 @@ defmodule Dmhai.Agent.Worker do
 
         cond do
           exec_error_streak >= nudge_threshold and not nudge_sent ->
-            Logger.warning("[Worker] #{exec_error_streak} consecutive exec errors — nudging job=#{job_id}")
+            Logger.warning("[Worker] #{exec_error_streak} consecutive exec errors — nudging task=#{task_id}")
             nudge_msg = %{role: "user", content: exec_error_nudge_msg()}
             nudged_ctx =
               ctx
@@ -328,10 +326,10 @@ defmodule Dmhai.Agent.Worker do
             loop(new_messages ++ [nudge_msg], tools, model, nudged_ctx)
 
           exec_error_streak >= nudge_threshold ->
-            Logger.error("[Worker] exec errors persist after nudge — requesting restart job=#{job_id}")
+            Logger.error("[Worker] exec errors persist after nudge — requesting restart task=#{task_id}")
             reason = "Worker failed #{exec_error_streak} consecutive times after warning."
-            emit_synthetic_final(ctx, "JOB_RESTART", reason)
-            {:ok, {:signal, "JOB_RESTART", reason}}
+            emit_synthetic_final(ctx, "TASK_RESTART", reason)
+            {:ok, {:signal, "TASK_RESTART", reason}}
 
           true ->
             new_ctx =
@@ -348,7 +346,7 @@ defmodule Dmhai.Agent.Worker do
 
             case signal_result do
               {:terminate, status, payload} ->
-                Logger.info("[Worker] job_signal received status=#{status} — exiting loop")
+                Logger.info("[Worker] task_signal received status=#{status} — exiting loop")
                 {:ok, {:signal, status, payload}}
 
               {:step, "STEP_DONE", step_args} ->
@@ -371,7 +369,7 @@ defmodule Dmhai.Agent.Worker do
   # Execute each tool call sequentially.
   # Returns {tool_result_messages, signal_or_nil, error_msgs}.
   # signal_or_nil is one of:
-  #   {:terminate, status, payload} — job_signal succeeded; loop exits.
+  #   {:terminate, status, payload} — task_signal succeeded; loop exits.
   #   {:step, status, args}         — step_signal succeeded; loop dispatches.
   #   nil                           — no signal in this batch.
   # error_msgs is a MapSet of tool result message maps whose tool returned
@@ -379,7 +377,7 @@ defmodule Dmhai.Agent.Worker do
   # stubbing — identified by Elixir value equality, no tool_call_id needed.
   defp execute_tools(calls, ctx) do
     worker_id = Map.get(ctx, :worker_id, "unknown")
-    job_id    = Map.get(ctx, :job_id)
+    task_id    = Map.get(ctx, :task_id)
 
     Enum.reduce(calls, {[], nil, MapSet.new()}, fn call, {acc_msgs, signal_acc, err_msgs} ->
       name         = get_in(call, ["function", "name"]) || ""
@@ -398,13 +396,13 @@ defmodule Dmhai.Agent.Worker do
           {:error, reason} -> "Error: #{reason}"
         end
 
-      WorkerStatus.append(job_id, worker_id, "tool_result", "#{name} → #{String.slice(content, 0, 300)}")
+      WorkerStatus.append(task_id, worker_id, "tool_result", "#{name} → #{String.slice(content, 0, 300)}")
 
       # Only treat signal tools as special if they actually SUCCEEDED.
       # A failed call is a normal tool error — model sees it and retries.
       new_signal =
         cond do
-          name == "job_signal" and match?({:ok, _}, exec_result) ->
+          name == "task_signal" and match?({:ok, _}, exec_result) ->
             status  = String.upcase(to_string(args["status"] || ""))
             payload = args["result"] || args["reason"] || ""
             {:terminate, status, payload}
@@ -463,9 +461,9 @@ defmodule Dmhai.Agent.Worker do
 
   defp protocol_nudge_msg(ctx) do
     if Map.get(ctx, :plan_approved, false) do
-      "PROTOCOL VIOLATION: You returned plain text instead of calling job_signal. " <>
-        "End your work by calling job_signal(status: \"JOB_DONE\", result: \"...\") " <>
-        "or job_signal(status: \"JOB_BLOCKED\", reason: \"...\"). Call job_signal now — do not repeat your text."
+      "PROTOCOL VIOLATION: You returned plain text instead of calling task_signal. " <>
+        "End your work by calling task_signal(status: \"TASK_DONE\", result: \"...\") " <>
+        "or task_signal(status: \"TASK_BLOCKED\", reason: \"...\"). Call task_signal now — do not repeat your text."
     else
       "PROTOCOL VIOLATION: You returned plain text instead of calling plan(). " <>
         "You must call plan(steps: [...], rationale: \"...\") to submit your plan. " <>
@@ -476,7 +474,7 @@ defmodule Dmhai.Agent.Worker do
   defp exec_error_nudge_msg do
     "WARNING: You have failed #{AgentSettings.exec_error_streak_nudge()} consecutive tool calls in a row. " <>
       "Re-evaluate your entire approach — your current strategy is not working. " <>
-      "Try a fundamentally different method. If you continue to fail, the job will be restarted."
+      "Try a fundamentally different method. If you continue to fail, the task will be restarted."
   end
 
   # Shared rejection handler: inject Police's rejection message + increment counters.
@@ -530,7 +528,7 @@ defmodule Dmhai.Agent.Worker do
 
   # Advance to next step. The runtime's current_step is the source of truth —
   # the model's reported id is checked for logging but never drives advancement.
-  # If model called STEP_DONE on the last step (should have called job_signal
+  # If model called STEP_DONE on the last step (should have called task_signal
   # directly per the prompt), nudge it to compile the final report.
   defp handle_step_done(step_args, messages, tools, model, ctx) do
     plan_steps   = Map.get(ctx, :plan_steps, [])
@@ -543,11 +541,11 @@ defmodule Dmhai.Agent.Worker do
     end
 
     if is_integer(last_step_id) and current_step == last_step_id do
-      Logger.info("[Worker] step_signal(STEP_DONE) on last step #{current_step} — nudging to call job_signal with result")
+      Logger.info("[Worker] step_signal(STEP_DONE) on last step #{current_step} — nudging to call task_signal with result")
       nudge = %{
         role: "user",
         content: "All steps are now complete. Compile your final deliverable and call " <>
-                 "job_signal(status: \"JOB_DONE\", result: \"<your full report/answer>\") now. " <>
+                 "task_signal(status: \"TASK_DONE\", result: \"<your full report/answer>\") now. " <>
                  "Do not call step_signal again."
       }
       loop(messages ++ [nudge], tools, model, Map.put(ctx, :current_step, current_step + 1))
@@ -625,16 +623,16 @@ defmodule Dmhai.Agent.Worker do
 
   # ── synthetic final ──────────────────────────────────────────────────────
 
-  # Used when the runtime needs to force a BLOCKED/JOB_DONE row on the worker's
+  # Used when the runtime needs to force a BLOCKED/TASK_DONE row on the worker's
   # behalf (model refused signal, LLM error, iter cap hit).
   defp emit_synthetic_final(ctx, status, payload) do
-    job_id    = Map.get(ctx, :job_id)
+    task_id    = Map.get(ctx, :task_id)
     worker_id = Map.get(ctx, :worker_id, "unknown")
 
-    if job_id do
-      WorkerStatus.append(job_id, worker_id, "final", payload, status)
+    if task_id do
+      WorkerStatus.append(task_id, worker_id, "final", payload, status)
     else
-      Logger.error("[Worker] emit_synthetic_final called without job_id")
+      Logger.error("[Worker] emit_synthetic_final called without task_id")
     end
   end
 
@@ -710,7 +708,8 @@ defmodule Dmhai.Agent.Worker do
 
     compaction_msgs = flat ++ [%{role: "user", content: instruction}]
 
-    case LLM.call(compactor_model(), compaction_msgs) do
+    trace = %{origin: "assistant", path: "Worker.compact", role: "WorkerCompactor", phase: "compact"}
+    case LLM.call(compactor_model(), compaction_msgs, trace: trace) do
       {:ok, new_summary} when is_binary(new_summary) and new_summary != "" ->
         {:ok, new_summary}
 
@@ -806,7 +805,8 @@ defmodule Dmhai.Agent.Worker do
               "Output just the facts, no preamble.\n\n#{excerpt}"}
       ]
 
-      case LLM.call(model, prompt) do
+      trace = %{origin: "assistant", path: "Worker.summarize_result", role: "WorkerResultSummarizer", phase: "summarize"}
+      case LLM.call(model, prompt, trace: trace) do
         {:ok, summary} when is_binary(summary) and summary != "" ->
           "[Summarised from #{String.length(text)} chars]\n#{summary}"
 
@@ -877,6 +877,15 @@ defmodule Dmhai.Agent.Worker do
   #
   # Why minimal: the model cannot call any execution tool yet, so detailed
   # execution rules waste tokens. We only need: task framing, terse step format,
+
+  defp worker_phase(ctx, iter) do
+    if Map.get(ctx, :plan_approved, false) do
+      step = Map.get(ctx, :current_step, 1)
+      "execute:step#{step}:iter#{iter}"
+    else
+      "plan:iter#{iter}"
+    end
+  end
 
   defp log_worker_messages(messages) do
     non_sys = Enum.reject(messages, fn m -> (m[:role] || m["role"]) == "system" end)

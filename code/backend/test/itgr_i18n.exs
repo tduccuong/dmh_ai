@@ -4,7 +4,7 @@ defmodule Itgr.I18n do
   use ExUnit.Case, async: true
 
   alias Dmhai.I18n
-  alias Dmhai.Agent.{Jobs, Worker, JobRuntime, WorkerStatus}
+  alias Dmhai.Agent.{Tasks, Worker, TaskRuntime, WorkerStatus}
   import Ecto.Adapters.SQL, only: [query!: 3]
 
   defp uid, do: T.uid()
@@ -27,8 +27,8 @@ defmodule Itgr.I18n do
   end
 
   test "nil/empty language falls back to English" do
-    assert I18n.t("no_such_job", nil) == I18n.t("no_such_job", "en")
-    assert I18n.t("no_such_job", "")  == I18n.t("no_such_job", "en")
+    assert I18n.t("no_such_task", nil) == I18n.t("no_such_task", "en")
+    assert I18n.t("no_such_task", "")  == I18n.t("no_such_task", "en")
   end
 
   test "interpolation substitutes %{name} placeholders" do
@@ -40,20 +40,20 @@ defmodule Itgr.I18n do
     assert I18n.t("nope_not_a_key", "en") == "nope_not_a_key"
   end
 
-  # ─── language propagates into Jobs/Worker ctx ────────────────────────────
+  # ─── language propagates into Tasks/Worker ctx ────────────────────────────
 
-  test "Jobs.insert stores language; Jobs.get reads it back" do
-    jid = Jobs.insert(
+  test "Tasks.insert stores language; Tasks.get reads it back" do
+    jid = Tasks.insert(
       user_id: uid(), session_id: uid(),
-      job_title: "x", job_spec: "y",
+      task_title: "x", task_spec: "y",
       language: "vi"
     )
-    assert Jobs.get(jid).language == "vi"
+    assert Tasks.get(jid).language == "vi"
   end
 
-  test "Jobs.insert defaults language to 'en' when not provided" do
-    jid = Jobs.insert(user_id: uid(), session_id: uid(), job_title: "x", job_spec: "y")
-    assert Jobs.get(jid).language == "en"
+  test "Tasks.insert defaults language to 'en' when not provided" do
+    jid = Tasks.insert(user_id: uid(), session_id: uid(), task_title: "x", task_spec: "y")
+    assert Tasks.get(jid).language == "en"
   end
 
   test "Worker.build_system_prompt interpolates the language" do
@@ -66,13 +66,13 @@ defmodule Itgr.I18n do
 
   test "worker system prompt reflects ctx.language" do
     user_id = uid(); sid = uid()
-    jid = Jobs.insert(user_id: user_id, session_id: sid,
-                      job_title: "x", job_spec: "task",
-                      language: "ja", job_status: "running")
+    jid = Tasks.insert(user_id: user_id, session_id: sid,
+                      task_title: "x", task_spec: "task",
+                      language: "ja", task_status: "running")
 
     ctx = %{
       user_id: user_id, session_id: sid,
-      worker_id: uid(), job_id: jid,
+      worker_id: uid(), task_id: jid,
       language: "ja", agent_pid: self()
     }
 
@@ -80,7 +80,7 @@ defmodule Itgr.I18n do
     T.stub_llm_call(fn _model, msgs, _opts ->
       [%{role: "system", content: sys} | _] = msgs
       send(test_pid, {:saw_prompt, sys})
-      {:ok, {:tool_calls, [T.tool_call("job_signal", %{"status" => "JOB_DONE", "result" => "done"})]}}
+      {:ok, {:tool_calls, [T.tool_call("task_signal", %{"status" => "TASK_DONE", "result" => "done"})]}}
     end)
 
     Worker.run("task in japanese", ctx)
@@ -94,9 +94,9 @@ defmodule Itgr.I18n do
     user_id = uid(); sid = uid()
     seed_session(sid, user_id)
 
-    jid = Jobs.insert(user_id: user_id, session_id: sid,
-                      job_title: "daily report", job_spec: "s",
-                      language: "es", job_status: "running")
+    jid = Tasks.insert(user_id: user_id, session_id: sid,
+                      task_title: "daily report", task_spec: "s",
+                      language: "es", task_status: "running")
     WorkerStatus.append(jid, "w1", "tool_call", "web_search(btc)")
 
     test_pid = self()
@@ -106,26 +106,26 @@ defmodule Itgr.I18n do
       {:ok, "resumen"}
     end)
 
-    {:ok, _} = JobRuntime.summarize_and_announce(jid, force: true)
+    {:ok, _} = TaskRuntime.summarize_and_announce(jid, force: true)
     assert_receive {:summarizer_prompt, body}
     assert String.contains?(body, "\"es\"")
   end
 
   # ─── emit_final_message uses localized labels ────────────────────────────
 
-  test "JobRuntime completion message renders in the job's language (via I18n)" do
+  test "TaskRuntime completion message renders in the job's language (via I18n)" do
     user_id = uid(); sid = uid()
     seed_session(sid, user_id)
 
-    jid = Jobs.insert(user_id: user_id, session_id: sid,
-                      job_title: "cuenta", job_spec: "s",
-                      language: "es", job_status: "pending")
+    jid = Tasks.insert(user_id: user_id, session_id: sid,
+                      task_title: "cuenta", task_spec: "s",
+                      language: "es", task_status: "pending")
 
     T.stub_llm_call(fn _model, _msgs, _opts ->
-      {:ok, {:tool_calls, [T.tool_call("job_signal", %{"status" => "JOB_BLOCKED", "reason" => "sin internet"})]}}
+      {:ok, {:tool_calls, [T.tool_call("task_signal", %{"status" => "TASK_BLOCKED", "reason" => "sin internet"})]}}
     end)
 
-    JobRuntime.start_job(jid)
+    TaskRuntime.start_task(jid)
 
     deadline = System.monotonic_time(:millisecond) + 3_000
     wait_until_status(jid, "blocked", deadline)
@@ -163,7 +163,7 @@ defmodule Itgr.I18n do
   end
 
   defp wait_until_status(jid, expected, deadline) do
-    if Jobs.get(jid).job_status == expected do
+    if Tasks.get(jid).task_status == expected do
       :ok
     else
       if System.monotonic_time(:millisecond) >= deadline do

@@ -11,7 +11,7 @@ defmodule Dmhai.Tools.Registry do
   @tools [
     Dmhai.Tools.Plan,
     Dmhai.Tools.StepSignal,
-    Dmhai.Tools.JobSignal,
+    Dmhai.Tools.TaskSignal,
     Dmhai.Tools.WebSearch,
     Dmhai.Tools.WebFetch,
     Dmhai.Tools.RunScript,

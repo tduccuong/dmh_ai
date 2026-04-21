@@ -55,8 +55,10 @@ defmodule Dmhai.Agent.ProfileExtractor do
           "Write NONE if nothing qualifies.\n\n" <>
           "The user message may be in any language. Always write output in English. Plain text only, no markdown."
 
+      trace = %{origin: "system", path: "ProfileExtractor.extract", role: "ProfileExtractor", phase: "extract"}
       case LLM.call(model, [%{role: "user", content: prompt}],
-             options: %{temperature: 0, num_predict: 200}
+             options: %{temperature: 0, num_predict: 200},
+             trace: trace
            ) do
         {:ok, reply} when is_binary(reply) and reply != "" ->
           Logger.debug("[ProfileExtractor] extraction result=#{String.slice(reply, 0, 200)}")
@@ -223,8 +225,10 @@ defmodule Dmhai.Agent.ProfileExtractor do
         "Output format: \"- Key: value1, value2\" — one bullet per category, no key repeated.\n" <>
         "Plain text only, no extra commentary."
 
+    trace = %{origin: "system", path: "ProfileExtractor.condense", role: "ProfileCondenser", phase: "condense"}
     case LLM.call(model, [%{role: "user", content: prompt}],
-           options: %{temperature: 0, num_predict: 600}
+           options: %{temperature: 0, num_predict: 600},
+           trace: trace
          ) do
       {:ok, reply} when is_binary(reply) and reply != "" ->
         condensed =

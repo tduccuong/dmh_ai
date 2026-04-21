@@ -118,7 +118,7 @@ UIManager.switchMode = async function(mode) {
         await SessionStore.setCurrentSessionId(newSession.id);
         this.currentSession = newSession;
         await this.renderSessions();
-        this.clearJobStatusArea();
+        this.clearTaskStatusArea();
         this.renderChat();
         if (mode === 'assistant') this.showAssistantHint();
     }
@@ -235,7 +235,7 @@ UIManager.switchSession = async function(id) {
     });
     this.currentSession = await SessionStore.getSession(id);
     await SessionStore.setCurrentSessionId(id);
-    this.clearJobStatusArea();
+    this.clearTaskStatusArea();
     this.renderChat();
     if ((this.currentSession.mode || 'confidant') === 'assistant') this.showAssistantHint();
 };
@@ -330,7 +330,7 @@ UIManager.showTokenStats = async function(sessionId, sessionName) {
         var workerRows = '';
         if (s.workers.length > 0) {
             workerRows = s.workers.map(function(w) {
-                var desc = w.description ? w.description.slice(0, 50) : w.job_id;
+                var desc = w.description ? w.description.slice(0, 50) : w.task_id;
                 return '<tr><td style="padding:4px 8px 4px 0;color:#aaa;">' + desc + '</td>' +
                        '<td style="padding:4px 0;text-align:right;white-space:nowrap;">' + fmt(w.tx) + ' / ' + fmt(w.rx) + '</td></tr>';
             }).join('');
@@ -342,7 +342,7 @@ UIManager.showTokenStats = async function(sessionId, sessionName) {
             '<tr><td style="padding:4px 8px 4px 0;color:#aaa;">Global total</td><td style="text-align:right;font-weight:600;">' + fmt(globalTotal) + '</td></tr>' +
             '<tr><td style="padding:4px 8px 4px 0;color:#aaa;">This session total</td><td style="text-align:right;font-weight:600;">' + fmt(sessionTotal) + '</td></tr>' +
             '<tr><td style="padding:4px 8px 4px 0;color:#aaa;">Master (tx / rx)</td><td style="text-align:right;">' + fmt(s.master.tx) + ' / ' + fmt(s.master.rx) + '</td></tr>' +
-            (workerRows ? '<tr><td colspan="2" style="padding:8px 0 2px;font-weight:600;border-top:1px solid #333;margin-top:4px;">Background jobs (tx / rx)</td></tr>' + workerRows : '') +
+            (workerRows ? '<tr><td colspan="2" style="padding:8px 0 2px;font-weight:600;border-top:1px solid #333;margin-top:4px;">Background tasks (tx / rx)</td></tr>' + workerRows : '') +
             '</table></div>';
 
         Modal.alertHtml('Statistics \u2014 ' + sessionName, body);
@@ -380,31 +380,31 @@ UIManager.autoNameSession = async function(session) {
     }
 };
 
-UIManager.showJobStatusArea = function() {
-    var area = document.getElementById('job-status-area');
+UIManager.showTaskStatusArea = function() {
+    var area = document.getElementById('task-status-area');
     if (!area) return;
     area.innerHTML = '';
     var item = document.createElement('div');
-    item.className = 'job-status-item job-status-waiting';
+    item.className = 'task-status-item task-status-waiting';
     item.textContent = 'Waiting for update from Assistant...';
     area.appendChild(item);
     area.style.display = 'block';
 };
 
-UIManager.appendJobStatusUpdate = function(text) {
-    var area = document.getElementById('job-status-area');
+UIManager.appendTaskStatusUpdate = function(text) {
+    var area = document.getElementById('task-status-area');
     if (!area) return;
-    var waiting = area.querySelector('.job-status-waiting');
+    var waiting = area.querySelector('.task-status-waiting');
     if (waiting) waiting.remove();
     var item = document.createElement('div');
-    item.className = 'job-status-item';
+    item.className = 'task-status-item';
     item.textContent = text;
     area.appendChild(item);
     area.style.display = 'block';
 };
 
-UIManager.clearJobStatusArea = function() {
-    var area = document.getElementById('job-status-area');
+UIManager.clearTaskStatusArea = function() {
+    var area = document.getElementById('task-status-area');
     if (!area) return;
     area.innerHTML = '';
     area.style.display = 'none';

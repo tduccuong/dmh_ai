@@ -4,33 +4,33 @@
 defmodule Itgr.Compaction do
   use ExUnit.Case, async: false
 
-  alias Dmhai.Agent.{Jobs, Worker, ContextEngine}
+  alias Dmhai.Agent.{Tasks, Worker, ContextEngine}
   import Ecto.Adapters.SQL, only: [query!: 3]
 
   defp uid, do: T.uid()
 
-  # Seed a jobs row and return ctx with job_id (required by new Worker.run).
+  # Seed a jobs row and return ctx with task_id (required by new Worker.run).
   defp make_ctx(overrides \\ []) do
     user_id    = Keyword.get(overrides, :user_id, uid())
     session_id = Keyword.get(overrides, :session_id, uid())
     worker_id  = Keyword.get(overrides, :worker_id, uid())
 
-    job_id =
-      Jobs.insert(
+    task_id =
+      Tasks.insert(
         user_id:    user_id,
         session_id: session_id,
-        job_type:   "one_off",
+        task_type:   "one_off",
         intvl_sec:  0,
-        job_title:  "compaction test",
-        job_spec:   "compaction test task",
-        job_status: "running"
+        task_title:  "compaction test",
+        task_spec:   "compaction test task",
+        task_status: "running"
       )
 
     %{
       user_id:    user_id,
       session_id: session_id,
       worker_id:  worker_id,
-      job_id:     job_id,
+      task_id:     task_id,
       agent_pid:  self(),
       description: "compaction test task"
     }
@@ -86,11 +86,11 @@ defmodule Itgr.Compaction do
           send(test_pid, {:compaction_instr, instr})
           {:ok, "Compacted: completed 10 steps, output was X."}
         n == 11 -> {:ok, {:tool_calls, [T.tool_call("plan", %{"steps" => [%{"step" => "final step", "tools" => []}], "rationale" => "post-compact"})]}}
-        true    -> {:ok, {:tool_calls, [T.tool_call("job_signal", %{"status" => "JOB_DONE", "result" => "done"})]}}
+        true    -> {:ok, {:tool_calls, [T.tool_call("task_signal", %{"status" => "TASK_DONE", "result" => "done"})]}}
       end
     end)
 
-    assert {:ok, {:signal, "JOB_DONE", _}} = Worker.run("do the thing", ctx)
+    assert {:ok, {:signal, "TASK_DONE", _}} = Worker.run("do the thing", ctx)
     assert_received {:compaction_instr, instr}
     assert String.contains?(instr, "Summarise") or String.contains?(instr, "activity")
   end
@@ -114,7 +114,7 @@ defmodule Itgr.Compaction do
 
         true ->
           send(test_pid, {:post_compact_msg_count, length(msgs)})
-          {:ok, {:tool_calls, [T.tool_call("job_signal", %{"status" => "JOB_DONE", "result" => "done"})]}}
+          {:ok, {:tool_calls, [T.tool_call("task_signal", %{"status" => "TASK_DONE", "result" => "done"})]}}
       end
     end)
 
@@ -144,7 +144,7 @@ defmodule Itgr.Compaction do
             role == "user" and String.starts_with?(content, "[Prior work summary]")
           end)
           send(test_pid, {:has_prefix, has_prefix})
-          {:ok, {:tool_calls, [T.tool_call("job_signal", %{"status" => "JOB_DONE", "result" => "done"})]}}
+          {:ok, {:tool_calls, [T.tool_call("task_signal", %{"status" => "TASK_DONE", "result" => "done"})]}}
       end
     end)
 

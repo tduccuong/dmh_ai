@@ -103,7 +103,7 @@ defmodule Dmhai.Tools.RunScript do
 
   # ── private ─────────────────────────────────────────────────────────────
 
-  # Preference order: job workspace → session_root → /tmp fallback.
+  # Preference order: task workspace → session_root → /tmp fallback.
   defp resolve_workdir(ctx) do
     cond do
       is_binary(Map.get(ctx, :workspace_dir)) -> ctx.workspace_dir

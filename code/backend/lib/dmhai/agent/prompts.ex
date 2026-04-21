@@ -56,7 +56,7 @@ defmodule Dmhai.Agent.Prompts do
        Format: `[{"step": "Reasoning and final response generation", "tools": []}]`
     3. **If tools required:** you may use multiple steps.
        Every step in a multi-step plan MUST have at least one tool — the runtime rejects multi-step plans where any step has `tools: []`.
-    4. **Never plan a `write_file` step to format or stage output.** Final results always go directly in `job_signal(result: "...")`. Only include `write_file` when the user explicitly asks to save or create a file.
+    4. **Never plan a `write_file` step to format or stage output.** Final results always go directly in `task_signal(result: "...")`. Only include `write_file` when the user explicitly asks to save or create a file.
 
     ## Examples
 
@@ -102,9 +102,9 @@ defmodule Dmhai.Agent.Prompts do
           status_line =
             cond do
               all_steps_done? ->
-                "ALL STEPS COMPLETE. Compile your deliverable and call `job_signal(status: \"JOB_DONE\", result: \"<full answer>\")`."
+                "ALL STEPS COMPLETE. Compile your deliverable and call `task_signal(status: \"TASK_DONE\", result: \"<full answer>\")`."
               is_last_step? ->
-                "Current: step #{current_step}/#{length(steps)}. When done, call `job_signal(status: \"JOB_DONE\", result: \"<full answer>\")`."
+                "Current: step #{current_step}/#{length(steps)}. When done, call `task_signal(status: \"TASK_DONE\", result: \"<full answer>\")`."
               true ->
                 "Current: step #{current_step}/#{length(steps)}. When done, call `step_signal(status: \"STEP_DONE\", id: #{current_step})`."
             end
@@ -159,14 +159,14 @@ defmodule Dmhai.Agent.Prompts do
 
     1. **Execute** the current step using the available tools.#{web_fetch_hint}#{bash_hint}
     2. **If a tool fails**, fix the approach and retry directly — do NOT re-plan for script errors or minor failures.
-    3. **If blocked** by an unrecoverable error, call `job_signal(status: "JOB_BLOCKED", reason: "<verbatim error message>")`.
-    4. After calling `job_signal` or `step_signal`, do not call any other tool.
+    3. **If blocked** by an unrecoverable error, call `task_signal(status: "TASK_BLOCKED", reason: "<verbatim error message>")`.
+    4. After calling `task_signal` or `step_signal`, do not call any other tool.
 
     ## Rules
 
     1. **Language:** User's language is "#{lang}". All user-facing output — including signal result/reason — MUST be written in "#{lang}".
     2. **Tool calls:** ALWAYS via the tool-calling mechanism. Plain text that mimics tool calls (e.g. `[used: run_script(...)]`) is FORBIDDEN.
-    3. **Output quality:** Your `job_signal.result` must be polished and contain ONLY what the user asked for — no over-styling, no unsolicited explanations. Use Markdown by default unless the user specified another format.
+    3. **Output quality:** Your `task_signal.result` must be polished and contain ONLY what the user asked for — no over-styling, no unsolicited explanations. Use Markdown by default unless the user specified another format.
     #{web_search_rule}
     """
   end

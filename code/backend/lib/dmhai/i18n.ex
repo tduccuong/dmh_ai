@@ -62,7 +62,7 @@ defmodule Dmhai.I18n do
       "fr" => "Le processus du worker s'est terminé sans appeler signal().",
       "ja" => "worker プロセスは signal() を呼び出さずに終了しました。"
     },
-    "job_cancelled_by_user" => %{
+    "task_cancelled_by_user" => %{
       "en" => "Job cancelled by user.",
       "de" => "Auftrag vom Benutzer abgebrochen.",
       "vi" => "Công việc đã bị huỷ bởi người dùng.",
@@ -145,29 +145,29 @@ defmodule Dmhai.I18n do
       "fr" => "Violation de politique répétée : %{reason}",
       "ja" => "ポリシー違反の繰り返し: %{reason}"
     },
-    "job_not_found" => %{
-      "en" => "No job found for id=%{id}.",
+    "task_not_found" => %{
+      "en" => "No task found for id=%{id}.",
       "de" => "Kein Auftrag mit id=%{id} gefunden.",
       "vi" => "Không tìm thấy công việc với id=%{id}.",
       "es" => "No se encontró ninguna tarea con id=%{id}.",
       "fr" => "Aucune tâche trouvée pour id=%{id}.",
       "ja" => "id=%{id} のジョブは見つかりませんでした。"
     },
-    "no_such_job" => %{
-      "en" => "No such job.",
+    "no_such_task" => %{
+      "en" => "No such task.",
       "de" => "Diesen Auftrag gibt es nicht.",
       "vi" => "Không có công việc nào như vậy.",
       "es" => "No existe tal tarea.",
       "fr" => "Cette tâche n'existe pas.",
       "ja" => "該当するジョブはありません。"
     },
-    "no_job_id" => %{
-      "en" => "No job_id provided.",
-      "de" => "Keine job_id angegeben.",
-      "vi" => "Chưa cung cấp job_id.",
-      "es" => "No se proporcionó job_id.",
-      "fr" => "Aucun job_id fourni.",
-      "ja" => "job_id が指定されていません。"
+    "no_task_id" => %{
+      "en" => "No task_id provided.",
+      "de" => "Keine task_id angegeben.",
+      "vi" => "Chưa cung cấp task_id.",
+      "es" => "No se proporcionó task_id.",
+      "fr" => "Aucun task_id fourni.",
+      "ja" => "task_id が指定されていません。"
     },
     "bad_interval" => %{
       "en" => "intvl_sec must be > 0.",
@@ -177,7 +177,7 @@ defmodule Dmhai.I18n do
       "fr" => "intvl_sec doit être > 0.",
       "ja" => "intvl_sec は 0 より大きい必要があります。"
     },
-    "job_status_rendered" => %{
+    "task_status_rendered" => %{
       "en" => "Job **%{title}** — %{status}.\n\n%{result}",
       "de" => "Auftrag **%{title}** — %{status}.\n\n%{result}",
       "vi" => "Công việc **%{title}** — %{status}.\n\n%{result}",
@@ -217,7 +217,7 @@ defmodule Dmhai.I18n do
       "fr" => "en pause",
       "ja" => "一時停止中"
     },
-    "job_paused" => %{
+    "task_paused" => %{
       "en" => "Job **%{title}** has been paused. Resume it anytime.",
       "de" => "Auftrag **%{title}** wurde pausiert. Du kannst ihn jederzeit fortsetzen.",
       "vi" => "Công việc **%{title}** đã tạm dừng. Bạn có thể tiếp tục bất cứ lúc nào.",
@@ -225,7 +225,7 @@ defmodule Dmhai.I18n do
       "fr" => "La tâche **%{title}** a été mise en pause. Reprenez-la quand vous voulez.",
       "ja" => "ジョブ **%{title}** を一時停止しました。いつでも再開できます。"
     },
-    "job_resumed" => %{
+    "task_resumed" => %{
       "en" => "Job **%{title}** has been resumed.",
       "de" => "Auftrag **%{title}** wurde fortgesetzt.",
       "vi" => "Công việc **%{title}** đã được tiếp tục.",

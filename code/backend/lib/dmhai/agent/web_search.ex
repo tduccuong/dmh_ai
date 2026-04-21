@@ -37,8 +37,10 @@ defmodule Dmhai.Agent.WebSearch do
         "- Do NOT reference any question or topic — treat the content as standalone\n\n" <>
         "Raw web results:\n#{raw_results}\n\nExtracted facts:"
 
+    trace = %{origin: "assistant", path: "WebSearch.synthesize", role: "WebSynthesizer", phase: "synthesize"}
     LLM.call(model, [%{role: "user", content: prompt}],
-      options: %{temperature: 0, num_predict: 1500}
+      options: %{temperature: 0, num_predict: 1500},
+      trace: trace
     )
   end
 end

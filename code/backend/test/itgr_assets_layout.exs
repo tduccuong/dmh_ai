@@ -1,12 +1,12 @@
 # Tests for the session asset layout: Constants helpers, Util.Path resolver,
-# Police path-safety check, and Jobs.pipeline + Jobs.origin persistence.
+# Police path-safety check, and Tasks.pipeline + Tasks.origin persistence.
 
 defmodule Itgr.AssetsLayout do
   use ExUnit.Case, async: true
 
   alias Dmhai.Constants
   alias Dmhai.Util.Path, as: SafePath
-  alias Dmhai.Agent.{Jobs, Police}
+  alias Dmhai.Agent.{Tasks, Police}
 
   defp uid, do: T.uid()
 
@@ -25,14 +25,14 @@ defmodule Itgr.AssetsLayout do
 
     test "session_origin_root for assistant / confidant only" do
       assert Constants.session_origin_root("u@x.com", "S", "assistant") ==
-               "/data/user_assets/u@x.com/S/assistant/jobs"
+               "/data/user_assets/u@x.com/S/assistant/tasks"
       assert Constants.session_origin_root("u@x.com", "S", "confidant") ==
-               "/data/user_assets/u@x.com/S/confidant/jobs"
+               "/data/user_assets/u@x.com/S/confidant/tasks"
     end
 
-    test "job_workspace_dir" do
-      assert Constants.job_workspace_dir("u@x.com", "S", "assistant", "J1") ==
-               "/data/user_assets/u@x.com/S/assistant/jobs/J1"
+    test "task_workspace_dir" do
+      assert Constants.task_workspace_dir("u@x.com", "S", "assistant", "J1") ==
+               "/data/user_assets/u@x.com/S/assistant/tasks/J1"
     end
 
     test "session_origin_root rejects unknown origin" do
@@ -55,18 +55,18 @@ defmodule Itgr.AssetsLayout do
     end
 
     test "relative path defaults to workspace" do
-      ctx = ctx("/sr", "/sr/assistant/jobs/J1", "/sr/data")
-      assert {:ok, "/sr/assistant/jobs/J1/foo.txt"} = SafePath.resolve("foo.txt", ctx)
+      ctx = ctx("/sr", "/sr/assistant/tasks/J1", "/sr/data")
+      assert {:ok, "/sr/assistant/tasks/J1/foo.txt"} = SafePath.resolve("foo.txt", ctx)
     end
 
     test "'data/...' prefix resolves under data_dir" do
-      ctx = ctx("/sr", "/sr/assistant/jobs/J1", "/sr/data")
+      ctx = ctx("/sr", "/sr/assistant/tasks/J1", "/sr/data")
       assert {:ok, "/sr/data/photo.jpg"} = SafePath.resolve("data/photo.jpg", ctx)
     end
 
     test "'workspace/...' prefix resolves under workspace_dir" do
-      ctx = ctx("/sr", "/sr/assistant/jobs/J1", "/sr/data")
-      assert {:ok, "/sr/assistant/jobs/J1/out.csv"} =
+      ctx = ctx("/sr", "/sr/assistant/tasks/J1", "/sr/data")
+      assert {:ok, "/sr/assistant/tasks/J1/out.csv"} =
                SafePath.resolve("workspace/out.csv", ctx)
     end
 
@@ -82,7 +82,7 @@ defmodule Itgr.AssetsLayout do
     end
 
     test "relative path with ../ that escapes root is rejected" do
-      ctx = ctx("/sr", "/sr/assistant/jobs/J1", "/sr/data")
+      ctx = ctx("/sr", "/sr/assistant/tasks/J1", "/sr/data")
       # ../../../ jumps above /sr
       assert {:error, reason} = SafePath.resolve("../../../../etc/passwd", ctx)
       assert String.contains?(reason, "escapes")
@@ -96,31 +96,31 @@ defmodule Itgr.AssetsLayout do
     end
   end
 
-  # ─── Jobs pipeline + origin columns ─────────────────────────────────────
+  # ─── Tasks pipeline + origin columns ─────────────────────────────────────
 
-  describe "Jobs.insert / Jobs.get with pipeline + origin" do
+  describe "Tasks.insert / Tasks.get with pipeline + origin" do
     test "persists pipeline='assistant' origin='assistant' by default" do
-      jid = Jobs.insert(user_id: uid(), session_id: uid(),
-                        job_title: "t", job_spec: "s")
-      j = Jobs.get(jid)
+      jid = Tasks.insert(user_id: uid(), session_id: uid(),
+                        task_title: "t", task_spec: "s")
+      j = Tasks.get(jid)
       assert j.pipeline == "assistant"
       assert j.origin   == "assistant"
     end
 
     test "round-trips pipeline='confidant' + origin='confidant'" do
-      jid = Jobs.insert(user_id: uid(), session_id: uid(),
-                        job_title: "t", job_spec: "s",
+      jid = Tasks.insert(user_id: uid(), session_id: uid(),
+                        task_title: "t", task_spec: "s",
                         pipeline: "confidant", origin: "confidant")
-      j = Jobs.get(jid)
+      j = Tasks.get(jid)
       assert j.pipeline == "confidant"
       assert j.origin   == "confidant"
     end
 
     test "round-trips mixed pipeline/origin (assistant-origin running confidant pipeline)" do
-      jid = Jobs.insert(user_id: uid(), session_id: uid(),
-                        job_title: "t", job_spec: "s",
+      jid = Tasks.insert(user_id: uid(), session_id: uid(),
+                        task_title: "t", task_spec: "s",
                         pipeline: "confidant", origin: "assistant")
-      j = Jobs.get(jid)
+      j = Tasks.get(jid)
       assert j.pipeline == "confidant"
       assert j.origin   == "assistant"
     end
@@ -132,7 +132,7 @@ defmodule Itgr.AssetsLayout do
     defp path_ctx do
       %{
         session_root:  "/data/user_assets/u/S",
-        workspace_dir: "/data/user_assets/u/S/assistant/jobs/J1",
+        workspace_dir: "/data/user_assets/u/S/assistant/tasks/J1",
         data_dir:      "/data/user_assets/u/S/data"
       }
     end

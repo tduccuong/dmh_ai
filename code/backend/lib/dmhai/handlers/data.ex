@@ -31,7 +31,7 @@ defmodule Dmhai.Handlers.Data do
 
   # GET /assets/:session_id/:file_id
   # Serves user-uploaded files from <session_root>/data/. Worker-scratch files
-  # under <session_root>/<origin>/jobs/<job>/ are intentionally not served —
+  # under <session_root>/<origin>/tasks/<task>/ are intentionally not served —
   # the worker should persist anything user-facing via signal(result) or by
   # writing to the data/ subdir explicitly.
   def get_asset(conn, user, session_id, file_id) do
@@ -344,7 +344,8 @@ defmodule Dmhai.Handlers.Data do
                 "Reply with only the title, no quotes, no explanation."
             }]
 
-            case LLM.call(@namer_model, messages) do
+            trace = %{origin: "system", path: "Handlers.Data.name_session", role: "SessionNamer", phase: "name"}
+            case LLM.call(@namer_model, messages, trace: trace) do
               {:ok, name} when is_binary(name) and name != "" ->
                 sanitized = sanitize_session_name(name)
 
@@ -502,32 +503,32 @@ defmodule Dmhai.Handlers.Data do
     }
   end
 
-  # GET /reserve-job-id
-  # Returns a pre-allocated job_id so the FE can start uploading attachments to
-  # the job workspace before the chat message is sent. No DB row is created yet.
-  def get_reserved_job_id(conn, _user) do
-    job_id = :crypto.strong_rand_bytes(9) |> Base.url_encode64(padding: false)
-    json(conn, 200, %{job_id: job_id})
+  # GET /reserve-task-id
+  # Returns a pre-allocated task_id so the FE can start uploading attachments to
+  # the task workspace before the chat message is sent. No DB row is created yet.
+  def get_reserved_task_id(conn, _user) do
+    task_id = :crypto.strong_rand_bytes(9) |> Base.url_encode64(padding: false)
+    json(conn, 200, %{task_id: task_id})
   end
 
-  # POST /upload-job-attachment
-  # Saves a scaled-down attachment to the job workspace. The FE uploads here in
+  # POST /upload-task-attachment
+  # Saves a scaled-down attachment to the task workspace. The FE uploads here in
   # parallel with the /agent/chat call so the worker has the files ready when it
-  # starts. Multipart fields: file, sessionId, jobId.
-  def post_job_attachment(conn, user) do
+  # starts. Multipart fields: file, sessionId, taskId.
+  def post_task_attachment(conn, user) do
     case parse_multipart(conn) do
       {:error, conn, :too_large} ->
         json(conn, 413, %{error: "File too large"})
 
       {:ok, conn, parts} ->
         session_id = get_in(parts, ["sessionId", :data]) || ""
-        job_id     = get_in(parts, ["jobId", :data])     || ""
+        task_id     = get_in(parts, ["taskId", :data])     || ""
         session_id = String.trim(session_id)
-        job_id     = String.trim(job_id)
+        task_id     = String.trim(task_id)
 
         cond do
-          session_id == "" or job_id == "" ->
-            json(conn, 400, %{error: "Missing sessionId or jobId"})
+          session_id == "" or task_id == "" ->
+            json(conn, 400, %{error: "Missing sessionId or taskId"})
 
           not owns_session?(session_id, user.id) ->
             json(conn, 403, %{error: "Forbidden"})
@@ -542,11 +543,11 @@ defmodule Dmhai.Handlers.Data do
                   filename  = filename || "upload"
                   safe_name = Regex.replace(~r/[^\w.\-]/, filename, "_")
                   origin    = session_origin(session_id)
-                  workspace = Dmhai.Constants.job_workspace_dir(
-                                user.email, session_id, origin, job_id)
+                  workspace = Dmhai.Constants.task_workspace_dir(
+                                user.email, session_id, origin, task_id)
                   File.mkdir_p!(workspace)
                   File.write!(Path.join(workspace, safe_name), raw)
-                  Logger.info("[Data] job attachment saved job=#{job_id} name=#{safe_name}")
+                  Logger.info("[Data] task attachment saved task=#{task_id} name=#{safe_name}")
                   json(conn, 200, %{name: safe_name})
                 end
 

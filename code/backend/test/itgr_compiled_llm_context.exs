@@ -178,15 +178,15 @@ defmodule Itgr.CompiledLlmContext do
 
   # ── SystemPrompt (intentionally prose — no Markdown headers) ────────────────
 
-  describe "SystemPrompt.generate" do
-    test "confidant mode is pure prose — no Markdown headings" do
-      prompt = SystemPrompt.generate(mode: "confidant")
+  describe "SystemPrompt" do
+    test "confidant prompt is pure prose — no Markdown headings" do
+      prompt = SystemPrompt.generate_confidant()
       assert extract_headings(prompt) == [],
              "confidant system prompt must not contain Markdown headings"
     end
 
-    test "assistant mode is pure prose — no Markdown headings" do
-      prompt = SystemPrompt.generate(mode: "assistant")
+    test "assistant prompt is pure prose — no Markdown headings" do
+      prompt = SystemPrompt.generate_assistant()
       assert extract_headings(prompt) == [],
              "assistant system prompt must not contain Markdown headings"
     end

@@ -10,11 +10,11 @@ defmodule Dmhai.Util.Path do
   Layout under each session_root:
       <session_root>/
         ├── data/                           ← user uploads
-        ├── assistant/jobs/<job_id>/        ← assistant-origin scratch
-        └── confidant/jobs/<job_id>/        ← confidant-origin scratch
+        ├── assistant/tasks/<task_id>/        ← assistant-origin scratch
+        └── confidant/tasks/<task_id>/        ← confidant-origin scratch
 
   The tool root is `session_root` — tools may read any file anywhere below
-  it. Escaping the session_root is rejected. Workspace = job's own scratch
+  it. Escaping the session_root is rejected. Workspace = task's own scratch
   dir; used by default for relative writes and bash cwd. Deletion is only
   permitted within the workspace.
 
@@ -84,7 +84,7 @@ defmodule Dmhai.Util.Path do
     end
   end
 
-  @doc "Check whether an absolute path is inside the job's workspace directory."
+  @doc "Check whether an absolute path is inside the task's workspace directory."
   @spec within_workspace?(String.t(), ctx()) :: boolean()
   def within_workspace?(abs_path, ctx) do
     case Map.get(ctx, :workspace_dir) do

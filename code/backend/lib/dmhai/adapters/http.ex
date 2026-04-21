@@ -45,7 +45,7 @@ defmodule Dmhai.Adapters.Http do
       image_names:      Keyword.get(opts, :image_names, []),
       files:            Keyword.get(opts, :files, []),
       has_video:        Keyword.get(opts, :has_video, false),
-      job_id:           Keyword.get(opts, :job_id),
+      task_id:           Keyword.get(opts, :task_id),
       attachment_names: Keyword.get(opts, :attachment_names, []),
       metadata:         Keyword.get(opts, :metadata, %{})
     }

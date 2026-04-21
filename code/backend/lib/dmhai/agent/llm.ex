@@ -34,6 +34,8 @@ defmodule Dmhai.Agent.LLM do
 
   import Ecto.Adapters.SQL, only: [query!: 3]
   alias Dmhai.Repo
+  alias Dmhai.Agent.AgentSettings
+  alias Dmhai.Agent.LogTrace
   require Logger
 
   @ollama_cloud_url "https://ollama.com/api/chat"
@@ -49,12 +51,13 @@ defmodule Dmhai.Agent.LLM do
     if stub = Application.get_env(:dmhai, :__llm_stream_stub__) do
       stub.(model_str, messages, reply_pid, opts)
     else
-      tools = Keyword.get(opts, :tools, [])
+      tools     = Keyword.get(opts, :tools, [])
       on_tokens = Keyword.get(opts, :on_tokens, nil)
+      trace     = Keyword.get(opts, :trace)
       Logger.info("[LLM] stream #{model_str} msgs=#{length(messages)} tools=#{length(tools)}")
       Dmhai.SysLog.log("[LLM] stream model=#{model_str} msgs=#{length(messages)} tools=#{length(tools)}\n  #{log_messages(messages)}")
 
-      case String.split(model_str, "::", parts: 3) do
+      result = case String.split(model_str, "::", parts: 3) do
         ["ollama", "cloud", model_name] ->
           settings = load_settings()
           {active, throttled} = partition_accounts(settings["accounts"] || [])
@@ -73,6 +76,9 @@ defmodule Dmhai.Agent.LLM do
           body = build_body(model_name, messages, tools, true)
           do_stream_request(url, headers, body, reply_pid, model_str, on_tokens)
       end
+
+      maybe_trace(trace, model_str, messages, tools, result)
+      result
     end
   end
 
@@ -84,13 +90,14 @@ defmodule Dmhai.Agent.LLM do
     if stub = Application.get_env(:dmhai, :__llm_call_stub__) do
       stub.(model_str, messages, opts)
     else
-      tools = Keyword.get(opts, :tools, [])
+      tools       = Keyword.get(opts, :tools, [])
       llm_options = Keyword.get(opts, :options, %{})
-      on_tokens = Keyword.get(opts, :on_tokens, nil)
+      on_tokens   = Keyword.get(opts, :on_tokens, nil)
+      trace       = Keyword.get(opts, :trace)
       Logger.info("[LLM] call #{model_str} msgs=#{length(messages)} tools=#{length(tools)}")
       Dmhai.SysLog.log("[LLM] call model=#{model_str} msgs=#{length(messages)} tools=#{length(tools)}\n  #{log_messages(messages)}")
 
-      case String.split(model_str, "::", parts: 3) do
+      result = case String.split(model_str, "::", parts: 3) do
         ["ollama", "cloud", model_name] ->
           settings = load_settings()
           {active, throttled} = partition_accounts(settings["accounts"] || [])
@@ -109,6 +116,9 @@ defmodule Dmhai.Agent.LLM do
           body = build_body(model_name, messages, tools, false, llm_options)
           do_call_request(url, headers, body, model_str, on_tokens)
       end
+
+      maybe_trace(trace, model_str, messages, tools, result)
+      result
     end
   end
 
@@ -650,6 +660,13 @@ defmodule Dmhai.Agent.LLM do
     end)
     result = Enum.join(parts, " | ")
     if String.length(result) > 1000, do: String.slice(result, 0, 1000) <> "…", else: result
+  end
+
+  defp maybe_trace(nil, _model_str, _messages, _tools, _result), do: :ok
+  defp maybe_trace(meta, model_str, messages, tools, result) do
+    if AgentSettings.log_trace() do
+      LogTrace.write(meta, model_str, messages, tools, result)
+    end
   end
 
   defp load_settings do
