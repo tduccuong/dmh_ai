@@ -569,6 +569,13 @@ defmodule Dmhai.Agent.UserAgent do
     File.mkdir_p(data_dir)
     File.mkdir_p(workspace_dir)
 
+    # Snapshot the set of `📎 [newly attached]` paths injected by
+    # ContextEngine into the current turn's user message. Police's
+    # check_fresh_attachments_read/2 uses this at text-round time to
+    # enforce that each fresh attachment was actually extract_content'd
+    # during this turn.
+    fresh_attachment_paths = Dmhai.Agent.Police.extract_fresh_attachment_paths(llm_messages)
+
     ctx = %{
       user_id:       user_id,
       user_email:    email,
@@ -576,10 +583,11 @@ defmodule Dmhai.Agent.UserAgent do
       session_root:  Dmhai.Constants.session_root(email, session_id),
       data_dir:      data_dir,
       workspace_dir: workspace_dir,
-      log_trace:     AgentSettings.log_trace()
+      log_trace:     AgentSettings.log_trace(),
+      fresh_attachment_paths: fresh_attachment_paths
     }
 
-    Dmhai.SysLog.log("[ASSISTANT] user=#{user_id} session=#{session_id} msg=#{String.slice(command.content, 0, 200)}")
+    Dmhai.SysLog.log("[ASSISTANT] user=#{user_id} session=#{session_id} msg=#{String.slice(command.content, 0, 200)} fresh_attachments=#{inspect(fresh_attachment_paths)}")
 
     session_turn_loop(llm_messages, model, ctx, 0)
 
@@ -612,10 +620,27 @@ defmodule Dmhai.Agent.UserAgent do
 
       on_tokens = fn rx, tx -> TokenTracker.add_master(ctx.session_id, ctx.user_id, rx, tx) end
 
-      case LLM.call(model, messages, tools: tools, on_tokens: on_tokens, trace: trace) do
+      # Use LLM.stream for every round. For tool-call rounds the collector
+      # stays empty (the model emits tool_calls, not content tokens) —
+      # harmless, buffer is cleared before the next round. For the FINAL
+      # text round, tokens flow into sessions.stream_buffer in real time
+      # so the FE polling loop renders the answer progressively as it's
+      # generated, same UX as Confidant mode.
+      collector = spawn_stream_collector(ctx.session_id, ctx.user_id)
+      result = LLM.stream(model, messages, collector,
+                          tools: tools, on_tokens: on_tokens, trace: trace)
+      stop_stream_collector(collector)
+
+      case result do
         {:ok, {:tool_calls, calls}} ->
           call_names = Enum.map_join(calls, ", ", fn c -> get_in(c, ["function", "name"]) || "?" end)
           Dmhai.SysLog.log("[ASSISTANT] round=#{round} tool_calls=[#{call_names}]")
+
+          # Defensive: if the model leaked any stray reasoning text before
+          # settling on tool_calls, clear the buffer so the FE doesn't
+          # briefly show a phantom partial answer for a round that turned
+          # out to be tool-calls only.
+          StreamBuffer.clear(ctx.session_id, ctx.user_id)
 
           assistant_msg = %{role: "assistant", content: "", tool_calls: calls}
           tool_result_msgs = execute_tools(calls, ctx)
@@ -631,6 +656,7 @@ defmodule Dmhai.Agent.UserAgent do
               # the other Police gates. The broken text is NOT persisted
               # to session.messages; only the corrected response will be.
               Dmhai.SysLog.log("[ASSISTANT] round=#{round} rejected text='#{String.slice(text, 0, 80)}' — nudging for retry")
+              StreamBuffer.clear(ctx.session_id, ctx.user_id)
               new_messages =
                 messages ++ [
                   %{role: "assistant", content: text},
@@ -639,17 +665,48 @@ defmodule Dmhai.Agent.UserAgent do
               session_turn_loop(new_messages, model, ctx, round + 1)
 
             :ok ->
-              Dmhai.SysLog.log("[ASSISTANT] round=#{round} text(#{String.length(text)} chars)")
-              {:ok, _assistant_ts} =
-                append_session_message(ctx.session_id, ctx.user_id,
-                                       %{role: "assistant", content: text})
+              # Before accepting the final text, enforce that every
+              # `📎 [newly attached]` path in the current turn's user
+              # message was passed to `extract_content` at some point
+              # during this turn. Catches the "model acknowledges the
+              # attachment in prose but never actually reads it" failure.
+              fresh_paths = Map.get(ctx, :fresh_attachment_paths, [])
+
+              case Dmhai.Agent.Police.check_fresh_attachments_read(fresh_paths, messages) do
+                {:rejected, reason} ->
+                  Dmhai.SysLog.log("[ASSISTANT] round=#{round} rejected fresh-attachment-miss — nudging for retry")
+                  StreamBuffer.clear(ctx.session_id, ctx.user_id)
+                  new_messages =
+                    messages ++ [
+                      %{role: "assistant", content: text},
+                      %{role: "user",      content: reason}
+                    ]
+                  session_turn_loop(new_messages, model, ctx, round + 1)
+
+                :ok ->
+                  Dmhai.SysLog.log("[ASSISTANT] round=#{round} text(#{String.length(text)} chars)")
+                  {:ok, _assistant_ts} =
+                    append_session_message(ctx.session_id, ctx.user_id,
+                                           %{role: "assistant", content: text})
+                  # Stream buffer had the progressive text; clear it now that
+                  # the permanent message is persisted, so the FE's streaming
+                  # placeholder gives way to the real message on next poll.
+                  StreamBuffer.clear(ctx.session_id, ctx.user_id)
+                  # Runtime auto-close: if the model worked on any task this
+                  # turn but forgot to call update_task(status: "done"), close
+                  # them now using the final answer as task_result. Keeps the
+                  # task list clean without relying on model compliance.
+                  auto_close_ongoing_tasks(ctx.session_id, text)
+              end
           end
 
         {:ok, ""} ->
           Dmhai.SysLog.log("[ASSISTANT] round=#{round} empty response — no message persisted")
+          StreamBuffer.clear(ctx.session_id, ctx.user_id)
 
         {:error, reason} ->
           Dmhai.SysLog.log("[ASSISTANT] round=#{round} ERROR: #{inspect(reason)}")
+          StreamBuffer.clear(ctx.session_id, ctx.user_id)
           # Persist the error as an assistant message so the FE renders it
           # and the user sees something actionable rather than silence.
           err_text = Dmhai.I18n.t("llm_error", "en", %{reason: inspect(reason)})
@@ -657,6 +714,29 @@ defmodule Dmhai.Agent.UserAgent do
                                             %{role: "assistant", content: err_text})
       end
     end
+  end
+
+  # Sweep any tasks still in `ongoing` for this session and mark them done
+  # with the assistant's final text as the task_result. Called at the end
+  # of a successful text round — catches the case where the model did the
+  # work but forgot to call update_task(status: "done") before emitting
+  # its answer. Matches the "less reliance on model" philosophy already
+  # applied to periodic re-arm: routine bookkeeping handled by the
+  # runtime, not the model. Periodic tasks re-schedule themselves via
+  # Tasks.mark_done/2's built-in branch.
+  defp auto_close_ongoing_tasks(session_id, assistant_text) do
+    # Cap the task_result snippet — don't dump an entire multi-kilobyte
+    # answer into every ongoing task row. First ~500 chars is enough
+    # audit context; the full answer lives in session.messages.
+    snippet = String.slice(assistant_text || "", 0, 500)
+
+    session_id
+    |> Tasks.active_for_session()
+    |> Enum.filter(&(&1.task_status == "ongoing"))
+    |> Enum.each(fn t ->
+      Dmhai.SysLog.log("[ASSISTANT] auto-closing ongoing task=#{t.task_id} — model did not call update_task(done)")
+      Tasks.mark_done(t.task_id, snippet)
+    end)
   end
 
   # Execute each tool call: Police-gate first (task-discipline check —

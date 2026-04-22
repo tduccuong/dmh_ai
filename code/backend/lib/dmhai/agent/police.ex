@@ -345,4 +345,103 @@ defmodule Dmhai.Agent.Police do
     end
   end
   def check_assistant_text(_), do: :ok
+
+  @doc """
+  Enforce that every `📎 ` path in the current turn's user message was
+  passed to `extract_content` during this turn. Catches the model-
+  compliance failure where the model acknowledges an attachment in
+  prose ("I see the PDF you attached…") but never reads it — leaving
+  it with no actual content to answer from.
+
+  `fresh_paths` — the list of workspace paths the context builder
+  injected the `[newly attached]` marker on for this turn (i.e. the
+  `📎 ` paths from the last user message).
+
+  `in_turn_messages` — the messages list accumulated inside
+  `session_turn_loop` across tool rounds. Every assistant-role message
+  with `tool_calls` is scanned; calls whose name is `"extract_content"`
+  contribute their `path` argument to the "read" set.
+
+  Returns `:ok` if every fresh path was read. Otherwise returns a
+  rejection message listing the missed paths so the session loop can
+  nudge the model to retry.
+  """
+  @spec check_fresh_attachments_read([String.t()], [map()]) :: :ok | {:rejected, String.t()}
+  def check_fresh_attachments_read([], _messages), do: :ok
+  def check_fresh_attachments_read(fresh_paths, messages) when is_list(fresh_paths) do
+    read_paths = collect_extracted_paths(messages)
+    missed     = Enum.reject(fresh_paths, &(&1 in read_paths))
+
+    if missed == [] do
+      :ok
+    else
+      joined = Enum.map_join(missed, "\n", fn p -> "  - `#{p}`" end)
+      reason =
+        "Error: you have `[newly attached]` attachments in the current user " <>
+          "message that you didn't read this turn:\n#{joined}\n" <>
+          "You must call `extract_content(path: <workspace/...>)` on each of " <>
+          "them — the user re-attached them because they want another look. " <>
+          "Retry the turn: if you haven't created a task yet, call `create_task` " <>
+          "first, then `extract_content` per attachment, then produce your " <>
+          "final answer."
+
+      Logger.warning("[Police] REJECTED fresh_attachments_unread: missed=#{inspect(missed)}")
+      Dmhai.SysLog.log("[POLICE] REJECTED fresh_attachments_unread: missed=#{inspect(missed)}")
+      {:rejected, reason}
+    end
+  end
+  def check_fresh_attachments_read(_, _), do: :ok
+
+  @doc """
+  Pull the set of `📎 [newly attached] <path>` paths from the last
+  user-role message in a message array. Used at turn start to snapshot
+  the "must be read this turn" set for
+  `check_fresh_attachments_read/2`.
+  """
+  @spec extract_fresh_attachment_paths([map()]) :: [String.t()]
+  def extract_fresh_attachment_paths(messages) do
+    last_user =
+      messages
+      |> Enum.reverse()
+      |> Enum.find(fn m -> (m[:role] || m["role"]) == "user" end)
+
+    case last_user do
+      nil -> []
+      msg ->
+        content = msg[:content] || msg["content"] || ""
+
+        ~r/📎\s+\[newly attached\]\s+(\S+)/u
+        |> Regex.scan(content, capture: :all_but_first)
+        |> List.flatten()
+        |> Enum.map(&String.trim/1)
+    end
+  end
+
+  # Scan the turn's message accumulator for `extract_content` tool_calls
+  # and return the set of `path` argument values the model passed.
+  defp collect_extracted_paths(messages) do
+    messages
+    |> Enum.flat_map(fn msg ->
+      role  = msg[:role] || msg["role"]
+      calls = msg[:tool_calls] || msg["tool_calls"] || []
+
+      if role == "assistant" and is_list(calls) do
+        Enum.flat_map(calls, fn call ->
+          name = get_in(call, ["function", "name"]) || ""
+          args = get_in(call, ["function", "arguments"]) || %{}
+          args = if is_binary(args), do: decode_or_empty(args), else: args
+
+          if name == "extract_content" and is_binary(args["path"]) do
+            [args["path"]]
+          else
+            []
+          end
+        end)
+      else
+        []
+      end
+    end)
+    |> MapSet.new()
+    |> MapSet.to_list()
+  end
 end

@@ -14,7 +14,7 @@ defmodule Dmhai.Agent.AgentSettings do
 
   @defaults %{
     "confidantModel"         => "gemini-3-flash-preview:cloud",
-    "assistantModel"         => "devstral-small-2:24b-cloud",
+    "assistantModel"         => "nemotron-3-nano:30b-cloud",
     "workerModel"          => "nemotron-3-nano:30b-cloud",
     "compactorModel"       => "gemini-3-flash-preview:cloud",
     "summarizerModel"      => "gemini-3-flash-preview:cloud",

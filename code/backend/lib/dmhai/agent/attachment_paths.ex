@@ -90,6 +90,7 @@ defmodule Dmhai.Agent.AttachmentPaths do
   def normalise_spec(spec, attachments) when is_binary(spec) and is_list(attachments) do
     base =
       spec
+      |> strip_transient_markers()
       |> String.split("\n")
       |> Enum.reject(fn line -> Regex.match?(~r/^\s*📎\s+/u, line) end)
       |> Enum.join("\n")
@@ -103,5 +104,22 @@ defmodule Dmhai.Agent.AttachmentPaths do
         attachment_block = Enum.map_join(paths, "\n", fn p -> "📎 " <> p end)
         base <> "\n\n" <> attachment_block
     end
+  end
+
+  @doc """
+  Strip any `[newly attached] ` context-build-time marker from a string.
+  The marker is only valid in the ephemeral LLM input array; if it
+  reaches any persisted field (task_spec / task_title / task_result)
+  it's a leak from the model copying the marker verbatim from its
+  input into a tool_call argument. Strip at every persistence boundary
+  so the DB never stores it.
+  """
+  @spec strip_transient_markers(String.t() | nil) :: String.t()
+  def strip_transient_markers(nil), do: ""
+  def strip_transient_markers(text) when is_binary(text) do
+    text
+    |> String.replace("📎 [newly attached] ", "📎 ")
+    |> String.replace("[newly attached] ", "")
+    |> String.replace("[newly attached]", "")
   end
 end

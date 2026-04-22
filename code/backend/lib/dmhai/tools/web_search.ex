@@ -10,12 +10,27 @@ defmodule Dmhai.Tools.WebSearch do
 
   @max_snippet_chars 500
 
+  # Source of truth for the "when to call web_search" guidance shown to the
+  # Assistant-mode model via the tool schema's description. The Confidant
+  # pipeline has its own pre-call classifier prompt in Dmhai.Web.Search —
+  # different framing ("Say YES/NO"), same underlying criteria; the two can
+  # be DRYed later if they drift.
+  @tool_description """
+  **Critical `web_search` rule:**
+  1. `web_search` tool is EXPENSIVE — only call when the answer to the user needs:
+    - Breaking news, sports scores, stock/crypto prices, weather, live events, headlines.
+    - Current technical information, GitHub repos, library/framework versions, or StackOverflow-style answers that could have changed.
+    - Statistics, laws, regulations, prices, or figures that change over time.
+    - A person's recent news, current job, or latest work.
+    - Anything you're unsure about or that could be outdated.
+  2. Calling `web_search` for any other reasons will be REJECTED.
+  """
+
   @impl true
   def name, do: "web_search"
 
   @impl true
-  def description,
-    do: "Live web search. EXPENSIVE — use only for time-sensitive or frequently-changing data."
+  def description, do: @tool_description
 
   @impl true
   def definition do

@@ -128,7 +128,10 @@ defmodule Dmhai.Tools.UpdateTask do
     if (result || "") |> to_string() |> String.trim() == "" do
       {:error, "update_task(status='done') requires a non-empty 'task_result' — compile the final answer for the task"}
     else
-      Tasks.mark_done(task_id, to_string(result))
+      # Strip any context-build-time marker the model may have copied in
+      # from its input verbatim; see §Attachment routing.
+      cleaned_result = Dmhai.Agent.AttachmentPaths.strip_transient_markers(to_string(result))
+      Tasks.mark_done(task_id, cleaned_result)
       :ok
     end
   end
@@ -146,9 +149,13 @@ defmodule Dmhai.Tools.UpdateTask do
         # Re-apply existing attachments during the spec rewrite so 📎 lines
         # don't get dropped accidentally when the assistant rewrites the
         # description text without re-supplying attachments.
-        existing = Dmhai.Agent.ContextEngine.extract_attachments(task.task_spec)
-        Tasks.update_spec(task.task_id, Dmhai.Agent.AttachmentPaths.normalise_spec(s, existing))
-        :ok
+        existing   = Dmhai.Agent.ContextEngine.extract_attachments(task.task_spec)
+        normalised = Dmhai.Agent.AttachmentPaths.normalise_spec(s, existing)
+
+        with :ok <- require_non_empty_post_normalise(normalised) do
+          Tasks.update_spec(task.task_id, normalised)
+          :ok
+        end
       other ->
         {:error, "update_task: invalid task_spec=#{inspect(other)}"}
     end
@@ -162,10 +169,28 @@ defmodule Dmhai.Tools.UpdateTask do
         other               -> throw({:bad_spec, other})
       end
 
-    Tasks.update_spec(task.task_id, Dmhai.Agent.AttachmentPaths.normalise_spec(base, attachments))
-    :ok
+    normalised = Dmhai.Agent.AttachmentPaths.normalise_spec(base, attachments)
+
+    with :ok <- require_non_empty_post_normalise(normalised) do
+      Tasks.update_spec(task.task_id, normalised)
+      :ok
+    end
   catch
     {:bad_spec, other} -> {:error, "update_task: invalid task_spec=#{inspect(other)}"}
+  end
+
+  # Mirror of create_task's guard — same root cause (model packs attachments
+  # into task_spec while leaving `attachments` empty), same nudge.
+  defp require_non_empty_post_normalise(spec) do
+    if is_binary(spec) and String.trim(spec) != "" do
+      :ok
+    else
+      {:error,
+       "update_task: task_spec is empty after normalisation. You likely passed " <>
+         "only a `📎 <path>` line as the spec — but file paths belong in the " <>
+         "`attachments` argument, not task_spec. Put the user's verbatim " <>
+         "question/request text in task_spec."}
+    end
   end
 
   defp apply_intvl(_task_id, nil), do: :ok

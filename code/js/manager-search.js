@@ -147,13 +147,16 @@ UIManager.sendMessage = async function() {
     document.getElementById('stop-label').textContent = t('stopGen');
     document.getElementById('stop-gen-btn').style.display = '';
 
-    // Show the "answering…" status indicator and assistant header as soon
-    // as the POST returns; the polling loop will start feeding streaming
-    // text into the placeholder when sessions.stream_buffer becomes non-null.
+    // Initial status is "thinking" — the model hasn't produced any visible
+    // output yet. We flip to "answering" inside _updateStreamPlaceholder
+    // the first time stream_buffer becomes non-empty (i.e. when the first
+    // word of the final answer lands in the polling delta). For Assistant
+    // mode turns that never stream (LLM.call vs LLM.stream) the status
+    // stays on "thinking" until the whole message drops in.
     if (!assistantHdr) {
         assistantHdr = buildMsgHeaderEl({ role: 'assistant', ts: Date.now() }, sessionAtSend);
         assistantDiv.insertBefore(assistantHdr, bodyDiv);
-        self.setStatusHtml(modeRoleHtml(sessionAtSend) + t('answering'));
+        self.setStatusHtml(modeRoleHtml(sessionAtSend) + t('thinking'));
     }
 
     // Called by pollTurnToCompletion once the turn is done. The final
@@ -398,6 +401,19 @@ UIManager._updateStreamPlaceholder = function(sessionAtSend, streamBuffer) {
     var entry = this._streamMap.get(sessionAtSend.id);
     if (!entry) return;
     if (!streamBuffer) return;
+
+    // First non-empty stream_buffer means the LLM just produced its first
+    // word of final answer — flip the status indicator from "thinking"
+    // to "answering" so the user knows output is flowing in now. After
+    // the flip we don't switch back even if later polls return null (the
+    // final message is about to land in the messages delta anyway).
+    if (!entry.hasContentFlag) {
+        entry.hasContentFlag = true;
+        var mode = (sessionAtSend && sessionAtSend.mode) || 'confidant';
+        var icon = (typeof MODE_ICONS !== 'undefined' && MODE_ICONS[mode]) || '';
+        var label = mode === 'assistant' ? 'Assistant' : 'Confidant';
+        this.setStatusHtml(icon + label + t('answering'));
+    }
 
     entry.content = streamBuffer;
 

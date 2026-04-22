@@ -68,6 +68,29 @@ defmodule Dmhai.Tools.ExtractContent do
   end
 
   def execute(%{"path" => path}, ctx) when is_binary(path) do
+    # Dedup: if the path is a historical attachment (not in this turn's
+    # fresh list) and a prior done task in the same session already
+    # extracted it, reuse that task's result instead of running the
+    # pipeline again. Freshly re-attached files (`[newly attached]`)
+    # always take the fresh path — the user re-uploaded for a reason.
+    fresh = Map.get(ctx, :fresh_attachment_paths, []) || []
+    session_id = Map.get(ctx, :session_id)
+
+    if path in fresh or session_id == nil do
+      do_extract(path, ctx)
+    else
+      case find_prior_extraction(session_id, path) do
+        {:ok, prior} -> reuse_prior(prior)
+        :none        -> do_extract(path, ctx)
+      end
+    end
+  end
+
+  def execute(_, _), do: {:error, "Missing required argument: path or data"}
+
+  # ── dedup for historical attachments ─────────────────────────────────────
+
+  defp do_extract(path, ctx) do
     with {:ok, abs} <- SafePath.resolve(path, ctx),
          :ok        <- exists_check(abs) do
       ext = abs |> Path.extname() |> String.downcase()
@@ -83,7 +106,43 @@ defmodule Dmhai.Tools.ExtractContent do
     end
   end
 
-  def execute(_, _), do: {:error, "Missing required argument: path or data"}
+  # Scan the most recent done tasks for the session and return the first
+  # whose `task_spec` listed this path as an attachment and whose
+  # `task_result` is non-empty. Cap is generous but bounded so we never
+  # scan the whole task history.
+  @prior_scan_limit 50
+  defp find_prior_extraction(session_id, path) do
+    Dmhai.Agent.Tasks.recent_done_for_session(session_id, @prior_scan_limit)
+    |> Enum.find(fn t ->
+      spec   = Map.get(t, :task_spec) || ""
+      result = Map.get(t, :task_result) || ""
+      path in Dmhai.Agent.ContextEngine.extract_attachments(spec) and
+        String.trim(result) != ""
+    end)
+    |> case do
+      nil  -> :none
+      task -> {:ok, task}
+    end
+  end
+
+  defp reuse_prior(task) do
+    tid    = Map.get(task, :task_id)
+    title  = Map.get(task, :task_title) || "(untitled)"
+    result = Map.get(task, :task_result) || ""
+
+    Logger.info("[ExtractContent] dedup hit — reusing task=#{tid}")
+
+    body =
+      "This file was already extracted on a prior task in this session. " <>
+        "Reusing the earlier summary rather than re-running the extractor.\n\n" <>
+        "**Prior task:** `#{tid}` — #{title}\n\n" <>
+        "**Prior task_result:**\n\n#{result}\n\n" <>
+        "If this summary isn't enough to answer the user's follow-up, " <>
+        "rely on your own earlier reply in the conversation; only " <>
+        "re-extract if the user explicitly asks you to re-read the file."
+
+    {:ok, body}
+  end
 
   # ── base64 input (Confidant fallback path) ────────────────────────────────
 

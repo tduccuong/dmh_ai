@@ -423,16 +423,17 @@ defmodule Dmhai.Agent.LLM do
     Logger.info("[LLM:http req=#{req_id}] stream BEGIN model=#{model_str} body_bytes=#{body_size} url=#{url}")
     Dmhai.SysLog.log("[LLM:http req=#{req_id}] stream BEGIN model=#{model_str} body_bytes=#{body_size}")
 
-    # See do_call_request for why we force `Connection: close` on outbound
-    # LLM calls — Finch pool reuse over Ollama's TLS keepalive was the
-    # root cause of the silent multi-minute recv hangs.
+    # See do_call_request for why we force `Connection: close` +
+    # `compressed: false` — first stops zombie-socket reuse; second
+    # avoids a gzip-decoder stall on long streamed responses.
     headers_no_reuse = [{"connection", "close"} | headers]
 
     result =
       Req.post(url,
         json: body,
         headers: headers_no_reuse,
-        receive_timeout: 180_000,
+        compressed: false,
+        receive_timeout: 120_000,
         retry: false,
         finch: Dmhai.Finch,
         into: fn {:data, data}, {req, resp} ->
@@ -554,7 +555,9 @@ defmodule Dmhai.Agent.LLM do
       true ->
         {:error, reason} = result
         Logger.error("[LLM] stream failed #{model_str}: #{inspect(reason)}")
-        {:error, reason}
+        # Same transport-error classification as do_call_request — lets
+        # do_cloud_stream's retry+rotate kick in on timeout / closed.
+        classify_transport_error(reason)
     end
   end
 
@@ -609,14 +612,16 @@ defmodule Dmhai.Agent.LLM do
     Logger.info("[LLM:http req=#{req_id}] call BEGIN model=#{model_str} body_bytes=#{body_size} url=#{url}")
     Dmhai.SysLog.log("[LLM:http req=#{req_id}] call BEGIN model=#{model_str} body_bytes=#{body_size}")
 
-    # `Connection: close` forces Finch to terminate the TCP/TLS session
-    # after the response. No connection is returned to the pool, so the
-    # next LLM call gets a fresh handshake — immune to the zombie-
-    # connection hang we hit on Ollama Cloud's keep-alive sockets (their
-    # edge silently detaches some backend state between requests on the
-    # same connection, and we'd otherwise block on recv forever waiting
-    # for a response that never comes). The ~150 ms handshake overhead
-    # is negligible against multi-second LLM response times.
+    # `Connection: close` + `compressed: false` + bounded receive_timeout:
+    # three guardrails learned from production incidents against Ollama
+    # Cloud. `Connection: close` forces fresh TCP/TLS per call — immune
+    # to zombie-socket reuse. `compressed: false` disables the default
+    # `Accept-Encoding: gzip` header — without it, Ollama's edge sometimes
+    # returns a gzipped response whose incremental decoding stalls on
+    # long text generations (short tool-call responses fit in one packet
+    # and always decoded cleanly; only multi-packet text responses
+    # triggered the hang). receive_timeout floors total wait at 120 s so
+    # unknown future stalls still fail out rather than block forever.
     # See specs/architecture.md §Outbound HTTP for LLM calls.
     headers_no_reuse = [{"connection", "close"} | headers]
 
@@ -624,7 +629,8 @@ defmodule Dmhai.Agent.LLM do
       Req.post(url,
         json: body,
         headers: headers_no_reuse,
-        receive_timeout: 180_000,
+        compressed: false,
+        receive_timeout: 120_000,
         retry: false,
         finch: Dmhai.Finch
       )
@@ -665,9 +671,25 @@ defmodule Dmhai.Agent.LLM do
 
       {:error, reason} ->
         Logger.error("[LLM:http req=#{req_id}] call FAILED elapsed_ms=#{elapsed1} model=#{model_str}: #{inspect(reason)}")
-        {:error, reason}
+        # Classify transport-layer errors (timeout, connection closed,
+        # DNS failure, …) as :server_error so do_cloud_call's retry +
+        # account rotation kicks in. Otherwise the raw Req error
+        # struct would propagate up to the session loop and be persisted
+        # verbatim as the assistant message ("LLM error: %Req.Transport
+        # Error{...}") — ugly and wastes the turn.
+        classify_transport_error(reason)
     end
   end
+
+  # Transport-layer errors get classified as :server_error so the outer
+  # account-rotation retry takes over. Recognises both Req's and Mint's
+  # error structs (Req.TransportError wraps Mint.TransportError).
+  defp classify_transport_error(%Req.TransportError{}), do: {:error, :server_error}
+  defp classify_transport_error(%Mint.TransportError{}), do: {:error, :server_error}
+  defp classify_transport_error(%{reason: reason})
+       when reason in [:timeout, :closed, :econnrefused, :econnreset, :nxdomain],
+       do: {:error, :server_error}
+  defp classify_transport_error(other), do: {:error, other}
 
   # Split accounts into {active, throttled} based on throttledUntil epoch-ms field.
   # Throttled accounts go to the back of the queue as last-resort fallback.

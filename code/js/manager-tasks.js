@@ -19,6 +19,10 @@
     var ACTIVE_POLL_MS = 3000;
     var IDLE_POLL_MS   = 15000;
     var RECENT_DONE_CAP = 20;
+    // Recent bucket renders as a <details> element. If the list is short,
+    // open it by default so the user doesn't have to click to see the
+    // just-finished task.
+    var RECENT_OPEN_THRESHOLD = 5;
 
     // ── API ──────────────────────────────────────────────────────────────
 
@@ -156,6 +160,7 @@
         if (tasks.length === 0) return;
         var details = document.createElement('details');
         details.className = 'task-bucket-recent';
+        if (tasks.length <= RECENT_OPEN_THRESHOLD) details.open = true;
         var summary = document.createElement('summary');
         summary.innerHTML = 'Recent <span class="task-recent-count">(' + tasks.length + ')</span>';
         details.appendChild(summary);

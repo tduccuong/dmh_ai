@@ -308,26 +308,11 @@
                             <div id="cloud-acct-error" style="display:none;color:#e05060;font-size:12px;margin-top:6px;"></div>
                         </div>
                     </div>
-                    <!-- Section 2: Ollama Cloud Models -->
-                    <div class="settings-section" id="cloud-models-section">
-                        <div class="settings-section-title">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>
-                            Ollama Cloud Models
-                        </div>
-                        <div class="settings-subsection">
-                            <div id="cloud-models-list" class="settings-list"></div>
-                            <div class="settings-search-wrap">
-                                <input id="cloud-model-search" class="settings-input" placeholder="Search or type model name...">
-                                <button class="settings-add-btn" id="cloud-model-add-btn">+ Add</button>
-                                <div class="settings-suggestions" id="cloud-model-suggestions"></div>
-                            </div>
-                        </div>
-                    </div>
-                    <!-- Section 3: Ollama Local Models -->
+                    <!-- Section 2: Ollama Local Endpoint -->
                     <div class="settings-section">
                         <div class="settings-section-title">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-                            Ollama Local Models
+                            Ollama Local Endpoint
                         </div>
                         <div class="settings-subsection">
                             <div class="settings-add-row">
@@ -336,9 +321,33 @@
                             </div>
                             <div id="settings-ollama-url-msg" style="display:none;font-size:12px;margin-top:6px;line-height:1.5;"></div>
                         </div>
+                    </div>
+                    <!-- Section 3: Assistant Model -->
+                    <div class="settings-section">
+                        <div class="settings-section-title">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                            Assistant Model
+                        </div>
                         <div class="settings-subsection">
-                            <div class="settings-subsection-title">Custom names (optional)</div>
-                            <div id="local-model-names-list" class="settings-list"></div>
+                            <div class="role-picker-current" id="assistant-model-current"></div>
+                            <div class="settings-search-wrap">
+                                <input id="assistant-model-search" class="settings-input" placeholder="Search model name...">
+                                <div class="settings-suggestions" id="assistant-model-suggestions"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- Section 4: Confidant Model -->
+                    <div class="settings-section">
+                        <div class="settings-section-title">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+                            Confidant Model
+                        </div>
+                        <div class="settings-subsection">
+                            <div class="role-picker-current" id="confidant-model-current"></div>
+                            <div class="settings-search-wrap">
+                                <input id="confidant-model-search" class="settings-input" placeholder="Search model name...">
+                                <div class="settings-suggestions" id="confidant-model-suggestions"></div>
+                            </div>
                         </div>
                     </div>
                 </div>

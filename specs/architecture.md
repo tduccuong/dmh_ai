@@ -491,15 +491,28 @@ UserAgent.run_assistant(cmd, state, session_data)
   │     system prompt + history + [Active tasks] block + current input
   │
   └── conversational turn loop:
-        LLM.call(model, messages, tools, ...) →
+        LLM.stream(model, messages, collector, tools, ...) →
           ┌─ {:tool_calls, calls} ─┐
-          │   execute each call, append tool result, loop
+          │   collector cleared (defensive), execute each call,
+          │   append tool result, loop
           └─ {:text, text} ─┘
-               append assistant message to session, stream to user, DONE
+               collector accumulated the text into sessions.stream_buffer
+               progressively during generation → FE polling rendered it
+               in real time → now persist the final message to
+               session.messages + clear stream_buffer → DONE
 
   Safety cap: max_assistant_tool_rounds per turn (default 50) — if hit,
   abort with a "let's continue next turn" message.
 ```
+
+Uses `LLM.stream` (not `LLM.call`) on every round — same pattern as
+Confidant — so that the final-answer text round streams tokens into
+`sessions.stream_buffer` as they're generated. The FE polling loop
+renders progressive text with the same "thinking…" → "streaming the
+answer…" status flip as Confidant. Tool-call rounds emit no content
+tokens, so `stream_buffer` stays empty through them and `LLM.stream`
+just returns `{:ok, {:tool_calls, …}}` — identical to what `LLM.call`
+used to return.
 
 The turn is strictly sequential: the model emits a tool-call round,
 tool(s) run, results come back, the model emits the next round (or text).
@@ -638,6 +651,17 @@ Key properties:
   is mid-turn on another task, the pickup waits in the mailbox until the
   current turn completes. On the next turn the assistant sees a pending
   periodic in its task list with pickup in the past and acts on it.
+- **Runtime auto-close of forgotten-done tasks.** If the session-turn
+  loop finishes a text round while any task owned by this session is
+  still in `ongoing` status, `auto_close_ongoing_tasks/2` sweeps those
+  tasks and calls `Tasks.mark_done/2` with the first 500 characters of
+  the assistant's final text as `task_result`. Catches the failure mode
+  where the model did the work but forgot to explicitly call
+  `update_task(status: "done")` before emitting its answer — a
+  compliance gap that otherwise leaves rows stuck in the sidebar
+  indefinitely. Periodic tasks re-schedule themselves via
+  `Tasks.mark_done/2`'s built-in branch, so the auto-close path works
+  for them too (ongoing → pending + bumped pickup).
 - **Auto-chain after each turn.** When a turn completes (user-initiated
   OR task-due initiated), the UserAgent calls `Tasks.fetch_next_due/1` for
   that session. The query returns the single pending task with the
@@ -772,9 +796,26 @@ their bare `📎 ` lines.
 - Self-expiring — on the next turn, a different user message becomes
   "last". The previously-marked message now renders bare in the LLM
   input. No stale markers.
-- Deterministic signal for the model AND for future Police checks: the
-  set of "fresh attachments this turn" is exactly the `📎 ` paths in
-  the last user message.
+- Deterministic signal for the model AND for the Police
+  `check_fresh_attachments_read/2` gate: the set of "fresh attachments
+  this turn" is exactly the `📎 ` paths in the last user message.
+- **Persistence-boundary sanitisation** — models occasionally copy the
+  marker verbatim into tool-call arguments they're building (e.g. they
+  paste `task_spec: "📎 [newly attached] workspace/foo.pdf"` into a
+  `create_task` call, echoing what they saw in their input). The
+  `create_task` and `update_task` handlers strip the ` [newly attached]`
+  literal from any `📎 ` line in `task_spec` before writing to the
+  DB. The marker is invalid as persisted data — only the context-
+  builder may emit it, only for the current turn's last user message.
+- **Post-normalise empty-spec guard** — `AttachmentPaths.normalise_spec/2`
+  strips all `📎 ` lines from the input because the `attachments`
+  argument is authoritative. A failure mode: the model packs the
+  attachment path into `task_spec` as a `📎 ` line AND leaves
+  `attachments` empty — normalisation then produces `""` and a garbage
+  task row is persisted. `create_task` and `update_task` re-check the
+  normalised spec for non-emptiness and reject with a nudge ("paths
+  belong in `attachments`, not `task_spec`") so the model retries with
+  the correct argument split instead of silently writing an empty spec.
 
 Prompt rule (in `system_prompt.ex :: assistant_base :: ## Attachments`):
 every `📎 [newly attached]`-prefixed line in the current turn's user
@@ -788,6 +829,32 @@ user message, the model passes those `📎 workspace/...` paths in the
 `attachments` argument of `create_task` / `update_task`; never
 hand-embeds `📎 ` lines in `task_spec`. The BE normalises the stored
 spec from the validated `attachments` list.
+
+**Follow-up discipline** — the primary path is prompt-enforced: for a
+follow-up question about a previously-attached file (bare `📎 `, no
+`[newly attached]` marker), the model answers conversationally from
+the prior task's `task_result` and its own earlier reply — **no
+`extract_content`, no `create_task`, no tool use at all**. Task wrapping
+is reserved for NEW work (new tool calls). The follow-up is just chat.
+
+**Runtime re-extract dedup** — belt-and-braces for when the model
+ignores the rule. `extract_content` at execute-time:
+
+1. Checks `ctx.fresh_attachment_paths` (the 📎 lines marked
+   `[newly attached]` on the current turn). If the path is in that
+   list, always runs the full pipeline — the user re-uploaded and
+   wants a fresh read.
+2. Otherwise, scans the session's recent done tasks (cap
+   `@prior_scan_limit = 50`) for one whose `task_spec` listed the
+   same path as an attachment AND has a non-empty `task_result`.
+   If found, returns a payload that cites the prior task_id and
+   inlines its `task_result`, with a note telling the model to use
+   that instead of triggering another extraction.
+
+Net effect: heavy extraction (LLM vision for images/video, or
+pdftotext/pandoc for docs) runs at most once per session per file.
+Even if the model wrongly creates a re-extract task, the dedup short-
+circuits the expensive work.
 
 Execution tools (unchanged from prior phases):
 `web_fetch`, `web_search`, `run_script`, `extract_content`, `read_file`,
@@ -965,7 +1032,20 @@ Checks:
    design: it fires only on EXACT tool-name match or clear call-shape,
    never on legitimate short replies like "Done." or "Yes".
 
-4. **Path safety** — `check_tool_calls/3` still validates any `path`
+4. **Fresh-attachment read enforcement** — after a turn's final text
+   round completes, `Police.check_fresh_attachments_read/2` verifies
+   that every `📎 ` path in the current turn's user message was passed
+   to `extract_content` during this turn. If any weren't, the final
+   text is rejected and a corrective nudge appended, listing the
+   missed paths, so the model re-runs the round and actually reads
+   them. Catches the compliance failure where the model acknowledges
+   an attachment in prose (*"I see the PDF you attached…"*) without
+   actually calling `extract_content`. Requires tracking which paths
+   the model extracted in the current turn — done by scanning the
+   turn's in-progress message list for `tool_call.function.name ==
+   "extract_content"` entries and collecting the `path` arguments.
+
+5. **Path safety** — `check_tool_calls/3` still validates any `path`
    argument resolves inside `session_root` via `Dmhai.Util.Path.resolve/2`.
    `run_script` still scans for `rm` / `rmdir` / `cp -r` that target paths
    outside `workspace_dir`. (Retained from pre-#101; wiring invocation is
@@ -1109,11 +1189,22 @@ Outbound HTTP from the app goes through one shared Finch pool
 (SearXNG, Jina reader, Telegram, `/assets` proxy) benefit from
 connection reuse — same hosts, steady traffic, no observed issues.
 
-**LLM calls specifically opt OUT of connection reuse.** Both
-`do_call_request/5` and `do_stream_request/6` in
-`lib/dmhai/agent/llm.ex` add a `Connection: close` header on every
-outbound request. This instructs Finch to terminate the TCP/TLS
-session after the response; no connection is returned to the pool.
+**LLM calls specifically opt OUT of connection reuse AND response
+compression.** Both `do_call_request/5` and `do_stream_request/6` in
+`lib/dmhai/agent/llm.ex`:
+
+- Add a `Connection: close` header on every outbound request so Finch
+  terminates the TCP/TLS session after the response (no pool reuse).
+- Pass `compressed: false` to `Req.post` so the client does NOT send
+  `Accept-Encoding: gzip`. Ollama Cloud's edge otherwise returns a
+  gzipped response for longer generations; the client-side streaming
+  gzip decoder stalled on the final-text response pattern (observed
+  multiple times — short tool-call responses fit in one packet and
+  decoded cleanly; multi-packet text responses stalled mid-decode for
+  minutes). curl works fine because it doesn't send Accept-Encoding
+  by default; the server returns plain text and nothing to decode.
+- Bound `receive_timeout` at 120 s as a floor so any future unknown
+  stall fails out rather than blocks forever.
 
 ### Why
 
@@ -1140,11 +1231,20 @@ subsequent reuses were at risk.
 
 ### Belt-and-suspenders
 
-`receive_timeout: 180_000` (3 min) caps any individual LLM HTTP call
+`receive_timeout: 120_000` (2 min) caps any individual LLM HTTP call
 — if something else ever silently hangs at the network level, we
-error out rather than blocking forever. The retry + account rotation
-inside `do_cloud_call/6` and `do_cloud_stream/7` covers transport
-errors.
+error out rather than blocking forever.
+
+**Transport-error classification.** `Req.TransportError` /
+`Mint.TransportError` / any error with `reason` in `[:timeout,
+:closed, :econnrefused, :econnreset, :nxdomain]` is mapped to
+`{:error, :server_error}` inside `do_call_request/5` and
+`do_stream_request/6`. This routes the failure into the existing
+`do_cloud_call/6` / `do_cloud_stream/7` retry loop — 3 attempts on
+the same account with 2 s delay, then rotation to the next account.
+Without this, a raw `%Req.TransportError{reason: :timeout}` would
+propagate up to the session loop and be persisted verbatim as the
+user-facing assistant message (`"LLM error: %Req.TransportError{…}"`).
 
 ### Other outbound HTTP is unaffected
 
@@ -1502,7 +1602,7 @@ Models ending in `:cloud` / `-cloud` auto-route to cloud pool. Cloud keys manage
 | Role | Default |
 |------|---------|
 | Confidant | `gemini-3-flash-preview:cloud` |
-| Assistant (session loop) | `devstral-small-2:24b-cloud` |
+| Assistant (session loop) | `nemotron-3-nano:30b-cloud` |
 | Context Compactor | `gemini-3-flash-preview:cloud` |
 | Progress Summariser (on-demand) | `gemini-3-flash-preview:cloud` |
 | Web Search Detector | `ministral-3:14b-cloud` |

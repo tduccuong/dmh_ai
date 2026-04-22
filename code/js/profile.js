@@ -183,9 +183,8 @@ const SettingsModal = {
     open: async function(page) {
         await Settings.load();
         this._renderAccounts();
-        this._renderCloudModels();
-        this._renderLocalModelNames();
-        this._updateSubsectionState();
+        this._renderRoleCurrent('assistant');
+        this._renderRoleCurrent('confidant');
         document.getElementById('settings-ollama-url').value = AppConfig.ollamaEndpoint || '';
         document.getElementById('settings-compact-turns').value = Settings._compactTurns;
         document.getElementById('settings-keep-recent').value = Settings._keepRecent > 0 ? Settings._keepRecent : '';
@@ -237,104 +236,106 @@ const SettingsModal = {
                 accts.splice(i, 1);
                 Settings.saveAccounts(accts);
                 SettingsModal._renderAccounts();
-                SettingsModal._updateSubsectionState();
             });
             item.appendChild(del);
             list.appendChild(item);
         });
     },
-    _renderCloudModels: function() {
-        var list = document.getElementById('cloud-models-list');
-        list.innerHTML = '';
-        Settings.cloudModels.forEach(function(name, i) {
-            var item = document.createElement('div');
-            item.className = 'settings-list-item';
-            var labelInput = document.createElement('input');
-            labelInput.className = 'settings-label-input';
-            labelInput.placeholder = normalizeModelLabel(name);
-            labelInput.value = Settings.modelLabels[name] || '';
-            labelInput.title = 'Display name';
-            labelInput.addEventListener('change', function() {
-                var labels = Object.assign({}, Settings.modelLabels);
-                var val = labelInput.value.trim();
-                if (val) labels[name] = val; else delete labels[name];
-                Settings.saveModelLabels(labels);
-            });
-            var nameSpan = document.createElement('span');
-            nameSpan.className = 'settings-list-item-sub';
-            nameSpan.textContent = name;
-            var del = SettingsModal._trashBtn();
-            del.addEventListener('click', function() {
-                var models = Settings.cloudModels;
-                models.splice(i, 1);
-                var labels = Object.assign({}, Settings.modelLabels);
-                delete labels[name];
-                Settings._modelLabels = labels;
-                Settings.saveCloudModels(models);
-                SettingsModal._renderCloudModels();
-            });
-            item.appendChild(labelInput);
-            item.appendChild(nameSpan);
-            item.appendChild(del);
-            list.appendChild(item);
-        });
-    },
-    _renderLocalModelNames: async function() {
-        var list = document.getElementById('local-model-names-list');
-        if (!list) return;
-        list.innerHTML = '';
-        try {
-            var models = await OllamaAPI.fetchModels();
-            var localModels = models.filter(function(m) {
-                return Settings.systemModels.indexOf(m.name) === -1 &&
-                       Settings.cloudModels.indexOf(m.name) === -1;
-            }).sort(function(a, b) { return (a.size || 0) - (b.size || 0); });
-            if (localModels.length === 0) {
-                list.innerHTML = '<div style="color:#786888;font-size:12px;padding:4px 0;">No local models found</div>';
-                return;
-            }
-            localModels.forEach(function(model) {
-                var item = document.createElement('div');
-                item.className = 'settings-list-item';
-                var labelInput = document.createElement('input');
-                labelInput.className = 'settings-label-input';
-                labelInput.placeholder = normalizeModelLabel(model.name);
-                labelInput.value = Settings.modelLabels[model.name] || '';
-                labelInput.title = 'Display name';
-                labelInput.addEventListener('change', function() {
-                    var labels = Object.assign({}, Settings.modelLabels);
-                    var val = labelInput.value.trim();
-                    if (val) labels[model.name] = val; else delete labels[model.name];
-                    Settings.saveModelLabels(labels);
-                });
-                var nameSpan = document.createElement('span');
-                nameSpan.className = 'settings-list-item-sub';
-                nameSpan.textContent = model.name + OllamaAPI.formatSize(model.size);
-                item.appendChild(labelInput);
-                item.appendChild(nameSpan);
-                list.appendChild(item);
-            });
-        } catch(e) {
-            list.innerHTML = '<div style="color:#786888;font-size:12px;padding:4px 0;">Could not load local models</div>';
+    // Shows the currently-selected model for a role above the search input.
+    // Reads from Settings, which mirrors what the BE would resolve via
+    // AgentSettings.model_for/1 — empty value means "fall back to @defaults".
+    _renderRoleCurrent: function(role) {
+        var el = document.getElementById(role + '-model-current');
+        if (!el) return;
+        var selected = (role === 'assistant') ? Settings._assistantModel : Settings._confidantModel;
+        if (selected && String(selected).trim()) {
+            el.innerHTML = 'Current: <span class="role-picker-current-name">' + selected + '</span>';
+        } else {
+            el.innerHTML = 'Current: <span class="role-picker-current-none">(using default)</span>';
         }
     },
-    _updateSubsectionState: function() {
-        var sub = document.getElementById('cloud-models-section');
-        var hasAccounts = Settings.accounts.length > 0;
-        sub.classList.toggle('disabled', !hasAccounts);
+    // Debounce map, keyed by role, so the two pickers don't share a timer.
+    _roleSearchTimers: {},
+    _bindRolePicker: function(role) {
+        var input = document.getElementById(role + '-model-search');
+        var sugg  = document.getElementById(role + '-model-suggestions');
+        if (!input || !sugg) return;
+        var self = this;
+        input.addEventListener('input', function() {
+            var q = input.value.trim().toLowerCase();
+            sugg.innerHTML = '';
+            if (!q) { sugg.classList.remove('open'); return; }
+            clearTimeout(self._roleSearchTimers[role]);
+            self._roleSearchTimers[role] = setTimeout(async function() {
+                sugg.innerHTML = '';
+                // Query in parallel: /registry?q= (public cloud catalog) and
+                // /tags (locally installed). Registry fills the gap for
+                // cloud models the user hasn't pulled yet; local /tags
+                // covers everything else (local models + already-installed
+                // cloud variants).
+                var registryPromise = apiFetch('/registry?q=' + encodeURIComponent(q))
+                    .then(function(res) { return res && res.ok ? res.json() : { models: [] }; })
+                    .catch(function() { return { models: [] }; });
+                var localPromise = OllamaAPI.fetchModels().catch(function() { return []; });
+                var results = await Promise.all([registryPromise, localPromise]);
+                var registryModels = (results[0] && results[0].models) || [];
+                var localModels    = results[1] || [];
+                // Partition by name. `:cloud` and `-cloud` are Ollama's
+                // canonical cloud-variant markers; anything else is local.
+                // De-dup by name; local wins over registry (we can show size
+                // info and the user already has it on disk).
+                var seen = Object.create(null);
+                var matches = [];
+                localModels.forEach(function(m) {
+                    var n = (m.name || '').toLowerCase();
+                    if (n.indexOf(q) === -1) return;
+                    if (seen[m.name]) return;
+                    seen[m.name] = true;
+                    var isCloud = n.indexOf(':cloud') !== -1 || n.indexOf('-cloud') !== -1;
+                    matches.push({ name: m.name, kind: isCloud ? 'cloud' : 'local' });
+                });
+                registryModels.forEach(function(m) {
+                    if (!m || !m.name) return;
+                    if (seen[m.name]) return;
+                    seen[m.name] = true;
+                    // Registry entries are all cloud-eligible.
+                    matches.push({ name: m.name, kind: 'cloud' });
+                });
+                if (!matches.length) { sugg.classList.remove('open'); return; }
+                // Cloud first, then local; stable alpha within each group.
+                matches.sort(function(a, b) {
+                    if (a.kind !== b.kind) return a.kind === 'cloud' ? -1 : 1;
+                    return a.name.localeCompare(b.name);
+                });
+                matches.forEach(function(m) {
+                    var item = document.createElement('div');
+                    item.className = 'settings-suggestion-item';
+                    item.textContent = m.name + ' (' + m.kind + ')';
+                    item.addEventListener('mousedown', function(e) {
+                        e.preventDefault();
+                        self._setRoleModel(role, m.name);
+                    });
+                    sugg.appendChild(item);
+                });
+                sugg.classList.add('open');
+            }, 300);
+        });
+        input.addEventListener('blur', function() {
+            setTimeout(function() { sugg.classList.remove('open'); }, 150);
+        });
     },
-    _addCloudModel: function(name) {
-        name = name.trim().toLowerCase();
+    _setRoleModel: function(role, name) {
+        name = (name || '').trim();
         if (!name) return;
-        // Recommended models are shown automatically — don't add to user list
-        if (Settings.systemModels.indexOf(name) !== -1) return;
-        var models = Settings.cloudModels;
-        if (models.indexOf(name) !== -1) return;
-        models.push(name);
-        Settings.saveCloudModels(models);
-        this._renderCloudModels();
-        document.getElementById('cloud-model-search').value = '';
-        document.getElementById('cloud-model-suggestions').classList.remove('open');
+        if (role === 'assistant') Settings._assistantModel = name;
+        else if (role === 'confidant') Settings._confidantModel = name;
+        else return;
+        Settings._persist();
+        SettingsModal._renderRoleCurrent(role);
+        var input = document.getElementById(role + '-model-search');
+        var sugg  = document.getElementById(role + '-model-suggestions');
+        if (input) input.value = '';
+        if (sugg)  { sugg.innerHTML = ''; sugg.classList.remove('open'); }
     },
     init: function() {
         var self = this;
@@ -371,65 +372,15 @@ const SettingsModal = {
             document.getElementById('cloud-acct-name').value = '';
             document.getElementById('cloud-acct-key').value = '';
             self._renderAccounts();
-            self._updateSubsectionState();
         });
-        // Cloud model search
-        var searchInput = document.getElementById('cloud-model-search');
-        var suggestions = document.getElementById('cloud-model-suggestions');
-        var _searchTimer = null;
-        searchInput.addEventListener('input', function() {
-            var q = this.value.trim().toLowerCase();
-            suggestions.innerHTML = '';
-            if (!q) { suggestions.classList.remove('open'); return; }
-            clearTimeout(_searchTimer);
-            _searchTimer = setTimeout(async function() {
-                suggestions.innerHTML = '';
-                var models = [];
-                // Search Ollama public registry via backend proxy
-                try {
-                    var res = await apiFetch('/registry?q=' + encodeURIComponent(q));
-                    if (res.ok) {
-                        var data = await res.json();
-                        models = (data.models || [])
-                            .map(function(m) { return m.name; })
-                            .filter(function(n) { return Settings.systemModels.indexOf(n) === -1; });
-                    }
-                } catch(e) {}
-                // Also show locally-installed cloud models that match the query
-                try {
-                    var localModels = await OllamaAPI.fetchModels();
-                    var localCloud = localModels
-                        .filter(function(m) {
-                            var tag = m.name.includes(':') ? m.name.split(':')[1] : '';
-                            return tag.includes('cloud')
-                                && m.name.toLowerCase().includes(q.toLowerCase())
-                                && Settings.systemModels.indexOf(m.name) === -1;
-                        })
-                        .map(function(m) { return m.name; });
-                    localCloud.forEach(function(n) { if (models.indexOf(n) === -1) models.push(n); });
-                } catch(e) {}
-                if (!models.length) { suggestions.classList.remove('open'); return; }
-                models.forEach(function(name) {
-                    var item = document.createElement('div');
-                    item.className = 'settings-suggestion-item';
-                    item.textContent = name;
-                    item.addEventListener('mousedown', function(e) {
-                        e.preventDefault();
-                        self._addCloudModel(name);
-                    });
-                    suggestions.appendChild(item);
-                });
-                suggestions.classList.add('open');
-            }, 350);
-        });
-        searchInput.addEventListener('blur', function() {
-            setTimeout(function() { suggestions.classList.remove('open'); }, 150);
-        });
-        searchInput.addEventListener('keydown', function(e) {
-            if (e.key === 'Enter') self._addCloudModel(searchInput.value);
-        });
-        document.getElementById('cloud-model-add-btn').addEventListener('click', function() {
-            self._addCloudModel(searchInput.value);
+        // Role-picker search (Assistant & Confidant). Both read the same
+        // local /tags list and partition by name: `:cloud` / `-cloud` → cloud,
+        // everything else → local. Clicking a suggestion persists the
+        // selection immediately — BE's AgentSettings reads fresh from DB on
+        // each model_for/1 call, so the next LLM call for the role routes
+        // to the new choice with no restart.
+        ['assistant', 'confidant'].forEach(function(role) {
+            self._bindRolePicker(role);
         });
         // Local Ollama URL save
         document.getElementById('settings-ollama-url-save').addEventListener('click', function() {

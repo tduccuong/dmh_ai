@@ -41,9 +41,11 @@ defmodule Dmhai.Tools.CreateTask do
          :ok                       <- require_non_empty(args["task_spec"], "task_spec"),
          {:ok, task_type}          <- normalise_type(args["task_type"]),
          {:ok, intvl_sec}          <- normalise_intvl(task_type, args["intvl_sec"]),
-         {:ok, attachments}        <- Dmhai.Agent.AttachmentPaths.validate(args["attachments"]) do
+         {:ok, attachments}        <- Dmhai.Agent.AttachmentPaths.validate(args["attachments"]),
+         normalised_spec           <- Dmhai.Agent.AttachmentPaths.normalise_spec(args["task_spec"], attachments),
+         :ok                       <- require_non_empty_post_normalise(normalised_spec) do
 
-      normalised_spec = Dmhai.Agent.AttachmentPaths.normalise_spec(args["task_spec"], attachments)
+      cleaned_title    = Dmhai.Agent.AttachmentPaths.strip_transient_markers(args["task_title"])
 
       task_id =
         Tasks.insert(
@@ -51,7 +53,7 @@ defmodule Dmhai.Tools.CreateTask do
           session_id: session_id,
           task_type:   task_type,
           intvl_sec:  intvl_sec,
-          task_title:  args["task_title"],
+          task_title:  cleaned_title,
           task_spec:   normalised_spec,
           # Start as 'ongoing' — the model just created this because it's
           # about to execute it in this same turn. 'pending' is reserved for
@@ -73,6 +75,24 @@ defmodule Dmhai.Tools.CreateTask do
   defp require_non_empty(v, field) do
     if is_binary(v) and String.trim(v) != "", do: :ok,
     else: {:error, "create_task requires a non-empty '#{field}'"}
+  end
+
+  # Guard against the model packing attachment 📎 lines into task_spec
+  # while leaving `attachments` empty — `normalise_spec/2` strips all 📎
+  # lines because `attachments` is authoritative, so the result is "".
+  # Reject with a nudge that steers the model to the correct argument
+  # split instead of silently persisting an empty spec.
+  defp require_non_empty_post_normalise(spec) do
+    if is_binary(spec) and String.trim(spec) != "" do
+      :ok
+    else
+      {:error,
+       "create_task: task_spec is empty after normalisation. You likely passed " <>
+         "only a `📎 <path>` line as the spec — but file paths belong in the " <>
+         "`attachments` argument, not task_spec. Put the user's verbatim " <>
+         "question/request text in task_spec, and pass paths like " <>
+         "`attachments: [\"workspace/foo.pdf\"]`."}
+    end
   end
 
   defp normalise_intvl(task_type, raw) do
