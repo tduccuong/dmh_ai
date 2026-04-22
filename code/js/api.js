@@ -33,6 +33,24 @@ const SessionStore = {
         if (!res.ok) return null;
         return res.json();
     },
+    // Progress rows (tool invocations, thinking excerpts, on-demand summaries).
+    // Emitted by the Assistant Loop in real time; persisted in session_progress
+    // table; NEVER injected into LLM context. Pass `sinceId` to delta-load.
+    getSessionProgress: async function(id, sinceId) {
+        var url = this.BASE + '/' + id + '/progress';
+        if (sinceId && sinceId > 0) url += '?since=' + encodeURIComponent(sinceId);
+        const res = await apiFetch(url);
+        if (!res.ok) return { progress: [] };
+        return res.json();
+    },
+    // Task list for a session — returns all tasks newest-first. The FE's
+    // task-list sidebar polls this endpoint at ~3 s cadence while tasks
+    // are active, 15 s when idle.
+    getSessionTasks: async function(id) {
+        const res = await apiFetch(this.BASE + '/' + id + '/tasks');
+        if (!res.ok) return { tasks: [] };
+        return res.json();
+    },
     updateSession: async function(session) {
         await apiFetch(this.BASE + '/' + session.id, {
             method: 'PUT',

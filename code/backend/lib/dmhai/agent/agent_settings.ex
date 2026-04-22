@@ -14,8 +14,7 @@ defmodule Dmhai.Agent.AgentSettings do
 
   @defaults %{
     "confidantModel"         => "gemini-3-flash-preview:cloud",
-    "assistantModel"         => "ministral-3:14b-cloud",
-    "languageDetectorModel"  => "ministral-3:8b-cloud",
+    "assistantModel"         => "devstral-small-2:24b-cloud",
     "workerModel"          => "nemotron-3-nano:30b-cloud",
     "compactorModel"       => "gemini-3-flash-preview:cloud",
     "summarizerModel"      => "gemini-3-flash-preview:cloud",
@@ -27,24 +26,11 @@ defmodule Dmhai.Agent.AgentSettings do
 
   @log_trace_default false
 
-  @plan_min_steps_default 1
-  @plan_max_steps_default 10
-  @plan_step_max_retries_default 3
-  @worker_max_iter_default 20
   @spawn_task_timeout_secs_default 30
-  @worker_context_n_default 8
-  @worker_context_m_default 6
   @max_tool_result_chars_default 8_000
   @master_compact_turn_threshold_default 90
   @master_compact_fraction_default 0.45
-  @task_poll_min_interval_sec_default 5
-  @task_poll_samples_per_cycle_default 10
-  @task_orphan_timeout_sec_default 300
-  @exec_error_streak_nudge_default 3
-  @max_worker_restarts_default 2
-  @task_progress_summary_every_n_rows_default 6
-  @task_progress_summary_min_interval_sec_default 30
-  @task_progress_summary_min_cycle_sec_default 1800
+  @max_assistant_tool_rounds_default 50
 
   # Web / HTTP defaults
   @http_user_agent_default "Mozilla/5.0 (compatible; DMH-AI/1.0)"
@@ -83,23 +69,9 @@ defmodule Dmhai.Agent.AgentSettings do
   @spec log_trace() :: boolean()
   def log_trace, do: bool_setting("logTrace", @log_trace_default)
 
-  @doc "Minimum number of steps required in a submitted plan."
-  @spec plan_min_steps() :: pos_integer()
-  def plan_min_steps, do: int_setting("planMinSteps", @plan_min_steps_default)
-
-  @doc "Maximum number of steps allowed in a submitted plan."
-  @spec plan_max_steps() :: pos_integer()
-  def plan_max_steps, do: int_setting("planMaxSteps", @plan_max_steps_default)
-
-  @doc "Max times the runtime retries a STEP_BLOCKED step before escalating to TASK_BLOCKED."
-  @spec plan_step_max_retries() :: pos_integer()
-  def plan_step_max_retries, do: int_setting("planStepMaxRetries", @plan_step_max_retries_default)
-
   @doc "Shortcut accessors."
   def confidant_model,          do: model_for("confidantModel")
   def assistant_model,          do: model_for("assistantModel")
-  def language_detector_model,  do: model_for("languageDetectorModel")
-  def worker_model,           do: model_for("workerModel")
   def compactor_model,        do: model_for("compactorModel")
   def summarizer_model,       do: model_for("summarizerModel")
   def web_search_model,       do: model_for("webSearchModel")
@@ -111,61 +83,21 @@ defmodule Dmhai.Agent.AgentSettings do
   @spec spawn_task_timeout_secs() :: pos_integer()
   def spawn_task_timeout_secs, do: int_setting("spawnTaskTimeoutSecs", @spawn_task_timeout_secs_default)
 
-  @doc "Worker context compaction: number of messages in the middle (stub) tier."
-  @spec worker_context_n() :: pos_integer()
-  def worker_context_n, do: int_setting("workerContextN", @worker_context_n_default)
-
-  @doc "Worker context compaction: number of most-recent messages to leave untouched."
-  @spec worker_context_m() :: pos_integer()
-  def worker_context_m, do: int_setting("workerContextM", @worker_context_m_default)
-
-  @doc "Max tool-call iterations for a non-periodic worker. Periodic workers ignore this."
-  @spec worker_max_iter() :: pos_integer()
-  def worker_max_iter, do: int_setting("workerMaxIter", @worker_max_iter_default)
-
-  @doc "Hard character limit for tool results fed into worker context. Larger results are summarised first."
+  @doc "Hard character limit for tool results fed back to the assistant. Larger results are truncated."
   @spec max_tool_result_chars() :: pos_integer()
   def max_tool_result_chars, do: int_setting("maxToolResultChars", @max_tool_result_chars_default)
 
-  @doc "Master session compaction: compact after this many recent turns."
+  @doc "Session compaction: compact after this many recent turns."
   @spec master_compact_turn_threshold() :: pos_integer()
   def master_compact_turn_threshold, do: int_setting("masterCompactTurnThreshold", @master_compact_turn_threshold_default)
 
-  @doc "Master session compaction: compact when recent chars exceed this fraction of estimated context budget."
+  @doc "Session compaction: compact when recent chars exceed this fraction of estimated context budget."
   @spec master_compact_fraction() :: float()
   def master_compact_fraction, do: float_setting("masterCompactFraction", @master_compact_fraction_default)
 
-  @doc "Minimum seconds between task progress polls (K floor). Never poll faster than this."
-  @spec task_poll_min_interval_sec() :: pos_integer()
-  def task_poll_min_interval_sec, do: int_setting("taskPollMinIntervalSec", @task_poll_min_interval_sec_default)
-
-  @doc "Target samples per periodic cycle (M). Poll interval = max(K, intvl/M)."
-  @spec task_poll_samples_per_cycle() :: pos_integer()
-  def task_poll_samples_per_cycle, do: int_setting("taskPollSamplesPerCycle", @task_poll_samples_per_cycle_default)
-
-  @doc "Consider a running task orphaned if no progress written in this many seconds."
-  @spec task_orphan_timeout_sec() :: pos_integer()
-  def task_orphan_timeout_sec, do: int_setting("taskOrphanTimeoutSec", @task_orphan_timeout_sec_default)
-
-  @doc "Consecutive execution-tool failures before the worker is nudged to re-evaluate."
-  @spec exec_error_streak_nudge() :: pos_integer()
-  def exec_error_streak_nudge, do: int_setting("execErrorStreakNudge", @exec_error_streak_nudge_default)
-
-  @doc "Max automatic worker restarts per task run before permanently blocking the task."
-  @spec max_worker_restarts() :: pos_integer()
-  def max_worker_restarts, do: int_setting("maxWorkerRestarts", @max_worker_restarts_default)
-
-  @doc "Fire a progress summary every N new worker_status rows."
-  @spec task_progress_summary_every_n_rows() :: pos_integer()
-  def task_progress_summary_every_n_rows, do: int_setting("taskProgressSummaryEveryNRows", @task_progress_summary_every_n_rows_default)
-
-  @doc "Minimum seconds (T gate) between consecutive progress summaries within the N AND T dual-threshold algorithm."
-  @spec task_progress_summary_min_interval_sec() :: pos_integer()
-  def task_progress_summary_min_interval_sec, do: int_setting("taskProgressSummaryMinIntervalSec", @task_progress_summary_min_interval_sec_default)
-
-  @doc "Periodic tasks whose cycle interval (intvl_sec) is shorter than this threshold never emit unsolicited interim progress summaries. One-off tasks are unaffected."
-  @spec task_progress_summary_min_cycle_sec() :: pos_integer()
-  def task_progress_summary_min_cycle_sec, do: int_setting("taskProgressSummaryMinCycleSec", @task_progress_summary_min_cycle_sec_default)
+  @doc "Per-turn safety cap on tool-call roundtrips before the turn aborts with a carry-on message."
+  @spec max_assistant_tool_rounds() :: pos_integer()
+  def max_assistant_tool_rounds, do: int_setting("maxAssistantToolRounds", @max_assistant_tool_rounds_default)
 
   @doc "HTTP User-Agent string for outbound web requests."
   @spec http_user_agent() :: String.t()

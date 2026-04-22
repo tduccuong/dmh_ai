@@ -5,18 +5,29 @@
 
 defmodule Dmhai.Agent.Tasks do
   @moduledoc """
-  DB helpers for the `tasks` table — the system of record for all
-  background work (one-off resolver answers, one-off worker tasks,
-  periodic worker tasks). Assistant inserts a row per classification;
-  runtime scheduler reads/updates rows; workers read task_spec by id.
+  DB helpers for the `tasks` table — per-session record of assistant tasks
+  (one_off or periodic). Rows are created by the assistant via
+  `create_task` and mutated via `update_task` as the session loop runs.
+
+  `Tasks.mark_done/2` is the **single rescheduling path** for periodic
+  tasks: on done it auto-reschedules (status=pending, time_to_pickup
+  bumped) and arms a TaskRuntime timer. The session loop does not need to
+  think about rescheduling separately.
   """
 
   alias Dmhai.Repo
   import Ecto.Adapters.SQL, only: [query!: 3]
 
+  @select_cols """
+  task_id, user_id, session_id, task_type, intvl_sec, task_title,
+  task_spec, task_status, task_result, time_to_pickup,
+  language, created_at, updated_at
+  """
+
   @doc """
   Insert a fresh task row. Returns the task_id.
-  status defaults to 'pending'; caller bumps to 'running' when the worker starts.
+  One_off: time_to_pickup defaults to now (immediate pickup).
+  Periodic: time_to_pickup defaults to now (first cycle is immediate).
   """
   def insert(attrs) do
     task_id = attrs[:task_id] || generate_id()
@@ -24,10 +35,9 @@ defmodule Dmhai.Agent.Tasks do
 
     query!(Repo, """
     INSERT INTO tasks (task_id, user_id, session_id, task_type, intvl_sec,
-                       task_title, task_spec, task_status, language,
-                       pipeline, origin,
-                       created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       task_title, task_spec, task_status, time_to_pickup,
+                       language, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, [
       task_id,
       attrs[:user_id],
@@ -37,24 +47,13 @@ defmodule Dmhai.Agent.Tasks do
       attrs[:task_title] || "",
       attrs[:task_spec] || "",
       attrs[:task_status] || "pending",
+      attrs[:time_to_pickup] || now,
       attrs[:language] || "en",
-      attrs[:pipeline] || "assistant",
-      attrs[:origin] || "assistant",
       now, now
     ])
 
     task_id
   end
-
-  @select_cols """
-  task_id, user_id, session_id, task_type, intvl_sec, task_title,
-  task_spec, task_status, task_result,
-  created_at, updated_at,
-  last_run_started_at, last_run_completed_at,
-  next_run_at, last_reported_status_id, current_worker_id,
-  last_summarized_status_id, last_summarized_at, language,
-  pipeline, origin
-  """
 
   def get(task_id) do
     r = query!(Repo, "SELECT #{@select_cols} FROM tasks WHERE task_id=?", [task_id])
@@ -65,59 +64,66 @@ defmodule Dmhai.Agent.Tasks do
     end
   end
 
-  def mark_running(task_id, worker_id) do
+  @doc "Mark a task ongoing when the session turn starts working on it."
+  def mark_ongoing(task_id) do
     now = System.os_time(:millisecond)
     query!(Repo, """
-    UPDATE tasks SET task_status='running',
-                    current_worker_id=?,
-                    last_run_started_at=?,
-                    updated_at=?
+    UPDATE tasks SET task_status='ongoing', updated_at=?
     WHERE task_id=?
-    """, [worker_id, now, now, task_id])
+    """, [now, task_id])
   end
 
+  @doc """
+  Terminal success. For one_off: status→done. For periodic: status→pending
+  with time_to_pickup bumped by intvl_sec. TaskRuntime.schedule_pickup is
+  called to arm the next timer.
+  """
   def mark_done(task_id, result) do
-    now = System.os_time(:millisecond)
-    query!(Repo, """
-    UPDATE tasks SET task_status='done',
-                    task_result=?,
-                    last_run_completed_at=?,
-                    current_worker_id=NULL,
-                    updated_at=?
-    WHERE task_id=?
-    """, [result, now, now, task_id])
-  end
+    task = get(task_id)
+    now  = System.os_time(:millisecond)
 
-  def mark_blocked(task_id, reason) do
-    now = System.os_time(:millisecond)
-    query!(Repo, """
-    UPDATE tasks SET task_status='blocked',
-                    task_result=?,
-                    last_run_completed_at=?,
-                    current_worker_id=NULL,
-                    updated_at=?
-    WHERE task_id=?
-    """, [reason, now, now, task_id])
+    case task && task.task_type do
+      "periodic" ->
+        next_at = now + (task.intvl_sec || 0) * 1_000
+        query!(Repo, """
+        UPDATE tasks SET task_status='pending',
+                        task_result=?,
+                        time_to_pickup=?,
+                        updated_at=?
+        WHERE task_id=?
+        """, [result || "", next_at, now, task_id])
+        Dmhai.Agent.TaskRuntime.schedule_pickup(task_id, next_at)
+
+      _ ->
+        query!(Repo, """
+        UPDATE tasks SET task_status='done',
+                        task_result=?,
+                        time_to_pickup=NULL,
+                        updated_at=?
+        WHERE task_id=?
+        """, [result || "", now, task_id])
+    end
   end
 
   def mark_cancelled(task_id) do
     now = System.os_time(:millisecond)
     query!(Repo, """
     UPDATE tasks SET task_status='cancelled',
-                    current_worker_id=NULL,
+                    time_to_pickup=NULL,
                     updated_at=?
     WHERE task_id=?
     """, [now, task_id])
+    Dmhai.Agent.TaskRuntime.cancel_pickup(task_id)
   end
 
   def mark_paused(task_id) do
     now = System.os_time(:millisecond)
     query!(Repo, """
     UPDATE tasks SET task_status='paused',
-                    current_worker_id=NULL,
                     updated_at=?
     WHERE task_id=?
     """, [now, task_id])
+    Dmhai.Agent.TaskRuntime.cancel_pickup(task_id)
   end
 
   def mark_pending(task_id) do
@@ -129,54 +135,93 @@ defmodule Dmhai.Agent.Tasks do
     """, [now, task_id])
   end
 
-  def set_periodic(task_id, intvl_sec) do
+  @doc "Update the task's spec text in place (used for mid-run adjustment)."
+  def update_spec(task_id, new_spec) do
     now = System.os_time(:millisecond)
     query!(Repo, """
-    UPDATE tasks SET task_type='periodic', intvl_sec=?, updated_at=?
+    UPDATE tasks SET task_spec=?, updated_at=?
+    WHERE task_id=?
+    """, [new_spec, now, task_id])
+  end
+
+  @doc "Update the interval for a periodic task."
+  def update_intvl(task_id, intvl_sec) do
+    now = System.os_time(:millisecond)
+    query!(Repo, """
+    UPDATE tasks SET intvl_sec=?, task_type='periodic', updated_at=?
     WHERE task_id=?
     """, [intvl_sec, now, task_id])
   end
 
-  def schedule_next_run(task_id, next_run_at) do
-    now = System.os_time(:millisecond)
-    query!(Repo, """
-    UPDATE tasks SET next_run_at=?, task_status='pending', updated_at=?
-    WHERE task_id=?
-    """, [next_run_at, now, task_id])
-  end
-
-  def advance_cursor(task_id, last_status_id) do
-    query!(Repo, """
-    UPDATE tasks SET last_reported_status_id=?, updated_at=?
-    WHERE task_id=? AND (last_reported_status_id IS NULL OR last_reported_status_id < ?)
-    """, [last_status_id, System.os_time(:millisecond), task_id, last_status_id])
-  end
-
-  def advance_summary_cursor(task_id, last_status_id) do
-    now = System.os_time(:millisecond)
-    query!(Repo, """
-    UPDATE tasks SET last_summarized_status_id=?, last_summarized_at=?, updated_at=?
-    WHERE task_id=? AND (last_summarized_status_id IS NULL OR last_summarized_status_id < ?)
-    """, [last_status_id, now, now, task_id, last_status_id])
-  end
-
-  @doc "Tasks that were running when the app went down — need cleanup on boot."
-  def fetch_orphaned do
-    r = query!(Repo, "SELECT #{@select_cols} FROM tasks WHERE task_status='running'", [])
-    Enum.map(r.rows, &row_to_map/1)
-  end
-
-  @doc "Periodic tasks due for next run (next_run_at <= now) and not cancelled."
-  def fetch_due_periodic(now_ms \\ nil) do
+  @doc """
+  Tasks whose pickup time has arrived. Used by boot rehydration and any
+  future code that wants to scan-on-wake instead of timer-driven.
+  """
+  def fetch_due(now_ms \\ nil) do
     now_ms = now_ms || System.os_time(:millisecond)
     r = query!(Repo, """
     SELECT #{@select_cols}
     FROM tasks
-    WHERE task_type='periodic'
-      AND task_status IN ('pending','done','blocked')
-      AND next_run_at IS NOT NULL
-      AND next_run_at <= ?
+    WHERE task_status='pending'
+      AND time_to_pickup IS NOT NULL
+      AND time_to_pickup <= ?
     """, [now_ms])
+    Enum.map(r.rows, &row_to_map/1)
+  end
+
+  @doc """
+  Return the single oldest pending task (lowest `time_to_pickup`) for a
+  session that is ready to pick up now. Used by the UserAgent's auto-chain
+  loop: after a turn completes it calls this, and if a row comes back it
+  self-sends `{:task_due, task_id}` so the next turn picks it up.
+
+  Only `pending` status is considered — `ongoing` means the model is
+  actively working on it (or was, before a crash; rehydration reverts those
+  to pending) and shouldn't be double-dispatched. Future-scheduled pickups
+  (`time_to_pickup > now`) are handled by `TaskRuntime` timers, not here.
+  """
+  @spec fetch_next_due(String.t(), integer() | nil) :: map() | nil
+  def fetch_next_due(session_id, now_ms \\ nil) do
+    now_ms = now_ms || System.os_time(:millisecond)
+
+    r = query!(Repo, """
+    SELECT #{@select_cols}
+    FROM tasks
+    WHERE session_id=?
+      AND task_status='pending'
+      AND time_to_pickup IS NOT NULL
+      AND time_to_pickup <= ?
+    ORDER BY time_to_pickup ASC
+    LIMIT 1
+    """, [session_id, now_ms])
+
+    case r.rows do
+      [row] -> row_to_map(row)
+      _     -> nil
+    end
+  end
+
+  @doc """
+  Pending periodic tasks with an armed future pickup — re-armed by
+  TaskRuntime on boot.
+  """
+  def fetch_pending_periodic do
+    r = query!(Repo, """
+    SELECT #{@select_cols}
+    FROM tasks
+    WHERE task_type='periodic'
+      AND task_status='pending'
+      AND time_to_pickup IS NOT NULL
+    """, [])
+    Enum.map(r.rows, &row_to_map/1)
+  end
+
+  @doc """
+  Tasks that were ongoing when the app went down — on boot we revert them
+  to pending so the next session turn can pick up where the log left off.
+  """
+  def fetch_orphaned_ongoing do
+    r = query!(Repo, "SELECT #{@select_cols} FROM tasks WHERE task_status='ongoing'", [])
     Enum.map(r.rows, &row_to_map/1)
   end
 
@@ -185,25 +230,36 @@ defmodule Dmhai.Agent.Tasks do
     Enum.map(r.rows, &row_to_map/1)
   end
 
-  @doc "Active (not terminal) tasks for a session — used for context injection and session-level cancellation."
+  @doc "Active (non-terminal) tasks for a session — used for the [Active tasks] context block."
   def active_for_session(session_id) do
     r = query!(Repo, """
     SELECT #{@select_cols} FROM tasks
-    WHERE session_id=? AND task_status IN ('pending', 'running', 'paused')
+    WHERE session_id=? AND task_status IN ('pending', 'ongoing', 'paused')
+    ORDER BY created_at ASC
     """, [session_id])
     Enum.map(r.rows, &row_to_map/1)
   end
 
-  def delete_for_session(session_id) do
-    query!(Repo, "DELETE FROM worker_status WHERE task_id IN (SELECT task_id FROM tasks WHERE session_id=?)", [session_id])
-    query!(Repo, "DELETE FROM tasks WHERE session_id=?", [session_id])
-    :ok
+  @doc """
+  Recent terminal tasks for a session (done or cancelled), newest first.
+  Used to render the flat `### done` sub-section of the task-list block —
+  the assistant sees them by id+title only and can call `fetch_task` for
+  details (or `update_task(status: "pending")` to redo).
+  """
+  def recent_done_for_session(session_id, limit \\ 20) do
+    r = query!(Repo, """
+    SELECT #{@select_cols} FROM tasks
+    WHERE session_id=? AND task_status IN ('done', 'cancelled')
+    ORDER BY updated_at DESC
+    LIMIT ?
+    """, [session_id, limit])
+    Enum.map(r.rows, &row_to_map/1)
   end
 
-  @doc "True when the given task_id is not yet taken — used to validate pre-allocated ids."
-  def id_available?(task_id) do
-    r = query!(Repo, "SELECT 1 FROM tasks WHERE task_id=?", [task_id])
-    r.rows == []
+  def delete_for_session(session_id) do
+    query!(Repo, "DELETE FROM session_progress WHERE session_id=?", [session_id])
+    query!(Repo, "DELETE FROM tasks WHERE session_id=?", [session_id])
+    :ok
   end
 
   @doc "Lookup user email by user_id. Falls back to user_id string on miss."
@@ -218,9 +274,7 @@ defmodule Dmhai.Agent.Tasks do
 
   defp row_to_map([
     task_id, user_id, session_id, task_type, intvl_sec, task_title, task_spec,
-    task_status, task_result, created_at, updated_at, last_run_started_at,
-    last_run_completed_at, next_run_at, last_reported_status_id, current_worker_id,
-    last_summarized_status_id, last_summarized_at, language, pipeline, origin
+    task_status, task_result, time_to_pickup, language, created_at, updated_at
   ]) do
     %{
       task_id: task_id,
@@ -232,18 +286,10 @@ defmodule Dmhai.Agent.Tasks do
       task_spec: task_spec,
       task_status: task_status,
       task_result: task_result,
-      created_at: created_at,
-      updated_at: updated_at,
-      last_run_started_at: last_run_started_at,
-      last_run_completed_at: last_run_completed_at,
-      next_run_at: next_run_at,
-      last_reported_status_id: last_reported_status_id || 0,
-      current_worker_id: current_worker_id,
-      last_summarized_status_id: last_summarized_status_id || 0,
-      last_summarized_at: last_summarized_at || 0,
+      time_to_pickup: time_to_pickup,
       language: language || "en",
-      pipeline: pipeline || "assistant",
-      origin:   origin   || "assistant"
+      created_at: created_at,
+      updated_at: updated_at
     }
   end
 

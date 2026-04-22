@@ -10,10 +10,13 @@ defmodule Dmhai.Adapters.Telegram do
   Dual role
   ---------
   1. INPUT: Receives messages from users via Telegram Bot API and routes them
-     to their UserAgent via Dmhai.Agent.UserAgent.dispatch/2.
+     to their UserAgent. The adapter looks up the session's mode and
+     dispatches via the matching path:
+       assistant → UserAgent.dispatch_assistant/2 with an AssistantCommand
+       confidant → UserAgent.dispatch_confidant/2 with a ConfidantCommand
 
   2. NOTIFICATION: Called by MsgGateway.notify/2 to push a message to the
-     user's Telegram chat when an async worker finishes.
+     user's Telegram chat when an async Assistant Loop finishes.
 
   Current state
   -------------
@@ -26,7 +29,7 @@ defmodule Dmhai.Adapters.Telegram do
   2. Implement `start_polling/0` (long-poll getUpdates loop) or a webhook
      endpoint in the router (`POST /webhooks/telegram`).
   3. Map incoming chat_id → user_id via the `telegram_users` DB table (TBD).
-  4. Build a Command and call UserAgent.dispatch/2.
+  4. Look up session.mode and build the matching command type, then dispatch.
 
   TODO items are marked with "TODO:" below.
   """

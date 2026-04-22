@@ -373,3 +373,183 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
 .img-lightbox-close:hover { background: rgba(80,50,110,0.95); }
 .img-thumb-clickable { cursor: zoom-in; transition: opacity 0.15s; }
 .img-thumb-clickable:hover { opacity: 0.85; }
+
+/* ── Progress rows (Assistant Loop tool activity) ──────────────────────
+   Emitted by the backend during task execution — one row per tool call
+   (tool kind, pending→done), plus optional thinking excerpts and on-
+   demand summaries. Rendered inline with messages but NEVER sent to the
+   LLM; see session_progress table + ContextEngine filter. */
+/* Inline layout (not flex): the icon is an inline-block at the start of
+   the row; the label wraps naturally and its wrapped lines return to the
+   row's left edge rather than hanging under the first-line label start.
+   First line reads "<icon> <label…>", subsequent wrapped lines flow
+   flush-left under the icon column — no visual right-indent creep. */
+.progress-row {
+    display: block;
+    padding: 2px 16px;
+    font-size: 12.5px;
+    color: #b0a3cc;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    line-height: 1.5;
+}
+.progress-row .progress-icon {
+    display: inline-block;
+    width: 20px;
+    margin-right: 4px;
+    text-align: center;
+    font-size: 13px;
+    vertical-align: baseline;
+}
+.progress-row .progress-label {
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.progress-tool.progress-status-pending .progress-icon {
+    display: inline-block;
+    animation: progress-spin 1s linear infinite;
+    color: #c87830;
+}
+.progress-tool.progress-status-done .progress-icon {
+    color: #5a8f6a;
+}
+.progress-thinking {
+    font-style: italic;
+    color: #6f6482;
+}
+.progress-summary {
+    color: #8a7fa0;
+}
+@keyframes progress-spin {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
+}
+
+/* ── Task-list sidebar (#102) ─────────────────────────────────────────
+   Lives under #sessions-list in the left sidebar. Scoped to the current
+   session. Visible only in Assistant mode (Confidant hides via JS). */
+.task-list-section {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid #22192f;
+}
+.task-list-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 10px 6px 10px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+/* Section title matches the DMH-AI brand orange (same hue as the logo-
+   adjacent <h2>DMH-AI</h2> heading in the sidebar) so the user's eye
+   catches it the same way as the product name. */
+.task-list-title { flex: 1; color: #e09040; }
+.task-count-badge {
+    background: #c87830;
+    color: #0e0c14;
+    font-weight: 700;
+    font-size: 10px;
+    padding: 1px 7px;
+    border-radius: 10px;
+    min-width: 18px;
+    text-align: center;
+}
+.task-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+.task-bucket-header {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #6f6482;
+    padding: 6px 10px 2px 10px;
+    margin-top: 2px;
+}
+.task-bucket-ongoing { color: #c87830; }
+.task-bucket-pending { color: #8a7fa0; }
+.task-bucket-paused  { color: #6f6482; }
+.task-bucket-recent {
+    margin-top: 4px;
+    padding: 0;
+}
+.task-bucket-recent > summary {
+    cursor: pointer;
+    list-style: none;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #6f6482;
+    padding: 6px 10px 4px 10px;
+    user-select: none;
+}
+.task-bucket-recent > summary::-webkit-details-marker { display: none; }
+.task-bucket-recent > summary::before {
+    content: "\25B8";
+    display: inline-block;
+    width: 10px;
+    transition: transform 150ms;
+}
+.task-bucket-recent[open] > summary::before { transform: rotate(90deg); }
+.task-recent-count { color: #5a506a; font-weight: 400; font-size: 10px; }
+
+.task-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px;
+    cursor: pointer;
+    font-size: 12.5px;
+    color: #c8b8e8;
+    border-left: 2px solid transparent;
+    transition: background 100ms;
+}
+.task-row:hover {
+    background: #19111f;
+    border-left-color: #c87830;
+}
+.task-row.task-status-ongoing {
+    background: linear-gradient(to right, rgba(200, 120, 48, 0.08), transparent);
+    border-left-color: #c87830;
+}
+.task-row.task-status-paused {
+    opacity: 0.6;
+}
+.task-bucket-recent .task-row {
+    opacity: 0.5;
+    font-size: 11.5px;
+}
+.task-bucket-recent .task-row:hover { opacity: 0.9; }
+
+.task-type-icon {
+    flex-shrink: 0;
+    width: 12px;
+    color: #8a7fa0;
+    font-size: 11px;
+    text-align: center;
+}
+.task-row.task-type-periodic .task-type-icon { color: #6a9cc8; }
+.task-title {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.task-meta {
+    flex-shrink: 0;
+    font-size: 10.5px;
+    color: #6f6482;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+}
+
+.task-empty {
+    padding: 8px 10px;
+    font-size: 12px;
+    color: #5a506a;
+    font-style: italic;
+}

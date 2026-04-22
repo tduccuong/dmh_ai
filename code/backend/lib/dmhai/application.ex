@@ -25,7 +25,6 @@ defmodule Dmhai.Application do
       {Registry, keys: :unique, name: Dmhai.Agent.Registry},
       Dmhai.Agent.Supervisor,
       {Task.Supervisor, name: Dmhai.Agent.TaskSupervisor},
-      {Task.Supervisor, name: Dmhai.Agent.WorkerSupervisor},
       Dmhai.Agent.TaskRuntime
     ] ++
       (if Application.get_env(:dmhai, :start_http, true) do

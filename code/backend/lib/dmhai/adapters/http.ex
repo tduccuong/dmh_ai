@@ -9,9 +9,13 @@ defmodule Dmhai.Adapters.Http do
 
   Flow
   ----
-  1. The Plug handler calls `dispatch/4` with the authenticated user, session_id,
-     message content, and its own pid as the reply target.
-  2. `dispatch/4` builds a Command and calls UserAgent.dispatch/2.
+  1. The Plug handler looks up `session.mode` and branches:
+       mode == "assistant" → `dispatch_assistant/5`
+       mode == "confidant" → `dispatch_confidant/6`
+     The branch is deliberate: the two paths share no command type and no
+     dispatcher. See specs/architecture.md §Request Lifecycle.
+  2. `dispatch_*` builds the path-specific command and calls
+     `UserAgent.dispatch_assistant/2` or `UserAgent.dispatch_confidant/2`.
   3. The Plug handler then calls `receive_stream/1` which blocks in a receive
      loop, forwarding {:chunk, _} tokens to the caller as they arrive from the
      agent's inline task.
@@ -23,34 +27,54 @@ defmodule Dmhai.Adapters.Http do
 
   @behaviour Dmhai.Agent.Adapter
 
-  alias Dmhai.Agent.{Command, UserAgent}
+  alias Dmhai.Agent.{AssistantCommand, ConfidantCommand, UserAgent}
 
   @default_timeout :timer.minutes(5)
 
-  # ─── Dispatch ─────────────────────────────────────────────────────────────
+  # ─── Dispatch (Assistant path) ────────────────────────────────────────────
 
   @doc """
-  Build a Command from HTTP request data and dispatch it to the user's agent.
+  Build an AssistantCommand from HTTP request data and dispatch it.
   Returns :ok immediately; the caller should follow up with receive_stream/1.
   """
-  @spec dispatch(String.t(), String.t(), String.t(), pid(), keyword()) ::
+  @spec dispatch_assistant(String.t(), String.t(), String.t(), pid(), keyword()) ::
           :ok | {:error, term()}
-  def dispatch(user_id, session_id, content, reply_pid, opts \\ []) do
-    command = %Command{
-      type: :chat,
-      content: content,
-      session_id: session_id,
-      reply_pid: reply_pid,
-      images:           Keyword.get(opts, :images, []),
-      image_names:      Keyword.get(opts, :image_names, []),
-      files:            Keyword.get(opts, :files, []),
-      has_video:        Keyword.get(opts, :has_video, false),
-      task_id:           Keyword.get(opts, :task_id),
+  def dispatch_assistant(user_id, session_id, content, reply_pid, opts \\ []) do
+    command = %AssistantCommand{
+      type:             :chat,
+      content:          content,
+      session_id:       session_id,
+      reply_pid:        reply_pid,
       attachment_names: Keyword.get(opts, :attachment_names, []),
+      files:            Keyword.get(opts, :files, []),
       metadata:         Keyword.get(opts, :metadata, %{})
     }
 
-    UserAgent.dispatch(user_id, command)
+    UserAgent.dispatch_assistant(user_id, command)
+  end
+
+  # ─── Dispatch (Confidant path) ────────────────────────────────────────────
+
+  @doc """
+  Build a ConfidantCommand from HTTP request data and dispatch it.
+  Returns :ok immediately; the caller should follow up with receive_stream/1.
+  """
+  @spec dispatch_confidant(String.t(), String.t(), String.t(), pid(), keyword()) ::
+          :ok | {:error, term()}
+  def dispatch_confidant(user_id, session_id, content, reply_pid, opts \\ []) do
+    command = %ConfidantCommand{
+      type:        :chat,
+      content:     content,
+      session_id:  session_id,
+      reply_pid:   reply_pid,
+      images:      Keyword.get(opts, :images, []),
+      image_names: Keyword.get(opts, :image_names, []),
+      files:       Keyword.get(opts, :files, []),
+      has_video:   Keyword.get(opts, :has_video, false),
+      metadata:    Keyword.get(opts, :metadata, %{})
+    }
+
+    UserAgent.dispatch_confidant(user_id, command)
   end
 
   @doc """
@@ -79,6 +103,13 @@ defmodule Dmhai.Adapters.Http do
 
       {:thinking, token} ->
         callback.({:thinking, token})
+        receive_stream(callback, timeout)
+
+      # Live session_progress push — the session turn emits one of these at
+      # INSERT (status=pending) and again at the done-flip for every tool
+      # call. FE renders immediately; polling is the reconciliation path.
+      {:progress, row} ->
+        callback.({:progress, row})
         receive_stream(callback, timeout)
 
       {:done, result} ->

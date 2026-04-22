@@ -33,9 +33,9 @@ defmodule Itgr.ToolCapability do
     }
   }
 
-  # The two agent roles that invoke tools in production:
-  # - assistantModel: master agent (handoff_to_resolver, handoff_to_worker, …)
-  # - workerModel:    worker agent (bash, web_fetch, …)
+  # The two model roles that invoke tools in production:
+  # - assistantModel: classifier + Assistant Loop (create_task, read_task_status, plan, run_script, …)
+  # - workerModel:    alias kept for settings back-compat; same model class as assistantModel
   defp tool_using_models do
     [
       {"assistantModel", AgentSettings.assistant_model()},

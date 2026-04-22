@@ -1,15 +1,22 @@
-# Integration tests: Confidant end-to-end pipeline via UserAgent.dispatch.
+# Integration tests: Confidant end-to-end pipeline via UserAgent.dispatch_confidant.
 # Run with: MIX_ENV=test mix test test/itgr_confidant_flow.exs
+#
+# Polling-based architecture (CLAUDE.md rule #9 + specs/architecture.md
+# §Polling-based delivery): the BE writes the final message to
+# session.messages and streams partial tokens into sessions.stream_buffer.
+# Tests assert on DB state (messages persisted, stream_buffer drained)
+# rather than on mailbox messages to reply_pid.
 
 defmodule Itgr.ConfidantFlow do
   use ExUnit.Case, async: false
 
-  alias Dmhai.Agent.{Command, UserAgent}
+  alias Dmhai.Agent.{ConfidantCommand, UserAgent}
   import Ecto.Adapters.SQL, only: [query!: 3]
+
+  @settle_ms 800
 
   defp uid, do: T.uid()
 
-  # Insert a session with optional initial messages.
   defp insert_session(session_id, user_id, mode, messages) do
     now = System.os_time(:millisecond)
     query!(Dmhai.Repo,
@@ -27,28 +34,58 @@ defmodule Itgr.ConfidantFlow do
     end
   end
 
-  # Build a chat Command with reply_pid = self().
+  defp session_stream_buffer(session_id, user_id) do
+    r = query!(Dmhai.Repo,
+      "SELECT stream_buffer FROM sessions WHERE id=? AND user_id=?",
+      [session_id, user_id])
+    case r.rows do
+      [[v]] -> v
+      _ -> nil
+    end
+  end
+
+  defp wait_for_assistant_message(session_id, user_id, timeout_ms \\ 5_000) do
+    deadline = System.os_time(:millisecond) + timeout_ms
+    do_wait(session_id, user_id, deadline)
+  end
+
+  defp do_wait(session_id, user_id, deadline) do
+    msgs = session_messages(session_id, user_id)
+    assistant = Enum.find(msgs, fn m -> m["role"] == "assistant" end)
+
+    cond do
+      assistant != nil -> {:ok, assistant}
+      System.os_time(:millisecond) > deadline -> :timeout
+      true ->
+        Process.sleep(50)
+        do_wait(session_id, user_id, deadline)
+    end
+  end
+
   defp chat_cmd(session_id, content) do
-    %Command{type: :chat, content: content, session_id: session_id, reply_pid: self()}
+    %ConfidantCommand{type: :chat, content: content, session_id: session_id, reply_pid: self()}
   end
 
   # ─── Happy path ───────────────────────────────────────────────────────────
 
-  test "confidant: reply_pid receives chunk(s) then done" do
+  test "confidant: final assistant message persists to session.messages" do
     user_id = uid(); sid = uid()
     insert_session(sid, user_id, "confidant",
       [%{"role" => "user", "content" => "Hello!"}])
 
-    # Web search detection stub (returns "NO")
     T.stub_llm_call(fn _model, _msgs, _opts -> {:ok, "NO: no search needed"} end)
-
     T.stub_llm_stream(fn _model, _msgs, reply_pid, _opts ->
-      send(reply_pid, {:chunk, "Hi there!"})
+      send(reply_pid, {:chunk, "Hi "})
+      send(reply_pid, {:chunk, "there!"})
       {:ok, "Hi there!"}
     end)
 
-    :ok = UserAgent.dispatch(user_id, chat_cmd(sid, "Hello!"))
-    assert_receive {:done, %{content: "Hi there!"}}, 5_000
+    :ok = UserAgent.dispatch_confidant(user_id, chat_cmd(sid, "Hello!"))
+    assert {:ok, msg} = wait_for_assistant_message(sid, user_id)
+    assert msg["content"] == "Hi there!"
+    assert is_integer(msg["ts"])
+    # stream_buffer is cleared once the final message lands
+    assert session_stream_buffer(sid, user_id) == nil
   end
 
   test "confidant: assistant response is persisted to the session" do
@@ -62,19 +99,14 @@ defmodule Itgr.ConfidantFlow do
       {:ok, "Why don't scientists trust atoms?"}
     end)
 
-    :ok = UserAgent.dispatch(user_id, chat_cmd(sid, "Tell me a joke."))
-    assert_receive {:done, _}, 5_000
-
-    msgs = session_messages(sid, user_id)
-    assert Enum.any?(msgs, fn m ->
-      m["role"] == "assistant" and m["content"] == "Why don't scientists trust atoms?"
-    end)
+    :ok = UserAgent.dispatch_confidant(user_id, chat_cmd(sid, "Tell me a joke."))
+    assert {:ok, msg} = wait_for_assistant_message(sid, user_id)
+    assert msg["content"] == "Why don't scientists trust atoms?"
   end
 
   test "confidant: history is included in the LLM call" do
     user_id = uid(); sid = uid()
 
-    # Pre-populate session with two turns of history
     history = [
       %{"role" => "user",      "content" => "What is 2+2?"},
       %{"role" => "assistant", "content" => "Four."},
@@ -86,24 +118,19 @@ defmodule Itgr.ConfidantFlow do
 
     test_pid = self()
     T.stub_llm_stream(fn _model, msgs, reply_pid, _opts ->
-      # messages should include the prior turns (not just the current message)
       send(test_pid, {:msg_count, length(msgs)})
       send(reply_pid, {:chunk, "Six."})
       {:ok, "Six."}
     end)
 
-    :ok = UserAgent.dispatch(user_id, chat_cmd(sid, "And 3+3?"))
-    assert_receive {:done, _}, 5_000
-    assert_received {:msg_count, count}
+    :ok = UserAgent.dispatch_confidant(user_id, chat_cmd(sid, "And 3+3?"))
+    assert_receive {:msg_count, count}, 2_000
+    assert {:ok, _} = wait_for_assistant_message(sid, user_id)
     # system + 2 history messages + current = at least 4
     assert count >= 4
   end
 
-  test "confidant: web_context is injected when LLM detection returns a search category" do
-    # This test stubs detect_category to return a search result by having LLM.call
-    # return "NEWS: breaking news question". WebSearch.search_and_fetch would run
-    # but since the searxng server isn't running in tests it will return empty results.
-    # We verify the pipeline doesn't crash and still produces a response.
+  test "confidant: web_context path does not crash when detection returns a search category" do
     user_id = uid(); sid = uid()
     insert_session(sid, user_id, "confidant",
       [%{"role" => "user", "content" => "Latest news?"}])
@@ -111,8 +138,6 @@ defmodule Itgr.ConfidantFlow do
     {:ok, call_n} = Agent.start_link(fn -> 0 end)
     T.stub_llm_call(fn _model, _msgs, _opts ->
       n = Agent.get_and_update(call_n, fn n -> {n, n + 1} end)
-      # First call is web search detection → return "NO" to simplify
-      # (testing the search path would require a running searxng instance)
       if n == 0, do: {:ok, "NO: not needed"}, else: {:ok, "No results found."}
     end)
 
@@ -121,13 +146,13 @@ defmodule Itgr.ConfidantFlow do
       {:ok, "No results."}
     end)
 
-    :ok = UserAgent.dispatch(user_id, chat_cmd(sid, "Latest news?"))
-    assert_receive {:done, _}, 5_000
+    :ok = UserAgent.dispatch_confidant(user_id, chat_cmd(sid, "Latest news?"))
+    assert {:ok, _} = wait_for_assistant_message(sid, user_id)
   end
 
   # ─── Error paths ─────────────────────────────────────────────────────────
 
-  test "confidant: LLM stream error sends {:error, ...} to reply_pid" do
+  test "confidant: LLM stream error leaves no assistant message persisted" do
     user_id = uid(); sid = uid()
     insert_session(sid, user_id, "confidant",
       [%{"role" => "user", "content" => "hi"}])
@@ -135,20 +160,27 @@ defmodule Itgr.ConfidantFlow do
     T.stub_llm_call(fn _model, _msgs, _opts -> {:ok, "NO"} end)
     T.stub_llm_stream(fn _model, _msgs, _reply_pid, _opts -> {:error, "upstream timeout"} end)
 
-    :ok = UserAgent.dispatch(user_id, chat_cmd(sid, "hi"))
-    assert_receive {:error, _}, 5_000
+    :ok = UserAgent.dispatch_confidant(user_id, chat_cmd(sid, "hi"))
+    # Settle the async task
+    Process.sleep(@settle_ms)
+
+    msgs = session_messages(sid, user_id)
+    refute Enum.any?(msgs, fn m -> m["role"] == "assistant" end)
+    assert session_stream_buffer(sid, user_id) == nil
   end
 
-  test "confidant: session not found sends {:error, ...} to reply_pid" do
+  test "confidant: session not found leaves no assistant message" do
     user_id = uid()
-    # Deliberately do NOT insert a session
     missing_sid = uid()
 
     T.stub_llm_call(fn _model, _msgs, _opts -> {:ok, "NO"} end)
     T.stub_llm_stream(fn _model, _msgs, _reply_pid, _opts -> {:ok, "answer"} end)
 
-    :ok = UserAgent.dispatch(user_id, chat_cmd(missing_sid, "hello"))
-    assert_receive {:error, _}, 5_000
+    :ok = UserAgent.dispatch_confidant(user_id, chat_cmd(missing_sid, "hello"))
+    Process.sleep(@settle_ms)
+
+    msgs = session_messages(missing_sid, user_id)
+    assert msgs == []
   end
 
   test "confidant: second dispatch is rejected while first is still running" do
@@ -157,25 +189,18 @@ defmodule Itgr.ConfidantFlow do
       [%{"role" => "user", "content" => "slow question"}])
 
     T.stub_llm_call(fn _model, _msgs, _opts -> {:ok, "NO"} end)
-
-    # Stub sleeps 400ms so the second dispatch arrives while the first task is live.
     T.stub_llm_stream(fn _model, _msgs, reply_pid, _opts ->
       :timer.sleep(400)
       send(reply_pid, {:chunk, "ok"})
       {:ok, "ok"}
     end)
 
-    # First dispatch — Task starts and enters the 400ms sleep in the stub.
-    :ok = UserAgent.dispatch(user_id, chat_cmd(sid, "slow question"))
-
-    # Allow the Task enough time to start and call LLM.stream.
+    :ok = UserAgent.dispatch_confidant(user_id, chat_cmd(sid, "slow question"))
     :timer.sleep(80)
 
-    # Second dispatch — UserAgent sees current_task is set, returns {:error, :busy}.
-    result = UserAgent.dispatch(user_id, chat_cmd(sid, "another question"))
+    result = UserAgent.dispatch_confidant(user_id, chat_cmd(sid, "another question"))
     assert result == {:error, :busy}
 
-    # Wait for the first task to finish.
-    assert_receive {:done, _}, 5_000
+    assert {:ok, _} = wait_for_assistant_message(sid, user_id)
   end
 end

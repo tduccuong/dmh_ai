@@ -5,13 +5,60 @@
  * For commercial inquiries, contact: tduccuong@gmail.com
  */
 
+// Build a chronological timeline that interleaves chat messages with
+// progress rows fetched from /sessions/:id/progress. Progress rows are
+// persisted and shown in the chat window but NEVER injected into LLM context.
+// Entry shape: { kind: 'message' | 'progress', ts, payload }
+function buildSessionTimeline(session) {
+    var entries = [];
+    (session.messages || []).forEach(function(m) {
+        entries.push({ kind: 'message', ts: m.ts || 0, payload: m });
+    });
+    (session.progress || []).forEach(function(p) {
+        // final rows surface as real assistant messages already; skip to avoid duplication.
+        if (p.kind === 'final') return;
+        entries.push({ kind: 'progress', ts: p.ts || 0, payload: p });
+    });
+    entries.sort(function(a, b) { return (a.ts || 0) - (b.ts || 0); });
+    return entries;
+}
+
+function renderProgressRow(row) {
+    var div = document.createElement('div');
+    div.className = 'progress-row progress-' + row.kind +
+                    (row.status ? ' progress-status-' + row.status : '');
+    var icon = document.createElement('span');
+    icon.className = 'progress-icon';
+    if (row.kind === 'tool') {
+        icon.textContent = row.status === 'pending' ? '\u25cb' : '\u2713';
+    } else if (row.kind === 'thinking') {
+        icon.textContent = '\u270e';
+    } else if (row.kind === 'summary') {
+        icon.textContent = '\u2026';
+    } else {
+        icon.textContent = '\u00b7';
+    }
+    div.appendChild(icon);
+    var label = document.createElement('span');
+    label.className = 'progress-label';
+    label.textContent = row.label || '';
+    div.appendChild(label);
+    return div;
+}
+
 UIManager.renderChat = function() {
     const container = document.getElementById('chat-container');
     container.innerHTML = '';
     if (!this.currentSession) return;
     var sessionId = this.currentSession.id;
     var renderSession = this.currentSession;
-    this.currentSession.messages.forEach(function(msg) {
+    var timeline = buildSessionTimeline(this.currentSession);
+    timeline.forEach(function(entry) {
+        if (entry.kind === 'progress') {
+            container.appendChild(renderProgressRow(entry.payload));
+            return;
+        }
+        var msg = entry.payload;
         const div = document.createElement('div');
         div.className = 'message ' + msg.role;
         var hdr = buildMsgHeaderEl(msg, renderSession);
@@ -491,21 +538,35 @@ UIManager.handleFileSelect = async function(files) {
                                     if (v.name === videoFile.name && !v.fileId) v.fileId = d.id;
                                 });
                             });
-                            SessionStore.updateSession(self.currentSession);
+                            // Local patch only — BE owns session.messages (CLAUDE.md rule #9).
                             if (!self.isStreaming) self.renderChat();
                         }
                     })
                     .catch(function(e) { console.error('Video upload failed:', e); });
 
                 if (videoMode === 'assistant') {
-                    // Assistant path: scale video down to workspace resolution.
-                    // Send button is gated until scaling completes (same pattern as image resize).
+                    // Assistant path: scale video down to workspace resolution and upload
+                    // it to <session>/workspace/ immediately. By send-time the file is on
+                    // disk, no reservation dance needed. The file's name (with .webm) is
+                    // stored on the entry; send-time code collects these into attachmentNames.
                     self.setStatus(t('processingImage'));
                     var capturedEntry = entry;
+                    var capturedSid = sessionId;
+                    var scaledName = videoFile.name.replace(/\.[^.]+$/, '') + '.webm';
                     UIManager.scaleVideo(videoFile)
-                        .then(function(scaledBlob) { capturedEntry._scaledBlob = scaledBlob; })
+                        .then(function(scaledBlob) {
+                            capturedEntry._scaledBlob = scaledBlob;
+                            var fd = new FormData();
+                            fd.append('file', scaledBlob, scaledName);
+                            fd.append('sessionId', capturedSid);
+                            return apiFetch('/upload-session-attachment', { method: 'POST', body: fd });
+                        })
+                        .then(function(r) { return r && r.json(); })
+                        .then(function(d) {
+                            if (d && d.name) capturedEntry.attachmentName = d.name;
+                        })
                         .catch(function(e) {
-                            console.error('Video scaling failed, falling back to original:', e);
+                            console.error('Video workspace upload failed:', e);
                             capturedEntry._scaledBlob = new Blob([videoFile], { type: videoFile.type });
                         })
                         .finally(function() {
@@ -557,7 +618,7 @@ UIManager.handleFileSelect = async function(files) {
                 self.attachedFiles.push(imgEntry);
                 self.renderAttachments();
 
-                // Upload in background — does not gate the send button
+                // Upload original to /assets (data/) — permanent human-accessible copy.
                 var imgFormData = new FormData();
                 imgFormData.append('file', file);
                 imgFormData.append('sessionId', sessionId);
@@ -568,6 +629,20 @@ UIManager.handleFileSelect = async function(files) {
                     .then(function(r) { return r.json(); })
                     .then(function(d) { imgEntry.id = d.id; })
                     .catch(function(e) { console.error('Image upload failed:', e); });
+
+                // Assistant mode: also upload scaled copy to <session>/workspace/ so it's
+                // ready for extract_content the moment the Assistant Loop runs. The scaled
+                // version (resizedFile) matches what the LLM vision API would consume anyway.
+                var attachMode = (self.currentSession && self.currentSession.mode) || 'confidant';
+                if (attachMode === 'assistant') {
+                    var wsFormData = new FormData();
+                    wsFormData.append('file', resizedFile, capturedImgName);
+                    wsFormData.append('sessionId', capturedImgSessionId);
+                    apiFetch('/upload-session-attachment', { method: 'POST', body: wsFormData })
+                        .then(function(r) { return r.json(); })
+                        .then(function(d) { if (d && d.name) imgEntry.attachmentName = d.name; })
+                        .catch(function(e) { console.error('Image workspace upload failed:', e); });
+                }
 
                 // Fire description in background — does not gate the send button
                 apiFetch('/describe-image', {
@@ -581,31 +656,71 @@ UIManager.handleFileSelect = async function(files) {
                 if (self._pendingDesc === 0 && self._pendingVideo === 0) self.setStatus('');
                 self.updateSendBtn();
             } else {
+                // Text / PDF / DOCX / XLSX / other document formats.
+                // Assistant mode: upload the RAW file to workspace/ so the
+                // model reads it via extract_content (uniform attachment
+                // pipeline — no client-side content extraction). Confidant
+                // mode: keep the legacy inline-content path since Confidant
+                // has no tool-call loop to pull file contents at turn time.
                 self.setStatus(t('attaching'));
+                var textMode = (self.currentSession && self.currentSession.mode) || 'confidant';
 
-                var extractedText = null;
-                if (isPdf) extractedText = await self.extractPdfText(file);
-                else if (officeFormat === 'docx') extractedText = await self.extractDocxText(file);
-                else if (officeFormat === 'xlsx') extractedText = await self.extractXlsxText(file);
+                if (textMode === 'assistant') {
+                    // Permanent copy for human-accessible download.
+                    var assetForm = new FormData();
+                    assetForm.append('file', file);
+                    assetForm.append('sessionId', sessionId);
 
-                var uploadFile = file;
-                if (extractedText !== null) {
-                    uploadFile = new File([extractedText], file.name + '.txt', { type: 'text/plain' });
+                    var wsForm = new FormData();
+                    wsForm.append('file', file);
+                    wsForm.append('sessionId', sessionId);
+
+                    var textEntry = {
+                        id: null,
+                        name: file.name,
+                        type: 'text',
+                        attachmentName: null
+                    };
+                    self.attachedFiles.push(textEntry);
+                    self.renderAttachments();
+
+                    apiFetch('/assets', { method: 'POST', body: assetForm })
+                        .then(function(r) { return r.json(); })
+                        .then(function(d) { textEntry.id = d && d.id; })
+                        .catch(function(e) { console.error('Text asset upload failed:', e); });
+
+                    apiFetch('/upload-session-attachment', { method: 'POST', body: wsForm })
+                        .then(function(r) { return r.json(); })
+                        .then(function(d) { if (d && d.name) textEntry.attachmentName = d.name; })
+                        .catch(function(e) { console.error('Text workspace upload failed:', e); });
+                } else {
+                    // Confidant: pre-extract text client-side, inline it at
+                    // send time via /agent/chat's `files` body field (single
+                    // shot, no tool loop).
+                    var extractedText = null;
+                    if (isPdf) extractedText = await self.extractPdfText(file);
+                    else if (officeFormat === 'docx') extractedText = await self.extractDocxText(file);
+                    else if (officeFormat === 'xlsx') extractedText = await self.extractXlsxText(file);
+
+                    var uploadFile = file;
+                    if (extractedText !== null) {
+                        uploadFile = new File([extractedText], file.name + '.txt', { type: 'text/plain' });
+                    }
+                    var formData = new FormData();
+                    formData.append('file', uploadFile);
+                    formData.append('sessionId', sessionId);
+                    var res = await apiFetch('/assets', { method: 'POST', body: formData });
+                    var data = await res.json();
+
+                    var lines = (data.content || '').split('\n');
+                    var snippet = lines.slice(0, FILE_SNIPPET_MAX_LINES).join('\n') + (lines.length > FILE_SNIPPET_MAX_LINES ? '\n…' : '');
+                    self.attachedFiles.push({
+                        id: data.id, name: file.name, type: 'text',
+                        snippet: snippet,
+                        fullContent: data.content
+                    });
+                    self.renderAttachments();
                 }
-                var formData = new FormData();
-                formData.append('file', uploadFile);
-                formData.append('sessionId', sessionId);
-                var res = await apiFetch('/assets', { method: 'POST', body: formData });
-                var data = await res.json();
-
-                var lines = (data.content || '').split('\n');
-                var snippet = lines.slice(0, FILE_SNIPPET_MAX_LINES).join('\n') + (lines.length > FILE_SNIPPET_MAX_LINES ? '\n…' : '');
-                self.attachedFiles.push({
-                    id: data.id, name: file.name, type: 'text',
-                    snippet: snippet,
-                    fullContent: data.content
-                });
-                self.renderAttachments();
             }
         } catch (e) {
             console.error('Upload failed:', e);
@@ -651,19 +766,12 @@ UIManager.updateSendBtn = function() {
     document.getElementById('send-btn').disabled = this.isStreaming || this._pendingVideo > 0 || this._pendingDesc > 0 || (!hasText && !hasAttachment);
 };
 
-UIManager.saveStreamingProgress = function() {
-    if (this._streamMap.size === 0) return;
-    var entry = Array.from(this._streamMap.values())[0];
-    if (!entry.content || !entry.session) return;
-    var session = entry.session;
-    var last = session.messages[session.messages.length - 1];
-    if (last && last.role === 'assistant') return;
-    session.messages.push({ role: 'assistant', content: entry.content });
-    var prev = session.messages[session.messages.length - 2];
-    if (prev && prev.role === 'user') prev._sentToLLM = true;
-    SessionStore.updateSession(session);
-    this._streamMap.clear();
-};
+// No-op retained for call-site compatibility (visibility/beforeunload hooks).
+// In the BE-owned-state model (CLAUDE.md rule #9) the BE persists the
+// assistant message itself when the turn completes; reload re-fetches
+// the canonical state. Partial streaming state is ephemeral — losing it
+// on tab close is expected.
+UIManager.saveStreamingProgress = function() {};
 
 UIManager._acquireWakeLock = async function() {
     if (!('wakeLock' in navigator) || this._wakeLock) return;

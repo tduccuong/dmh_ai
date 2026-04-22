@@ -7,34 +7,51 @@ defmodule Dmhai.Agent.UserAgent do
   @idle_timeout :timer.minutes(30)
 
   @moduledoc """
-  Per-user master agent (GenServer).
+  Per-user agent (GenServer).
 
   Lifecycle
   ---------
   Started lazily by Dmhai.Agent.Supervisor.ensure_started/1 on first command.
   Shuts itself down after 30 minutes of idle.
-  State that must survive restarts (workers in progress, platform state) is
-  kept in-memory only for now — a crash means workers are lost and the agent
-  restarts clean. Persistence can be added later.
+  State that must survive restarts is kept in-memory only for now — a crash
+  means in-flight inline tasks are lost and the agent restarts clean.
+  Persistence can be added later.
+
+  Strict path separation
+  ----------------------
+  The Assistant and Confidant paths do NOT share a dispatcher. Each mode has
+  its own command type and its own dispatch message:
+
+    {:dispatch_assistant, %AssistantCommand{}} → run_assistant/3
+    {:dispatch_confidant, %ConfidantCommand{}} → run_confidant/3
+    {:dispatch, :interrupt}                    → cancel_current_task/1
+      (the only cross-path message — cancellation is mode-agnostic)
+
+  The mode branch is taken by the HTTP handler *before* it builds a command,
+  so a body field for one path can never reach the other. See
+  specs/architecture.md §Request Lifecycle.
 
   Execution paths
   ---------------
-  1. Inline  — short/streaming tasks (answer, search, tool call).
-               A Task runs under Dmhai.Agent.TaskSupervisor, sends
-               {:chunk, text} / {:done, result} directly to reply_pid,
-               then exits.  The GenServer monitors it and clears state on done.
+  1. Inline         — short/streaming tasks (answer, search, tool call).
+                      A Task runs under Dmhai.Agent.TaskSupervisor, sends
+                      {:chunk, text} / {:done, result} directly to reply_pid,
+                      then exits. The GenServer monitors it and clears state on done.
 
-  2. Worker  — long/async tasks (booking, file processing, monitoring).
-               A Task runs under Dmhai.Agent.WorkerSupervisor.  The HTTP
-               connection is already closed (ack was sent).  When the worker
-               finishes it writes a new assistant message to the session in DB
-               and fires MsgGateway.notify/2.
+  2. Assistant Loop — long/async tasks (the Assistant classifier calls
+                      `create_task`; a fresh loop runs under
+                      Dmhai.Agent.AssistantLoopSupervisor). The HTTP connection
+                      is already closed (ack was sent). When the loop finishes
+                      it writes a new assistant message and fires
+                      MsgGateway.notify/2.
   """
 
   use GenServer
   require Logger
 
-  alias Dmhai.Agent.{AgentSettings, Command, ContextEngine, LLM, ProfileExtractor, Supervisor, Tasks, TokenTracker, WebSearch}
+  alias Dmhai.Agent.{AgentSettings, AssistantCommand, ConfidantCommand, ContextEngine,
+                     LLM, ProfileExtractor, StreamBuffer, Supervisor, Tasks,
+                     TokenTracker, WebSearch}
   alias Dmhai.Web.Search, as: WebSearchEngine
   # WebSearch kept for synthesize_results used in build_web_context
   alias Dmhai.Repo
@@ -44,7 +61,9 @@ defmodule Dmhai.Agent.UserAgent do
 
   defstruct [
     :user_id,
-    # current inline task: nil | {task_ref, reply_pid}
+    # current inline task: nil | {task_ref, reply_pid, session_id}
+    # session_id is retained so that on turn completion we can check
+    # Tasks.fetch_next_due/1 and auto-chain the next pending task.
     current_task: nil,
     # per-platform opaque state (e.g. %{telegram: %{chat_id: "123"}})
     platform_state: %{}
@@ -52,20 +71,37 @@ defmodule Dmhai.Agent.UserAgent do
 
   # ─── Client API ───────────────────────────────────────────────────────────
 
-  @doc "Route a Command to the user's agent, starting it if needed."
-  @spec dispatch(String.t(), Command.t()) :: :ok | {:error, term()}
-  def dispatch(user_id, %Command{} = command) do
+  @doc "Dispatch an AssistantCommand to the user's agent, starting it if needed."
+  @spec dispatch_assistant(String.t(), AssistantCommand.t()) :: :ok | {:error, term()}
+  def dispatch_assistant(user_id, %AssistantCommand{} = command) do
     with {:ok, pid} <- Supervisor.ensure_started(user_id) do
-      GenServer.call(pid, {:dispatch, command}, :infinity)
+      GenServer.call(pid, {:dispatch_assistant, command}, :infinity)
+    end
+  end
+
+  @doc "Dispatch a ConfidantCommand to the user's agent, starting it if needed."
+  @spec dispatch_confidant(String.t(), ConfidantCommand.t()) :: :ok | {:error, term()}
+  def dispatch_confidant(user_id, %ConfidantCommand{} = command) do
+    with {:ok, pid} <- Supervisor.ensure_started(user_id) do
+      GenServer.call(pid, {:dispatch_confidant, command}, :infinity)
+    end
+  end
+
+  @doc "Interrupt the current inline task (mode-agnostic)."
+  @spec interrupt(String.t()) :: :ok
+  def interrupt(user_id) do
+    case Registry.lookup(Dmhai.Agent.Registry, user_id) do
+      [{pid, _}] -> GenServer.call(pid, {:dispatch, :interrupt})
+      []         -> :ok
     end
   end
 
   @doc "Cancel all active tasks for a specific session (called on session delete)."
-  @spec cancel_session_workers(String.t(), String.t()) :: :ok
-  def cancel_session_workers(_user_id, session_id) do
+  @spec cancel_session_tasks(String.t(), String.t()) :: :ok
+  def cancel_session_tasks(_user_id, session_id) do
     session_id
     |> Tasks.active_for_session()
-    |> Enum.each(fn task -> Dmhai.Agent.TaskRuntime.cancel_task(task.task_id) end)
+    |> Enum.each(fn task -> Tasks.mark_cancelled(task.task_id) end)
     :ok
   end
 
@@ -101,27 +137,26 @@ defmodule Dmhai.Agent.UserAgent do
     {:ok, %__MODULE__{user_id: user_id}, @idle_timeout}
   end
 
-  # Dispatch a command
+  # Dispatch — interrupt is the only message type that serves both paths.
   @impl true
-  def handle_call({:dispatch, %Command{type: :interrupt}}, _from, state) do
+  def handle_call({:dispatch, :interrupt}, _from, state) do
     state = cancel_current_task(state)
     {:reply, :ok, state, @idle_timeout}
   end
 
-  def handle_call({:dispatch, %Command{} = command}, _from, state) do
-    if state.current_task do
-      # Already busy — tell the reply_pid directly and refuse
-      send(command.reply_pid, {:error, :busy})
-      {:reply, {:error, :busy}, state, @idle_timeout}
-    else
-      task =
-        Task.Supervisor.async_nolink(Dmhai.Agent.TaskSupervisor, fn ->
-          run_command(command, state)
-        end)
+  # Assistant path — strictly separated from Confidant. Requires a loaded
+  # session in "assistant" mode; mismatched mode is a handler bug and gets
+  # refused here as a safety net.
+  def handle_call({:dispatch_assistant, %AssistantCommand{} = command}, _from, state) do
+    dispatch_run(command, state, fn session_data ->
+      run_assistant(command, state, session_data)
+    end, required_mode: "assistant")
+  end
 
-      {:reply, :ok, %{state | current_task: {task.ref, command.reply_pid}},
-       @idle_timeout}
-    end
+  def handle_call({:dispatch_confidant, %ConfidantCommand{} = command}, _from, state) do
+    dispatch_run(command, state, fn session_data ->
+      run_confidant(command, state, session_data)
+    end, required_mode: "confidant")
   end
 
   # Platform state
@@ -135,10 +170,14 @@ defmodule Dmhai.Agent.UserAgent do
      @idle_timeout}
   end
 
-  # Inline task completed normally — {ref, result} message from Task
+  # Inline task completed normally — {ref, result} message from Task.
+  # On completion, auto-chain: check if the same session has another
+  # pending task with `time_to_pickup <= now`. If so, self-send
+  # {:task_due, task_id} so the next turn runs silently for that task.
   @impl true
-  def handle_info({ref, _result}, %{current_task: {ref, _}} = state) do
+  def handle_info({ref, _result}, %{current_task: {ref, _reply_pid, session_id}} = state) do
     Process.demonitor(ref, [:flush])
+    maybe_trigger_next_due(session_id)
     {:noreply, %{state | current_task: nil}, @idle_timeout}
   end
 
@@ -149,7 +188,7 @@ defmodule Dmhai.Agent.UserAgent do
   end
 
   # Inline task crashed
-  def handle_info({:DOWN, ref, :task, _pid, reason}, %{current_task: {ref, reply_pid}} = state) do
+  def handle_info({:DOWN, ref, :task, _pid, reason}, %{current_task: {ref, reply_pid, _sid}} = state) do
     Logger.error("[UserAgent] inline task crashed user=#{state.user_id} reason=#{inspect(reason)}")
     send(reply_pid, {:error, "Internal error — please try again"})
     {:noreply, %{state | current_task: nil}, @idle_timeout}
@@ -157,6 +196,30 @@ defmodule Dmhai.Agent.UserAgent do
 
   # Stray DOWN — swallow. (Was used for the old worker tracking; TaskRuntime owns workers now.)
   def handle_info({:DOWN, _ref, _type, _pid, _reason}, state) do
+    {:noreply, state, @idle_timeout}
+  end
+
+  # Auto-chain pickup: either fired by TaskRuntime's periodic timer or
+  # self-sent by `maybe_trigger_next_due/1` after the previous turn
+  # completed. If the agent is idle, run a silent turn for this task —
+  # no user waiting, so progress streams to a throwaway pid while
+  # session_progress + the final assistant message persist to DB. FE
+  # picks them up via polling.
+  def handle_info({:task_due, task_id}, %{current_task: nil} = state) do
+    case Tasks.get(task_id) do
+      %{task_status: "pending", session_id: session_id} = task ->
+        start_silent_turn(task, session_id, state)
+
+      _ ->
+        # Task disappeared, already done, or flipped to paused/cancelled.
+        {:noreply, state, @idle_timeout}
+    end
+  end
+
+  # Agent is busy — drop the message. The post-completion
+  # `maybe_trigger_next_due/1` path will pick it up after the current
+  # turn finishes, so we don't need to re-queue.
+  def handle_info({:task_due, _task_id}, state) do
     {:noreply, state, @idle_timeout}
   end
 
@@ -174,12 +237,110 @@ defmodule Dmhai.Agent.UserAgent do
 
   defp cancel_current_task(%{current_task: nil} = state), do: state
 
-  defp cancel_current_task(%{current_task: {_ref, reply_pid}} = state) do
+  defp cancel_current_task(%{current_task: {_ref, reply_pid, _sid}} = state) do
     send(reply_pid, {:error, :interrupted})
     %{state | current_task: nil}
   end
 
+  # Post-turn hook: check for another pending task in the same session
+  # whose pickup is due (time_to_pickup <= now). If found, self-send
+  # {:task_due, task_id} so the agent picks it up automatically.
+  defp maybe_trigger_next_due(session_id) do
+    case Tasks.fetch_next_due(session_id) do
+      nil -> :ok
+      %{task_id: tid} -> send(self(), {:task_due, tid})
+    end
+  end
+
+  # Start an auto-triggered turn for a task picked off the pending queue.
+  # Output lands in DB (session_progress, sessions.messages, stream_buffer)
+  # exactly as for a user-initiated turn; FE polling renders it.
+  defp start_silent_turn(task, session_id, state) do
+    task_id = task.task_id
+
+    spawned =
+      Task.Supervisor.async_nolink(Dmhai.Agent.TaskSupervisor, fn ->
+        case load_session(session_id, state.user_id) do
+          {:ok, _model, session_data} ->
+            if (session_data["mode"] || "confidant") == "assistant" do
+              run_assistant_silent(task, session_data, state.user_id)
+            else
+              Logger.warning("[UserAgent] skipping auto task-due for non-assistant session=#{session_id}")
+            end
+
+          {:error, reason} ->
+            Logger.warning("[UserAgent] auto task-due load failed session=#{session_id} task=#{task_id} reason=#{inspect(reason)}")
+        end
+      end)
+
+    # reply_pid has no purpose in fire-and-forget / polling architecture;
+    # we still carry a dummy value in the state tuple for structural
+    # consistency with user-initiated turns (see :handle_info({ref, _})).
+    dummy_pid = spawn(fn -> :ok end)
+    {:noreply, %{state | current_task: {spawned.ref, dummy_pid, session_id}}, @idle_timeout}
+  end
+
+  # Silent equivalent of run_assistant for auto-triggered task pickups.
+  # Builds context like normal BUT appends a synthetic trailing user-role
+  # message to the LLM context only (NOT persisted to session.messages)
+  # that says "[Task due: …] — pick it up now". The model then responds
+  # as it would to a real user ask. The final assistant text IS persisted
+  # so next turn's LLM context carries the audit trail.
+  defp run_assistant_silent(task, session_data, user_id) do
+    model   = AgentSettings.assistant_model()
+    profile = load_user_profile(user_id)
+    email   = Tasks.lookup_user_email(user_id)
+    session_id = task.session_id
+
+    active_tasks = Tasks.active_for_session(session_id)
+    recent_done  = Tasks.recent_done_for_session(session_id)
+
+    llm_messages =
+      ContextEngine.build_assistant_messages(session_data,
+        profile:      profile,
+        active_tasks: active_tasks,
+        recent_done:  recent_done,
+        files:        []
+      )
+
+    # Append synthetic "task due" instruction as the last user-role turn
+    # so the model knows what to act on. Not persisted — it's an internal
+    # prompt, not user input. The model's final assistant text IS persisted
+    # via append_session_message below.
+    synthetic = %{role: "user",
+                  content: "[Task due: `#{task.task_id}` — #{task.task_title}] " <>
+                           "Pick this task up now. Run whatever execution tools you need, " <>
+                           "then call update_task(status: \"done\", task_result: ...) when finished."}
+
+    llm_messages = llm_messages ++ [synthetic]
+
+    data_dir      = Dmhai.Constants.session_data_dir(email, session_id)
+    workspace_dir = Dmhai.Constants.session_workspace_dir(email, session_id)
+    File.mkdir_p(data_dir)
+    File.mkdir_p(workspace_dir)
+
+    ctx = %{
+      user_id:       user_id,
+      user_email:    email,
+      session_id:    session_id,
+      session_root:  Dmhai.Constants.session_root(email, session_id),
+      data_dir:      data_dir,
+      workspace_dir: workspace_dir,
+      log_trace:     AgentSettings.log_trace()
+    }
+
+    Dmhai.SysLog.log("[ASSISTANT:auto] user=#{user_id} session=#{session_id} task=#{task.task_id} title=#{String.slice(task.task_title || "", 0, 60)}")
+
+    session_turn_loop(llm_messages, model, ctx, 0)
+
+    Task.start(fn -> maybe_compact(session_id, user_id) end)
+  end
+
   # Append a message map to the session's messages JSON column in DB.
+  # Stamps the message's `ts` from the BE clock (overwriting any incoming
+  # value) per CLAUDE.md rule #9 — the BE is the authority for every
+  # persisted timestamp. Returns {:ok, ts_ms} so callers can echo the
+  # timestamp back on the wire (e.g. in the final /agent/chat SSE frame).
   defp append_session_message(session_id, user_id, message) do
     try do
       result = query!(Repo, "SELECT messages FROM sessions WHERE id=? AND user_id=?",
@@ -188,55 +349,80 @@ defmodule Dmhai.Agent.UserAgent do
       case result.rows do
         [[msgs_json]] ->
           msgs = Jason.decode!(msgs_json || "[]")
-          updated = Jason.encode!(msgs ++ [message])
-          now = System.os_time(:millisecond)
+          now  = System.os_time(:millisecond)
+          stamped = Map.put(message, :ts, now)
+          updated = Jason.encode!(msgs ++ [stamped])
           query!(Repo, "UPDATE sessions SET messages=?, updated_at=? WHERE id=?",
                  [updated, now, session_id])
+          {:ok, now}
 
         _ ->
           Logger.warning("[UserAgent] session not found id=#{session_id}")
+          {:error, :session_not_found}
       end
     rescue
-      e -> Logger.error("[UserAgent] append_session_message failed: #{Exception.message(e)}")
+      e ->
+        Logger.error("[UserAgent] append_session_message failed: #{Exception.message(e)}")
+        {:error, :exception}
     end
   end
 
 
-  # ─── Command execution (inline task) ──────────────────────────────────────
+  # ─── Dispatch helper (inline task lifecycle) ──────────────────────────────
+  #
+  # Handles the common busy-check + Task.Supervisor.async_nolink spawn + session
+  # load, then hands off to the mode-specific pipeline via `run_fn`. Each
+  # dispatch_* handler supplies its own run_fn, so the two pipelines never
+  # cross paths here.
+  defp dispatch_run(command, state, run_fn, opts) do
+    required_mode = Keyword.fetch!(opts, :required_mode)
+    reply_pid     = command.reply_pid
 
-  @doc false
-  # Runs inside a Task under TaskSupervisor.
-  # Routes to Confidant or Assistant pipeline based on session mode.
-  defp run_command(%Command{reply_pid: reply_pid, session_id: session_id} = command, state) do
-    user_id = state.user_id
+    if state.current_task do
+      send(reply_pid, {:error, :busy})
+      {:reply, {:error, :busy}, state, @idle_timeout}
+    else
+      task =
+        Task.Supervisor.async_nolink(Dmhai.Agent.TaskSupervisor, fn ->
+          case load_session(command.session_id, state.user_id) do
+            {:ok, _model, session_data} ->
+              actual_mode = session_data["mode"] || "confidant"
 
-    case load_session(session_id, user_id) do
-      {:ok, _session_model, session_data} ->
-        mode = session_data["mode"] || "confidant"
+              if actual_mode == required_mode do
+                run_fn.(session_data)
+              else
+                # Shouldn't happen — the HTTP handler checks mode before
+                # building the command. Refuse loudly if it does.
+                Logger.error("[UserAgent] mode mismatch: session=#{actual_mode} dispatch=#{required_mode}")
+                send(reply_pid, {:error, :mode_mismatch})
+              end
 
-        case mode do
-          "assistant" -> run_assistant(command, state, session_data)
-          _           -> run_confidant(command, state, session_data)
-        end
+            {:error, reason} ->
+              send(reply_pid, {:error, reason})
+          end
+        end)
 
-      {:error, reason} ->
-        send(reply_pid, {:error, reason})
+      {:reply, :ok, %{state | current_task: {task.ref, reply_pid, command.session_id}}, @idle_timeout}
     end
   end
 
   # ─── Confidant pipeline ─────────────────────────────────────────────────
-  # Synchronous: detect web search → maybe fetch → master responds.
+  # Fire-and-forget: detect web search → maybe fetch → stream LLM tokens
+  # into `sessions.stream_buffer`. FE polls the column for progressive text.
 
-  defp run_confidant(%Command{reply_pid: reply_pid, session_id: session_id} = command, state, session_data) do
+  defp run_confidant(%ConfidantCommand{session_id: session_id} = command, state, session_data) do
     user_id = state.user_id
     model   = AgentSettings.confidant_model()
 
     web_context =
       if command.content != "" do
         user_msgs = extract_user_messages(session_data)
-        case WebSearchEngine.search(command.content, user_msgs, :confidant, reply_pid: reply_pid) do
+        # `reply_pid: nil` — web-search status lines (🔍, 📄) no longer go
+        # over the wire; the FE sees the web-search's final context as
+        # part of the LLM's answer and as session_progress rows elsewhere.
+        case WebSearchEngine.search(command.content, user_msgs, :confidant, reply_pid: nil) do
           :no_search -> nil
-          result     -> build_web_context(command.content, result, reply_pid)
+          result     -> build_web_context(command.content, result, nil)
         end
       else
         nil
@@ -263,18 +449,26 @@ defmodule Dmhai.Agent.UserAgent do
     Dmhai.SysLog.log("[CONFIDANT] user=#{user_id} session=#{session_id} msg=#{String.slice(command.content, 0, 200)} web_search=#{web_context != nil}")
     Dmhai.SysLog.log("[CONFIDANT] sending #{length(llm_messages)} msgs to model=#{model}\n  #{log_llm_messages(llm_messages)}")
 
+    # Stream collector: tokens from LLM.stream flow here, where they are
+    # appended to the per-session stream_buffer column. FE polling reads
+    # the column and renders progressive text.
+    collector = spawn_stream_collector(session_id, user_id)
+
     on_tokens = fn rx, tx -> TokenTracker.add_master(session_id, user_id, rx, tx) end
     trace     = %{origin: "confidant", path: "UserAgent.run_confidant", role: "ConfidantMaster", phase: "single-turn"}
-    case LLM.stream(model, llm_messages, reply_pid, on_tokens: on_tokens, trace: trace) do
+
+    result = LLM.stream(model, llm_messages, collector, on_tokens: on_tokens, trace: trace)
+    # Synchronously wait for the collector to drain any in-flight chunks
+    # and exit — prevents its final `flush/1` from racing with our clear/2
+    # below, which would leave a stale (possibly empty) buffer behind.
+    stop_stream_collector(collector)
+
+    case result do
       {:ok, full_text} when full_text != "" ->
         Dmhai.SysLog.log("[CONFIDANT] response(#{String.length(full_text)} chars): #{String.slice(full_text, 0, 300)}")
-        append_session_message(session_id, user_id, %{
-          role: "assistant",
-          content: full_text,
-          ts: System.os_time(:millisecond)
-        })
-
-        send(reply_pid, {:done, %{content: full_text}})
+        {:ok, _assistant_ts} =
+          append_session_message(session_id, user_id, %{role: "assistant", content: full_text})
+        StreamBuffer.clear(session_id, user_id)
 
         Task.start(fn -> maybe_compact(session_id, user_id) end)
 
@@ -283,667 +477,245 @@ defmodule Dmhai.Agent.UserAgent do
         end)
 
       {:ok, ""} ->
-        send(reply_pid, {:error, "No response received. Please try again."})
+        StreamBuffer.clear(session_id, user_id)
+        Dmhai.SysLog.log("[CONFIDANT] empty response — no message persisted")
 
       {:error, reason} ->
+        StreamBuffer.clear(session_id, user_id)
         Dmhai.SysLog.log("[CONFIDANT] ERROR: #{inspect(reason)}")
-        send(reply_pid, {:error, "LLM error: #{inspect(reason)}"})
+    end
+  end
+
+  # Signal the collector to flush and exit, then block until it's gone so
+  # the caller's subsequent StreamBuffer operations see a quiescent column.
+  defp stop_stream_collector(collector) do
+    ref = Process.monitor(collector)
+    send(collector, :flush_and_stop)
+
+    receive do
+      {:DOWN, ^ref, :process, _pid, _reason} -> :ok
+    after
+      5_000 ->
+        Process.demonitor(ref, [:flush])
+        :ok
+    end
+  end
+
+  # Loop process that accumulates {:chunk, token} messages from LLM.stream
+  # and periodically flushes to the sessions.stream_buffer column. The FE
+  # polls that column and renders the partial text in the streaming
+  # placeholder until the final message lands in session.messages.
+  defp spawn_stream_collector(session_id, user_id) do
+    spawn(fn -> stream_collector_loop(StreamBuffer.new(session_id, user_id)) end)
+  end
+
+  defp stream_collector_loop(buf) do
+    receive do
+      {:chunk, token} when is_binary(token) ->
+        buf |> StreamBuffer.append(token) |> StreamBuffer.maybe_flush() |> stream_collector_loop()
+
+      {:thinking, _} ->
+        # Thinking text is not surfaced in the visible stream buffer —
+        # the FE renders thinking in a separate `<details>` block
+        # populated only after the final message lands. Drop silently.
+        stream_collector_loop(buf)
+
+      :flush_and_stop ->
+        StreamBuffer.flush(buf)
+        :ok
+
+      _ ->
+        stream_collector_loop(buf)
+    after
+      # Safety valve: if the producer dies without sending :flush_and_stop
+      # we still commit whatever we have and exit.
+      120_000 -> StreamBuffer.flush(buf)
     end
   end
 
   # ─── Assistant pipeline ─────────────────────────────────────────────────
-  # Master creates plan → worker executes → master_buffer → master reports.
+  #
+  # The conversational session sees the stored user message (which already
+  # contains `📎 workspace/<name>` lines for any attachment — inlined at
+  # /agent/chat entry) and decides what to do turn-by-turn. It does NOT
+  # receive inline image bytes — pixels come via `extract_content` when
+  # the model decides to read a particular attachment.
 
-  defp run_assistant(%Command{reply_pid: reply_pid, session_id: session_id} = command, state, session_data) do
+  # ─── Assistant pipeline — conversational session turn (#101) ─────────────
+  #
+  # One LLM handles the whole conversation: sees the task list + history +
+  # current input and decides what to do turn-by-turn. No plan/exec/signal
+  # protocol, no classifier/loop split.
+
+  defp run_assistant(%AssistantCommand{session_id: session_id} = command, state, session_data) do
     user_id = state.user_id
     model   = AgentSettings.assistant_model()
-
     profile = load_user_profile(user_id)
+    email   = Tasks.lookup_user_email(user_id)
 
-    # Inject active tasks for this session so the Assistant can answer
-    # status/cancel/set-periodic queries using real task_ids.
-    session_jobs = Tasks.list_for_session(session_id)
-    combined_buffer =
-      case Enum.filter(session_jobs, fn j -> j.task_status in ["pending", "running", "paused"] end) do
-        [] -> nil
-        active ->
-          lines =
-            Enum.map_join(active, "\n", fn j ->
-              "- task_id: #{j.task_id}, title: #{j.task_title}, type: #{j.task_type}, status: #{j.task_status}"
-            end)
-          "[Active tasks for this session]\n#{lines}"
-      end
-
-    # Pass only the current message's raw images so the master can classify intent
-    # (e.g. recognise an image-analysis request). Image descriptions from previous
-    # messages are intentionally excluded — the master is a classifier, not an
-    # answerer, and descriptions in its system prompt cause it to answer directly
-    # instead of handing off to a worker.
-    images = command.images
-
-    # Detect language from URL-stripped prose so the master can't be misled by
-    # URL domains (e.g. "summarize this: https://vnexpress.net/..." → "en").
-    # Returns nil on UNKNOWN so the master falls back to its own detection.
-    detected_language = detect_content_language(command.content)
+    active_tasks = Tasks.active_for_session(session_id)
+    recent_done  = Tasks.recent_done_for_session(session_id)
 
     llm_messages =
       ContextEngine.build_assistant_messages(session_data,
-        profile:        profile,
-        has_video:      images != [] and command.has_video,
-        images:         images,
-        files:          command.files,
-        buffer_context: combined_buffer,
-        language:       detected_language
+        profile:      profile,
+        active_tasks: active_tasks,
+        recent_done:  recent_done,
+        files:        command.files
       )
 
-    tools = [
-      handoff_to_worker_json_schema_def(),
-      set_periodic_for_task_json_schema_def(),
-      pause_task_json_schema_def(),
-      resume_task_json_schema_def(),
-      cancel_task_json_schema_def(),
-      read_task_status_json_schema_def()
-    ]
+    data_dir      = Dmhai.Constants.session_data_dir(email, session_id)
+    workspace_dir = Dmhai.Constants.session_workspace_dir(email, session_id)
+    File.mkdir_p(data_dir)
+    File.mkdir_p(workspace_dir)
+
+    ctx = %{
+      user_id:       user_id,
+      user_email:    email,
+      session_id:    session_id,
+      session_root:  Dmhai.Constants.session_root(email, session_id),
+      data_dir:      data_dir,
+      workspace_dir: workspace_dir,
+      log_trace:     AgentSettings.log_trace()
+    }
 
     Dmhai.SysLog.log("[ASSISTANT] user=#{user_id} session=#{session_id} msg=#{String.slice(command.content, 0, 200)}")
-    Dmhai.SysLog.log("[ASSISTANT] sending #{length(llm_messages)} msgs to model=#{model}\n  #{log_llm_messages(llm_messages)}")
 
-    on_tokens = fn rx, tx -> TokenTracker.add_master(session_id, user_id, rx, tx) end
-    trace     = %{origin: "assistant", path: "UserAgent.run_assistant", role: "AssistantMaster", phase: "classify"}
-    # Pass self() so master reasoning/text does not stream to the user when a tool call is made.
-    # For the rare text-only fallback, we forward full_text manually below.
-    case LLM.stream(model, llm_messages, self(), tools: tools, on_tokens: on_tokens, trace: trace) do
-      {:ok, {:tool_calls, calls}} ->
-        call_names = Enum.map_join(calls, ", ", fn c -> get_in(c, ["function", "name"]) || "?" end)
-        Dmhai.SysLog.log("[ASSISTANT] tool_calls=[#{call_names}]")
-        handle_tool_calls(calls, command, state, session_data)
+    session_turn_loop(llm_messages, model, ctx, 0)
 
-      {:ok, full_text} when full_text != "" ->
-        # Fallback — master should always call a tool, but handle gracefully if it doesn't.
-        # Since we passed self() above, chunks went to the Task mailbox; forward them here.
-        Logger.warning("[UserAgent] master returned text without tool call, presenting directly")
-        Dmhai.SysLog.log("[ASSISTANT] text fallback (#{String.length(full_text)} chars): #{String.slice(full_text, 0, 200)}")
-        append_session_message(session_id, user_id, %{
-          role: "assistant",
-          content: full_text,
-          ts: System.os_time(:millisecond)
-        })
-        send(reply_pid, {:chunk, full_text})
-        send(reply_pid, {:done, %{content: full_text}})
-        Task.start(fn -> maybe_compact(session_id, user_id) end)
-
-      {:ok, ""} ->
-        send(reply_pid, {:error, "No response received. Please try again."})
-
-      {:error, reason} ->
-        Dmhai.SysLog.log("[ASSISTANT] ERROR: #{inspect(reason)}")
-        send(reply_pid, {:error, "LLM error: #{inspect(reason)}"})
-    end
-  end
-
-  defp handle_tool_calls(calls, command, state, session_data) do
-    tool_name =
-      Enum.find_value(calls, nil, fn call -> get_in(call, ["function", "name"]) end)
-
-    case tool_name do
-      "handoff_to_worker"      -> handle_handoff_to_worker(calls, command, state, session_data)
-      "set_periodic_for_task"   -> handle_set_periodic(calls, command, state)
-      "pause_task"              -> handle_pause_task(calls, command, state)
-      "resume_task"             -> handle_resume_task(calls, command, state)
-      "cancel_task"             -> handle_cancel_task(calls, command, state)
-      "read_task_status"        -> handle_read_task_status(calls, command, state)
-      _                        ->
-        Logger.warning("[UserAgent] unknown Assistant tool call: #{inspect(tool_name)}")
-        send(command.reply_pid, {:error, "Unknown tool: #{inspect(tool_name)}"})
-    end
-  end
-
-  # ── Assistant tool handlers (task-based flow) ──────────────────────────────
-
-  # The Assistant chose the Worker path. Insert a task row and spawn a worker
-  # bound to that task_id. The TaskRuntime watches worker_status for completion.
-  defp handle_handoff_to_worker(calls, command, state, session_data) do
-    %Command{reply_pid: reply_pid, session_id: session_id} = command
-    user_id = state.user_id
-
-    task_desc  = assistant_arg(calls, "handoff_to_worker", "task")      || "Task requested by user"
-    task_title  = assistant_arg(calls, "handoff_to_worker", "task_title") || short_title(task_desc)
-    intvl_str  = assistant_arg(calls, "handoff_to_worker", "intvl_sec")
-    intvl_sec  = parse_int(intvl_str, 0)
-    task_type   = if intvl_sec > 0, do: "periodic", else: "one_off"
-    ack        = assistant_arg(calls, "handoff_to_worker", "ack") || "Working on it — I'll report back."
-    language   = normalise_lang(assistant_arg(calls, "handoff_to_worker", "language"))
-    origin     = session_origin(session_data)
-
-    # Build the attachment section for the task_spec.
-    # Path 1 (normal): FE pre-allocated a task_id and uploaded files to the task workspace.
-    #   → wait for those files and inject workspace/<name> paths.
-    # Path 2 (fallback): reservation failed and the FE sent inline base64 images.
-    #   → save them to the session data_dir and inject data/<name> paths.
-    # In both cases the task_spec contains ONLY file paths — never inline descriptions.
-    pre_task_id       = command.task_id
-    attachment_names = command.attachment_names
-
-    media_context =
-      cond do
-        pre_task_id && attachment_names != [] ->
-          email     = Tasks.lookup_user_email(user_id)
-          workspace = Dmhai.Constants.task_workspace_dir(email, session_id, origin, pre_task_id)
-          case wait_for_attachments(workspace, attachment_names) do
-            :ok      -> build_attachment_section("workspace", attachment_names)
-            :timeout -> build_attachment_section("workspace", attachment_names) <>
-                        "\n[Warning: some attachments may not have uploaded in time — worker will handle missing files gracefully]"
-          end
-
-        command.images != [] ->
-          email    = Tasks.lookup_user_email(user_id)
-          data_dir = Dmhai.Constants.session_data_dir(email, session_id)
-          File.mkdir_p(data_dir)
-          saved = save_inline_images(command.images, command.image_names, data_dir)
-          Logger.warning("[UserAgent] FE did not pre-upload #{length(saved)} image(s); saved to data_dir as fallback")
-          build_attachment_section("data", saved)
-
-        true ->
-          nil
-      end
-
-    full_task =
-      if media_context, do: task_desc <> "\n\n" <> media_context, else: task_desc
-
-    task_id =
-      Tasks.insert(
-        task_id:     pre_task_id,
-        user_id:    user_id,
-        session_id: session_id,
-        task_type:   task_type,
-        intvl_sec:  intvl_sec,
-        task_title:  task_title,
-        task_spec:   full_task,
-        task_status: "pending",
-        language:   language,
-        pipeline:   "assistant",
-        origin:     origin
-      )
-
-    Logger.info("[UserAgent] worker task=#{task_id} type=#{task_type} intvl=#{intvl_sec} title=#{task_title}")
-
-    # Delegate to TaskRuntime to spawn the worker + start watchdog/poller.
-    Dmhai.Agent.TaskRuntime.start_task(task_id)
-
-    append_session_message(session_id, user_id, %{
-      role: "assistant",
-      content: ack,
-      ts: System.os_time(:millisecond)
-    })
-
-    send(reply_pid, {:chunk, ack})
-    send(reply_pid, {:done, %{task_created: true}})
-  end
-
-  # Poll until all expected attachment files exist in the task workspace.
-  # Uploads are fast (scaled-down files) so this typically resolves before
-  # the LLM even responds. Logs a warning and continues on timeout rather
-  # than blocking the task indefinitely.
-  @attachment_wait_timeout_ms 30_000
-  @attachment_poll_ms 200
-
-  defp wait_for_attachments(workspace, names) do
-    deadline = System.os_time(:millisecond) + @attachment_wait_timeout_ms
-    do_wait_attachments(workspace, names, deadline)
-  end
-
-  defp do_wait_attachments(workspace, names, deadline) do
-    missing = Enum.reject(names, &File.exists?(Path.join(workspace, &1)))
-
-    cond do
-      missing == [] ->
-        :ok
-
-      System.os_time(:millisecond) >= deadline ->
-        Logger.warning("[UserAgent] attachment wait timed out; missing: #{inspect(missing)}")
-        :timeout
-
-      true ->
-        Process.sleep(@attachment_poll_ms)
-        do_wait_attachments(workspace, names, deadline)
-    end
-  end
-
-  defp build_attachment_section(prefix, names) do
-    lines = Enum.map_join(names, "\n", fn name -> "- #{prefix}/#{name}" end)
-    "[Attached files — use extract_content on these paths as needed]\n#{lines}"
-  end
-
-  defp save_inline_images(images, names, data_dir) do
-    images
-    |> Enum.with_index()
-    |> Enum.flat_map(fn {b64, i} ->
-      name = Enum.at(names, i) || "image_#{i + 1}.jpg"
-      path = Path.join(data_dir, name)
-      case Base.decode64(b64, ignore: :whitespace) do
-        {:ok, bin} ->
-          File.write!(path, bin)
-          [name]
-        :error ->
-          Logger.warning("[UserAgent] could not decode inline image #{name} — skipping")
-          []
-      end
+    Task.start(fn ->
+      maybe_compact(session_id, user_id)
+      ProfileExtractor.extract_and_merge(command.content, nil, user_id)
     end)
   end
 
-  defp handle_set_periodic(calls, command, _state) do
-    %Command{reply_pid: reply_pid, session_id: session_id} = command
-    task_id    = assistant_arg(calls, "set_periodic_for_task", "task_id")
-    intvl_str = assistant_arg(calls, "set_periodic_for_task", "intvl_sec")
-    ack       = assistant_arg(calls, "set_periodic_for_task", "ack") || "Scheduled."
-    intvl_sec = parse_int(intvl_str, 0)
-    task       = task_id && Tasks.get(task_id)
-    lang      = (task && task.language) || "en"
+  # One LLM turn. If the model emits tool calls, execute them (persisting
+  # progress rows as side effects), append their results, and recurse. If
+  # the model emits text, append it to session.messages — the FE will pick
+  # it up on its next poll.
+  defp session_turn_loop(messages, model, ctx, round) do
+    max_rounds = AgentSettings.max_assistant_tool_rounds()
 
-    msg =
-      cond do
-        task_id in [nil, ""] -> Dmhai.I18n.t("no_task_id", lang)
-        intvl_sec <= 0      -> Dmhai.I18n.t("bad_interval", lang)
-        is_nil(task)         -> Dmhai.I18n.t("no_such_task", lang)
-        true ->
-          Tasks.set_periodic(task_id, intvl_sec)
-          ack
+    if round >= max_rounds do
+      msg = Dmhai.I18n.t("turn_cap_reached", "en", %{max: max_rounds})
+      {:ok, _} = append_session_message(ctx.session_id, ctx.user_id,
+                                        %{role: "assistant", content: msg})
+    else
+      tools = Dmhai.Tools.Registry.all_definitions()
+
+      trace = %{
+        origin: "assistant",
+        path: "UserAgent.session_turn",
+        role: "AssistantSession",
+        phase: "round#{round}"
+      }
+
+      on_tokens = fn rx, tx -> TokenTracker.add_master(ctx.session_id, ctx.user_id, rx, tx) end
+
+      case LLM.call(model, messages, tools: tools, on_tokens: on_tokens, trace: trace) do
+        {:ok, {:tool_calls, calls}} ->
+          call_names = Enum.map_join(calls, ", ", fn c -> get_in(c, ["function", "name"]) || "?" end)
+          Dmhai.SysLog.log("[ASSISTANT] round=#{round} tool_calls=[#{call_names}]")
+
+          assistant_msg = %{role: "assistant", content: "", tool_calls: calls}
+          tool_result_msgs = execute_tools(calls, ctx)
+
+          new_messages = messages ++ [assistant_msg] ++ tool_result_msgs
+          session_turn_loop(new_messages, model, ctx, round + 1)
+
+        {:ok, text} when is_binary(text) and text != "" ->
+          Dmhai.SysLog.log("[ASSISTANT] round=#{round} text(#{String.length(text)} chars)")
+          {:ok, _assistant_ts} =
+            append_session_message(ctx.session_id, ctx.user_id,
+                                   %{role: "assistant", content: text})
+
+        {:ok, ""} ->
+          Dmhai.SysLog.log("[ASSISTANT] round=#{round} empty response — no message persisted")
+
+        {:error, reason} ->
+          Dmhai.SysLog.log("[ASSISTANT] round=#{round} ERROR: #{inspect(reason)}")
+          # Persist the error as an assistant message so the FE renders it
+          # and the user sees something actionable rather than silence.
+          err_text = Dmhai.I18n.t("llm_error", "en", %{reason: inspect(reason)})
+          {:ok, _} = append_session_message(ctx.session_id, ctx.user_id,
+                                            %{role: "assistant", content: err_text})
       end
-
-    user_id = (task && task.user_id) || "system"
-    append_session_message(session_id, user_id, %{
-      role: "assistant",
-      content: msg,
-      ts: System.os_time(:millisecond)
-    })
-
-    send(reply_pid, {:chunk, msg})
-    send(reply_pid, {:done, %{}})
-  end
-
-  defp handle_cancel_task(calls, command, _state) do
-    %Command{reply_pid: reply_pid, session_id: session_id} = command
-    task_id = assistant_arg(calls, "cancel_task", "task_id")
-    ack    = assistant_arg(calls, "cancel_task", "ack") || "Job cancelled."
-    task    = task_id && Tasks.get(task_id)
-    lang   = (task && task.language) || "en"
-
-    msg =
-      case task do
-        nil  -> Dmhai.I18n.t("no_such_task", lang)
-        _job ->
-          Dmhai.Agent.TaskRuntime.cancel_task(task_id)
-          ack
-      end
-
-    user_id = task && task.user_id
-
-    if user_id do
-      append_session_message(session_id, user_id, %{
-        role: "assistant",
-        content: msg,
-        ts: System.os_time(:millisecond)
-      })
     end
-
-    send(reply_pid, {:chunk, msg})
-    send(reply_pid, {:done, %{}})
   end
 
-  defp handle_pause_task(calls, command, _state) do
-    %Command{reply_pid: reply_pid, session_id: session_id} = command
-    task_id = assistant_arg(calls, "pause_task", "task_id")
-    ack    = assistant_arg(calls, "pause_task", "ack")
-    task    = task_id && Tasks.get(task_id)
-    lang   = (task && task.language) || "en"
+  # Execute each tool call: write a pending session_progress row (spinner
+  # visible on the next FE poll, max 500 ms later), run the tool via
+  # ToolRegistry, flip the row to done. Returns the tool_result messages
+  # for the LLM's next round.
+  defp execute_tools(calls, ctx) do
+    Enum.map(calls, fn call ->
+      name         = get_in(call, ["function", "name"]) || ""
+      args         = get_in(call, ["function", "arguments"]) || %{}
+      tool_call_id = call["id"] || ""
 
-    msg =
-      case task do
-        nil  -> Dmhai.I18n.t("no_such_task", lang)
-        _job ->
-          Dmhai.Agent.TaskRuntime.pause_task(task_id)
-          ack || Dmhai.I18n.t("task_paused", lang, %{title: task.task_title})
-      end
+      # Update-task side effect: when update_task(task_id, status: "ongoing")
+      # fires, the current task_id becomes the active one for subsequent
+      # progress rows. We infer it below from the args when present.
+      progress_ctx = %{
+        session_id: ctx.session_id,
+        user_id:    ctx.user_id,
+        task_id:    args["task_id"]
+      }
 
-    user_id = task && task.user_id
+      progress_label = Dmhai.Agent.ProgressLabel.format(name, args)
+      {:ok, row} = Dmhai.Agent.SessionProgress.append_tool_pending(progress_ctx, progress_label)
 
-    if user_id do
-      append_session_message(session_id, user_id, %{
-        role: "assistant",
-        content: msg,
-        ts: System.os_time(:millisecond)
-      })
-    end
+      args_log = args |> Jason.encode!() |> String.slice(0, 600)
+      Dmhai.SysLog.log("[ASSISTANT] tool=#{name} args=#{args_log}")
+      exec_result = Dmhai.Tools.Registry.execute(name, args, ctx)
+      Dmhai.Agent.SessionProgress.mark_tool_done(row.id)
 
-    send(reply_pid, {:chunk, msg})
-    send(reply_pid, {:done, %{}})
-  end
-
-  defp handle_resume_task(calls, command, _state) do
-    %Command{reply_pid: reply_pid, session_id: session_id} = command
-    task_id = assistant_arg(calls, "resume_task", "task_id")
-    ack    = assistant_arg(calls, "resume_task", "ack")
-    task    = task_id && Tasks.get(task_id)
-    lang   = (task && task.language) || "en"
-
-    msg =
-      case task do
-        nil  -> Dmhai.I18n.t("no_such_task", lang)
-        _job ->
-          Dmhai.Agent.TaskRuntime.resume_task(task_id)
-          ack || Dmhai.I18n.t("task_resumed", lang, %{title: task.task_title})
-      end
-
-    user_id = task && task.user_id
-
-    if user_id do
-      append_session_message(session_id, user_id, %{
-        role: "assistant",
-        content: msg,
-        ts: System.os_time(:millisecond)
-      })
-    end
-
-    send(reply_pid, {:chunk, msg})
-    send(reply_pid, {:done, %{}})
-  end
-
-  # User explicitly asked about a task — reuse the same summarizer path as the
-  # runtime's unsolicited push. force: true so we always produce output (even
-  # "no new activity since the last update"). The summarizer appends a
-  # progress message to the session AND pings the notification bus, so the
-  # frontend reloads and renders.
-  defp handle_read_task_status(calls, command, _state) do
-    %Command{reply_pid: reply_pid} = command
-    task_id = assistant_arg(calls, "read_task_status", "task_id")
-
-    case task_id && Tasks.get(task_id) do
-      nil ->
-        msg = Dmhai.I18n.t("task_not_found", "en", %{id: inspect(task_id)})
-        send(reply_pid, {:chunk, msg})
-        send(reply_pid, {:done, %{content: msg}})
-
-      task ->
-        lang = task.language || "en"
-        # Terminal/quiescent tasks: render stored result directly, no LLM call.
-        case task.task_status do
-          status when status in ["done", "blocked", "cancelled", "paused"] ->
-            status_label = Dmhai.I18n.t("status_#{status}", lang)
-            result_text  = task.task_result || Dmhai.I18n.t("no_result", lang)
-            body = Dmhai.I18n.t("task_status_rendered", lang, %{
-              title: task.task_title,
-              status: status_label,
-              result: result_text
-            })
-            send(reply_pid, {:chunk, body})
-            send(reply_pid, {:done, %{content: body}})
-
-          _ ->
-            # Running/pending — delta-only summary via the shared summarizer.
-            Task.start(fn ->
-              case Dmhai.Agent.TaskRuntime.summarize_and_announce(task_id, force: true) do
-                {:ok, text} ->
-                  send(reply_pid, {:chunk, text})
-                  send(reply_pid, {:done, %{content: text}})
-
-                {:skipped, text} ->
-                  send(reply_pid, {:chunk, text})
-                  send(reply_pid, {:done, %{content: text}})
-
-                {:error, reason} ->
-                  send(reply_pid, {:error, "Could not summarize: #{inspect(reason)}"})
-              end
-            end)
+      content =
+        case exec_result do
+          {:ok, result}    -> format_tool_result(result)
+          {:error, reason} -> "Error: #{reason}"
         end
-    end
+
+      %{role: "tool", content: content, tool_call_id: tool_call_id}
+    end)
   end
 
-  # ── Assistant tool schemas ────────────────────────────────────────────────
+  # Normalise a tool's {:ok, result} payload into the string that the model
+  # receives as `tool` role content. Rules (see CLAUDE.md rule #10):
+  #   binary → pass-through (verbatim text, e.g. stdout)
+  #   map/list → pretty JSON after recursive atom/tuple normalisation
+  #   number / boolean → to_string
+  #   nil → ""
+  #   atom → Atom.to_string
+  #   anything else → JSON of the normalised value
+  # NEVER `inspect/1` — it leaks Elixir syntax into the model's context.
+  defp format_tool_result(result) when is_binary(result), do: result
+  defp format_tool_result(result) when is_map(result) or is_list(result),
+    do: Jason.encode!(normalise_json(result), pretty: true)
+  defp format_tool_result(result) when is_number(result) or is_boolean(result),
+    do: to_string(result)
+  defp format_tool_result(nil), do: ""
+  defp format_tool_result(atom) when is_atom(atom), do: Atom.to_string(atom)
+  defp format_tool_result(other), do: Jason.encode!(normalise_json(other))
 
-  defp handoff_to_worker_json_schema_def do
-    %{
-      name: "handoff_to_worker",
-      description:
-        "Hand off a task to a background worker. Use for: research, file operations, " <>
-          "calculations, multi-step work, AND any periodic task (monitor CPU every N sec, " <>
-          "daily research, recurring reports). For periodic tasks, set intvl_sec > 0 " <>
-          "(the worker itself never sees the interval — the runtime schedules re-runs). " <>
-          "The worker has tools: bash, web fetch/search, file io, calculator, date/time, media/doc parsers. " <>
-          "It signals completion via task_signal(TASK_DONE|TASK_BLOCKED).",
-      parameters: %{
-        type: "object",
-        properties: %{
-          task_title: %{
-            type: "string",
-            description: "A short (2-6 word) title for the task, in the user's language."
-          },
-          task: %{
-            type: "string",
-            description:
-              "The verbatim user message — copy it exactly as written. " <>
-                "Do NOT rephrase, summarise, or interpret. " <>
-                "Attached file paths (if any) are appended automatically by the system. " <>
-                "For periodic tasks, do NOT mention the schedule — the worker runs as a one-off each cycle."
-          },
-          intvl_sec: %{
-            type: "integer",
-            description:
-              "Interval in seconds between runs for a periodic task. " <>
-                "Set to 0 for one-off. Examples: 10 = every 10 s, 3600 = hourly, 86400 = daily."
-          },
-          ack: %{
-            type: "string",
-            description: "Brief acknowledgment shown to the user while the task runs. In the user's language."
-          },
-          language: %{
-            type: "string",
-            description: "ISO 639-1 code of the user's language (e.g. 'en', 'vi', 'es', 'fr', 'ja', 'zh', 'de')."
-          }
-        },
-        required: ["task_title", "task", "ack", "language"]
-      }
-    }
+  # Walk nested structures, coercing Elixir-only types to JSON-native forms:
+  # atoms → strings (except true/false/nil which are JSON-native),
+  # tuples → lists, map keys → strings.
+  defp normalise_json(v) when is_map(v) do
+    Map.new(v, fn {k, val} -> {json_key(k), normalise_json(val)} end)
   end
+  defp normalise_json(v) when is_list(v), do: Enum.map(v, &normalise_json/1)
+  defp normalise_json(v) when is_tuple(v),
+    do: v |> Tuple.to_list() |> Enum.map(&normalise_json/1)
+  defp normalise_json(v) when is_atom(v) and not is_boolean(v) and v != nil,
+    do: Atom.to_string(v)
+  defp normalise_json(v), do: v
 
-  defp set_periodic_for_task_json_schema_def do
-    %{
-      name: "set_periodic_for_task",
-      description:
-        "Turn an existing task into a periodic one (or update its interval). Use when the user says " <>
-          "something like 'run this every hour' or 'repeat daily' about a task that's already running.",
-      parameters: %{
-        type: "object",
-        properties: %{
-          task_id:    %{type: "string", description: "The task_id to update."},
-          intvl_sec: %{type: "integer", description: "New interval in seconds (> 0)."},
-          ack:       %{type: "string", description: "Confirmation shown to the user."}
-        },
-        required: ["task_id", "intvl_sec", "ack"]
-      }
-    }
-  end
-
-  defp pause_task_json_schema_def do
-    %{
-      name: "pause_task",
-      description:
-        "Temporarily pause a running or pending task. The worker is stopped but task data is " <>
-          "preserved — the task can be resumed later with resume_job. Use for 'pause X', 'hold X', 'stop X for now'.",
-      parameters: %{
-        type: "object",
-        properties: %{
-          task_id: %{type: "string", description: "The task_id to pause."},
-          ack:    %{type: "string", description: "Confirmation shown to the user, in their language."}
-        },
-        required: ["task_id", "ack"]
-      }
-    }
-  end
-
-  defp resume_task_json_schema_def do
-    %{
-      name: "resume_task",
-      description:
-        "Resume a previously paused task. The worker restarts from the beginning of its task spec. " <>
-          "Use for 'resume X', 'continue X', 'restart X'.",
-      parameters: %{
-        type: "object",
-        properties: %{
-          task_id: %{type: "string", description: "The task_id to resume."},
-          ack:    %{type: "string", description: "Confirmation shown to the user, in their language."}
-        },
-        required: ["task_id", "ack"]
-      }
-    }
-  end
-
-  defp cancel_task_json_schema_def do
-    %{
-      name: "cancel_task",
-      description:
-        "Permanently cancel a task by id. Stops any in-flight worker and prevents future runs. " <>
-          "Cannot be undone. Use for 'stop X', 'cancel X', 'kill X'.",
-      parameters: %{
-        type: "object",
-        properties: %{
-          task_id: %{type: "string", description: "The task_id to cancel."},
-          ack:    %{type: "string", description: "Confirmation shown to the user."}
-        },
-        required: ["task_id", "ack"]
-      }
-    }
-  end
-
-  defp read_task_status_json_schema_def do
-    %{
-      name: "read_task_status",
-      description:
-        "Fetch status + recent progress for a task. Use when the user asks " <>
-          "'how is X going?' / 'what happened to Y?' / 'show me the report'.",
-      parameters: %{
-        type: "object",
-        properties: %{
-          task_id: %{type: "string", description: "The task_id to query."}
-        },
-        required: ["task_id"]
-      }
-    }
-  end
+  defp json_key(k) when is_atom(k), do: Atom.to_string(k)
+  defp json_key(k) when is_binary(k), do: k
+  defp json_key(k), do: to_string(k)
 
   # ── small helpers ─────────────────────────────────────────────────────────
-
-  defp assistant_arg(calls, tool_name, key) do
-    Enum.find_value(calls, nil, fn call ->
-      if get_in(call, ["function", "name"]) == tool_name do
-        args = get_in(call, ["function", "arguments"]) || %{}
-        args =
-          case args do
-            a when is_map(a)    -> a
-            a when is_binary(a) -> (case Jason.decode(a) do {:ok, m} -> m; _ -> %{} end)
-          end
-        args[key]
-      end
-    end)
-  end
-
-  defp parse_int(v, _default) when is_integer(v), do: v
-  defp parse_int(v, default) when is_binary(v) do
-    case Integer.parse(v) do
-      {n, _} -> n
-      _      -> default
-    end
-  end
-  defp parse_int(_, default), do: default
-
-  # Derive the session's origin ("assistant" | "confidant") from its mode.
-  # Used to bucket tasks into the correct filesystem subtree regardless of
-  # which handoff pipeline (resolver/worker) executed them.
-  defp session_origin(session_data) do
-    case session_data && session_data["mode"] do
-      "confidant" -> "confidant"
-      _           -> "assistant"
-    end
-  end
-
-  # Normalise an LLM-supplied language field down to a 2-letter lowercase code.
-  # Rejects junk (empty, nil, more than a few chars). Falls back to "en".
-  defp normalise_lang(nil), do: "en"
-  defp normalise_lang(""), do: "en"
-  defp normalise_lang(v) when is_binary(v) do
-    code =
-      v
-      |> String.downcase()
-      |> String.trim()
-      |> String.split(~r/[_\-]/)
-      |> List.first()
-
-    if is_binary(code) and String.length(code) in 2..3, do: code, else: "en"
-  end
-  defp normalise_lang(_), do: "en"
-
-  # ── Language detection ────────────────────────────────────────────────────
-
-  # Strip http(s) URLs from text, then ask a tiny LLM to identify the language.
-  # Returns an ISO 639-1 code (e.g. "en", "vi") or nil when the model returns
-  # UNKNOWN — nil means the master will fall back to its own detection.
-  @url_strip_regex ~r{https?://\S+}
-
-  defp detect_content_language(content) when is_binary(content) and content != "" do
-    stripped = Regex.replace(@url_strip_regex, content, "") |> String.trim()
-    words    = String.split(stripped, ~r/\s+/, trim: true)
-
-    if stripped == "" or length(words) < 5 do
-      nil
-    else
-      model = AgentSettings.language_detector_model()
-
-      prompt =
-        "Detect the language of the following text.\n" <>
-          "Reply with ONLY the ISO 639-1 two-letter code (e.g. en, vi, es, fr, ja, zh, de, ko, pt, it).\n" <>
-          "If you cannot determine the language, reply with UNKNOWN.\n" <>
-          "Do not include any explanation, punctuation, or extra words — just the code.\n\n" <>
-          "Text: #{stripped}"
-
-      try do
-        trace = %{origin: "assistant", path: "UserAgent.detect_content_language", role: "LanguageDetector", phase: "detect"}
-        case LLM.call(model, [%{role: "user", content: prompt}],
-               options: %{temperature: 0, num_predict: 10},
-               trace: trace
-             ) do
-          {:ok, response} -> parse_language_code(response)
-          {:error, _}     -> nil
-        end
-      rescue
-        _ -> nil
-      end
-    end
-  end
-
-  defp detect_content_language(_), do: nil
-
-  defp parse_language_code(response) do
-    code =
-      response
-      |> String.trim()
-      |> String.downcase()
-      |> String.replace(~r/[^a-z]/, "")
-
-    cond do
-      code == "unknown"                    -> nil
-      String.length(code) in 2..3         -> code
-      true                                 -> nil
-    end
-  end
-
-  defp short_title(nil), do: "Untitled task"
-  defp short_title(""),  do: "Untitled task"
-  defp short_title(content) do
-    content
-    |> String.split(~r/\s+/)
-    |> Enum.reject(&(&1 == ""))
-    |> Enum.take(6)
-    |> Enum.join(" ")
-  end
 
   # Load session model + full session data (messages + context + mode) from DB.
   # Returns {:ok, model, %{"messages" => [...], "context" => %{...}, "mode" => "confidant"|"assistant"}}

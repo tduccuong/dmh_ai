@@ -11,7 +11,7 @@ defmodule Dmhai.Agent.ContextEngine do
   ----------------
   - Build the full message list for each LLM call — two separate entry points:
       build_confidant_messages/2  — Confidant pipeline (image/video descriptions, web context)
-      build_assistant_messages/2  — AssistantMaster pipeline (buffer context, language)
+      build_assistant_messages/2  — Assistant pipeline (active task-list block)
     Both produce: [system] ++ [compaction prefix] ++ [history] ++ [snippets] ++ [current msg]
   - Decide when to compact (turn count or estimated token budget)
   - Run LLM-based compaction and persist the result to the session's `context` column
@@ -87,48 +87,189 @@ defmodule Dmhai.Agent.ContextEngine do
   end
 
   @doc """
-  Build the complete messages list for the AssistantMaster LLM call.
+  Build the complete messages list for the Assistant session turn.
 
   `session_data` — map with string keys loaded from the DB:
     %{"messages" => [...], "context" => %{"summary" => ..., "summary_up_to_index" => ...} | nil}
 
   opts:
-    - `:profile`        — user profile text (injected silently into the system prompt)
-    - `:has_video`      — true when the current request carries video frames
-    - `:images`         — list of base64 strings for the current message (for intent classification)
-    - `:files`          — list of %{"name" => name, "content" => text} for the current message
-    - `:buffer_context` — formatted master_buffer entries (active task updates)
-    - `:language`       — ISO 639-1 code detected from the user's message
+    - `:profile`      — user profile text (injected silently into the system prompt)
+    - `:active_tasks` — list of task maps from Tasks.active_for_session/1. Formatted
+                       into an `[Active task list]` block injected right before the
+                       current user message. Empty list → no block.
+    - `:recent_done`  — list of recently completed/cancelled tasks for the `### done` subsection
+    - `:files`        — list of %{"name" => name, "content" => text} for the current message
   """
   @spec build_assistant_messages(map(), keyword()) :: [map()]
   def build_assistant_messages(session_data, opts \\ []) do
-    profile        = Keyword.get(opts, :profile, "")
-    has_video      = Keyword.get(opts, :has_video, false)
-    images         = Keyword.get(opts, :images, [])
-    files          = Keyword.get(opts, :files, [])
-    buffer_context = Keyword.get(opts, :buffer_context)
-    language       = Keyword.get(opts, :language)
+    profile      = Keyword.get(opts, :profile, "")
+    active_tasks = Keyword.get(opts, :active_tasks, [])
+    recent_done  = Keyword.get(opts, :recent_done, [])
+    files        = Keyword.get(opts, :files, [])
 
     system_msg = %{role: "system",
-                   content: SystemPrompt.generate_assistant(
-                     profile:   profile,
-                     has_video: has_video,
-                     language:  language
-                   )}
+                   content: SystemPrompt.generate_assistant(profile: profile)}
 
     {prefix, history_llm, relevant_msgs, last_msgs} =
-      build_core(session_data, images, files, nil)
+      build_core(session_data, [], files, nil)
 
-    extra_context =
-      if is_binary(buffer_context) and buffer_context != "" do
-        [%{role: "user",      content: "[Worker agent updates]\n\n#{buffer_context}"},
-         %{role: "assistant", content: "I've reviewed the worker updates and will incorporate them."}]
-      else
-        []
-      end
+    task_list_block = build_task_list_block(active_tasks, recent_done, base_level: 2)
 
-    [system_msg] ++ prefix ++ history_llm ++ relevant_msgs ++ extra_context ++ last_msgs
+    [system_msg] ++ prefix ++ history_llm ++ relevant_msgs ++ task_list_block ++ last_msgs
   end
+
+  @doc """
+  Render the hierarchical task-list block as a pair of user/assistant messages.
+
+  `active_tasks` — list of non-terminal tasks (pending | ongoing | paused).
+  `recent_done`  — list of done/cancelled tasks to show under `### done`.
+  `base_level`   — heading level of the top `Task list` heading (default 2).
+                   Type sub-sections are `base_level + 1`; task titles are
+                   `base_level + 2`. Must leave `base_level + 2 ≤ 6` or the
+                   generator raises (Markdown has no h7).
+
+  Returns `[]` when both lists are empty (nothing to render).
+  """
+  @spec build_task_list_block([map()], [map()], keyword()) :: [map()]
+  def build_task_list_block(active_tasks, recent_done \\ [], opts \\ [])
+  def build_task_list_block([], [], _opts), do: []
+  def build_task_list_block(active_tasks, recent_done, opts) do
+    base_level = Keyword.get(opts, :base_level, 2)
+
+    if base_level + 2 > 6 do
+      raise ArgumentError,
+        "task-list block base_level=#{base_level} would push task-title headings to level #{base_level + 2}, past Markdown h6"
+    end
+
+    top  = String.duplicate("#", base_level)
+    sub  = String.duplicate("#", base_level + 1)
+    task = String.duplicate("#", base_level + 2)
+
+    {periodic, one_off, paused} = partition_active(active_tasks)
+
+    sections =
+      [
+        render_type_section(periodic, "periodic", sub, task),
+        render_type_section(one_off,  "one_off",  sub, task),
+        render_paused_section(paused, sub, task),
+        render_done_section(recent_done, sub)
+      ]
+      |> Enum.reject(&(&1 == nil))
+
+    if sections == [] do
+      []
+    else
+      body = "#{top} Task list\n\n" <> Enum.join(sections, "\n\n")
+
+      [%{role: "user", content: body},
+       %{role: "assistant", content: "Noted — task list acknowledged."}]
+    end
+  end
+
+  # Split active_tasks into the three render buckets. Periodic and one_off
+  # contain pending + ongoing; paused tasks get their own section regardless
+  # of type so the user can see "what's been set aside".
+  defp partition_active(tasks) do
+    periodic = Enum.filter(tasks, &(&1.task_status != "paused" and &1.task_type == "periodic"))
+    one_off  = Enum.filter(tasks, &(&1.task_status != "paused" and &1.task_type == "one_off"))
+    paused   = Enum.filter(tasks, &(&1.task_status == "paused"))
+    {periodic, one_off, paused}
+  end
+
+  defp render_type_section([], _label, _sub, _task), do: nil
+  defp render_type_section(tasks, label, sub, task) do
+    rendered = Enum.map_join(tasks, "\n\n", &render_task_block(&1, task))
+    "#{sub} #{label}\n\n" <> rendered
+  end
+
+  defp render_paused_section([], _sub, _task), do: nil
+  defp render_paused_section(tasks, sub, task) do
+    rendered = Enum.map_join(tasks, "\n\n", &render_task_block(&1, task))
+    "#{sub} paused\n\n" <> rendered
+  end
+
+  defp render_done_section([], _sub), do: nil
+  defp render_done_section(tasks, sub) do
+    lines =
+      Enum.map_join(tasks, "\n", fn t ->
+        "- `#{t.task_id}` — #{t.task_title}"
+      end)
+    "#{sub} done\n\n" <> lines
+  end
+
+  # Both active and done tasks render the same `task_id` format: a backticked
+  # id immediately following the title marker. Active tasks use a Markdown
+  # heading (`#### \`id\` — title`); done tasks use a bullet (`- \`id\` — title`).
+  # The heading-level `task_id` keeps the identifier adjacent to the title
+  # so the model can always reference it verbatim when calling update_task
+  # / fetch_task — never needs to invent one.
+  defp render_task_block(task, heading) do
+    title_line = "#{heading} `#{task.task_id}` — #{task.task_title}"
+
+    fields =
+      [
+        "**Description:** #{task.task_spec |> strip_attachment_lines() |> String.trim()}",
+        "**Status:** #{task.task_status}",
+        pickup_line(task),
+        attachments_line(task)
+      ]
+      |> Enum.reject(&(&1 == nil))
+      |> Enum.join("\n")
+
+    title_line <> "\n" <> fields
+  end
+
+  defp pickup_line(%{task_status: "pending", task_type: "periodic", time_to_pickup: ts})
+       when is_integer(ts),
+       do: "**Pick up time:** " <> format_ts(ts)
+  defp pickup_line(_), do: nil
+
+  defp attachments_line(task) do
+    case extract_attachments(task.task_spec) do
+      [] -> nil
+      paths ->
+        "**Attachments:**\n" <>
+          Enum.map_join(paths, "\n", fn p -> "- #{p}" end)
+    end
+  end
+
+  @doc """
+  Pull workspace paths out of a task_spec by scanning for 📎-prefixed lines.
+  The 📎 is stripped from the returned paths. Used both by the task-list
+  renderer and by fetch_task to surface a structured attachments field.
+  """
+  @spec extract_attachments(String.t() | nil) :: [String.t()]
+  def extract_attachments(nil), do: []
+  def extract_attachments(spec) when is_binary(spec) do
+    spec
+    |> String.split("\n", trim: true)
+    |> Enum.flat_map(fn line ->
+      trimmed = String.trim(line)
+      case Regex.run(~r/^📎\s+(.+)$/u, trimmed) do
+        [_, path] -> [String.trim(path)]
+        _         -> []
+      end
+    end)
+  end
+
+  # Remove 📎-prefixed lines from a spec so the "Description" field in the
+  # task-list block shows only the prose description (attachments are
+  # rendered separately as a bullet list).
+  defp strip_attachment_lines(nil), do: ""
+  defp strip_attachment_lines(spec) do
+    spec
+    |> String.split("\n")
+    |> Enum.reject(fn line -> Regex.match?(~r/^\s*📎\s+/u, line) end)
+    |> Enum.join("\n")
+  end
+
+  defp format_ts(ms) when is_integer(ms) do
+    case DateTime.from_unix(div(ms, 1000)) do
+      {:ok, dt} -> DateTime.to_iso8601(dt) |> String.slice(0, 16) |> Kernel.<>(" UTC")
+      _ -> to_string(ms)
+    end
+  end
+  defp format_ts(_), do: ""
 
   @doc "True when the session history is long enough to warrant compaction."
   @spec should_compact?(map()) :: boolean()

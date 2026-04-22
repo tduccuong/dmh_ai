@@ -31,7 +31,7 @@ defmodule Dmhai.Handlers.Data do
 
   # GET /assets/:session_id/:file_id
   # Serves user-uploaded files from <session_root>/data/. Worker-scratch files
-  # under <session_root>/<origin>/tasks/<task>/ are intentionally not served —
+  # under <session_root>/workspace/ are intentionally not served —
   # the worker should persist anything user-facing via signal(result) or by
   # writing to the data/ subdir explicitly.
   def get_asset(conn, user, session_id, file_id) do
@@ -52,14 +52,6 @@ defmodule Dmhai.Handlers.Data do
     else
       json(conn, 404, %{error: "Not found"})
     end
-  end
-
-  # GET /notifications?since=<unix_millis>
-  def get_notifications(conn, user) do
-    params = URI.decode_query(conn.query_string)
-    since = String.to_integer(params["since"] || "0")
-    entries = Dmhai.Agent.MasterBuffer.fetch_notifications(user.id, since)
-    json(conn, 200, entries)
   end
 
   # GET /sessions
@@ -102,6 +94,108 @@ defmodule Dmhai.Handlers.Data do
     case result.rows do
       [row | _] -> json(conn, 200, parse_session_row(row))
       _ -> json(conn, 404, %{error: "Not found"})
+    end
+  end
+
+  # GET /sessions/:id/tasks
+  # Returns all tasks for the session, newest first. The FE's task-list
+  # sidebar polls this at ~3s cadence while tasks are active.
+  def get_session_tasks(conn, user, session_id) do
+    owns = query!(Repo, "SELECT id FROM sessions WHERE id=? AND user_id=?", [session_id, user.id])
+
+    if owns.rows == [] do
+      json(conn, 404, %{error: "Not found"})
+    else
+      tasks =
+        session_id
+        |> Dmhai.Agent.Tasks.list_for_session()
+        |> Enum.map(&Map.take(&1, [:task_id, :task_title, :task_type, :task_status,
+                                    :intvl_sec, :task_spec, :task_result,
+                                    :time_to_pickup, :language,
+                                    :created_at, :updated_at]))
+      json(conn, 200, %{tasks: tasks})
+    end
+  end
+
+  # GET /sessions/:id/progress?since=<id>
+  # Returns the session's progress rows after the given id (delta-load).
+  # The FE polls this at its own cadence while a task is active; when no tasks
+  # are running it can back off to a slower cadence (or skip entirely).
+  def get_session_progress(conn, user, session_id) do
+    owns = query!(Repo, "SELECT id FROM sessions WHERE id=? AND user_id=?", [session_id, user.id])
+
+    if owns.rows == [] do
+      json(conn, 404, %{error: "Not found"})
+    else
+      conn = fetch_query_params(conn)
+      since_id =
+        case conn.query_params["since"] do
+          nil -> 0
+          s ->
+            case Integer.parse(to_string(s)) do
+              {n, _} -> n
+              _      -> 0
+            end
+        end
+
+      rows = Dmhai.Agent.SessionProgress.fetch_for_session(session_id, since_id)
+      json(conn, 200, %{progress: rows})
+    end
+  end
+
+  # GET /sessions/:id/poll?msg_since=<ts>&prog_since=<id>
+  # Unified delta endpoint for the FE's polling loop.
+  # Returns:
+  #   - messages:      new session.messages entries with ts > msg_since
+  #   - progress:      new session_progress rows with id > prog_since
+  #   - stream_buffer: partial final-answer text currently being streamed, or nil
+  #   - is_working:    true when a turn is in flight (buffer non-null OR ongoing task)
+  def poll_session(conn, user, session_id) do
+    result =
+      query!(Repo,
+             "SELECT messages, stream_buffer FROM sessions WHERE id=? AND user_id=?",
+             [session_id, user.id])
+
+    case result.rows do
+      [[msgs_json, stream_buffer]] ->
+        conn = fetch_query_params(conn)
+
+        msg_since =
+          case conn.query_params["msg_since"] do
+            nil -> 0
+            s ->
+              case Integer.parse(to_string(s)) do
+                {n, _} -> n
+                _      -> 0
+              end
+          end
+
+        prog_since =
+          case conn.query_params["prog_since"] do
+            nil -> 0
+            s ->
+              case Integer.parse(to_string(s)) do
+                {n, _} -> n
+                _      -> 0
+              end
+          end
+
+        all_msgs = Jason.decode!(msgs_json || "[]")
+        new_msgs = Enum.filter(all_msgs, fn m -> (m["ts"] || 0) > msg_since end)
+        progress = Dmhai.Agent.SessionProgress.fetch_for_session(session_id, prog_since)
+
+        has_active_task = Dmhai.Agent.Tasks.fetch_next_due(session_id) != nil
+        is_working = is_binary(stream_buffer) or has_active_task
+
+        json(conn, 200, %{
+          messages:      new_msgs,
+          progress:      progress,
+          stream_buffer: stream_buffer,
+          is_working:    is_working
+        })
+
+      _ ->
+        json(conn, 404, %{error: "Not found"})
     end
   end
 
@@ -370,32 +464,30 @@ defmodule Dmhai.Handlers.Data do
   end
 
   # PUT /sessions/:id
+  # Metadata-only: updates name (and wipes messages + context when the FE
+  # sends `messages: []` as a session-reset signal). Regular message writes
+  # are BE-only via /agent/chat — FE MUST NOT push message-shaped state
+  # back here (CLAUDE.md rule #9). Incoming `messages` arrays with content
+  # are ignored; only the empty-array "reset" case has effect.
   def put_session(conn, user, session_id) do
     {:ok, body, conn} = read_body(conn)
     d = Jason.decode!(body || "{}")
     now = :os.system_time(:millisecond)
-    messages = d["messages"] || []
+    name = sanitize_session_name(d["name"])
+    reset? = Map.get(d, "messages") == []
 
-    # When messages are cleared (session reset), also wipe server-owned context
-    # so the compaction summary doesn't bleed into the fresh conversation.
-    if messages == [] do
+    if reset? do
       query!(Repo, """
       UPDATE sessions SET name=?, messages=?, context=NULL, updated_at=?
       WHERE id=? AND user_id=?
-      """, [sanitize_session_name(d["name"]), "[]", now, session_id, user.id])
+      """, [name, "[]", now, session_id, user.id])
       query!(Repo, "DELETE FROM session_token_stats WHERE session_id=?", [session_id])
       query!(Repo, "DELETE FROM worker_token_stats WHERE session_id=?", [session_id])
     else
       query!(Repo, """
-      UPDATE sessions SET name=?, messages=?, updated_at=?
+      UPDATE sessions SET name=?, updated_at=?
       WHERE id=? AND user_id=?
-      """, [
-        sanitize_session_name(d["name"]),
-        Jason.encode!(messages),
-        now,
-        session_id,
-        user.id
-      ])
+      """, [name, now, session_id, user.id])
     end
 
     json(conn, 200, d)
@@ -404,12 +496,11 @@ defmodule Dmhai.Handlers.Data do
   # DELETE /sessions/:id
   def delete_session(conn, user, session_id) do
     # Stop any in-flight workers for this session before cleaning up
-    UserAgent.cancel_session_workers(user.id, session_id)
+    UserAgent.cancel_session_tasks(user.id, session_id)
 
     query!(Repo, "DELETE FROM sessions WHERE id=? AND user_id=?", [session_id, user.id])
     query!(Repo, "DELETE FROM image_descriptions WHERE session_id=?", [session_id])
     query!(Repo, "DELETE FROM video_descriptions WHERE session_id=?", [session_id])
-    query!(Repo, "DELETE FROM master_buffer WHERE session_id=?", [session_id])
     query!(Repo, "DELETE FROM session_token_stats WHERE session_id=?", [session_id])
     query!(Repo, "DELETE FROM worker_token_stats WHERE session_id=?", [session_id])
 
@@ -503,32 +594,23 @@ defmodule Dmhai.Handlers.Data do
     }
   end
 
-  # GET /reserve-task-id
-  # Returns a pre-allocated task_id so the FE can start uploading attachments to
-  # the task workspace before the chat message is sent. No DB row is created yet.
-  def get_reserved_task_id(conn, _user) do
-    task_id = :crypto.strong_rand_bytes(9) |> Base.url_encode64(padding: false)
-    json(conn, 200, %{task_id: task_id})
-  end
-
-  # POST /upload-task-attachment
-  # Saves a scaled-down attachment to the task workspace. The FE uploads here in
-  # parallel with the /agent/chat call so the worker has the files ready when it
-  # starts. Multipart fields: file, sessionId, taskId.
-  def post_task_attachment(conn, user) do
+  # POST /upload-session-attachment
+  # Saves a scaled-down attachment to the session workspace. The FE uploads
+  # here at attach time (parallel with /assets original upload), so paths are
+  # known and files are on disk well before the user hits Send.
+  # Multipart fields: file, sessionId.
+  def post_session_attachment(conn, user) do
     case parse_multipart(conn) do
       {:error, conn, :too_large} ->
         json(conn, 413, %{error: "File too large"})
 
       {:ok, conn, parts} ->
         session_id = get_in(parts, ["sessionId", :data]) || ""
-        task_id     = get_in(parts, ["taskId", :data])     || ""
         session_id = String.trim(session_id)
-        task_id     = String.trim(task_id)
 
         cond do
-          session_id == "" or task_id == "" ->
-            json(conn, 400, %{error: "Missing sessionId or taskId"})
+          session_id == "" ->
+            json(conn, 400, %{error: "Missing sessionId"})
 
           not owns_session?(session_id, user.id) ->
             json(conn, 403, %{error: "Forbidden"})
@@ -542,12 +624,10 @@ defmodule Dmhai.Handlers.Data do
                 else
                   filename  = filename || "upload"
                   safe_name = Regex.replace(~r/[^\w.\-]/, filename, "_")
-                  origin    = session_origin(session_id)
-                  workspace = Dmhai.Constants.task_workspace_dir(
-                                user.email, session_id, origin, task_id)
+                  workspace = Dmhai.Constants.session_workspace_dir(user.email, session_id)
                   File.mkdir_p!(workspace)
                   File.write!(Path.join(workspace, safe_name), raw)
-                  Logger.info("[Data] task attachment saved task=#{task_id} name=#{safe_name}")
+                  Logger.info("[Data] session attachment saved session=#{session_id} name=#{safe_name}")
                   json(conn, 200, %{name: safe_name})
                 end
 
@@ -561,13 +641,6 @@ defmodule Dmhai.Handlers.Data do
   defp owns_session?(session_id, user_id) do
     result = query!(Repo, "SELECT id FROM sessions WHERE id=? AND user_id=?", [session_id, user_id])
     result.rows != []
-  end
-
-  defp session_origin(session_id) do
-    case query!(Repo, "SELECT mode FROM sessions WHERE id=?", [session_id]) do
-      %{rows: [[mode]]} when mode in ["assistant", "confidant"] -> mode
-      _ -> "assistant"
-    end
   end
 
   defp user_asset_dir(email, session_id) do

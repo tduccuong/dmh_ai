@@ -9,9 +9,9 @@ defmodule Dmhai.Tools.Registry do
   """
 
   @tools [
-    Dmhai.Tools.Plan,
-    Dmhai.Tools.StepSignal,
-    Dmhai.Tools.TaskSignal,
+    Dmhai.Tools.CreateTask,
+    Dmhai.Tools.UpdateTask,
+    Dmhai.Tools.FetchTask,
     Dmhai.Tools.WebSearch,
     Dmhai.Tools.WebFetch,
     Dmhai.Tools.RunScript,
@@ -20,7 +20,9 @@ defmodule Dmhai.Tools.Registry do
     Dmhai.Tools.Calculator,
     Dmhai.Tools.ParseDocument,
     Dmhai.Tools.ExtractContent,
-    Dmhai.Tools.SpawnTask
+    Dmhai.Tools.SpawnTask,
+    Dmhai.Tools.SaveCredential,
+    Dmhai.Tools.LookupCredential
   ]
 
   @doc "Returns all tool definitions in OpenAI function-calling format."

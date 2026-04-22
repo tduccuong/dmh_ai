@@ -54,9 +54,18 @@ UIManager.initializeApp = async function() {
             this._currentMode = this.currentSession.mode || 'confidant';
             this._updateModeLabel();
         }
+        await this.refreshSessionProgress();
         await this.renderSessions();
         this.renderChat();
+        this.startProgressPolling();
         document.getElementById('message-input').focus();
+
+        // Mirror switchSession's sidebar behaviour on first load / refresh.
+        if ((this.currentSession.mode || 'confidant') === 'assistant') {
+            if (this.startTaskListPolling) this.startTaskListPolling();
+        } else if (this.renderTaskList) {
+            this.renderTaskList();
+        }
 
         // Start notification polling for Assistant worker updates
         var pollMs = parseInt(this._prefs && this._prefs.notificationPollInterval) || 5000;
@@ -120,7 +129,13 @@ UIManager.switchMode = async function(mode) {
         await this.renderSessions();
         this.clearTaskStatusArea();
         this.renderChat();
-        if (mode === 'assistant') this.showAssistantHint();
+        this.startProgressPolling();
+        if (mode === 'assistant') {
+            this.showAssistantHint();
+            if (this.startTaskListPolling) this.startTaskListPolling();
+        } else if (this.renderTaskList) {
+            this.renderTaskList();
+        }
     }
 };
 
@@ -236,8 +251,114 @@ UIManager.switchSession = async function(id) {
     this.currentSession = await SessionStore.getSession(id);
     await SessionStore.setCurrentSessionId(id);
     this.clearTaskStatusArea();
+    await this.refreshSessionProgress();
     this.renderChat();
-    if ((this.currentSession.mode || 'confidant') === 'assistant') this.showAssistantHint();
+    this.startProgressPolling();
+    if ((this.currentSession.mode || 'confidant') === 'assistant') {
+        this.showAssistantHint();
+        if (this.startTaskListPolling) this.startTaskListPolling();
+    } else {
+        // Confidant: stop any prior polling and hide the sidebar section.
+        if (this._taskPoll) { clearInterval(this._taskPoll); this._taskPoll = null; }
+        if (this.renderTaskList) this.renderTaskList();
+    }
+};
+
+// Initial snapshot — fetches progress rows once (on session switch or
+// reload). Subsequent updates come in via startProgressPolling's `/poll`
+// delta requests. Both write to `currentSession.progress`.
+UIManager.refreshSessionProgress = async function() {
+    if (!this.currentSession) return false;
+    var sid = this.currentSession.id;
+    try {
+        var data = await SessionStore.getSessionProgress(sid, 0);
+        var list = (data && data.progress) || [];
+        if (this.currentSession && this.currentSession.id === sid) {
+            var prev = JSON.stringify(this.currentSession.progress || []);
+            this.currentSession.progress = list;
+            return JSON.stringify(list) !== prev;
+        }
+    } catch (e) {}
+    return false;
+};
+
+// Poll /sessions/:id/poll at adaptive cadence (500ms when BE is working,
+// 5s when idle). Handles all three delta types — new messages, new /
+// updated progress rows, streaming-buffer text — and keeps the FE mirror
+// in sync with the DB. pollTurnToCompletion (in manager-search.js) owns
+// the DOM placeholder during an active turn; this loop handles the
+// background / post-turn idle cadence, including auto-chain updates.
+UIManager.startProgressPolling = function() {
+    if (this._progressPoll) {
+        clearTimeout(this._progressPoll);
+        this._progressPoll = null;
+    }
+    var self = this;
+    var sid = this.currentSession && this.currentSession.id;
+    if (!sid) return;
+
+    // Baselines: only request deltas we haven't seen yet.
+    var msgSince = 0;
+    (this.currentSession.messages || []).forEach(function(m) {
+        if (m && typeof m.ts === 'number' && m.ts > msgSince) msgSince = m.ts;
+    });
+    var progSince = 0;
+    (this.currentSession.progress || []).forEach(function(p) {
+        if (p && typeof p.id === 'number' && p.id > progSince) progSince = p.id;
+    });
+
+    async function tick() {
+        if (!self.currentSession || self.currentSession.id !== sid) {
+            self._progressPoll = null;
+            return;
+        }
+        // sendMessage drives its own polling loop during a turn; skip a tick
+        // to avoid double-polling.
+        if (self.isStreaming) {
+            self._progressPoll = setTimeout(tick, 500);
+            return;
+        }
+
+        var url = '/sessions/' + encodeURIComponent(sid) +
+                  '/poll?msg_since=' + msgSince + '&prog_since=' + progSince;
+        var isWorking = false;
+        var changed = false;
+        try {
+            var res = await apiFetch(url);
+            if (res.ok) {
+                var data = await res.json();
+
+                (data.messages || []).forEach(function(m) {
+                    self.currentSession.messages.push(m);
+                    if (typeof m.ts === 'number' && m.ts > msgSince) msgSince = m.ts;
+                    changed = true;
+                });
+
+                (data.progress || []).forEach(function(p) {
+                    self.currentSession.progress = self.currentSession.progress || [];
+                    var replaced = false;
+                    for (var pi = 0; pi < self.currentSession.progress.length; pi++) {
+                        if (self.currentSession.progress[pi].id === p.id) {
+                            self.currentSession.progress[pi] = p;
+                            replaced = true;
+                            break;
+                        }
+                    }
+                    if (!replaced) self.currentSession.progress.push(p);
+                    if (typeof p.id === 'number' && p.id > progSince) progSince = p.id;
+                    changed = true;
+                });
+
+                isWorking = !!data.is_working;
+            }
+        } catch (e) {}
+
+        if (changed) self.renderChat();
+        var nextMs = isWorking ? 500 : 5000;
+        self._progressPoll = setTimeout(tick, nextMs);
+    }
+
+    tick();
 };
 
 UIManager.savePrefs = function(partial) {
@@ -427,13 +548,15 @@ UIManager.showAssistantHint = function() {
 UIManager.retryLastMessage = function() {
     if (!this.currentSession) return;
     var msgs = this.currentSession.messages;
-    // Find last user message that has not yet a complete assistant reply after it
+    // TODO(timestamps): truncating history on retry currently only mutates
+    // the FE mirror — the BE retains the old messages. A dedicated
+    // /sessions/:id/truncate endpoint (or an explicit in-body field) is
+    // needed so the BE mirror stays consistent. For now retry re-sends
+    // the user text; the BE appends a fresh user message, which is
+    // usually what the user wants anyway.
     for (var i = msgs.length - 1; i >= 0; i--) {
         if (msgs[i].role === 'user') {
             document.getElementById('message-input').value = msgs[i].content || '';
-            // Remove the partial assistant message and the user message from history
-            this.currentSession.messages = msgs.slice(0, i);
-            SessionStore.updateSession(this.currentSession);
             this.renderChat();
             this.sendMessage();
             return;

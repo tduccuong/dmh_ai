@@ -15,6 +15,13 @@ defmodule Dmhai.Agent.UserAgentMessages do
   import Ecto.Adapters.SQL, only: [query!: 3]
   require Logger
 
+  @doc """
+  Append a message to the session's `messages` JSON column and stamp its
+  `ts` from the BE clock (overwriting any incoming value) per CLAUDE.md
+  rule #9. Returns `{:ok, ts_ms}` on success so callers can plumb the
+  canonical timestamp back through their response (e.g. /agent/chat's
+  final SSE `{done, user_ts, assistant_ts}` frame).
+  """
   def append(session_id, user_id, message) do
     try do
       result = query!(Repo, "SELECT messages FROM sessions WHERE id=? AND user_id=?",
@@ -23,54 +30,22 @@ defmodule Dmhai.Agent.UserAgentMessages do
       case result.rows do
         [[msgs_json]] ->
           msgs = Jason.decode!(msgs_json || "[]")
-          updated = Jason.encode!(msgs ++ [message])
-          now = System.os_time(:millisecond)
+          now  = System.os_time(:millisecond)
+          stamped = Map.put(message, :ts, now)
+          updated = Jason.encode!(msgs ++ [stamped])
           query!(Repo, "UPDATE sessions SET messages=?, updated_at=? WHERE id=?",
                  [updated, now, session_id])
-          :ok
+          {:ok, now}
 
         _ ->
           Logger.warning("[UserAgentMessages] session not found id=#{session_id}")
-          :ok
+          {:error, :session_not_found}
       end
     rescue
       e ->
         Logger.error("[UserAgentMessages] append failed: #{Exception.message(e)}")
-        :ok
+        {:error, :exception}
     end
   end
 
-  # Mark all messages for a given task_id as _archived: true instead of deleting them.
-  # Archived messages are:
-  #   - still visible in the FE (full cycle history preserved)
-  #   - filtered out by context_engine before LLM injection (keeps LLM context clean)
-  # Called before each new periodic cycle so the previous cycle's messages don't
-  # pollute the assistant's context on the next user interaction.
-  def archive_by_task_id(session_id, user_id, task_id) do
-    try do
-      result = query!(Repo, "SELECT messages FROM sessions WHERE id=? AND user_id=?",
-                      [session_id, user_id])
-
-      case result.rows do
-        [[msgs_json]] ->
-          msgs = Jason.decode!(msgs_json || "[]")
-          updated = Enum.map(msgs, fn m ->
-            if m["task_id"] == task_id, do: Map.put(m, "_archived", true), else: m
-          end)
-          if updated != msgs do
-            now = System.os_time(:millisecond)
-            query!(Repo, "UPDATE sessions SET messages=?, updated_at=? WHERE id=?",
-                   [Jason.encode!(updated), now, session_id])
-          end
-          :ok
-
-        _ ->
-          :ok
-      end
-    rescue
-      e ->
-        Logger.error("[UserAgentMessages] archive_by_task_id failed: #{Exception.message(e)}")
-        :ok
-    end
-  end
 end

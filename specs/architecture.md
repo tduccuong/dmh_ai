@@ -1,8 +1,67 @@
 # DMH-AI Architecture
 
+> **⚠ In-flight rearchitecture (2026-04-21, #101):** Assistant mode is
+> collapsing into a **single conversational session loop**. The prior
+> two-stage pipeline (Classifier LLM → Assistant Loop LLM with
+> PLAN → EXEC → SIGNAL protocol) is being replaced by one LLM per session
+> that sees the conversation + a `[Task list]` context block and decides
+> turn-by-turn what to do — just like a modern chat agent. This removes
+> the plan/exec/signal protocol, the Police signal rules, the
+> `Dmhai.Agent.AssistantLoop` module, the `plan` / `step_signal` /
+> `task_signal` tools, and the fork-on-adjust scaffolding
+> (`predecessor_task_id` / `superseded_by_task_id` / `'superseded'` status).
+>
+> **Key model in the target architecture:**
+>   - Tasks are lightweight rows in `tasks` table: `task_type` (one_off |
+>     periodic), `intvl_sec`, `task_title`, `task_spec` (description),
+>     `task_status` (pending | ongoing | paused | done | cancelled),
+>     `task_result`, `time_to_pickup`, `language`.
+>   - The assistant uses `create_task` / `update_task` tools to manage the
+>     list, and the full tool catalogue (`web_fetch`, `run_script`, etc.) to
+>     execute work.
+>   - `Tasks.mark_done/2` auto-reschedules periodics: `task_type="periodic"`
+>     → `status="pending"`, `time_to_pickup=now+intvl_sec`.
+>   - Scheduling is best-effort: a tiny `TaskRuntime` arms timers for
+>     `time_to_pickup` and, on fire, sends `{:task_due, task_id}` to the
+>     session GenServer (starting it if idle-timed-out). If the session is
+>     busy with another turn, the pickup waits its turn in the mailbox.
+>   - No parallel tasks per session: one ordered stream. User wants
+>     independence → new chat session (multiple sessions per user run in
+>     parallel at the user-agent level).
+>   - No fork-on-adjust: if the user redirects a running task, the
+>     assistant naturally updates the task description or status via
+>     `update_task` in its next turn.
+>
+> **What survives intact from prior phases:**
+>   - `job` → `task` rename (Phase 1)
+>   - Per-session workspace layout (`<session>/data/` + `<session>/workspace/`, #91)
+>   - Strict Confidant / Assistant path separation at HTTP handler entry
+>     (#92a) — Confidant is unchanged; Assistant's internal pipeline is what
+>     #101 simplifies
+>   - Attachment-path injection via 📎 prefix on user messages (#92a)
+>   - `session_progress` table + `/sessions/:id/progress` endpoint (#90) —
+>     still the FE's activity-log source
+>   - Event-driven lifecycle (#96): no poller; task completion is an
+>     in-session LLM tool call, not a process-level signal
+
 ## Overview
 
-DMH-AI is a self-hosted AI assistant. Users chat with it through a browser SPA. The backend classifies each message into a **task** (simple one-off answer, complex one-off worker task, or periodic worker task) and routes it accordingly. All long-running work is tracked in the `tasks` table; the runtime owns scheduling, polling, summarising, and completion — the agent code is stateless end-to-end.
+DMH-AI is a self-hosted AI assistant. Users chat with it through a browser
+SPA. Each session runs one of two modes:
+
+- **Confidant** — fast synchronous Q&A. One streaming LLM call per user
+  message. No tasks, no scheduler, no background work. The friendly
+  close-companion surface.
+- **Assistant** — conversational agent that maintains a **task list** for
+  the session and works through it turn-by-turn. One LLM per session
+  handles dispatch, classification, and execution as a single
+  conversation. Tasks can be `one_off` (done once) or `periodic` (the
+  runtime reschedules each cycle). All tasks belonging to a session run
+  sequentially in that session — no per-session parallelism.
+
+Shared utilities (LLM routing, web fetch, tool sandbox, path resolution,
+session_progress log, i18n) are common to both modes; the pipelines don't
+cross above that level.
 
 ---
 
@@ -41,9 +100,8 @@ Application
  ├── Finch                       (HTTP client pool — LLM + web-fetch)
  ├── Registry  (Dmhai.Agent.Registry) — UserAgent lookups
  ├── Dmhai.Agent.Supervisor      (DynamicSupervisor for UserAgents)
- ├── Task.Supervisor  (Dmhai.Agent.TaskSupervisor)   — inline tasks
- ├── Task.Supervisor  (Dmhai.Agent.WorkerSupervisor) — detached workers
- ├── Dmhai.Agent.TaskRuntime      (GenServer — owns all tasks)
+ ├── Task.Supervisor  (Dmhai.Agent.TaskSupervisor)          — inline session turns
+ ├── Dmhai.Agent.TaskRuntime      (GenServer — periodic scheduler only)
  ├── Bandit HTTP  :8080          (optional)
  └── Bandit HTTPS :8443          (optional; requires /app/ssl/cert.pem)
       └── Dmhai.Router (Plug.Router)
@@ -61,16 +119,16 @@ After the supervisor tree starts, `application.ex` runs three sequential steps:
 ## Module Namespaces
 
 ```
-Dmhai.Agent.*     — agent runtime: UserAgent, Worker, TaskRuntime, Jobs,
-                    WorkerStatus, ContextEngine, LLM, Police, MasterBuffer
-                    (notification bus), AgentSettings, TokenTracker,
+Dmhai.Agent.*     — agent runtime: UserAgent, TaskRuntime (periodic
+                    scheduler), Tasks, SessionProgress, ContextEngine, LLM,
+                    Police (path-safety only), AgentSettings, TokenTracker,
                     ProfileExtractor, WebSearch, SystemPrompt,
                     UserAgentMessages (shared session-message writer)
 
-Dmhai.Tools.*     — worker-facing tools: RunScript, ReadFile, WriteFile,
+Dmhai.Tools.*     — assistant-callable tools: RunScript, ReadFile, WriteFile,
                     WebFetch, WebSearch, Calculator,
                     ParseDocument, ExtractContent, SpawnTask,
-                    Plan, TaskSignal, StepSignal, Registry
+                    CreateTask, UpdateTask, Registry
 
 Dmhai.Web.*       — web-fetch subsystem (see §Web Fetch):
                     CmpDetector, ConsentSeeder, ReaderExtractor,
@@ -82,7 +140,7 @@ Dmhai.Util.*      — cross-concern helpers: Html (text extraction),
 
 Dmhai.Constants   — single source of truth for filesystem paths
                     (assets_dir, session_root, session_data_dir,
-                    session_origin_root, task_workspace_dir, sanitize)
+                    session_workspace_dir, sanitize)
 
 Dmhai.I18n        — plain-dict translation module (en/vi/es/fr/ja)
 
@@ -113,11 +171,48 @@ HTTP request
 
 Auth: `POST /auth/login` → bcrypt → httpOnly cookie. `/auth/me` for session restore. Admin role gates `/admin/*` routes.
 
+### Confidant vs. Assistant — strict path separation
+
+The mode branch is taken **at the earliest possible point** — inside the HTTP
+handler, immediately after the session is located in DB. After the branch,
+**no function is reached by both paths**. Shared code is tool-level only
+(LLM, ContextEngine's mode-specific builders, SystemPrompt's mode-specific
+generators, SessionProgress, Tasks, UserAgentMessages, TokenTracker). No
+"dispatcher that checks mode internally" exists.
+
+```
+POST /agent/chat
+    │
+    ├── look up session.mode (single SELECT)
+    │
+    ├── mode == "confidant"
+    │     → handle_confidant_chat(conn, user, body, session_id)
+    │     → Http.dispatch_confidant(...) → {:dispatch_confidant, %ConfidantCommand{}}
+    │     → UserAgent.handle_call({:dispatch_confidant, cmd})
+    │     → run_confidant(cmd, state, session_data)
+    │
+    └── mode == "assistant"
+          → handle_assistant_chat(conn, user, body, session_id)
+          → Http.dispatch_assistant(...) → {:dispatch_assistant, %AssistantCommand{}}
+          → UserAgent.handle_call({:dispatch_assistant, cmd})
+          → run_assistant(cmd, state, session_data)
+```
+
+Command structs are split by mode — `AssistantCommand` carries text +
+attachment names (the session loop is text-only; attachments live in the
+stored user message as `📎 workspace/…` lines). `ConfidantCommand` carries
+inline `images` / `has_video` for direct vision answering. This prevents a
+body field from accidentally flowing into the wrong pipeline.
+
 ---
 
 ## UserAgent
 
-One GenServer per authenticated user, idle-timed-out after 30 min. Post-refactor it holds very little state — TaskRuntime owns all task/worker tracking.
+One GenServer per authenticated user, idle-timed-out after 30 min. In the
+conversational-session architecture it holds very little state — the
+`tasks` + `session_progress` + `sessions.messages` tables are the truth.
+The GenServer exists mainly to serialise per-user turns and hold
+platform-specific metadata (Telegram chat_id, etc.).
 
 ```
 UserAgent state:
@@ -125,7 +220,123 @@ UserAgent state:
   platform_state:  %{telegram: %{...}, ...}
 ```
 
-It dispatches inline commands (Assistant classification + Confidant pipeline) under `TaskSupervisor`. It is *not* in the worker lifecycle path any more — TaskRuntime talks to the workers directly.
+It accepts two **distinct** dispatch messages — one per mode — and routes
+each to its own pipeline function. There is **no shared dispatcher** that
+inspects the command to decide which pipeline to call.
+
+```
+handle_call({:dispatch_assistant, %AssistantCommand{} = cmd}, …)
+  → Task.Supervisor.async_nolink(TaskSupervisor, fn ->
+      run_assistant(cmd, state, session_data)
+    end)
+
+handle_call({:dispatch_confidant, %ConfidantCommand{} = cmd}, …)
+  → Task.Supervisor.async_nolink(TaskSupervisor, fn ->
+      run_confidant(cmd, state, session_data)
+    end)
+
+handle_call({:dispatch, :interrupt}, …)
+  → cancel_current_task(state)        ← the only message that serves both
+```
+
+`run_assistant/3` and `run_confidant/3` do not call into each other and do
+not share any helper that knows about the other path. Interrupt is the sole
+cross-path message because cancellation is mode-agnostic.
+
+In Assistant mode (#101 target), the dispatched task runs the **session
+loop** (see §Assistant Mode) — a single conversational LLM turn with
+tool-call roundtrips. The session loop is short-lived per turn: it starts
+when a user message or `{:task_due, task_id}` arrives, runs the model
+until it emits text, and exits. State lives in DB (`tasks`,
+`session_progress`, `sessions.messages`), not in the GenServer.
+
+---
+
+## Timestamps and ownership
+
+All persisted timestamps are generated at the backend (see CLAUDE.md
+rule #9). The FE never stamps `ts` on user messages, assistant messages,
+`session_progress` rows, or task rows, and never PUTs message-shaped state
+back to the BE.
+
+Concretely for a user turn:
+
+1. FE POSTs `/agent/chat` with `{sessionId, content, attachmentNames?, files?}`.
+   No `ts`, no local message push to `/sessions/:id` PUT.
+2. BE, inside `handle_assistant_chat` / `handle_confidant_chat`, appends the
+   user message to `session.messages` with `ts = System.os_time(:ms)` BEFORE
+   dispatching to the pipeline, then returns `{user_ts}` immediately as
+   JSON. The pipeline runs asynchronously in the background.
+3. Pipeline runs. Every `session_progress` row gets `ts = System.os_time(:ms)`
+   at INSERT. Final-text tokens are written to `sessions.stream_buffer`
+   as they arrive from the LLM (throttled; see below). When the final
+   text round completes, the accumulated text is appended to
+   `session.messages` with its own BE `ts` and `stream_buffer` is cleared.
+
+The FE holds a local mirror of `session.messages` for display. It
+optimistically appends a user-message object at send time for instant
+rendering — that object carries NO `ts`. The POST response `{user_ts}`
+is used to patch the optimistic entry with the canonical BE timestamp.
+Everything after that — progress rows, streaming text, final assistant
+message — flows through polling.
+
+## Polling-based delivery
+
+There is no server-sent event stream. `/agent/chat` is fire-and-forget;
+the turn runs in the background on the UserAgent's supervised Task and
+all output lands in DB tables.
+
+The FE reconciles via a single polling endpoint per active session:
+
+```
+GET /sessions/:id/poll?msg_since=<ts>&prog_since=<id>
+→ {
+    "messages":       [... messages with ts > msg_since, newest-last ...],
+    "progress":       [... session_progress rows with id > prog_since ...],
+    "stream_buffer":  "<partial accumulated text>" | null,
+    "is_working":     true | false
+  }
+```
+
+- `messages` delta: new user / assistant messages persisted since the
+  last tick. Usually one at a time.
+- `progress` delta: `session_progress` rows (kind=tool pending/done, or
+  kind=thinking, or kind=summary) since the last tick. Cheap — indexed
+  on `(session_id, id)`.
+- `stream_buffer`: partial text of the in-flight final-answer round.
+  Updated on the BE in-place as tokens arrive from the LLM, capped to a
+  hard update cadence (default 250 ms between writes — see
+  `@stream_buffer_flush_ms`). `null` when no generation is active.
+- `is_working`: `true` when the UserAgent's `current_task` is set or
+  `stream_buffer` is non-null. Drives the FE polling cadence.
+
+**FE cadence** (`manager-*` scripts):
+
+- Active session + `is_working=true`: **500 ms** poll.
+- Active session + `is_working=false`: **5 s** poll.
+- `document.hidden` / session switch: poll paused entirely.
+- Session switch: one `GET /sessions/:id` snapshot to rebuild local
+  state, then resume polling on the new session id.
+
+**FE rendering**:
+
+- New `messages` delta is merged into `currentSession.messages` by ts
+  (optimistic user entries patched in place).
+- New `progress` delta is merged into `currentSession.progress` by id
+  (upsert — done-flips overwrite the prior pending row).
+- `stream_buffer` is rendered in the streaming placeholder (the same
+  DOM node that used to display the live-streamed token text). When
+  the final message appears in the `messages` delta, the placeholder is
+  replaced with the permanent message and the buffer goes to `null`.
+
+**Latency** (500 ms poll):
+- Tool spinner / tick: visible within 500 ms of tool start / finish.
+- Final-text reveal: updated every 500 ms in chunks as the LLM produces
+  tokens — text grows visibly rather than appearing in one bam. Not
+  token-perfect, but well above the "visibly moving" perceptual
+  threshold.
+- First byte (user optimistic render → first tool line): ~same as
+  today, gated by BE turn dispatch speed.
 
 ---
 
@@ -133,40 +344,67 @@ It dispatches inline commands (Assistant classification + Confidant pipeline) un
 
 # Confidant Mode
 
-In Confidant mode, every message is handled with a single LLM streaming call. There are no tasks, no workers, and no async polling. The pipeline is fully synchronous from HTTP request to SSE response.
+In Confidant mode, every message is handled with a single LLM streaming call.
+There are no tasks, no tool calls, no Assistant Loop — just a one-shot
+answer. Delivery uses the same polling mechanism as Assistant mode: the
+LLM's streamed tokens are buffered into `sessions.stream_buffer`, the FE
+polls to render progressive text, and the final answer lands in
+`session.messages` when generation completes.
+
+**Separation guarantee**: this path shares **no function** with the Assistant
+path. Its command type is `%ConfidantCommand{}`, its dispatcher is
+`{:dispatch_confidant, cmd}`, its pipeline function is `run_confidant/3`, and
+its context builder is `ContextEngine.build_confidant_messages/2`. Tool-level
+helpers (LLM, UserAgentMessages, Tasks only for read-only queries) are
+stateless utilities, not shared pipeline code.
 
 ---
 
 ## Confidant Pipeline Flow
 
 ```
-POST /agent/chat
+POST /agent/chat    (mode === "confidant" branch)
     │
     ▼
-UserAgent.run_confidant(session_data, command, user)
+handle_confidant_chat(conn, user, body, session_id)
     │
-    ├── [1] Web search detection (optional)
-    │         WebSearch.detect_intent(message) → bool
-    │         if true: WebSearch.search(keywords) → raw results
-    │                  LLM.call(summarizer_model) → web_context (synthesized text)
+    ├── parse body: content, images[], imageNames[], files[], hasVideo
+    │   (Confidant fields only — attachmentNames ignored even if present)
     │
-    ├── [2] Media resolution
-    │         load image/video descriptions from DB (image_descriptions, video_descriptions)
-    │         if any missing: describe inline via LLM call per missing file (Confidant only)
+    ├── build %ConfidantCommand{content, session_id, reply_pid,
+    │                            images, image_names, files, has_video, metadata}
     │
-    ├── [3] Context assembly → ContextEngine.build_messages/2
-    │         (see §Context Assembly below)
-    │
-    └── [4] LLM.stream(master_model, messages)
-              → streaming tokens → SSE to browser
+    └── Http.dispatch_confidant(user_id, cmd)
+          → GenServer.call(UserAgent, {:dispatch_confidant, cmd})
+                │
+                ▼
+          UserAgent.run_confidant(cmd, state, session_data)
+                │
+                ├── [1] Web search detection (optional)
+                │         WebSearch.detect_intent(message) → bool
+                │         if true: WebSearch.search(keywords) → raw results
+                │                  LLM.call(summarizer_model) → web_context
+                │
+                ├── [2] Media resolution (Confidant-only)
+                │         load image/video descriptions from DB
+                │         if any missing: describe inline via LLM call per missing file
+                │
+                ├── [3] Context assembly → ContextEngine.build_confidant_messages/2
+                │         (see §Context Assembly below)
+                │
+                └── [4] LLM.stream(confidant_model, messages)
+                          → tokens → sessions.stream_buffer (throttled writes)
+                          → final text appended to session.messages on completion
+                          (inline images[] are passed to the LLM for direct
+                           vision answering — unlike the Assistant path)
 ```
 
 ### Context Assembly
 
-`ContextEngine.build_messages/2` assembles the final message list in this order:
+`ContextEngine.build_confidant_messages/2` assembles the final message list in this order:
 
 ```
-[0]     system: SystemPrompt.generate(mode: "confidant", opts)
+[0]     system: SystemPrompt.generate_confidant(opts)
                   ├── Confidant base persona (friend-style; structured for technical topics)
                   ├── Today's date
                   ├── User profile   (injected silently, never quoted)
@@ -219,584 +457,413 @@ Send button is gated until image resize and video frame extraction complete.
 
 ---
 
----
-
 # Assistant Mode
 
-In Assistant mode, every user message is classified by the Assistant LLM into one of seven intents and handled accordingly. Active tasks for the session (pending/running/paused) are injected into the LLM context so the model can do fuzzy task-title matching.
+In Assistant mode, every user message (and every periodic-task pickup
+poke) is handled by a **single conversational LLM turn** for the session.
+The same model sees the conversation history, the current task list, and
+the new input, then decides what to do — call tools, update tasks, reply
+with text — on a per-turn basis. There is no separate classifier stage and
+no plan/exec/signal protocol.
 
 ---
 
-## Intent Classification
+## Session loop
 
 ```
-Browser  POST /agent/chat
-   ▼
-UserAgent.run_assistant
-   │  context: system prompt + session history + [Active tasks for this session]
-   ▼
-Assistant LLM (tools: handoff_to_worker, pause_task, resume_task,
-                       cancel_task, set_periodic_for_task, read_task_status)
-   │
-   ├─ Intent: NEW TASK (default)
-   │    "research X", "write Y", "monitor Z", any action request
-   │    → handoff_to_worker(task: VERBATIM user message, intvl_sec=0|N, ...)
-   │    → Jobs.insert + TaskRuntime.start_task
-   │
-   ├─ Intent: STATUS CHECK
-   │    "status of X", "how is X going", "what is going on", "any updates"
-   │    → Specific task: read_task_status(task_id)  [fuzzy match on title]
-   │    → General / no tasks: answer directly in user's language
-   │
-   ├─ Intent: PAUSE JOB
-   │    "pause X", "hold X", "stop X for now"  [fuzzy match on title]
-   │    → Found: pause_task(task_id, ack)  ← temporary halt, task data preserved
-   │    → Not found: answer directly, list active tasks, ask user to clarify
-   │
-   ├─ Intent: RESUME JOB
-   │    "resume X", "continue X", "unpause X"  [fuzzy match on title]
-   │    → Found paused task: resume_task(task_id, ack)  ← worker restarts from scratch
-   │    → Not found / not paused: answer directly
-   │
-   ├─ Intent: STOP JOB
-   │    "stop X", "cancel X", "kill X"  [fuzzy match on title]
-   │    → Found: cancel_task(task_id, ack)  ← permanent termination
-   │    → Not found: answer directly, list active tasks, ask user to clarify
-   │
-   ├─ Intent: STOP ALL
-   │    "stop all", "cancel everything"
-   │    → cancel_task for each active task (or answer directly if none)
-   │
-   └─ Intent: CHANGE INTERVAL
-        "run X every N seconds"
-        → set_periodic_for_task(task_id, intvl_sec, ack)
+incoming:
+  {:user_msg, %AssistantCommand{content, attachment_names, files}}
+  OR
+  {:task_due, task_id}        ← fired by scheduler; no user text
+
+  ▼
+UserAgent.run_assistant(cmd, state, session_data)
+  │
+  ├── build context (§Context assembly)
+  │     system prompt + history + [Active tasks] block + current input
+  │
+  └── conversational turn loop:
+        LLM.call(model, messages, tools, ...) →
+          ┌─ {:tool_calls, calls} ─┐
+          │   execute each call, append tool result, loop
+          └─ {:text, text} ─┘
+               append assistant message to session, stream to user, DONE
+
+  Safety cap: max_assistant_tool_rounds per turn (default 50) — if hit,
+  abort with a "let's continue next turn" message.
 ```
 
-**Key constraint:** For NEW TASK intent, `task` = verbatim user message, never rewritten.
+The turn is strictly sequential: the model emits a tool-call round,
+tool(s) run, results come back, the model emits the next round (or text).
+Text output ends the turn — no "must end with signal" rule.
 
-The Assistant is required to supply `language` (ISO 639-1) on every handoff — detected from the user's message. This propagates to the worker system prompt, summariser prompt, and fixed-label lookups.
-
-## Assistant Tool Schemas
-
-| Tool | Required args | Purpose |
-|------|--------------|---------|
-| `handoff_to_worker` | `task_title`, `task`, `ack`, `language` (+ optional `intvl_sec`) | Spawn worker for one-off or periodic task |
-| `pause_task` | `task_id`, `ack` | Temporarily pause task — stops worker, preserves data, allows resume |
-| `resume_task` | `task_id`, `ack` | Resume a paused task — marks pending, restarts worker |
-| `cancel_task` | `task_id`, `ack` | Permanently cancel running/scheduled task |
-| `set_periodic_for_task` | `task_id`, `intvl_sec`, `ack` | Convert a running task to periodic (or change its interval) |
-| `read_task_status` | `task_id` | Show terminal result directly OR fire summariser for running tasks |
+If a second user message arrives while a turn is in flight, it queues in
+the session's mailbox and is handled on the next turn (the message
+surfaces in the updated `session.messages` context).
 
 ---
 
-## Assistant Pipeline Flow
+## Context assembly
 
-Two distinct LLM calls run in sequence: (1) the **classifier call** (Assistant Master model) that
-routes the message to a tool action, and (2) the **worker loop** (Worker Agent model) that executes
-the task. Each has its own context assembly.
+`ContextEngine.build_assistant_messages/2`:
 
 ```
-POST /agent/chat
-    │
-    ▼
-UserAgent.run_assistant(session_data, command, user)
-    │
-    ├── [1] Active tasks query
-    │         Jobs.list_active(session_id) → combined_buffer (formatted list) | nil
-    │
-    ├── [2] Language detection
-    │         LLM.call(tiny model, strip-URLs message text) → detected_language (ISO 639-1)
-    │
-    ├── [3] Media resolution (same as Confidant)
-    │
-    ├── [4] Context assembly → ContextEngine.build_messages/2
-    │         (see §Context Assembly — Classifier below)
-    │
-    ├── [5] LLM.stream(assistant_model, messages,
-    │                  tools: [handoff_to_worker, set_periodic_for_task,
-    │                          cancel_task, read_task_status])
-    │         ack text streamed inline to browser before tool call executes
-    │         → exactly one tool call
-    │
-    └── [6] Route tool outcome
-              handoff_to_worker(task_title, task, ack, language, intvl_sec=0|N)
-                → INSERT tasks row → TaskRuntime.start_task → Worker.run (detached task)
-              set_periodic_for_task / cancel_task / read_task_status
-                → handled inline, no worker spawned
-```
+[0]     system: SystemPrompt.generate_assistant(opts)
+                  ├── persona, tool-use rules, output-quality rules
+                  ├── today's date
+                  └── user profile (silently injected)
 
-### Context Assembly — Classifier
+        The assistant model is fully multilingual — it detects the user's
+        language from the current message and replies in the same language
+        without any separate detection step. Language is also NOT a field
+        passed into the system prompt.
 
-`ContextEngine.build_messages/2` with `mode: "assistant"`:
+[1..N]  Compaction prefix (only when session.context.summary is present)
 
-```
-[0]     system: SystemPrompt.generate(mode: "assistant", opts)
-                  ├── Assistant classifier persona (routing agent, not a friend persona)
-                  ├── Tool documentation for all 4 management tools
-                  ├── Language rule: respond and ack always in detected_language
-                  ├── Today's date
-                  ├── User profile   (silently injected)
-                  ├── Image/video descriptions
-                  └── (no web search — classifier does not fetch external content)
+[N+1..M] Recent messages (history)
 
-[1..N]  Compaction prefix (same as Confidant — when summary exists)
+[M+1..P] Relevant snippets (keyword retrieval from pre-compaction history)
 
-[N+1..M] Recent messages (same as Confidant)
+[P+1]   Task-list block — injected right before the current input.
+          Hierarchical Markdown with an explicit `base_level` (default 2):
+          `base_level` → top `Task list` heading
+          `base_level + 1` → type sub-sections (`periodic` / `one_off` / `done`)
+          `base_level + 2` → one heading per active task
 
-[M+1..P] Relevant snippets (same as Confidant, top-4 by keyword overlap ≥ 0.25)
+          Example (base_level = 2):
 
-[P+1]   Buffer context (only when active tasks exist)
-          {role: "user",      content: "[Active tasks / Worker agent updates]\n<combined_buffer>"}
-          {role: "assistant", content: "I've reviewed the worker agent updates."}
-          Injected as a context exchange immediately before the current user message.
+              ## Task list
 
-[P+2]   Current user message (with media inline if present; no web_context injection)
+              ### periodic
+
+              #### `01HQ4Z…abc` — Monitor physics papers
+              **Description:** Watch arxiv daily for new quantum-computing papers.
+              **Status:** pending
+              **Pick up time:** 2026-04-21 18:00 UTC
+              **Attachments:**
+              - workspace/keywords.txt
+
+              ### one_off
+
+              #### `01HQ4Z…def` — Book flight tickets
+              **Description:** Book round-trip LAX↔Tokyo, Feb 15–28.
+              **Status:** ongoing
+              **Attachments:**
+              - workspace/passport_scan.jpg
+
+              ### done
+
+              - `01HQ4Z…ghi` — Research physics
+              - `01HQ4Z…jkl` — Order new bike
+
+          Rules:
+          - Type sub-sections appear ONLY when they contain at least one task.
+          - Non-terminal tasks (pending / ongoing / paused) render the full
+            block (description, status, pickup, attachments). `task_id` is
+            rendered inside the title heading as `` `<id>` — <title> `` so the
+            model always sees the ID adjacent to the title and never needs
+            to invent one.
+          - Done / cancelled tasks render flat under `### done` using the
+            SAME id-prefix format: `- \`<task_id>\` — <task_title>`.
+            Keeps the list manageable as sessions age — the model can call
+            `fetch_task(task_id)` for details (e.g. to redo a task).
+          - Attachments are extracted at render time from lines matching
+            `^📎\s+(.+)$` in `task_spec`; the 📎 is stripped when rendering.
+            If no matching lines → the **Attachments:** row is omitted.
+          - Heading depth is enforced: `base_level + 2` must not exceed 6
+            (Markdown ceiling); the generator raises if it would.
+
+          This block mutates between turns (status transitions + task
+          updates), so it's placed at a stable bottom position — older
+          history stays KV-cache-warm.
+
+[P+2]   Current input
+          - User message: verbatim content, possibly ending with
+            "📎 workspace/<name>" lines (injected at /agent/chat entry).
+          - OR synthetic: "[Periodic task due: <task_title>]"
+            for a {:task_due} turn.
 ```
 
 ---
 
-## Job Lifecycle
-
-`Dmhai.Agent.TaskRuntime` is a single named GenServer that owns every task. It holds an in-memory map of running tasks plus a map of pending periodic reschedule timers. All long-running work is tracked in the `tasks` table.
+## Task lifecycle
 
 ```
-tasks.task_status lifecycle:
+task_status transitions:
 
-  pending  ──► running  ──► done       (signal(TASK_DONE))
-      ▲              │
-      │              ├──► blocked      (signal(BLOCKED) | synthetic)
-      │              │         │
-      │              │         └── if periodic: schedule next_run_at
-      │              │             ↓
-      │              ├──► paused       (Assistant calls pause_task)
-      │              │         │           periodic reschedule timer cancelled;
-      └──────────────┘         │           data preserved; worker killed
-         resume_task ───────────┘
-         (mark_pending + start_task)
-                     │
-                     └──► cancelled    (Assistant calls cancel_task)
-                              │
-                              └── periodic runs are NOT rescheduled
+  (no state)─► ongoing  ──► done       (Tasks.mark_done)
+                   │          │
+                   │          └─ if task_type == "periodic":
+                   │               Tasks.mark_done auto-
+                   │               reschedules:
+                   │                 status=pending,
+                   │                 time_to_pickup=now+intvl_sec
+                   │                 TaskRuntime.schedule_pickup
+                   │
+                   ├──► paused    (update_task(status: "paused"))
+                   │
+                   ├──► cancelled (update_task(status: "cancelled"))
+                   │
+                   └──► (stays ongoing; the assistant may go idle
+                         waiting for next user turn)
+
+  pending ◄── (periodic auto-reschedule OR
+               update_task(status: "pending") to redo a done task)
+      │
+      └── when scheduled pickup fires (time_to_pickup reached),
+          UserAgent injects a {:task_due} turn; the next session
+          turn transitions the task to ongoing again.
 ```
 
-Per-task components started by `TaskRuntime.start_task(task_id)`:
+Key properties:
 
-```
-start_task(task_id)
-    │
-    ├── Jobs.mark_running(task_id, worker_id)
-    │
-    ├── worker_task = Task.Supervisor.async_nolink(WorkerSupervisor, fn ->
-    │                   Worker.run(task.task_spec, %{
-    │                     user_id, session_id, worker_id, task_id,
-    │                     description: task.task_title,
-    │                     language: task.language
-    │                   })
-    │                 end)
-    │
-    └── poller_task = Task.Supervisor.async_nolink(TaskSupervisor, fn ->
-                        poller_loop(task_id, worker_task,
-                          last_cursor=task.last_reported_status_id || 0)
-                      end)
-```
+- **`create_task` inserts with `task_status='ongoing'`, not `pending`.** The
+  model created the task because it is about to execute it in this same
+  turn — there is no pending phase for freshly-created tasks. `pending` is
+  reserved for periodic tasks awaiting their next cycle and for done tasks
+  explicitly resurrected via `update_task(status: "pending")`.
+- **`Tasks.mark_done/2` is the single source of rescheduling for periodic
+  tasks.** The assistant doesn't call a separate reschedule tool — it just
+  updates status to "done", and the mark_done implementation branches on
+  `task_type`.
+- **Best-effort scheduling.** If `time_to_pickup` arrives while the session
+  is mid-turn on another task, the pickup waits in the mailbox until the
+  current turn completes. On the next turn the assistant sees a pending
+  periodic in its task list with pickup in the past and acts on it.
+- **Auto-chain after each turn.** When a turn completes (user-initiated
+  OR task-due initiated), the UserAgent calls `Tasks.fetch_next_due/1` for
+  that session. The query returns the single pending task with the
+  lowest `time_to_pickup ≤ now`. If a row comes back the agent self-sends
+  `{:task_due, task_id}` and starts a silent turn for it — no user is
+  waiting so progress frames flow to a throwaway pid while
+  `session_progress` rows and the final assistant message still persist.
+  FE picks them up via polling. The chain stops when `fetch_next_due`
+  returns `nil` (queue empty, or only future-scheduled pickups remain).
+- **No "superseded" / fork.** User redirects mid-task → the assistant
+  updates the task description or status naturally on its next turn.
+  No `predecessor_task_id`, no `superseded_by_task_id` — those scaffolding
+  columns are removed.
 
-**Cursor initialisation:** the poller starts at `task.last_reported_status_id` (defaulting to 0 when NULL via `row_to_map`). For periodic tasks this means each new cycle's poller skips all historical rows from prior cycles — preventing old final rows from being re-processed and re-reported.
+### Sidebar ordering
 
-**`advance_cursor` / `advance_summary_cursor`** use `IS NULL OR < ?` so the first update after insert (column defaults NULL) is never silently skipped.
+The FE sidebar (`js/manager-tasks.js :: partitionTasks`) sorts the
+`pending` bucket by `time_to_pickup` ASC — oldest pickup first, which
+matches the BE's `fetch_next_due/1` dispatch order. What shows at the top
+of the pending section is what the agent will work on next. Tasks
+without a pickup fall to the bottom. Other buckets: `ongoing` keeps BE
+order (newest first), `recent` is `updated_at` DESC.
 
 ---
 
-## Worker
+## Assistant tool schemas
 
-The worker NEVER knows about periodicity. Every invocation is one-off — for periodic tasks, the runtime re-spawns a fresh worker for each cycle.
+Task-management tools (assistant calls these to shape its task list):
 
-```
-Worker.run(task, ctx)
-   │
-   ├── stored messages[0] = placeholder (per-turn prompt injected each iteration)
-   │
-   └── loop(messages, tools, model, ctx)
-         │
-         ├── drain_subtask_results   (spawn_task async results)
-         ├── maybe_compact_worker_messages (rolling-summary compaction)
-         │     — on compactor LLM failure, OLD MESSAGES ARE KEPT (no silent context loss)
-         │
-         ├── compute effective_tools  (phase-gated + adaptive selection)
-         │     plan phase:       [plan] only
-         │     execution phase:  all tools except task_signal; media tools
-         │                       gated on context signals (@tool_scan_window)
-         │     post-steps phase: [task_signal] only
-         │
-         ├── build_turn_prompt  (per-turn, matches phase + effective_tools)
-         │     plan phase:    tool catalogue + step format rules
-         │     execution:     full plan as bullet list + "You are on step [N]"
-         │                    + step_signal instructions
-         │     post-steps:    "All steps complete, call task_signal(TASK_DONE)"
-         │
-         ├── LLM.call(model, effective_messages, effective_tools)
-         │     ↓
-         │  ┌──{:ok, {:tool_calls, calls}}──────────────────────────┐
-         │  │                                                        │
-         │  │  Police.check_tool_calls                               │
-         │  │    — text mimicry, repeated identical, path safety     │
-         │  │    — step_signal must not be batched with other tools  │
-         │  │     ↓ rejected → nudge + retry (max 3 → TASK_BLOCKED)  │
-         │  │                                                        │
-         │  │  execute each tool                                     │
-         │  │                                                        │
-         │  │  step_signal results (non-terminal):                   │
-         │  │    STEP_DONE {id}      → advance current_step          │
-         │  │    STEP_BLOCKED {id,r} → inject retry msg or TASK_BLOCKED│
-         │  │    PLAN_REVISE  → re-validate + restart step 1         │
-         │  │                                                        │
-         │  │  task_signal results (terminal):                        │
-         │  │    TASK_DONE / TASK_BLOCKED → exit loop                 │
-         │  │                                                        │
-         │  └────────────────────────────────────────────────────────┘
-         │
-         └──{:ok, text} (no tool call) → PROTOCOL violation
-               Police.check_text → nudge ("call step_signal or task_signal!")
-               after 3 nudges → synthetic TASK_BLOCKED final row
-```
+| Tool | Args | Effect |
+|------|------|--------|
+| `create_task` | `task_title`, `task_spec`, `task_type` (one_off\|periodic), `intvl_sec`, `language`, `attachments?` | Insert a task row (**status=ongoing**, time_to_pickup=now). The model is calling this because it's about to start executing the task in this same turn — so the row starts in `ongoing`, not `pending`. If `attachments` is non-empty, each path is validated (must start with `workspace/` or `data/`) and `📎 <path>` lines are appended to the stored `task_spec` — so the DB row has canonical form. Returns `task_id`. |
+| `update_task` | `task_id`, `status?`, `task_spec?`, `intvl_sec?`, `attachments?` | Mutate fields. `status="done"` triggers the auto-reschedule branch for periodic tasks. `attachments`, if passed, REPLACES the existing list (not additive) — same validation + normalisation as `create_task`. Omit to leave attachments untouched. |
+| `fetch_task` | `task_id` | Read-only fetch for when the assistant needs task details beyond what the Task-list block shows (e.g. the full description of a done task, the previous cycle's result, the activity log). Returns the full task row plus the latest ≤20 `session_progress` entries for that task. |
 
-### Context Assembly — Plan Phase
+### "Redo a done task" vs "new related ask"
 
-The worker maintains its own message list (not the session's), compacted by a rolling summary.
+**Default: each new user ask is a new task.** A follow-up that asks for
+different information — even on the same subject — calls `create_task`
+again and runs its own pending → ongoing → done cycle. The sidebar then
+shows each distinct ask as its own row with its own audit trail. This is
+the rule enforced by `system_prompt.ex :: assistant_base :: ## Task list
+discipline`. Example:
 
-```
-API call: LLM.call(worker_model, effective_messages, tools: [plan])
+> *"Find out what machines are in the network"* → task A (scan).
+>
+> *"ok which ones have an HTTP server?"* → task B, independent of A —
+> different data, different script, different audit trail. Both tasks
+> visible in the sidebar.
 
-effective_messages at first iteration:
-  [0] system: Prompts.plan_phase_prompt(lang, now, all_tools)
-               ├── # Worker Agent — Planning Phase
-               ├── ## Context — current date/time UTC
-               ├── ## Available Execution Tools
-               │     ### <tool_name>      ← every tool except `plan`, with full description
-               │     ...                  ← listed as plain text AND passed as JSON schemas
-               ├── ## web_search Constraint (always present)
-               ├── ## Decision Logic
-               ├── ## Examples
-               └── ## Rules + "Call plan(steps, rationale) now."
+**Exception: explicit redo of the immediately preceding task.** Only
+when the user says *"actually try Y instead"* / *"re-run that"* /
+*"do it again but deeper"* — about the task that just finished — does
+the assistant reuse that same `task_id`:
 
-  [1] user: <task_spec task text>
-```
+- Task still pending / ongoing / paused → `update_task(task_id,
+  task_spec: "<new description>")` to rewrite and continue.
+- Task already done → `update_task(task_id, status: "pending")` to
+  reopen; mark done again when finished. For a periodic task, "done →
+  pending" resumes the schedule (the DB row's `time_to_pickup` stays at
+  its last value).
 
-Rolling summary stub is injected between `[0]` and `[1]` when `ctx.rolling_summary` is set
-(see §Rolling Summary Compaction below).
+Follow-ups that only *look* related to a done task are NOT redos — they
+get their own `create_task`.
 
-Model must respond with a single `plan(steps, rationale)` tool call. The runtime validates
-step count bounds, dangerous content, and tool declarations before approving.
+### Attachment routing
 
-### Context Assembly — Execution Phase
+**Uniform attachment pipeline — no format-specific shortcuts.** In
+Assistant mode every attachment — image, video, PDF, DOCX, XLSX, plain
+text, anything else — follows the same path:
 
-After plan approval. The message list grows with each iteration as tool calls and results accumulate.
+1. FE uploads the raw file to `/assets` (permanent user-accessible
+   storage) AND to `/upload-session-attachment` (writes it to
+   `<session>/workspace/<name>`). No client-side content extraction.
+2. At send time the FE passes each uploaded file's name in
+   `attachmentNames: [...]`. The `/agent/chat` body's inline
+   `files: [{name, content}]` field is NOT used by the Assistant path —
+   it is a Confidant-only inline-injection channel, see Confidant Mode.
+3. BE inlines `📎 workspace/<name>` lines into the persisted user
+   message, one per attachment.
+4. The model sees those paths in the user message. When it wants the
+   file's content it calls `extract_content(path: "workspace/<name>")`
+   as a tool call — same for images, videos, documents, and text.
+   That tool call becomes a `session_progress` row in the chat
+   timeline; the read is never invisible.
+5. Per the Task-list discipline, the model wraps the extract call in
+   a `create_task` → `update_task(done)` cycle when the read is part
+   of a substantive action.
 
-```
-API call: LLM.call(worker_model, effective_messages,
-                   tools: select_tools(all_tools, messages, ctx))
+The routing inside `extract_content` (image / video / pdf / pandoc-doc /
+plain-text branches) is an implementation detail — the model's mental
+model is "one path per attachment, one tool call to read, one task per
+substantive action". No attachment type is ever auto-injected into the
+LLM context in Assistant mode.
 
-effective_messages per iteration:
-  [0] system: Prompts.execution_phase_prompt(lang, now, effective_tools, ctx)
-               ├── # Worker Agent — Execution Phase
-               ├── ## Context — current date/time UTC
-               ├── ## Approved Plan (present when plan_steps non-empty)
-               │     → N. <current step label>   ← arrow marks the active step
-               │       M. <other step label>
-               │     middle step: "Current: step N/total. When done, call step_signal(status: "STEP_DONE", id: N)."
-               │     last step:   "Current: step N/total. When done, call task_signal(status: "TASK_DONE", result: "...")."
-               │     post-steps:  "ALL STEPS COMPLETE. Compile your deliverable and call task_signal(...)."
-               ├── ## Available Tools
-               │     "Look at the tool schemas definition in the tools section."
-               │     (provider-agnostic reference; no per-tool descriptions repeated in the prompt)
-               ├── ## Protocol
-               │     1. Execute current step (+ web_fetch hint; run_script sandbox hint)
-               │     2. If tool fails, retry directly — do NOT re-plan
-               │     3. If blocked: task_signal(status: "TASK_BLOCKED", reason: "...")
-               │     4. After task_signal or step_signal, do not call any other tool
-               ├── ## Rules (language, tool-call mechanism, output quality)
-               └── ## web_search Constraint (only when web_search in effective_tools)
+When a task involves a specific subset of the attachments listed on the
+user message, the model passes those `📎 workspace/...` paths in the
+`attachments` argument of `create_task` / `update_task`; never
+hand-embeds `📎 ` lines in `task_spec`. The BE normalises the stored
+spec from the validated `attachments` list.
 
-  [1]  user:      <task_spec task text>
-  [2]  assistant: plan() tool call
-  [3]  tool:      plan approved
-  [4]  assistant: first execution tool call(s)
-  [5]  tool:      result(s)
-       ...        ← one assistant+tool pair appended each iteration
-```
+Execution tools (unchanged from prior phases):
+`web_fetch`, `web_search`, `run_script`, `extract_content`, `read_file`,
+`write_file`, `calculator`, `parse_document`, `spawn_task`, `get_date`.
 
-**Adaptive tool selection (`select_tools`):** run each iteration. Starts from the full tool set;
-always excludes `plan` (use `PLAN_REVISE` signal instead); gates `parse_document` and
-`extract_content` on document/attachment keywords in task or messages; gates `web_search` on
-live-data keywords. Keeps the tool list lean and prevents the model from reaching for expensive
-tools unnecessarily.
+Credential tools (per-user persistent credential store; see
+`Dmhai.Agent.Credentials`):
 
-### Rolling Summary Compaction
+| Tool | Args | Effect |
+|------|------|--------|
+| `save_credential` | `target`, `cred_type` (ssh_key\|user_pass\|api_key\|token\|other), `payload` (object), `notes?` | Upsert scoped to (user_id, target). Payload is a free-form JSON object — e.g. `{username, private_key}` for ssh_key, `{username, password}` for user_pass, `{value}` for api_key / token. |
+| `lookup_credential` | `target?` | With `target`: return the full record (payload included). Without: return the list of saved targets (metadata only, no secrets) so the assistant can pick one. |
 
-When `length(messages) > 1 + N + M + 5` (N=`workerContextN`=8, M=`workerContextM`=6):
+Storage is plaintext in the `user_credentials` SQLite table — documented
+shortcut matching how the rest of the app treats sensitive fields; revisit
+when the DB is moved off local disk. The assistant is prompted (see
+`system_prompt.ex :: assistant_base`) to look up before asking, ask
+specifically when absent, and save immediately on receipt so future tasks
+against the same target don't re-prompt.
 
-```
-Split: [system] ++ old ++ middle ++ recent
-Case update_rolling_summary(old, ctx.rolling_summary):
-  {:ok, summary} → effective_messages:
-      [system]
-      {user: "[Prior work summary]\n<summary>"}
-      {assistant: "Understood, continuing from prior work."}
-      ++ stub(middle) ++ recent
-  :failed → original messages kept intact (no silent context loss; retried next iteration)
-```
-
-The rolling summary lives in `ctx.rolling_summary` (in-memory, not persisted to DB).
-If the compactor LLM fails, spillover messages are **retained** rather than silently dropped.
-
-### PROTOCOL Contract
-
-**Phase 1 — Planning** (`plan_approved = false`):
-Model calls `plan(steps, rationale)`. Each step is an object `{"step": "...", "tools": ["tool1"]}`. Runtime validates (step count bounds, dangerous content, tool declarations). On approval, `ctx.plan_steps` and `ctx.current_step = 1` are set. Prompt enforces: strictly 1 step when answerable from training data or requiring ≤2 tool calls; multiple steps only when step N's output is the required input to step N+1. Police hard-rejects any multi-step plan where any step has `tools: []` — a step with no tool calls is only valid as a single-step plan.
-
-**Phase 2 — Step execution** (`plan_approved = true`, steps remaining):
-For each step, model uses available tools then calls one of:
-```
-step_signal(status: "STEP_DONE",            id: N)
-step_signal(status: "STEP_BLOCKED",         id: N, reason: "...")
-step_signal(status: "PLAN_REVISE",   new_plan: [...], reason: "...")
-```
-`step_signal` must be the only tool call in its turn (Police enforced).
-
-**Step ID reconciliation:** the runtime's `ctx.current_step` is the source of truth. If the model reports a wrong `id`, the runtime logs a warning and corrects it — advancement is always `current_step + 1`, never `reported_id + 1`. The last-step check also uses `current_step`, not the model's reported id.
-
-On `STEP_BLOCKED`: runtime injects "Step [N] blocked: \<reason\>. Retry step [N]." and loops. After `plan_step_max_retries` exhausted → synthetic `TASK_BLOCKED` (reason taken from last STEP_BLOCKED, no LLM call).
-
-On `PLAN_REVISE`: same Police validation as initial plan. If approved, `ctx.plan_steps` replaced, `ctx.current_step` reset to 1.
-
-**Phase 3 — Post-steps** (all steps done):
-Only `task_signal` is callable. Model calls:
-```
-task_signal(status: "TASK_DONE",    result: "final report for the user")
-task_signal(status: "TASK_BLOCKED", reason: "verbatim error message")
-```
-`result` is **required** (non-empty, non-whitespace) on TASK_DONE — the worker must compile the deliverable before signalling. The runtime passes it directly to the user; no extra LLM call is made.
-
-If the model calls `step_signal(STEP_DONE)` on the last step instead of `task_signal`, the runtime injects a nudge ("All steps complete — compile and call task_signal now") and loops once more. **There is no implicit TASK_DONE with empty result.**
-
-Mid-execution replans (via `plan()` or `PLAN_REVISE`) always reset `plan_steps`, `current_step` to 1, and `step_retries`.
-
-### Synthetic Finals
-
-Situations where the runtime writes a `kind='final'` row on the worker's behalf (so tasks never hang):
-
-| Cause | Final signal_status | Reason text |
-|-------|---------------------|-------------|
-| Worker hit iter cap without task_signal | TASK_BLOCKED | `max_iter_reached` (I18n) |
-| Worker returned plain text after 3 nudges | TASK_BLOCKED | `worker_refused_signal` (I18n) |
-| Police: 3 consecutive rejections OR any violation type reaches 3 total | TASK_BLOCKED | `policy_violation` (I18n) |
-| Step retries exhausted | TASK_BLOCKED | last STEP_BLOCKED reason (no LLM call) |
-| LLM returned empty | TASK_BLOCKED | `llm_empty_response` (I18n) |
-| LLM errored | TASK_BLOCKED | `llm_error` (I18n) |
-| Worker OS process died without signal | TASK_BLOCKED | `worker_exited_no_signal` (I18n) |
-| Job cancelled by user | TASK_BLOCKED | `task_cancelled_by_user` (I18n) |
-| Orphaned 'running' on app restart | TASK_BLOCKED | `worker_orphaned` (I18n) |
-| Exec error streak persists after nudge | TASK_RESTART → spawn new worker (same task_id) | runtime-generated |
-| TASK_RESTART exceeds `maxWorkerRestarts` | TASK_BLOCKED | runtime-generated |
-
-**Exec error recovery flow:**
-
-```
-exec tools all fail N times (execErrorStreakNudge, default 3)
-    → inject nudge: "re-evaluate your approach"
-    → reset exec_error_streak to 0, set exec_nudge_sent=true, loop
-
-exec tools all fail N times AGAIN (nudge_sent=true)
-    → emit TASK_RESTART final row
-    → TaskRuntime.handle_poller_outcome: restart_count < maxWorkerRestarts
-        → spawn new worker (same task_id, fresh ctx)
-        → increment restart_count in in-memory record
-    → restart_count >= maxWorkerRestarts → TASK_BLOCKED
-```
-
-**Plan tool availability:** `plan` is only offered in the plan phase (when `plan_approved=false`). `select_tools` always excludes it from the execution phase tool set to prevent gratuitous mid-execution replanning. Use `step_signal(PLAN_REVISE)` to trigger a plan revision if the approach must change mid-execution.
+**Removed tools** (no longer exist): `plan`, `step_signal`, `task_signal`,
+`handoff_to_worker`, `pause_task`, `resume_task`, `set_periodic_for_task`,
+`read_task_status` (collapsed into `update_task`, `fetch_task`, and
+direct replies).
 
 ---
 
-## Worker Tool Set
+## Scheduler — `Dmhai.Agent.TaskRuntime`
 
-Registered in `Dmhai.Tools.Registry` (12 tools):
+A single named GenServer. Its only job is to arm timers for periodic task
+pickups and, on fire, nudge the session to wake up. It does not track
+in-flight work (there is none — the session loop is per-turn, not
+persistent).
 
-| Tool | Phase available | Purpose |
-|------|----------------|---------|
-| `plan` | Plan phase only | Submit a step-by-step plan (1–10 steps). Runtime validates and approves. |
-| `step_signal` | Execution phase only | Per-step checkpoint: `STEP_DONE`, `STEP_BLOCKED`, or `PLAN_REVISE`. Must be called alone (not batched). |
-| `task_signal` | Post-steps phase only | Terminal task signal: `TASK_DONE` (requires `result`) or `TASK_BLOCKED` (requires `reason`). Ends the worker loop. |
-| `run_script` | Execution | Write and run a complete Linux shell script in one call. Use for HTTP requests (curl/wget), system queries, file ops, scripting. `cwd = ctx.workspace_dir` |
-| `read_file` / `write_file` | Execution | File ops under `<session_root>/`. Paths resolve via `Dmhai.Util.Path.resolve/2` |
-| `web_search` | Execution | Live search through SearXNG. **EXPENSIVE** — only for live data. |
-| `web_fetch` | Execution | CMP-aware URL fetch (see §Web Fetch) |
-| `calculator` | Execution | Safe math eval (arithmetic, trig, log, complex; constants: pi, e) |
-| `parse_document` | Execution (context-gated) | Parse document files (.pdf, .docx, etc.). Only included when task/messages contain document signals. |
-| `extract_content` | Execution (context-gated) | Unified extractor. Accepts a `path` (file on disk) or `data` (base64). Routes by extension: images → ImageMagick + LLM; video → ffmpeg frames + LLM; documents → pdftotext/pandoc/direct read. Returns two sections: `## Description` + `## Verbatim Content`. Only included when task/messages contain media/attachment signals. |
-| `spawn_task` | Execution | Async bash; result arrives as `{:subtask_result, output}` in a later iteration |
+```
+schedule_pickup(task_id, when_ms):
+  cancel any existing timer for task_id
+  ref = Process.send_after(self(), {:pickup_due, task_id}, when_ms - now)
+  state.timers = Map.put(state.timers, task_id, ref)
 
-**Phase gating** is enforced via `effective_tools` computed each turn — the model physically cannot call tools outside the current phase.
+handle_info({:pickup_due, task_id}):
+  task = Tasks.get(task_id)
+  session_pid = UserSupervisor.ensure_session_started(task.user_id, task.session_id)
+  send(session_pid, {:task_due, task_id})
 
-**Removed tools:** `signal` (replaced by `step_signal` + `task_signal`), `list_dir` (run_script ls covers it), `datetime` (static UTC in prompt header), `describe_image` / `describe_video` (unified into `extract_content`).
+boot rehydrate (Dmhai.Agent.TaskRuntime.rehydrate/0):
+  for task in tasks where status="pending" AND task_type="periodic"
+      AND time_to_pickup IS NOT NULL:
+    schedule_pickup(task_id, task.time_to_pickup)
+  for task in tasks where status="ongoing":
+    Tasks.update_fields(task_id, status: "pending")
+      (a.k.a. any task that was ongoing when the BEAM died reverts to
+       pending; the assistant will see it in the task list and pick up
+       where the session_progress log left off)
+```
 
-Deleted in prior refactors: `declare_periodic`, `midjob_notify` (replaced by runtime scheduler + summariser).
+Cancelling / pausing a task also cancels its pickup timer (done inside
+`Tasks.mark_cancelled/1` and `Tasks.mark_paused/1` via a callback into
+TaskRuntime).
 
 ---
 
-## Police
+## Session mailbox interleaving
 
-Guards against bad model behaviour inside the worker loop:
+The session's GenServer has one mailbox. Messages that arrive while a turn
+is running:
 
-1. **Text mimicry** — model writes `[used: run_script(...)]` as plain text instead of calling the tool. Rejected with a nudge.
-2. **Repeated identical tool calls** — same name + args as a prior iteration, excluding `@repeatable_tools` (`spawn_task`). `step_signal` STEP_BLOCKED and PLAN_REVISE are also exempt (retry semantics), but STEP_DONE repeats are caught as loop bugs.
-3. **Path safety** — reads allowed anywhere outside `/data/` (sandbox system paths) or within own `session_root`; writes confined to `workspace_dir`; shell deletions confined to `workspace_dir`.
-4. **Plan step tools** — in a multi-step plan every step must declare at least one execution tool (`tools: [...]`). A step with `tools: []` is only valid in a single-step plan (pure knowledge answer). Hard-rejected with a specific instruction to collapse to 1 step.
-5. **Signal batching** — both `step_signal` and `task_signal` must each be the only tool call in their turn. Batching either with other tools is rejected.
-6. **job_done_missing_result** — `task_signal(TASK_DONE)` must carry a non-empty, non-whitespace `result` field.
+- `{:dispatch_assistant, %AssistantCommand{}}` — next user message
+- `{:task_due, task_id}` — scheduler poke
+- `:interrupt` — cancel the current turn
 
-On rejection, injects `"REJECTED (<reason>): Fix this specific violation before continuing."` — the specific reason is always included so the model knows exactly what to fix.
+All queue; all are processed in arrival order at the start of the next
+turn. The model sees them as they are — the `[Active tasks]` block
+reflects whatever state the DB has when context is built.
 
-**Two independent kill switches** in `handle_rejection`:
-
-1. `consecutive_rejections` (in ctx) — fires after 3 *consecutive* violations with no successful non-plan tool call in between. Plan-only calls do **not** reset this counter (replanning after a violation is not progress).
-2. `violation_counts` (per-type map, never resets) — tracks total violations per Police category (`text_mimicry`, `repeated_identical_tool_calls`, `path_violation`, `step_signal_batched`, `job_signal_batched`, `job_done_missing_result`, etc.). When any single category reaches 3 total violations, forces synthetic TASK_BLOCKED immediately.
-
-### Path-Safety Rules
-
-`Dmhai.Agent.Police.check_tool_calls/3` adds a **path violation** check alongside text mimicry + repeated identical calls:
-
-1. **Explicit-path read tools** (`read_file`, `parse_document`, `extract_content`): allowed if the resolved path does **not** start with `/data/` (system paths inside the sandbox) or if it falls within `session_root` under `/data/`. Rejected if it targets another user's or session's tree under `/data/`.
-2. **Explicit-path write tools** (`write_file`): must stay within `workspace_dir` (`/data/user_assets/<email>/<session_id>/assistant/tasks/<task_id>/`).
-3. **Shell tools** (`run_script`): absolute paths in the command are scanned; those under `/data/` must be within `session_root`. Deletion targets (`rm` / `rmdir` / `unlink`) must be within `workspace_dir`.
-
-If ctx doesn't carry `session_root` (non-worker callers), path checks are skipped.
+Because there is only one ongoing turn at a time per session, parallelism
+within a session is nil by design. A user who wants two truly independent
+threads of work creates a second chat session; each session has its own
+GenServer and its own task list.
 
 ---
 
-## Poller + Progress Summariser
+## Completion & output
 
-The per-task poller Task runs inside `TaskSupervisor` and tails `worker_status` on a polling interval `max(K, intvl_sec/M)`.
+At the end of a turn the assistant emits text (plus any final tool-call
+rounds). That text becomes the `role: "assistant"` entry in
+`session.messages`. The FE renders it like any assistant reply. There is
+no separate "task done" notification path — the conversation itself
+announces completion ("Got it, here's the summary: …"), and the
+task's `status=done` row is visible in the FE's task-list sidebar.
 
-Cancel (`do_cancel_job`) kills **both** the worker task (via `WorkerSupervisor`) and the poller task (via `TaskSupervisor`). Killing only the worker left the poller running and could trigger a reschedule race.
-
-```
-poller_loop(task_id, worker_task, last_cursor):
-    loop:
-      task = Jobs.get(task_id)
-      case task.task_status:
-        "cancelled" →
-          safe_shutdown_worker(worker_task)
-          WorkerStatus.append(kind='final', signal=BLOCKED,
-                              content=I18n.t("task_cancelled_by_user", task.language))
-          {:poller_done, task_id, {:cancelled, _}}
-
-        _ →
-          new_rows = WorkerStatus.fetch_since(task_id, last_cursor)
-          Jobs.advance_cursor(task_id, max(id))
-
-          maybe_announce_progress(task)   ← unsolicited mid-task summary (see below)
-
-          case {final_row(new_rows), worker_dead?(worker_task)}:
-            {final, _}         → finalize_job(task, final); {:poller_done, ...}
-            {nil, true}        → (peek again; else synth BLOCKED)
-            _                  → sleep(interval_ms); loop
-```
-
-### Mid-task Progress Summariser (delta-only)
-
-Skipped entirely for periodic tasks whose `intvl_sec < taskProgressSummaryMinCycleSec` (default 1800 s) — short-cycle tasks finish too quickly for interim reports to be useful.
-
-For all other tasks, fires when **both** thresholds are crossed (N AND T):
-
-1. New non-summary rows since `last_summarized_status_id` ≥ `taskProgressSummaryEveryNRows` (default 6).
-2. Seconds since `last_summarized_at` ≥ `taskProgressSummaryMinIntervalSec` (default 30).
-
-Also fires **synchronously** when the user asks "how's task X going?" — the Assistant routes that to `read_task_status`, which calls `TaskRuntime.summarize_and_announce(task_id, force: true)`.
-
-```
-summarize_and_announce(task_id, force: bool):
-    ETS mutex per-task (@summarizer_locks):
-      if lock is held by another process:
-        force=true  → {:skipped, I18n.t("summary_already_being_prepared", lang)}
-        force=false → :ok (no-op)
-
-    with mutex held:
-      rows = WorkerStatus.fetch_since(cursor)  -- excludes progress_summary rows
-      if rows == [] and not force: :ok
-      if rows == [] and force:
-         write I18n.t("no_new_activity", lang, %{title: ...})
-
-      else:
-         LLM.call(summarizer_model, prompt:
-            "Write a status update as a single line: '<title>: <detail>'\n" <>
-            "  - title: 2-6 word noun phrase (e.g. 'Downloading report')\n" <>
-            "  - detail: 1-2 sentences max, only what the log shows. No speculation.\n" <>
-            "Output ONLY the single line. Write in language '#{lang}'.")
-
-         WorkerStatus.append(kind='progress_summary', content=<summary>)
-         MasterBuffer.append_progress_notification(session, summary_text,
-                                                   I18n.t("notify_progress", …))
-         Jobs.advance_summary_cursor(task_id, max_id)
-```
-
-Delta-only: prior progress_summary rows are **excluded** from the summariser's input to prevent recursive summary drift.
-
-Progress updates are **not** stored as chat messages. They are delivered via `MasterBuffer.append_progress_notification/4` which sets `content = summary_text` (non-empty). The frontend distinguishes progress notifications from session-reload sentinels by checking `entry.content`:
-- `content` non-empty → progress status update; displayed as a stacked status phrase in `#task-status-area` below the chat messages.
-- `content` empty → session-reload sentinel; triggers session reload and clears `#task-status-area`.
+External push (Telegram, etc.) for task completion remains available via
+`MsgGateway.notify/2` when a task transitions to `done` or `cancelled` —
+see #95 for the scheduled-push variant.
 
 ---
 
-## Completion Flow
+## Boot rehydration
 
 ```
-Worker calls task_signal(TASK_DONE, result: "final report…")
-    │
-    ▼
-TaskSignal.execute writes WorkerStatus row:
-    kind='final', signal_status='TASK_DONE'
-    │
-    ▼
-Poller sees final row in next poll:
-    Jobs.mark_done(task_id)
-    emit_final_message(task, TASK_DONE, final_row.content):
-      body = "**<task_title>**\n\n<result>"   ← result compiled by the worker
-      UserAgentMessages.append(session, body)
-      MasterBuffer.append_notification(I18n.t("notify_done", lang, title: ...))
-      MsgGateway.notify(user_id, notify_text)
-    │
-    ▼
-Frontend polls GET /notifications?since=<ts>
-    sees entry with content="" (sentinel) → clears #task-status-area → reloads /sessions/:id → renders
-
-If task.task_type == "periodic" and status ≠ "cancelled":
-    Jobs.schedule_next_run(task_id, now + intvl_sec * 1000)
-    Process.send_after(self(), {:run_scheduled, task_id}, intvl_sec * 1000)
-    → fresh spawn via start_task on timer fire (no memory of prior cycles)
-```
-
-**TASK_BLOCKED completion:** same path; `final_row.content` is the reason string from `task_signal(TASK_BLOCKED, reason: "...")` — passed directly to `emit_final_message`. No extra LLM call.
-
-**TASK_BLOCKED forces a progress summary first:** runtime calls `do_summarize_and_announce(task_id, force: true)` before emitting the failure banner.
-
----
-
-## Boot Rehydration
-
-On `TaskRuntime.init`, after a 500ms delay (allows supervisor tree to stabilise):
-
-```
-do_rehydrate:
-  orphans = Jobs.fetch_orphaned()    -- rows with status='running' but no in-memory worker
-  for each orphan:
-     emit synthetic BLOCKED final + session message (I18n'd)
-     Jobs.mark_blocked(...)
-
-  due = Jobs.fetch_due_periodic()    -- periodic + next_run_at <= now
-  for each due: start_task(task_id)
+Dmhai.Agent.TaskRuntime.rehydrate/0 (called 500 ms after app start):
+  1. Any task with status="ongoing" → revert to "pending"
+     (the session turn that owned it didn't complete; the assistant will
+      resume via task list on next user message or scheduled pickup).
+  2. Any pending periodic task with time_to_pickup IS NOT NULL →
+     schedule_pickup (re-arm the timer).
+  3. Any pending periodic task with time_to_pickup <= now → poke the
+     session immediately (next user interaction will handle it).
 ```
 
 Disabled in `:test` env via `:dmhai, :enable_task_rehydrate, false`.
+
+Crash survival is trivial under this model: `tasks` + `session_progress`
++ `sessions.messages` are the truth. The assistant reads them on its
+next turn and continues. No ctx-snapshot persistence is needed.
+
+---
+
+## Police (shrunk)
+
+Retained:
+- **Path safety** — `check_tool_calls/3` still validates any `path`
+  argument resolves inside `session_root` via `Dmhai.Util.Path.resolve/2`.
+  `run_script` still scans for `rm` / `rmdir` / `cp -r` that target paths
+  outside `workspace_dir`.
+
+Removed:
+- Signal protocol rules (`step_signal` batching, `task_signal` ordering,
+  terminal-tool exclusivity) — protocol is gone, rules along with it.
+- Repeated-identical-tool-call kill switch — the conversational model
+  doesn't produce the loop-trap failure mode that required it; rely on
+  the per-turn max_assistant_tool_rounds cap instead.
+
+---
 
 ---
 
@@ -806,21 +873,16 @@ All paths are derived from `Dmhai.Constants` — the single source of truth. Ema
 
 ```
 /data/user_assets/<email>/<session_id>/
-  ├── data/                           ← user uploads (POST /assets writes here;
-  │                                      GET /assets serves from here)
-  ├── assistant/tasks/<task_id>/        ← scratch for tasks originating in
-  │                                      Assistant-mode sessions
-  │                                      (web fetches, temp files, bash output)
-  └── confidant/tasks/<task_id>/        ← scratch for tasks originating in
-                                         Confidant-mode sessions (empty skeleton
-                                         by default — Confidant-mode direct
-                                         streaming does not create tasks today)
+  ├── data/       ← user uploads (POST /assets writes here; GET /assets serves from here)
+  └── workspace/  ← scratch shared across ALL tasks in the session
+                    (web fetches, temp files, bash output, assistant outputs)
 ```
 
-**`origin` vs `pipeline` (two orthogonal task attributes on the tasks row):**
+One `data/` and one `workspace/` per session — no per-task subdir, no per-origin subdir. Confidant sessions create neither folder until (and unless) a task is spawned.
 
-- `origin` ∈ {`assistant`, `confidant`}: the session's `mode` when the task was created. **Drives filesystem subdir.** An Assistant-mode session dispatching a resolver task gets `.../assistant/tasks/<id>/`, *not* confidant.
-- `pipeline` ∈ {`assistant`, `confidant`}: the execution path. `handoff_to_resolver` → `confidant`; `handoff_to_worker` → `assistant`. **Drives runtime behaviour** (which LLM path runs the task).
+**`origin` and `pipeline` task columns:**
+
+Both are kept on the tasks row for bookkeeping but are effectively always `"assistant"` now — Confidant sessions don't create tasks. The filesystem layout no longer splits by origin; all tasks in a session share `<session_root>/workspace/`. Columns are retained for future polymorphic use.
 
 ### `Dmhai.Constants` Helpers
 
@@ -829,30 +891,28 @@ Constants.assets_dir()                             # "/data/user_assets"
 Constants.sanitize("foo/bar")                      # "foo_bar"
 Constants.session_root(email, sid)                 # <assets>/<email>/<sid>
 Constants.session_data_dir(email, sid)             # <session_root>/data
-Constants.session_origin_root(email, sid, origin)  # <session_root>/<origin>/tasks
-Constants.task_workspace_dir(email, sid, origin, task_id)  # <origin_root>/<task_id>
+Constants.session_workspace_dir(email, sid)        # <session_root>/workspace
 ```
 
-### Worker ctx Paths
+### Session turn ctx
 
-`TaskRuntime.spawn_worker_task` computes and mkdirs paths before launching the worker:
+When a session turn runs, UserAgent builds the ctx for tool execution:
 
 ```elixir
 ctx = %{
-  user_id:       task.user_id,
+  user_id:       session.user_id,
   user_email:    <looked-up>,
-  session_id:    task.session_id,
-  worker_id:     ...,
-  task_id:        task.task_id,
-  description:   task.task_title,
-  language:      task.language,
-  origin:        task.origin,                 # "assistant" | "confidant"
-  pipeline:      task.pipeline,               # "assistant" | "confidant"
+  session_id:    session.id,
+  task_id:       <current task if one is active>,
   session_root:  <.../<email>/<sid>>,
   data_dir:      <session_root>/data,
-  workspace_dir: <session_root>/<origin>/tasks/<task_id>
+  workspace_dir: <session_root>/workspace
 }
 ```
+
+Tools receive this ctx and use `session_root` / `data_dir` /
+`workspace_dir` for path resolution. `task_id` is nil during
+direct-response turns and set to the actively-worked task otherwise.
 
 ### Tool Path Resolution — `Dmhai.Util.Path.resolve/2`
 
@@ -869,68 +929,217 @@ Any path that escapes `session_root` after `Path.expand` → `{:error, "Access d
 
 ## Media Pipeline
 
-Client does **not** pre-digest media for the worker — the worker calls tools instead.
-When media is attached in an Assistant-mode session:
+Client does **not** pre-digest media for the Assistant Loop — the Loop calls
+tools instead. When media is attached in an Assistant-mode session, both
+uploads fire at **attach time** (not at send time), so paths are fully known
+by the time the user hits Send.
 
 ```
-FE: GET /reserve-task-id
-        ← {task_id}  (12-char base64url, pre-allocated)
+At attach time (user drops file):
+  (1) POST /assets                     ← save ORIGINAL to <session>/data/<name>
+                                          permanent storage for human access
+                                          (thumbnail render, download button).
+                                          Video max: 300 MB (MEDIA_MAX_SIZE_BYTES).
+                                          Returns fileId used by FE only.
+  (2) Workspace upload. Every file type — images, videos, PDFs, DOCX,
+      XLSX, plain text, anything — is uploaded as-is to the session
+      workspace:
+      - Image: resizeImage → 768px JPEG (sub-second canvas op) →
+        POST /upload-session-attachment as workspace/<name>.jpg
+      - Video: scaleVideo → VIDEO_WORKSPACE_MAX_PX / VIDEO_WORKSPACE_BITRATE
+        via MediaRecorder + canvas, real-time 1:1 with duration →
+        POST /upload-session-attachment as workspace/<base>.webm.
+        Send button is gated until scaling completes.
+      - PDF / DOCX / XLSX / TXT / any other format: raw file →
+        POST /upload-session-attachment as workspace/<name>.
+        NO client-side extraction — the BE's `extract_content` tool
+        handles all formats uniformly via pdftotext / pandoc / direct
+        read. This keeps the architecture consistent: no attachment
+        type is auto-injected into the LLM context, every read is a
+        visible `extract_content` tool call.
+      Multipart fields: file, sessionId. (No taskId — the workspace is
+      per-session since Phase 2 #91, so no task-level namespacing is
+      needed.) Max workspace attachment size: 200 MB.
 
-then in parallel:
-  (1) POST /assets                ← save originals at data/ for permanent user access
-                                     Video: max 300 MB (MEDIA_MAX_SIZE_BYTES); backend
-                                     returns 413 with clear message if exceeded.
-  (2) Client-side media scaling:
-      Image: resizeImage → 768px JPEG (sub-second canvas op)
-             → POST /upload-task-attachment as workspace/<name>.jpg
-      Video: scaleVideo  → VIDEO_WORKSPACE_MAX_PX (640px), VIDEO_WORKSPACE_BITRATE (800 kbps)
-             via MediaRecorder + canvas, real-time (1:1 with video duration)
-             → POST /upload-task-attachment as workspace/<base>.webm
-             Send button is gated until scaling completes.
-      Max workspace attachment size: 200 MB (@max_workspace_attachment_bytes).
-  (3) POST /agent/chat            ← fires with taskId + attachmentNames in body
-                                     images[] and hasVideo are empty — no inline base64
+At send time:
+  (3) POST /agent/chat                 ← fires with attachmentNames[] in body.
+                                          images[] / files[] inline fields
+                                          are NOT used by the Assistant path
+                                          (Confidant-only).
 
-UserAgent.handle_handoff_to_worker — attachment handling (paths only, never inline descriptions):
-  Path 1 — FE pre-allocated task_id and uploaded files to task workspace (normal path):
-    wait_for_attachments(workspace, names)  ← polls up to 30s
-    build_attachment_section("workspace", names)
-      → "[Attached files — use extract_content on these paths as needed]\n- workspace/<name>\n..."
-    appended to task_spec
+BE /agent/chat entry:
+  (a) wait_for_attachments(workspace, names)
+        Safety net — uploads almost always finish at attach time; polls
+        up to 30 s if a late upload is still in flight.
+  (b) User message is persisted to session.messages with content =
+        "<user text>\n\n📎 workspace/<name1>\n📎 workspace/<name2>"
+        (one `📎 ` line per attachment). 📎 is a language-neutral
+        marker the system prompt teaches the model: `📎 `-prefixed
+        lines are uploaded file paths, read them via `extract_content`.
 
-  Path 2 — FE reservation failed and sent inline base64 images (fallback):
-    save_inline_images(images, names, data_dir)  ← writes binary to session_root/data/
-    build_attachment_section("data", names)
-      → "[Attached files — use extract_content on these paths as needed]\n- data/<name>\n..."
-    appended to task_spec
-
-  Path 3 — no attachments:
-    media_context = nil  ← task_spec contains only the task text
+  (c) Session turn proceeds with stored history (now containing the paths).
 ```
 
-Worker calls `extract_content(path: "workspace/<name>")` per attachment:
+**Obsolete & removed (Phase 2)**:
+
+Endpoints / API:
+- `GET /reserve-task-id` endpoint — nothing needs a task_id at upload time.
+- `/upload-task-attachment` → renamed `/upload-session-attachment`.
+- `taskId` field in the upload multipart body.
+- `taskId` field in the `/agent/chat` body.
+
+UserAgent internals:
+- `Dmhai.Agent.Command` single struct → split into `AssistantCommand` and
+  `ConfidantCommand` (see §Request Lifecycle).
+- `UserAgent.run_command/2` — the shared dispatcher that inspected mode
+  internally. Mode branch now lives in the HTTP handler; UserAgent receives
+  two distinct dispatch message types.
+- `Command.task_id` struct field.
+- `build_attachment_section`, `wait_for_attachments`, `save_inline_images`
+  inside `handle_handoff_to_worker` — replaced by the single
+  `UserAgentMessages.inject_attachment_paths/3` step at `/agent/chat` entry.
+- `save_inline_images` fallback (the inline-base64-as-workspace-fallback path).
+- English-only `[Attached files — use extract_content on these paths as
+  needed]` header that inject_attachment_paths used to prepend — replaced
+  with the language-neutral `📎` prefix on each path line.
+
+Tool names:
+- `handoff_to_worker` → renamed `create_task` (no separate worker exists
+  post-#89; the Assistant itself drives the loop).
+
+Classifier inputs:
+- Inline `images[]` for the Assistant classifier — classifier is now a
+  text-only router. Attached paths live in the stored user message and the
+  Assistant Loop processes pixels via `extract_content`. Confidant mode
+  continues to use inline images (separate path, unchanged).
+
+Runtime (#96 — event-driven rewire):
+- The per-task `poller_loop/3` and all its helpers (`runner_dead?`,
+  `safe_shutdown_poller`, `synthesize_blocked` from the poller path).
+- `Tasks.advance_cursor/2` — unused after poller removal.
+- `tasks.last_reported_status_id` column — only the poller read/wrote it.
+- `task_poll_min_interval_sec`, `task_poll_samples_per_cycle`,
+  `task_progress_summary_*` settings (except `*_min_interval_sec` which
+  remains to rate-limit the on-demand summariser).
+- `:task_poll_override_ms` test-env config.
+- `poller_task` field in TaskRuntime's per-task state record.
+- `broadcast_progress/2` stub in TaskRuntime.
+- Poller-driven `maybe_announce_progress/1` — obsoleted with the summariser
+  changes in #90 and the poller removal in #96.
+
+Conversational session rearchitecture (#101 — landed):
+- `Dmhai.Agent.AssistantLoop` module + `AssistantLoopSupervisor` — the Loop
+  is now inline turn-by-turn in `UserAgent.run_assistant`.
+- Plan/exec/signal protocol: `Dmhai.Tools.Plan`, `Dmhai.Tools.TaskSignal`,
+  `Dmhai.Tools.StepSignal` — deleted.
+- `Dmhai.Agent.Prompts` plan-phase / execution-phase prompt builders —
+  deleted. Session loop uses one unified system prompt.
+- Police signal-protocol rules: batching checks, terminal-tool ordering,
+  `step_signal` vs `task_signal` discipline — gone. Path safety retained.
+- `tasks.predecessor_task_id`, `tasks.superseded_by_task_id` columns and
+  the `'superseded'` status value — fork-on-adjust scaffolding; removed.
+- `tasks.current_worker_id`, `last_summarized_status_id`,
+  `last_summarized_at`, `last_run_started_at`, `last_run_completed_at`,
+  `pipeline`, `origin` columns — derivable from `session_progress` or
+  redundant in the one-session model.
+- `next_run_at` → renamed `time_to_pickup` (more accurate; covers the
+  one-off case too).
+- `'one_off'` stays as the task_type value (consistency with existing code).
+- `pause_task`, `resume_task`, `set_periodic_for_task`, `read_task_status`
+  tools — collapsed into `update_task(task_id, status|task_spec|intvl_sec)`
+  and direct assistant replies.
+- `TaskRuntime`'s runner tracking — now just the periodic-pickup scheduler.
+
+Pre-turn language detection (#102b):
+- `UserAgent.detect_content_language/1` + `parse_language_code/1` —
+  vestigial from the old classifier/loop split. The conversational
+  assistant model handles language detection inline at zero additional
+  cost. Deleted.
+- `AgentSettings.language_detector_model/0` + the `languageDetectorModel`
+  admin setting — no consumer after detection removal. Deleted.
+- `SystemPrompt` `language` parameter + `language_hint/1` helper — the
+  system prompt no longer receives or injects a language directive.
+- `ContextEngine.build_assistant_messages` `:language` opt — removed.
+
+Phase-3 cleanup (#94 — in progress):
+- Task-list block restructured to hierarchical Markdown with `base_level`
+  parameterisation (see §Context assembly).
+- `create_task` / `update_task` gain explicit `attachments` argument;
+  `fetch_task` tool added. The model no longer hand-embeds `📎` lines
+  in `task_spec`; the BE normalises the stored spec from the validated
+  `attachments` list.
+- `Dmhai.Agent.MasterBuffer` module + `master_buffer` DB table — legacy
+  notification bus; unused after #90/#101. Removed.
+- `UserAgent.cancel_session_workers/2` → renamed `cancel_session_tasks/2`
+  (no workers exist any more).
+- `UserAgentMessages.archive_by_task_id/3` — obsolete after #101's
+  single-session-no-parallel-cycles model. Removed.
+- Obsolete i18n keys removed: `worker_exited_no_signal`, `worker_orphaned`,
+  `worker_refused_signal`, `max_iter_reached`, `loop_crashed`,
+  `loop_max_restarts_blocked`, `unknown_terminal_status`,
+  `plan_submission_failed`, `step_blocked_exhausted`,
+  `exec_errors_after_warning`, `policy_violation`, `blocked_label`,
+  `status_blocked`, `notify_blocked`, `task_spec_fallback`.
+
+When the session loop decides to read an attachment it calls
+`extract_content(path: "workspace/<name>")`:
+
 - Image (`.jpg`, `.png`, …) → ImageMagick scale → 1 LLM call → `## Description` + `## Verbatim Content`
 - Video (`.webm`, `.mp4`, …) → ffmpeg extracts N frames server-side → 1 LLM call → same two sections
 - Document (`.pdf`, `.docx`, …) → pdftotext / pandoc / direct read → text returned directly (no LLM)
 
-All results are returned as tool results and kept in the worker's context as usual.
+All results come back as tool results and stay in the session turn's
+context as usual.
 
 ---
 
-## Worker LLM Trace Logging
+## Tool result formatting
 
-When the `logTrace` admin setting is `true`, every worker task writes a verbatim log to:
+Per CLAUDE.md rule #10, the session loop's `format_tool_result/1` in
+`user_agent.ex` normalises a tool's `{:ok, result}` payload into the
+string that is handed to the model as the `tool` role message's content.
+
+Rules:
+
+- **Binary in → binary out, verbatim.** Text-oriented tools (`run_script`,
+  `read_file`, `parse_document`, `extract_content`, `datetime`) return raw
+  strings. The model sees exactly the text a human would see.
+- **Map / list in → pretty JSON out.** Metadata-oriented tools (`create_task`,
+  `update_task`, `fetch_task`, `web_search`, `web_fetch`, `save_credential`,
+  `lookup_credential`) return structured data. `format_tool_result` runs a
+  recursive normalisation first — atoms → strings (`"ok"`, not `:ok`),
+  tuples → lists, nested maps/lists flattened to JSON-native — then
+  `Jason.encode!/2` with `pretty: true`.
+- **Primitives (number, boolean, nil)** are coerced via `to_string/1`.
+- **`inspect/1` is forbidden** — it leaks Elixir syntax (`%{}`, `:atom`,
+  `{:ok, x}`) into the model's context. Any code path that would reach
+  `inspect/1` is a bug.
+
+`run_script` follows the text convention: on success it returns the raw
+stdout string; on non-zero exit or timeout it returns `{:error, "<reason>"}`
+(handled separately, not through `format_tool_result`). The previous
+`%{output, workdir}` map wrapping is removed — `workdir` is already in
+the session ctx and isn't useful to the model.
+
+---
+
+## Session LLM trace logging
+
+When the `logTrace` admin setting is `true`, every session turn writes a
+verbatim log to:
 
 ```
-<session_root>/log_traces/<task_id>.log
+<session_root>/log_traces/<task_id or "direct">.log
 ```
 
-The log records every LLM call (full system prompt + message history) and response
-(tool calls or plain text) for that task, timestamped per iteration.
+Each log records every LLM call (full system prompt + message history)
+and response (tool calls or plain text) for that turn, timestamped.
+Turns on a specific task write into `<task_id>.log`; turns that are
+pure direct-response (no task touched) write into `direct.log`.
 
-**Control:** Admin UI → Conversation Settings → "Trace worker LLM calls to file" checkbox.
-Persisted in `admin_cloud_settings.logTrace` (boolean, default `false`).
-Takes effect on the next task start (ctx is read once per `spawn_worker_task`).
+**Control:** Admin UI → Conversation Settings → "Trace assistant LLM
+calls to file" checkbox. Persisted in `admin_cloud_settings.logTrace`
+(boolean, default `false`). Takes effect on the next turn.
 
 ---
 
@@ -1002,11 +1211,10 @@ Models ending in `:cloud` / `-cloud` auto-route to cloud pool. Cloud keys manage
 
 | Role | Default |
 |------|---------|
-| Confidant Master | `gemini-3-flash-preview:cloud` |
-| Assistant Master | `ministral-3:14b-cloud` |
-| Worker Agent | `qwen3-coder-next:cloud` |
+| Confidant | `gemini-3-flash-preview:cloud` |
+| Assistant (session loop) | `devstral-small-2:24b-cloud` |
 | Context Compactor | `gemini-3-flash-preview:cloud` |
-| Progress Summariser | `gemini-3-flash-preview:cloud` |
+| Progress Summariser (on-demand) | `gemini-3-flash-preview:cloud` |
 | Web Search Detector | `ministral-3:14b-cloud` |
 | Image Describer | `gemini-3-flash-preview:cloud` |
 | Video Describer | `gemini-3-flash-preview:cloud` |
@@ -1016,32 +1224,28 @@ Models ending in `:cloud` / `-cloud` auto-route to cloud pool. Cloud keys manage
 
 | Key | Default | Purpose |
 |-----|---------|---------|
-| `workerMaxIter` | 20 | Hard cap on worker iterations |
-| `workerContextN` / `workerContextM` | 8 / 6 | Rolling-summary stub tier + recent tier |
-| `maxToolResultChars` | 8000 | Truncation threshold for tool results fed back to worker |
+| `maxAssistantToolRounds` | 50 | Per-turn cap on tool-call roundtrips; abort turn if exceeded |
+| `maxToolResultChars` | 8000 | Truncation threshold for tool results fed back into context |
 | `spawnTaskTimeoutSecs` | 30 | Bash command timeout inside spawn_task |
-| `planMinSteps` / `planMaxSteps` | 1 / 10 | Plan step count bounds (Police.check_plan); 1 step is valid for simple tasks |
-| `planStepMaxRetries` | 3 | Max STEP_BLOCKED retries before forcing TASK_BLOCKED |
-| `masterCompactTurnThreshold` | 90 | Master compaction turn count trigger |
-| `masterCompactFraction` | 0.45 | Master compaction char-budget fraction |
-| `taskPollMinIntervalSec` | 5 | K — poller interval floor |
-| `taskPollSamplesPerCycle` | 10 | M — target samples per periodic cycle |
-| `taskOrphanTimeoutSec` | 300 | Orphan detection window |
-| `execErrorStreakNudge` | 3 | Consecutive exec-tool failures before nudging the model |
-| `maxWorkerRestarts` | 2 | Max automatic worker restarts per task before permanent block |
-| `taskProgressSummaryEveryNRows` | 6 | Summariser row-count trigger (N gate) |
-| `taskProgressSummaryMinIntervalSec` | 30 | Minimum seconds between summaries (T gate in N AND T algorithm) |
-| `taskProgressSummaryMinCycleSec` | 1800 | Periodic tasks with intvl_sec below this skip interim summaries entirely |
+| `masterCompactTurnThreshold` | 90 | Session compaction turn count trigger |
+| `masterCompactFraction` | 0.45 | Session compaction char-budget fraction |
+| `execErrorStreakNudge` | 3 | Consecutive exec-tool failures before a nudge is appended to the model's context |
 
 ---
 
 ## Internationalisation
 
-**LLM-generated content** (worker output, progress summaries, task titles, acks) is produced in the user's language via explicit prompt injection. The Assistant detects and supplies `language` (ISO 639-1) on every handoff; it is stored on the tasks row and threaded into:
+**LLM-generated content** (session output, on-demand progress summaries,
+task titles, final answers) is produced in the user's language — the
+assistant model is multilingual by default and responds in whatever
+language the user wrote in. No pre-turn language-detection step, no
+`language` hint injected into the system prompt. Trust the model.
 
-- Worker per-turn prompt (`build_turn_prompt` injects language rule each iteration).
-- Summariser prompt (explicit "write in `<lang>`" instruction).
-- Confidant pipeline (existing language-rule in prompt).
+The Assistant still stores an ISO 639-1 `language` on every `create_task`
+(it reads the user's message and picks the code itself) so the on-demand
+progress summariser — a separate LLM call on a smaller model — can be
+told explicitly which language to write its one-line update in. That's
+the only downstream consumer of the stored field.
 
 **Runtime-generated labels** use the `Dmhai.I18n` module — a plain-dict lookup with interpolation:
 
@@ -1076,33 +1280,31 @@ users
 auth_tokens
   token PK, user_id, created_at
 
-tasks                  ← system of record for all long-running work
+tasks                  ← system of record for all tasks in the session
   task_id TEXT PK
   user_id / session_id
   task_type TEXT       ← 'one_off' | 'periodic'
   intvl_sec INT       ← 0 for one_off
-  task_title TEXT      ← 2-6 words, in user's language
-  task_spec TEXT       ← verbatim user message + optional "[Attached files...]" block
-  task_status TEXT     ← 'pending' | 'running' | 'done' | 'blocked' | 'cancelled' | 'paused'
-  task_result TEXT     ← final Markdown answer (or BLOCKED reason)
+  task_title TEXT      ← short label shown in the task-list block + FE sidebar
+  task_spec TEXT       ← description; verbatim user message (with 📎-prefixed
+                         attachment paths appended, if any). Updated in place
+                         when the assistant calls update_task(task_spec: ...).
+  task_status TEXT     ← 'pending' | 'ongoing' | 'paused' | 'done' | 'cancelled'
+  task_result TEXT     ← last compiled result (final Markdown answer for one_off;
+                         last cycle's result for periodic). Reused in the
+                         [Active tasks] block context if the task re-runs.
+  time_to_pickup INT  ← unix ms; for periodic (next cycle) and any future
+                         delayed-oneoff semantics. NULL for immediate-run.
   language TEXT       ← ISO 639-1 (default 'en')
-  pipeline TEXT       ← 'assistant' | 'confidant' — execution path (worker vs resolver)
-  origin TEXT         ← 'assistant' | 'confidant' — session mode at task creation.
-                        Drives filesystem subdir (<session_root>/<origin>/tasks/<task_id>)
   created_at / updated_at
-  last_run_started_at / last_run_completed_at
-  next_run_at                 ← for periodic scheduling
-  last_reported_status_id     ← poller progress cursor
-  last_summarized_status_id   ← summariser cursor (delta-only)
-  last_summarized_at          ← rate-limit anchor
-  current_worker_id           ← active worker id (cleared on terminal)
 
-worker_status         ← per-iteration progress rows
+session_progress         ← per-activity progress rows (UI + audit log)
   id INTEGER PK AUTOINCREMENT
-  task_id / worker_id
-  kind TEXT           ← 'thinking' | 'tool_call' | 'tool_result' | 'progress_summary' | 'final' | 'error'
-  content TEXT        ← truncated to 4k chars
-  signal_status TEXT  ← 'TASK_DONE' | 'BLOCKED' (only for kind='final')
+  session_id / user_id / task_id
+  kind TEXT           ← 'tool' | 'thinking' | 'summary'
+  status TEXT         ← 'pending' | 'done' (tool rows only; flipped when the
+                         tool call returns)
+  label TEXT          ← truncated to 4k chars; the FE-renderable activity line
   ts INTEGER
 
 master_buffer         ← notification bus (polled by frontend)
@@ -1123,7 +1325,7 @@ settings              — admin settings KV store
 blocked_domains       — scanner/abuse domain blocklist
 ```
 
-The `worker_state` table was dropped in the refactor (`DROP TABLE IF EXISTS worker_state` migration). The `master_buffer.worker_id` column is left dormant for compatibility.
+The DB schema is consolidated — no legacy `ALTER TABLE` migration chain. Wipe `~/.dmhai/` to re-init from scratch after schema changes. The `master_buffer.worker_id` column is left dormant (unused since the master/worker split was collapsed).
 
 ---
 
@@ -1140,28 +1342,48 @@ index.html
  ├── profile.js       — Settings, UserProfile, UserFactTracker
  ├── ui.js            — Modal, Lightbox, SettingsModal
  ├── manager-app.js   — session list, mode switcher, session CRUD, token-stats modal
+ ├── manager-tasks.js — task-list sidebar (renderTasks, polling)
  ├── manager-chat.js  — renderChat, renderSessions
  ├── manager-search.js— sendMessage streaming logic
- └── main.js          — bootstrap, event wiring, notification polling
+ └── main.js          — bootstrap, event wiring
 ```
 
 ### Session Modes
 
-Each session has `mode = 'confidant' | 'assistant'` (legacy column). The sidebar filters by mode. In Assistant mode the chat shows task-progress turns (assistant messages with `kind: "progress"` and a `task_id` field) alongside regular replies.
+Each session has `mode = 'confidant' | 'assistant'`. The sidebar filters by mode.
 
-### Notification Polling
+### Task-list sidebar (Assistant mode)
+
+Section under `#sessions-list` in the sidebar, scoped to the currently-open
+session. Data comes from:
 
 ```
-setInterval:
-  GET /notifications?since=<last_ts>
-  → [{id, session_id, summary, content, created_at}, …]
-  interval: configurable in user settings
+GET /sessions/:id/tasks
+→ { tasks: [task, task, ...] }    -- full Tasks.list_for_session/1 dump
 ```
 
-Two kinds returned from `master_buffer` by `TaskRuntime`:
+The FE partitions the list client-side into:
 
-- **Sentinel** (`append_notification/3`, `content=""`): written on task done/blocked. Frontend reloads the session and clears `#task-status-area`.
-- **Progress** (`append_progress_notification/4`, `content=<summary_text>`): written on each mid-task progress summary. Frontend appends the text as a stacked status phrase in `#task-status-area` without reloading the session.
+- **ongoing** (most prominent; pinned at the top)
+- **pending** — periodic due next (sorted by `time_to_pickup` ascending),
+  then non-periodic pending, by `created_at`
+- **paused**
+- **Recent** (collapsible; last ~20 done/cancelled by `updated_at` desc)
+
+Each row shows: title, status chip (colour-coded), type icon (🔁 periodic
+vs ▸ one_off), and — for pending periodic — a relative pickup time
+("in 45m", "now", "3h ago"). Clicking a row scrolls the chat view to the
+latest `session_progress` entry for that task (if any) or highlights the
+row briefly if none.
+
+Polling cadence: `3 000 ms` while the session is open and has at least
+one non-terminal task; `15 000 ms` when idle. Backoff is cooperative —
+the same call is triggered opportunistically when `session_progress`
+deltas arrive (tasks may have transitioned).
+
+No push channel — the BE does not notify the FE of task changes. This
+matches #90's FE-driven progress polling; we keep FE the pull side
+everywhere.
 
 ---
 
@@ -1186,7 +1408,7 @@ docker-compose up
 Volume `/data`:
 - `/data/db/chat.db` — SQLite
 - `/data/user_assets/<email>/<session_id>/data/` — user uploads (see §Filesystem Layout)
-- `/data/user_assets/<email>/<session_id>/<origin>/tasks/<task_id>/` — task scratch
+- `/data/user_assets/<email>/<session_id>/workspace/` — session task scratch (shared across all tasks in the session)
 - `/data/system_logs/system.log` — SysLog traces
 
 ---
@@ -1199,22 +1421,21 @@ Test files are `test/itgr_*.exs`. Harness in `test/test_helper.exs` provides:
 - `T.tool_call/3` — build a normalised tool-call map matching `LLM.normalize_tool_calls` output.
 - `T.session_data/1` — build a session fixture.
 
-Coverage (16 worker-loop + 21 task-runtime + others, ~120 total):
+Coverage:
 
 | Area | File |
 |------|------|
-| Worker loop (signal, protocol violations, compaction) | `itgr_worker_loop.exs` |
-| Job runtime (Jobs/WorkerStatus/Signal/TaskRuntime end-to-end + mutex) | `itgr_job_runtime.exs` |
-| Context/compaction (master + worker) | `itgr_compaction.exs` |
+| Session turn loop (tool-call roundtrips, text termination, max-rounds cap) | `itgr_session_loop.exs` (#101; replaces `itgr_worker_loop.exs`) |
+| Task runtime (Tasks CRUD, periodic scheduler, mark_done auto-reschedule) | `itgr_task_runtime.exs` |
+| Context compaction (session-level) | `itgr_compaction.exs` |
 | Confidant pipeline | `itgr_confidant_flow.exs` |
-| Context engine message building | `itgr_context_engine.exs` |
+| Context engine message building (incl. [Active tasks] injection) | `itgr_context_engine.exs` |
 | Tool capability (real LLM, network-gated) | `itgr_tool_capability.exs` |
 | i18n (translation coverage, language propagation) | `itgr_i18n.exs` |
 | Web fetch (CMP detection, reader, fallback, real sites under `:network` tag) | `itgr_web_fetch.exs` |
 
 Test env (`config/test.exs`):
 - `enable_task_rehydrate: false` — disables boot rehydration during tests.
-- `task_poll_override_ms: 100` — tight poll cadence so TaskRuntime tests finish in seconds.
 
 Run filters:
 - Default: `mix test` skips `:network`-tagged tests.

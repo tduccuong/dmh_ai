@@ -23,22 +23,9 @@ defmodule Itgr.AssetsLayout do
                "/data/user_assets/u@x.com/S1/data"
     end
 
-    test "session_origin_root for assistant / confidant only" do
-      assert Constants.session_origin_root("u@x.com", "S", "assistant") ==
-               "/data/user_assets/u@x.com/S/assistant/tasks"
-      assert Constants.session_origin_root("u@x.com", "S", "confidant") ==
-               "/data/user_assets/u@x.com/S/confidant/tasks"
-    end
-
-    test "task_workspace_dir" do
-      assert Constants.task_workspace_dir("u@x.com", "S", "assistant", "J1") ==
-               "/data/user_assets/u@x.com/S/assistant/tasks/J1"
-    end
-
-    test "session_origin_root rejects unknown origin" do
-      assert_raise FunctionClauseError, fn ->
-        Constants.session_origin_root("u@x.com", "S", "worker")
-      end
+    test "session_workspace_dir" do
+      assert Constants.session_workspace_dir("u@x.com", "S") ==
+               "/data/user_assets/u@x.com/S/workspace"
     end
 
     test "sanitize replaces special chars with underscore" do
@@ -55,18 +42,18 @@ defmodule Itgr.AssetsLayout do
     end
 
     test "relative path defaults to workspace" do
-      ctx = ctx("/sr", "/sr/assistant/tasks/J1", "/sr/data")
-      assert {:ok, "/sr/assistant/tasks/J1/foo.txt"} = SafePath.resolve("foo.txt", ctx)
+      ctx = ctx("/sr", "/sr/workspace", "/sr/data")
+      assert {:ok, "/sr/workspace/foo.txt"} = SafePath.resolve("foo.txt", ctx)
     end
 
     test "'data/...' prefix resolves under data_dir" do
-      ctx = ctx("/sr", "/sr/assistant/tasks/J1", "/sr/data")
+      ctx = ctx("/sr", "/sr/workspace", "/sr/data")
       assert {:ok, "/sr/data/photo.jpg"} = SafePath.resolve("data/photo.jpg", ctx)
     end
 
     test "'workspace/...' prefix resolves under workspace_dir" do
-      ctx = ctx("/sr", "/sr/assistant/tasks/J1", "/sr/data")
-      assert {:ok, "/sr/assistant/tasks/J1/out.csv"} =
+      ctx = ctx("/sr", "/sr/workspace", "/sr/data")
+      assert {:ok, "/sr/workspace/out.csv"} =
                SafePath.resolve("workspace/out.csv", ctx)
     end
 
@@ -82,7 +69,7 @@ defmodule Itgr.AssetsLayout do
     end
 
     test "relative path with ../ that escapes root is rejected" do
-      ctx = ctx("/sr", "/sr/assistant/tasks/J1", "/sr/data")
+      ctx = ctx("/sr", "/sr/workspace", "/sr/data")
       # ../../../ jumps above /sr
       assert {:error, reason} = SafePath.resolve("../../../../etc/passwd", ctx)
       assert String.contains?(reason, "escapes")
@@ -93,36 +80,6 @@ defmodule Itgr.AssetsLayout do
       assert SafePath.within?("/sr", "/sr")
       refute SafePath.within?("/sr2/data", "/sr")
       refute SafePath.within?("/sr-poison", "/sr")
-    end
-  end
-
-  # ─── Tasks pipeline + origin columns ─────────────────────────────────────
-
-  describe "Tasks.insert / Tasks.get with pipeline + origin" do
-    test "persists pipeline='assistant' origin='assistant' by default" do
-      jid = Tasks.insert(user_id: uid(), session_id: uid(),
-                        task_title: "t", task_spec: "s")
-      j = Tasks.get(jid)
-      assert j.pipeline == "assistant"
-      assert j.origin   == "assistant"
-    end
-
-    test "round-trips pipeline='confidant' + origin='confidant'" do
-      jid = Tasks.insert(user_id: uid(), session_id: uid(),
-                        task_title: "t", task_spec: "s",
-                        pipeline: "confidant", origin: "confidant")
-      j = Tasks.get(jid)
-      assert j.pipeline == "confidant"
-      assert j.origin   == "confidant"
-    end
-
-    test "round-trips mixed pipeline/origin (assistant-origin running confidant pipeline)" do
-      jid = Tasks.insert(user_id: uid(), session_id: uid(),
-                        task_title: "t", task_spec: "s",
-                        pipeline: "confidant", origin: "assistant")
-      j = Tasks.get(jid)
-      assert j.pipeline == "confidant"
-      assert j.origin   == "assistant"
     end
   end
 
@@ -168,7 +125,7 @@ defmodule Itgr.AssetsLayout do
       call = T.tool_call("run_script", %{"script" => "rm -rf /data/user_assets/u/S/data/photo.jpg"})
       assert {:rejected, reason} = Police.check_tool_calls([call], [], path_ctx())
       assert String.contains?(reason, "path_violation")
-      assert String.contains?(reason, "outside the job workspace")
+      assert String.contains?(reason, "outside the session workspace")
     end
 
     test "rejects spawn_task rm outside workspace" do

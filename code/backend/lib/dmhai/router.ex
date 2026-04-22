@@ -14,7 +14,6 @@ defmodule Dmhai.Router do
   alias Dmhai.Handlers.Tools
   alias Dmhai.Handlers.AgentChat
   alias Dmhai.Agent.UserAgent
-  alias Dmhai.Agent.MasterBuffer
 
   plug Dmhai.Plugs.BlockScanners
   plug Dmhai.Plugs.SecurityHeaders
@@ -190,6 +189,27 @@ defmodule Dmhai.Router do
     end
   end
 
+  get "/sessions/:session_id/progress" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      Data.get_session_progress(conn, user, session_id)
+    end
+  end
+
+  get "/sessions/:session_id/tasks" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      Data.get_session_tasks(conn, user, session_id)
+    end
+  end
+
+  # Poll endpoint — unified delta fetch for messages, progress rows,
+  # streaming-buffer text, and the `is_working` flag. FE hits this at
+  # 500 ms when the agent is active, 5 s when idle.
+  get "/sessions/:session_id/poll" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      Data.poll_session(conn, user, session_id)
+    end
+  end
+
   get "/image-descriptions/:session_id" do
     with {:ok, conn, user} <- check_auth(conn) do
       Data.get_image_descriptions(conn, user, session_id)
@@ -199,12 +219,6 @@ defmodule Dmhai.Router do
   get "/video-descriptions/:session_id" do
     with {:ok, conn, user} <- check_auth(conn) do
       Data.get_video_descriptions(conn, user, session_id)
-    end
-  end
-
-  get "/notifications" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      Data.get_notifications(conn, user)
     end
   end
 
@@ -264,15 +278,9 @@ defmodule Dmhai.Router do
     end
   end
 
-  get "/reserve-task-id" do
+  post "/upload-session-attachment" do
     with {:ok, conn, user} <- check_auth(conn) do
-      Data.get_reserved_task_id(conn, user)
-    end
-  end
-
-  post "/upload-task-attachment" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      Data.post_task_attachment(conn, user)
+      Data.post_session_attachment(conn, user)
     end
   end
 
@@ -377,11 +385,10 @@ defmodule Dmhai.Router do
     end
   end
 
-  # Cancel all running workers and flush master_buffer for a session (used by "Clear session")
+  # Cancel all running tasks for a session (used by "Clear session")
   post "/sessions/:session_id/cancel-workers" do
     with {:ok, conn, user} <- check_auth(conn) do
-      UserAgent.cancel_session_workers(user.id, session_id)
-      MasterBuffer.delete_for_session(session_id)
+      UserAgent.cancel_session_tasks(user.id, session_id)
       send_resp(conn, 200, Jason.encode!(%{ok: true}))
     end
   end

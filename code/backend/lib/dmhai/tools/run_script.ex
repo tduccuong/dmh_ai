@@ -87,7 +87,11 @@ defmodule Dmhai.Tools.RunScript do
 
     case Task.yield(task, timeout_s * 1_000) || Task.shutdown(task, :brutal_kill) do
       {:ok, {output, 0}} ->
-        {:ok, %{output: String.slice(output, 0, @max_output), workdir: workdir}}
+        # Return raw stdout verbatim so the model sees what a human would see
+        # running the command. workdir is already in session ctx; embedding it
+        # would force JSON wrapping with newline escaping.
+        _ = workdir
+        {:ok, String.slice(output, 0, @max_output)}
 
       {:ok, {output, exit_code}} ->
         {:error, "exit #{exit_code}: #{String.slice(output, 0, @max_output)}"}

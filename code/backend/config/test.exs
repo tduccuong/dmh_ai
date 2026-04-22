@@ -21,5 +21,3 @@ config :dmhai, :start_https, false
 config :dmhai, :start_http,  false
 config :dmhai, :enable_task_rehydrate, false
 config :dmhai, :run_startup_check,   false
-# Tight poll cadence so TaskRuntime tests finish in seconds rather than tens of seconds.
-config :dmhai, :task_poll_override_ms, 100

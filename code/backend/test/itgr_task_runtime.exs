@@ -1,11 +1,10 @@
-# Integration tests for the task lifecycle: Tasks, WorkerStatus, Signal, TaskRuntime.
-# Run with: MIX_ENV=test mix test test/itgr_job_runtime.exs
+# Integration tests for the new conversational-session task runtime (#101).
+# Covers Tasks CRUD, SessionProgress log, and TaskRuntime periodic scheduling.
 
 defmodule Itgr.TaskRuntime do
   use ExUnit.Case, async: false
 
-  alias Dmhai.Agent.{Tasks, TaskRuntime, WorkerStatus}
-  alias Dmhai.Tools.TaskSignal
+  alias Dmhai.Agent.{SessionProgress, Tasks, TaskRuntime}
   import Ecto.Adapters.SQL, only: [query!: 3]
 
   defp uid, do: T.uid()
@@ -14,339 +13,180 @@ defmodule Itgr.TaskRuntime do
     now = System.os_time(:millisecond)
     query!(Dmhai.Repo,
       "INSERT OR IGNORE INTO sessions (id, user_id, mode, messages, created_at, updated_at) VALUES (?,?,?,?,?,?)",
-      [sid, user_id, "confidant", "[]", now, now])
+      [sid, user_id, "assistant", "[]", now, now])
   end
 
   # ─── Tasks DB helpers ─────────────────────────────────────────────────────
 
-  test "Tasks.insert + get round-trip" do
+  test "Tasks.insert + get round-trip preserves all fields" do
     sid = uid(); uid_ = uid()
-    jid = Tasks.insert(user_id: uid_, session_id: sid, task_title: "hello",
-                      task_spec: "spec", task_type: "one_off")
+    tid = Tasks.insert(
+      user_id: uid_, session_id: sid,
+      task_title: "hello", task_spec: "spec",
+      task_type: "one_off", language: "vi"
+    )
 
-    job = Tasks.get(jid)
-    assert job.task_id == jid
-    assert job.task_type == "one_off"
-    assert job.task_title == "hello"
-    assert job.task_status == "pending"
+    t = Tasks.get(tid)
+    assert t.task_id == tid
+    assert t.task_type == "one_off"
+    assert t.task_title == "hello"
+    assert t.task_status == "pending"
+    assert t.language == "vi"
+    assert is_integer(t.time_to_pickup)
   end
 
-  test "Tasks.mark_running sets status + worker_id + timestamp" do
-    jid = Tasks.insert(user_id: uid(), session_id: uid(), task_title: "x", task_spec: "s")
-    wid = uid()
-    Tasks.mark_running(jid, wid)
-    job = Tasks.get(jid)
-    assert job.task_status == "running"
-    assert job.current_worker_id == wid
-    assert is_integer(job.last_run_started_at)
+  test "Tasks.mark_ongoing flips status" do
+    tid = Tasks.insert(user_id: uid(), session_id: uid(), task_title: "x", task_spec: "s")
+    Tasks.mark_ongoing(tid)
+    assert Tasks.get(tid).task_status == "ongoing"
   end
 
-  test "Tasks.mark_done stores result and clears worker_id" do
-    jid = Tasks.insert(user_id: uid(), session_id: uid(), task_title: "x", task_spec: "s")
-    Tasks.mark_running(jid, uid())
-    Tasks.mark_done(jid, "42")
-    job = Tasks.get(jid)
-    assert job.task_status == "done"
-    assert job.task_result == "42"
-    assert job.current_worker_id == nil
+  test "Tasks.mark_done on one_off sets done + clears pickup" do
+    tid = Tasks.insert(user_id: uid(), session_id: uid(), task_title: "x", task_spec: "s")
+    Tasks.mark_done(tid, "42")
+    t = Tasks.get(tid)
+    assert t.task_status == "done"
+    assert t.task_result == "42"
+    assert t.time_to_pickup == nil
   end
 
-  test "Tasks.set_periodic flips type and sets interval" do
-    jid = Tasks.insert(user_id: uid(), session_id: uid(), task_title: "x", task_spec: "s")
-    Tasks.set_periodic(jid, 60)
-    job = Tasks.get(jid)
-    assert job.task_type == "periodic"
-    assert job.intvl_sec == 60
+  test "Tasks.mark_done on periodic auto-reschedules (status=pending, pickup bumped)" do
+    tid = Tasks.insert(user_id: uid(), session_id: uid(),
+                       task_title: "hb", task_spec: "s",
+                       task_type: "periodic", intvl_sec: 60)
+    Tasks.mark_done(tid, "cycle complete")
+    t = Tasks.get(tid)
+    assert t.task_status == "pending"
+    assert t.task_result == "cycle complete"
+    assert is_integer(t.time_to_pickup)
+    assert t.time_to_pickup > System.os_time(:millisecond)
   end
 
-  test "Tasks.fetch_due_periodic only returns periodic jobs past next_run_at" do
-    past   = System.os_time(:millisecond) - 1_000
-    future = System.os_time(:millisecond) + 60_000
-
-    due_id = Tasks.insert(user_id: uid(), session_id: uid(), task_title: "due",
-                         task_spec: "s", task_type: "periodic", intvl_sec: 60)
-    Tasks.schedule_next_run(due_id, past)
-
-    not_due_id = Tasks.insert(user_id: uid(), session_id: uid(), task_title: "notdue",
-                             task_spec: "s", task_type: "periodic", intvl_sec: 60)
-    Tasks.schedule_next_run(not_due_id, future)
-
-    due_list = Tasks.fetch_due_periodic()
-    due_ids  = Enum.map(due_list, & &1.task_id)
-    assert due_id in due_ids
-    refute not_due_id in due_ids
+  test "Tasks.update_spec rewrites the description in place" do
+    tid = Tasks.insert(user_id: uid(), session_id: uid(), task_title: "x", task_spec: "old")
+    Tasks.update_spec(tid, "new spec")
+    assert Tasks.get(tid).task_spec == "new spec"
   end
 
-  # ─── WorkerStatus DB helpers ─────────────────────────────────────────────
-
-  test "WorkerStatus.append + fetch_since monotonic cursor" do
-    jid = Tasks.insert(user_id: uid(), session_id: uid(), task_title: "x", task_spec: "s")
-    wid = uid()
-
-    :ok = WorkerStatus.append(jid, wid, "tool_call", "bash(date)")
-    :ok = WorkerStatus.append(jid, wid, "tool_result", "Mon Jan 1")
-    :ok = WorkerStatus.append(jid, wid, "final", "all done", "TASK_DONE")
-
-    all = WorkerStatus.fetch_since(jid, 0)
-    assert length(all) == 3
-    kinds = Enum.map(all, & &1.kind)
-    assert kinds == ["tool_call", "tool_result", "final"]
-
-    # Cursor after second row → only final remains.
-    second_id = Enum.at(all, 1).id
-    [last] = WorkerStatus.fetch_since(jid, second_id)
-    assert last.kind == "final"
-    assert last.signal_status == "TASK_DONE"
+  test "Tasks.mark_cancelled clears pickup" do
+    tid = Tasks.insert(user_id: uid(), session_id: uid(),
+                       task_title: "x", task_spec: "s",
+                       task_type: "periodic", intvl_sec: 60)
+    Tasks.mark_cancelled(tid)
+    t = Tasks.get(tid)
+    assert t.task_status == "cancelled"
+    assert t.time_to_pickup == nil
   end
 
-  test "WorkerStatus truncates very large content" do
-    jid = Tasks.insert(user_id: uid(), session_id: uid(), task_title: "x", task_spec: "s")
+  test "Tasks.active_for_session returns only non-terminal tasks, oldest first" do
+    sid = uid(); uid_ = uid()
+    a = Tasks.insert(user_id: uid_, session_id: sid, task_title: "a", task_spec: "s")
+    b = Tasks.insert(user_id: uid_, session_id: sid, task_title: "b", task_spec: "s")
+    Tasks.mark_ongoing(b)
+    c = Tasks.insert(user_id: uid_, session_id: sid, task_title: "c", task_spec: "s")
+    Tasks.mark_done(c, "done")
+
+    active = Tasks.active_for_session(sid)
+    ids    = Enum.map(active, & &1.task_id)
+    assert a in ids
+    assert b in ids
+    refute c in ids
+  end
+
+  # ─── SessionProgress ─────────────────────────────────────────────────────
+
+  test "SessionProgress.append_tool_pending + mark_tool_done" do
+    sid = uid(); uid_ = uid()
+    tid = Tasks.insert(user_id: uid_, session_id: sid, task_title: "x", task_spec: "s")
+    ctx = %{session_id: sid, user_id: uid_, task_id: tid}
+
+    {:ok, inserted} = SessionProgress.append_tool_pending(ctx, "web_fetch(example.com)")
+    [row] = SessionProgress.fetch_for_task(tid)
+    assert row.id == inserted.id
+    assert row.kind == "tool"
+    assert row.status == "pending"
+    assert row.label == "web_fetch(example.com)"
+
+    :ok = SessionProgress.mark_tool_done(inserted.id)
+    [row2] = SessionProgress.fetch_for_task(tid)
+    assert row2.status == "done"
+  end
+
+  test "SessionProgress truncates large labels" do
+    sid = uid(); uid_ = uid()
+    tid = Tasks.insert(user_id: uid_, session_id: sid, task_title: "x", task_spec: "s")
+    ctx = %{session_id: sid, user_id: uid_, task_id: tid}
     big = String.duplicate("a", 10_000)
-    :ok = WorkerStatus.append(jid, uid(), "tool_result", big)
-    [row] = WorkerStatus.fetch_since(jid, 0)
-    assert String.length(row.content) < 5_000
-    assert String.ends_with?(row.content, "[truncated]")
+    {:ok, _} = SessionProgress.append_tool_pending(ctx, big)
+    [row] = SessionProgress.fetch_for_task(tid)
+    assert String.length(row.label) < 5_000
+    assert String.ends_with?(row.label, "[truncated]")
   end
 
-  # ─── TaskSignal tool contract ──────────────────────────────────────────────
+  test "SessionProgress.fetch_for_session filters by session_id + since_id cursor" do
+    s1 = uid(); s2 = uid(); uid_ = uid()
+    t1 = Tasks.insert(user_id: uid_, session_id: s1, task_title: "a", task_spec: "s")
+    t2 = Tasks.insert(user_id: uid_, session_id: s2, task_title: "b", task_spec: "s")
 
-  test "TaskSignal.execute(TASK_DONE) writes a 'final' row with the result payload" do
-    jid = Tasks.insert(user_id: uid(), session_id: uid(), task_title: "x", task_spec: "s")
-    ctx = %{task_id: jid, worker_id: "w1"}
+    {:ok, a1} = SessionProgress.append_tool_pending(%{session_id: s1, user_id: uid_, task_id: t1}, "x")
+    {:ok, _a2} = SessionProgress.append_tool_pending(%{session_id: s2, user_id: uid_, task_id: t2}, "y")
+    {:ok, a3} = SessionProgress.append_tool_pending(%{session_id: s1, user_id: uid_, task_id: t1}, "z")
 
-    assert {:ok, _} = TaskSignal.execute(%{"status" => "TASK_DONE", "result" => "all done"}, ctx)
+    rows = SessionProgress.fetch_for_session(s1)
+    assert Enum.map(rows, & &1.id) == [a1.id, a3.id]
 
-    [row] = WorkerStatus.fetch_since(jid, 0)
-    assert row.kind == "final"
-    assert row.signal_status == "TASK_DONE"
-    assert row.content == "all done"
+    rows = SessionProgress.fetch_for_session(s1, a1.id)
+    assert Enum.map(rows, & &1.id) == [a3.id]
   end
 
-  test "TaskSignal.execute rejects TASK_DONE without result" do
-    ctx = %{task_id: "x", worker_id: "w1"}
-    assert {:error, reason} = TaskSignal.execute(%{"status" => "TASK_DONE"}, ctx)
-    assert String.contains?(reason, "result")
+  # ─── TaskRuntime periodic scheduling ─────────────────────────────────────
+
+  test "TaskRuntime.schedule_pickup arms a timer (basic smoke test)" do
+    sid = uid(); uid_ = uid()
+    seed_session(sid, uid_)
+    tid = Tasks.insert(user_id: uid_, session_id: sid,
+                       task_title: "ping", task_spec: "s",
+                       task_type: "periodic", intvl_sec: 1)
+    # Just smoke-test that the cast doesn't crash; the actual timer fire is
+    # gated on UserAgent.Supervisor in prod which we don't boot in tests.
+    :ok = TaskRuntime.schedule_pickup(tid, System.os_time(:millisecond) + 60_000)
+    :ok = TaskRuntime.cancel_pickup(tid)
   end
 
-  test "TaskSignal.execute(TASK_BLOCKED) writes a 'final' row with TASK_BLOCKED status" do
-    jid = Tasks.insert(user_id: uid(), session_id: uid(), task_title: "x", task_spec: "s")
-    ctx = %{task_id: jid, worker_id: "w1"}
+  # ─── Summariser (on-demand) ──────────────────────────────────────────────
 
-    assert {:ok, _} = TaskSignal.execute(%{"status" => "TASK_BLOCKED", "reason" => "api down"}, ctx)
-
-    [row] = WorkerStatus.fetch_since(jid, 0)
-    assert row.signal_status == "TASK_BLOCKED"
-    assert row.content == "api down"
-  end
-
-  test "TaskSignal.execute rejects invalid status" do
-    ctx = %{task_id: "x", worker_id: "w1"}
-    assert {:error, reason} = TaskSignal.execute(%{"status" => "WEIRD"}, ctx)
-    assert String.contains?(reason, "must be")
-  end
-
-  test "TaskSignal.execute rejects TASK_BLOCKED without reason" do
-    ctx = %{task_id: "x", worker_id: "w1"}
-    assert {:error, reason} = TaskSignal.execute(%{"status" => "TASK_BLOCKED"}, ctx)
-    assert String.contains?(reason, "reason")
-  end
-
-  test "TaskSignal.execute rejects missing task_id" do
-    ctx = %{worker_id: "w1"}
-    assert {:error, reason} = TaskSignal.execute(%{"status" => "TASK_DONE", "result" => "x"}, ctx)
-    assert String.contains?(reason, "task_id")
-  end
-
-  # ─── TaskRuntime end-to-end (one-off with stubbed LLM) ────────────────────
-
-  test "TaskRuntime.start_task runs worker and finalises TASK_DONE" do
-    user_id = uid(); sid = uid()
-    seed_session(sid, user_id)
-
-    jid = Tasks.insert(user_id: user_id, session_id: sid,
-                      task_type: "one_off", intvl_sec: 0,
-                      task_title: "greet", task_spec: "say hello",
-                      task_status: "pending")
+  test "summarize_and_announce: writes a summary row from activity log" do
+    sid = uid(); uid_ = uid()
+    seed_session(sid, uid_)
+    tid = Tasks.insert(user_id: uid_, session_id: sid,
+                       task_title: "research", task_spec: "multi-step research")
+    ctx = %{session_id: sid, user_id: uid_, task_id: tid}
+    {:ok, a} = SessionProgress.append_tool_pending(ctx, "web_search(btc)")
+    :ok      = SessionProgress.mark_tool_done(a.id)
 
     T.stub_llm_call(fn _model, _msgs, _opts ->
-      {:ok, {:tool_calls, [T.tool_call("task_signal", %{"status" => "TASK_DONE", "result" => "done"})]}}
+      {:ok, "Researching: fetching btc news."}
     end)
 
-    TaskRuntime.start_task(jid)
+    {:ok, text} = TaskRuntime.summarize_and_announce(tid, force: true)
+    assert String.contains?(text, "Researching")
 
-    # Wait up to 3s for the job to reach 'done' state.
-    assert wait_for(fn -> Tasks.get(jid).task_status == "done" end, 3_000)
-
-    job = Tasks.get(jid)
-    assert job.task_result == "done"
-    assert is_integer(job.last_run_completed_at)
+    rows = SessionProgress.fetch_for_task(tid)
+    assert Enum.any?(rows, fn r -> r.kind == "summary" end)
   end
 
-  test "TaskRuntime finalises BLOCKED on signal(BLOCKED)" do
-    user_id = uid(); sid = uid()
-    seed_session(sid, user_id)
-
-    jid = Tasks.insert(user_id: user_id, session_id: sid, task_title: "x",
-                      task_spec: "s", task_status: "pending")
-
-    T.stub_llm_call(fn _model, _msgs, _opts ->
-      {:ok, {:tool_calls, [T.tool_call("task_signal", %{"status" => "TASK_BLOCKED", "reason" => "network error"})]}}
-    end)
-
-    TaskRuntime.start_task(jid)
-    assert wait_for(fn -> Tasks.get(jid).task_status == "blocked" end, 3_000)
-
-    job = Tasks.get(jid)
-    assert job.task_result == "network error"
+  test "summarize_and_announce(force: false) is a no-op when nothing new" do
+    sid = uid(); uid_ = uid()
+    seed_session(sid, uid_)
+    tid = Tasks.insert(user_id: uid_, session_id: sid, task_title: "x", task_spec: "s")
+    assert :ok = TaskRuntime.summarize_and_announce(tid, force: false)
   end
 
-  test "TaskRuntime.cancel_task halts a running job" do
-    user_id = uid(); sid = uid()
-    seed_session(sid, user_id)
-
-    jid = Tasks.insert(user_id: user_id, session_id: sid, task_title: "x",
-                      task_spec: "s", task_status: "pending")
-
-    # Make the stub block forever so we can cancel mid-run.
-    T.stub_llm_call(fn _model, _msgs, _opts ->
-      Process.sleep(:timer.seconds(30))
-      {:ok, "never"}
-    end)
-
-    TaskRuntime.start_task(jid)
-    Process.sleep(100)
-    :ok = TaskRuntime.cancel_task(jid)
-
-    assert wait_for(fn -> Tasks.get(jid).task_status == "cancelled" end, 3_000)
-  end
-
-  # ─── Progress summarizer ─────────────────────────────────────────────────
-
-  test "summarize_and_announce: delta-only, advances cursor, appends session message" do
-    user_id = uid(); sid = uid()
-    seed_session(sid, user_id)
-    jid = Tasks.insert(user_id: user_id, session_id: sid, task_title: "research",
-                      task_spec: "run multi-step research", task_status: "running")
-
-    # Seed a batch of worker_status rows.
-    WorkerStatus.append(jid, "w1", "tool_call", "web_search(btc price)")
-    WorkerStatus.append(jid, "w1", "tool_result", "Found 3 results")
-    WorkerStatus.append(jid, "w1", "tool_call", "web_fetch(nytimes.com)")
-
-    T.stub_llm_call(fn _model, _msgs, _opts ->
-      {:ok, "Searching the web and fetching articles — in progress."}
-    end)
-
-    {:ok, text} = TaskRuntime.summarize_and_announce(jid, force: true)
-    assert String.contains?(text, "in progress")
-
-    # Cursor advanced past the 3 input rows.
-    job = Tasks.get(jid)
-    assert job.last_summarized_status_id > 0
-
-    # progress_summary row saved.
-    all = WorkerStatus.fetch_since(jid, 0)
-    assert Enum.any?(all, fn r -> r.kind == "progress_summary" end)
-  end
-
-  test "summarize_and_announce(force: false): no-op when no new rows" do
-    user_id = uid(); sid = uid()
-    seed_session(sid, user_id)
-    jid = Tasks.insert(user_id: user_id, session_id: sid, task_title: "x",
-                      task_spec: "s", task_status: "running")
-    # No worker_status rows at all.
-    assert :ok = TaskRuntime.summarize_and_announce(jid, force: false)
-  end
-
-  test "summarize_and_announce(force: true): canned message when no new rows" do
-    user_id = uid(); sid = uid()
-    seed_session(sid, user_id)
-    jid = Tasks.insert(user_id: user_id, session_id: sid, task_title: "quiet",
-                      task_spec: "s", task_status: "running")
-
-    {:ok, text} = TaskRuntime.summarize_and_announce(jid, force: true)
-    assert String.contains?(text, "No new activity")
-  end
-
-  test "summarize_and_announce: excludes prior progress_summary rows from next summary input" do
-    user_id = uid(); sid = uid()
-    seed_session(sid, user_id)
-    jid = Tasks.insert(user_id: user_id, session_id: sid, task_title: "x",
-                      task_spec: "s", task_status: "running")
-
-    WorkerStatus.append(jid, "w1", "tool_call", "step 1")
-    {:ok, counter} = Agent.start_link(fn -> 0 end)
-    test_pid = self()
-
-    T.stub_llm_call(fn _model, msgs, _opts ->
-      n = Agent.get_and_update(counter, fn n -> {n, n + 1} end)
-      send(test_pid, {:summarize_call, n, msgs})
-      {:ok, "Summary #{n}."}
-    end)
-
-    TaskRuntime.summarize_and_announce(jid, force: true)
-    WorkerStatus.append(jid, "w1", "tool_call", "step 2")
-    TaskRuntime.summarize_and_announce(jid, force: true)
-
-    # Second call should NOT have the prior summary in its input.
-    assert_received {:summarize_call, 1, msgs}
-    prompt = msgs |> List.last() |> Map.get(:content)
-    refute String.contains?(prompt, "Summary 0")
-    refute String.contains?(prompt, "progress_summary")
-    assert String.contains?(prompt, "step 2")
-  end
-
-  test "summarize_and_announce: per-job mutex prevents concurrent runs" do
-    user_id = uid(); sid = uid()
-    seed_session(sid, user_id)
-    jid = Tasks.insert(user_id: user_id, session_id: sid, task_title: "x",
-                      task_spec: "s", task_status: "running")
-
-    WorkerStatus.append(jid, "w1", "tool_call", "step 1")
-
-    # Stub LLM to block; we'll trigger two concurrent summaries to force the
-    # mutex path. First one holds the lock; second must see {:skipped, _}.
-    {:ok, started_pid} = Agent.start_link(fn -> 0 end)
-    test_pid = self()
-
-    T.stub_llm_call(fn _model, _msgs, _opts ->
-      Agent.update(started_pid, &(&1 + 1))
-      send(test_pid, :summary_started)
-      Process.sleep(200)
-      {:ok, "Progress summary."}
-    end)
-
-    # Fire the first in a Task — it will acquire the lock and sleep.
-    spawn_link(fn -> TaskRuntime.summarize_and_announce(jid, force: true) end)
-
-    # Wait for the first to enter the LLM call (lock held).
-    assert_receive :summary_started, 1_000
-
-    # Second call must hit the mutex and return {:skipped, _}.
-    assert {:skipped, text} = TaskRuntime.summarize_and_announce(jid, force: true)
-    assert String.contains?(text, "being prepared")
-
-    # Poller (force=false) just gets :ok no-op when locked.
-    assert :ok = TaskRuntime.summarize_and_announce(jid, force: false)
-
-    # Only the first invocation triggered the LLM.
-    assert Agent.get(started_pid, & &1) == 1
-  end
-
-  # ─── helpers ─────────────────────────────────────────────────────────────
-
-  defp wait_for(fun, timeout_ms) do
-    deadline = System.monotonic_time(:millisecond) + timeout_ms
-    wait_for_loop(fun, deadline)
-  end
-
-  defp wait_for_loop(fun, deadline) do
-    cond do
-      fun.() -> true
-      System.monotonic_time(:millisecond) >= deadline -> false
-      true ->
-        Process.sleep(50)
-        wait_for_loop(fun, deadline)
-    end
+  test "summarize_and_announce(force: true) emits canned message when nothing new" do
+    sid = uid(); uid_ = uid()
+    seed_session(sid, uid_)
+    tid = Tasks.insert(user_id: uid_, session_id: sid, task_title: "quiet", task_spec: "s")
+    {:ok, text} = TaskRuntime.summarize_and_announce(tid, force: true)
+    assert String.contains?(text, "No new activity") or String.contains?(text, "Không có")
   end
 end

@@ -52,13 +52,12 @@ defmodule Dmhai.Constants do
   # ── Filesystem layout for user assets ────────────────────────────────────
   #
   #   /data/user_assets/<email>/<session_id>/
-  #     ├── data/                           ← user uploads
-  #     ├── assistant/tasks/<task_id>/      ← worker/resolver scratch (assistant-origin)
-  #     └── confidant/tasks/<task_id>/      ← confidant-origin scratch
+  #     ├── data/       ← user uploads (photos, docs, video frames)
+  #     └── workspace/  ← assistant task outputs (web fetches, temp files, etc.)
   #
-  # `origin` reflects the session's mode; `pipeline` reflects the execution
-  # path (assistant=worker, confidant=resolver). Filesystem is keyed by
-  # `origin`, not `pipeline`.
+  # One data/ and one workspace/ per session — shared across all tasks in the
+  # session (not per-task). Confidant sessions don't use workspace/ (Confidant
+  # is sync, no tasks run).
 
   @doc """
   Make a filesystem-safe slug (alphanumerics, dash, underscore only).
@@ -82,17 +81,9 @@ defmodule Dmhai.Constants do
     Path.join(session_root(email, session_id), "data")
   end
 
-  @doc "Root directory for all tasks belonging to a given origin within a session."
-  @spec session_origin_root(String.t(), String.t(), String.t()) :: String.t()
-  def session_origin_root(email, session_id, origin)
-      when origin in ["assistant", "confidant"] do
-    Path.join([session_root(email, session_id), origin, "tasks"])
-  end
-
-  @doc "Workspace directory for a specific task (worker scratch: web fetches, temp files, etc.)."
-  @spec task_workspace_dir(String.t(), String.t(), String.t(), String.t()) :: String.t()
-  def task_workspace_dir(email, session_id, origin, task_id)
-      when origin in ["assistant", "confidant"] do
-    Path.join(session_origin_root(email, session_id, origin), sanitize(task_id))
+  @doc "Workspace directory for a session — shared across all tasks in the session."
+  @spec session_workspace_dir(String.t(), String.t()) :: String.t()
+  def session_workspace_dir(email, session_id) do
+    Path.join(session_root(email, session_id), "workspace")
   end
 end

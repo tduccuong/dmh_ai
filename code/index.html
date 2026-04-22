@@ -42,6 +42,13 @@
         </div>
         <button class="new-session-btn" id="new-session-btn">+ New Session</button>
         <div class="sessions-list" id="sessions-list"></div>
+        <div class="task-list-section" id="task-list-section" style="display:none;">
+            <div class="task-list-header">
+                <span class="task-list-title">Tasks</span>
+                <span class="task-count-badge" id="task-count-badge" style="display:none;"></span>
+            </div>
+            <div class="task-list" id="task-list"></div>
+        </div>
         <div class="endpoint-section">
             <button class="sidebar-settings-btn" id="sidebar-settings-btn">
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
@@ -274,6 +281,7 @@
 <script src="/js/manager-app.js" defer></script>
 <script src="/js/manager-chat.js" defer></script>
 <script src="/js/manager-search.js" defer></script>
+<script src="/js/manager-tasks.js" defer></script>
 <script>if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');</script>
     <div class="settings-overlay" id="settings-overlay">
         <div class="settings-modal">

@@ -1,15 +1,15 @@
-# Tests for Dmhai.I18n + language propagation through the job/worker pipeline.
+# Tests for Dmhai.I18n translation coverage + language propagation.
 
 defmodule Itgr.I18n do
   use ExUnit.Case, async: true
 
   alias Dmhai.I18n
-  alias Dmhai.Agent.{Tasks, Worker, TaskRuntime, WorkerStatus}
+  alias Dmhai.Agent.{SessionProgress, Tasks, TaskRuntime}
   import Ecto.Adapters.SQL, only: [query!: 3]
 
   defp uid, do: T.uid()
 
-  # ─── I18n dictionary coverage ────────────────────────────────────────────
+  # ─── I18n dictionary coverage ──────────────────────────────────────────
 
   test "every shipped locale has a translation for every key" do
     missing =
@@ -22,25 +22,25 @@ defmodule Itgr.I18n do
   end
 
   test "unknown language falls back to English source" do
-    assert I18n.t("blocked_label", "xx", %{reason: "r"}) ==
-             I18n.t("blocked_label", "en", %{reason: "r"})
+    assert I18n.t("llm_error", "xx", %{reason: "r"}) ==
+             I18n.t("llm_error", "en", %{reason: "r"})
   end
 
   test "nil/empty language falls back to English" do
-    assert I18n.t("no_such_task", nil) == I18n.t("no_such_task", "en")
-    assert I18n.t("no_such_task", "")  == I18n.t("no_such_task", "en")
+    assert I18n.t("llm_empty_response", nil) == I18n.t("llm_empty_response", "en")
+    assert I18n.t("llm_empty_response", "")  == I18n.t("llm_empty_response", "en")
   end
 
   test "interpolation substitutes %{name} placeholders" do
-    assert I18n.t("blocked_label", "en", %{reason: "DB down"}) == "Blocked: DB down"
-    assert I18n.t("blocked_label", "vi", %{reason: "DB down"}) == "Bị chặn: DB down"
+    assert I18n.t("llm_error", "en", %{reason: "timeout"}) == "LLM error: timeout"
+    assert I18n.t("llm_error", "vi", %{reason: "timeout"}) == "Lỗi LLM: timeout"
   end
 
   test "unknown key returns the key itself" do
     assert I18n.t("nope_not_a_key", "en") == "nope_not_a_key"
   end
 
-  # ─── language propagates into Tasks/Worker ctx ────────────────────────────
+  # ─── language propagates into Tasks row ──────────────────────────────
 
   test "Tasks.insert stores language; Tasks.get reads it back" do
     jid = Tasks.insert(
@@ -56,39 +56,7 @@ defmodule Itgr.I18n do
     assert Tasks.get(jid).language == "en"
   end
 
-  test "Worker.build_system_prompt interpolates the language" do
-    prompt_en = Worker.build_system_prompt("en")
-    prompt_vi = Worker.build_system_prompt("vi")
-
-    assert String.contains?(prompt_en, "user's language is \"en\"")
-    assert String.contains?(prompt_vi, "user's language is \"vi\"")
-  end
-
-  test "worker system prompt reflects ctx.language" do
-    user_id = uid(); sid = uid()
-    jid = Tasks.insert(user_id: user_id, session_id: sid,
-                      task_title: "x", task_spec: "task",
-                      language: "ja", task_status: "running")
-
-    ctx = %{
-      user_id: user_id, session_id: sid,
-      worker_id: uid(), task_id: jid,
-      language: "ja", agent_pid: self()
-    }
-
-    test_pid = self()
-    T.stub_llm_call(fn _model, msgs, _opts ->
-      [%{role: "system", content: sys} | _] = msgs
-      send(test_pid, {:saw_prompt, sys})
-      {:ok, {:tool_calls, [T.tool_call("task_signal", %{"status" => "TASK_DONE", "result" => "done"})]}}
-    end)
-
-    Worker.run("task in japanese", ctx)
-    assert_receive {:saw_prompt, sys}
-    assert String.contains?(sys, "user's language is \"ja\"")
-  end
-
-  # ─── language propagates into summarizer prompt ──────────────────────────
+  # ─── language propagates into on-demand summariser prompt ────────────
 
   test "summarize_and_announce prompt includes language directive" do
     user_id = uid(); sid = uid()
@@ -96,8 +64,10 @@ defmodule Itgr.I18n do
 
     jid = Tasks.insert(user_id: user_id, session_id: sid,
                       task_title: "daily report", task_spec: "s",
-                      language: "es", task_status: "running")
-    WorkerStatus.append(jid, "w1", "tool_call", "web_search(btc)")
+                      language: "es")
+    ctx = %{session_id: sid, user_id: user_id, task_id: jid}
+    {:ok, row} = SessionProgress.append_tool_pending(ctx, "web_search(btc)")
+    SessionProgress.mark_tool_done(row.id)
 
     test_pid = self()
     T.stub_llm_call(fn _model, msgs, _opts ->
@@ -111,45 +81,15 @@ defmodule Itgr.I18n do
     assert String.contains?(body, "\"es\"")
   end
 
-  # ─── emit_final_message uses localized labels ────────────────────────────
-
-  test "TaskRuntime completion message renders in the job's language (via I18n)" do
-    user_id = uid(); sid = uid()
-    seed_session(sid, user_id)
-
-    jid = Tasks.insert(user_id: user_id, session_id: sid,
-                      task_title: "cuenta", task_spec: "s",
-                      language: "es", task_status: "pending")
-
-    T.stub_llm_call(fn _model, _msgs, _opts ->
-      {:ok, {:tool_calls, [T.tool_call("task_signal", %{"status" => "TASK_BLOCKED", "reason" => "sin internet"})]}}
-    end)
-
-    TaskRuntime.start_task(jid)
-
-    deadline = System.monotonic_time(:millisecond) + 3_000
-    wait_until_status(jid, "blocked", deadline)
-
-    # Check the session message body uses the Spanish label.
-    body = last_assistant_message(sid, user_id)
-    assert String.contains?(body, "Bloqueado:") or String.contains?(body, "Bloqueado :")
-  end
-
-  # ─── helpers ─────────────────────────────────────────────────────────────
+  # ─── helpers ─────────────────────────────────────────────────────────
 
   defp translation_for(key, lang) do
-    # Access @messages via t/2; if a key is missing for a lang, t falls back to "en".
-    # Detect missing by comparing: if lang != "en" and the translation equals the
-    # English source, we infer the lang is missing. For shipped langs that should
-    # match English (symbols only, e.g. "notify_done"), allow equality.
     en = I18n.t(key, "en", %{reason: "R", title: "T", count: 1, text: "X",
                               max: 1, id: "I", status: "S", result: "R"})
     got = I18n.t(key, lang, %{reason: "R", title: "T", count: 1, text: "X",
                                max: 1, id: "I", status: "S", result: "R"})
-    # For symbol-only keys the translation can equal English — treat as present
-    # if either it differs OR both are the English source intentionally.
     cond do
-      got == en -> got  # considered "present" (caller counts `nil` as missing)
+      got == en -> got
       is_binary(got) -> got
       true -> nil
     end
@@ -159,28 +99,6 @@ defmodule Itgr.I18n do
     now = System.os_time(:millisecond)
     query!(Dmhai.Repo,
       "INSERT OR IGNORE INTO sessions (id, user_id, mode, messages, created_at, updated_at) VALUES (?,?,?,?,?,?)",
-      [sid, user_id, "confidant", "[]", now, now])
-  end
-
-  defp wait_until_status(jid, expected, deadline) do
-    if Tasks.get(jid).task_status == expected do
-      :ok
-    else
-      if System.monotonic_time(:millisecond) >= deadline do
-        flunk("timed out waiting for job #{jid} to reach #{expected}")
-      else
-        Process.sleep(50)
-        wait_until_status(jid, expected, deadline)
-      end
-    end
-  end
-
-  defp last_assistant_message(sid, user_id) do
-    r = query!(Dmhai.Repo, "SELECT messages FROM sessions WHERE id=? AND user_id=?",
-                [sid, user_id])
-    [[msgs_json]] = r.rows
-    msgs = Jason.decode!(msgs_json || "[]")
-    last = msgs |> Enum.reverse() |> Enum.find(fn m -> m["role"] == "assistant" end)
-    last && last["content"] || ""
+      [sid, user_id, "assistant", "[]", now, now])
   end
 end

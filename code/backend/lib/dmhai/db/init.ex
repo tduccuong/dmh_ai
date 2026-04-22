@@ -28,6 +28,8 @@ defmodule Dmhai.DB.Init do
       context TEXT,
       user_id TEXT DEFAULT '',
       mode TEXT DEFAULT 'confidant',
+      stream_buffer TEXT,                   -- partial final-answer tokens being streamed from the LLM; NULL when idle
+      stream_buffer_ts INTEGER,             -- last stream_buffer update ts (ms); used by FE polling to detect change
       created_at INTEGER,
       updated_at INTEGER DEFAULT 0
     )
@@ -107,21 +109,6 @@ defmodule Dmhai.DB.Init do
     query!(Repo, "CREATE UNIQUE INDEX IF NOT EXISTS idx_video_descriptions_name ON video_descriptions (session_id, name)")
 
     query!(Repo, """
-    CREATE TABLE IF NOT EXISTS master_buffer (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      session_id TEXT NOT NULL,
-      user_id TEXT NOT NULL,
-      worker_id TEXT,
-      content TEXT NOT NULL,
-      summary TEXT,
-      consumed INTEGER DEFAULT 0,
-      created_at INTEGER NOT NULL
-    )
-    """)
-
-    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_master_buffer_session ON master_buffer (session_id, consumed, created_at)")
-
-    query!(Repo, """
     CREATE TABLE IF NOT EXISTS session_token_stats (
       session_id TEXT PRIMARY KEY,
       user_id TEXT,
@@ -155,39 +142,52 @@ defmodule Dmhai.DB.Init do
       task_title TEXT,
       task_spec TEXT NOT NULL,
       task_status TEXT NOT NULL DEFAULT 'pending',
+                                               -- 'pending' | 'ongoing' | 'paused'
+                                               -- | 'done' | 'cancelled'
       task_result TEXT,
+      time_to_pickup INTEGER,                  -- unix ms; when to next pick up this task
+                                               -- (periodic next cycle; one_off future-dated)
       language TEXT NOT NULL DEFAULT 'en',
-      pipeline TEXT NOT NULL DEFAULT 'assistant',
-      origin TEXT NOT NULL DEFAULT 'assistant',
-      last_reported_status_id INTEGER DEFAULT 0,
-      last_summarized_status_id INTEGER DEFAULT 0,
-      last_summarized_at INTEGER DEFAULT 0,
-      current_worker_id TEXT,
       created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      last_run_started_at INTEGER,
-      last_run_completed_at INTEGER,
-      next_run_at INTEGER
+      updated_at INTEGER NOT NULL
     )
     """)
 
     query!(Repo, "CREATE INDEX IF NOT EXISTS idx_tasks_session ON tasks (session_id, task_status)")
     query!(Repo, "CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks (user_id, task_status)")
-    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_tasks_next_run ON tasks (task_status, next_run_at)")
+    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_tasks_pickup ON tasks (task_status, time_to_pickup)")
 
     query!(Repo, """
-    CREATE TABLE IF NOT EXISTS worker_status (
+    CREATE TABLE IF NOT EXISTS session_progress (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      task_id TEXT NOT NULL,
-      worker_id TEXT NOT NULL,
-      kind TEXT NOT NULL,                     -- 'thinking' | 'tool_call' | 'tool_result' | 'final' | 'error'
-      content TEXT,
-      signal_status TEXT,                     -- 'TASK_DONE' | 'TASK_BLOCKED' (only for kind='final')
+      session_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      task_id TEXT,                           -- nullable: direct-response turns have no task
+      kind TEXT NOT NULL,                     -- 'tool' | 'thinking' | 'summary'
+      status TEXT,                            -- 'pending' | 'done' (tool only — mutated in place)
+      label TEXT,                             -- human-readable one-liner for FE rendering
       ts INTEGER NOT NULL
     )
     """)
 
-    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_worker_status_task ON worker_status (task_id, id)")
+    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_session_progress_task ON session_progress (task_id, id)")
+    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_session_progress_session ON session_progress (session_id, ts)")
+
+    query!(Repo, """
+    CREATE TABLE IF NOT EXISTS user_credentials (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      target TEXT NOT NULL,                  -- free-form label: "pi@192.168.178.22", "github-api", etc.
+      cred_type TEXT NOT NULL,               -- 'ssh_key' | 'user_pass' | 'api_key' | 'token' | 'other'
+      payload TEXT NOT NULL,                 -- plaintext JSON blob: {user, password} | {private_key} | {token} | ...
+      notes TEXT,                            -- free-form notes from the assistant (why/when/how to use)
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      UNIQUE(user_id, target)
+    )
+    """)
+
+    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_user_credentials_user ON user_credentials (user_id)")
   end
 
   defp seed_admin do
