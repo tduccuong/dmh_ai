@@ -203,13 +203,14 @@ UIManager.renderSessions = async function() {
                 return self.currentSession && r.id === self.currentSession.id;
             });
             if (!currentStillValid) {
-                self.currentSession = remaining.length > 0
+                var next = remaining.length > 0
                     ? remaining[0]
                     : await SessionStore.createSession(t('newChat'), currentMode);
-                await SessionStore.setCurrentSessionId(self.currentSession.id);
-                self.renderChat();
+                await self.renderSessions();
+                await self.switchSession(next.id);
+            } else {
+                await self.renderSessions();
             }
-            await self.renderSessions();
         });
 
         if (statsBtn) actions.appendChild(statsBtn);

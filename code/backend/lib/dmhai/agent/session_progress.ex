@@ -96,6 +96,18 @@ defmodule Dmhai.Agent.SessionProgress do
     :ok
   end
 
+  @doc """
+  Remove a progress row. Used when a tool call returned `{:error, ...}`
+  (e.g. validation guard, Police rejection) so the rejected attempt
+  doesn't leave a ghost row in the chat timeline — the model's retry
+  produces a fresh row that will end up as the only visible entry.
+  """
+  @spec delete(integer()) :: :ok
+  def delete(id) when is_integer(id) do
+    query!(Repo, "DELETE FROM session_progress WHERE id=?", [id])
+    :ok
+  end
+
   @doc "Convenience: write a 'thinking' row."
   @spec append_thinking(map(), String.t()) :: {:ok, integer()}
   def append_thinking(ctx, label), do: append(ctx, "thinking", label)

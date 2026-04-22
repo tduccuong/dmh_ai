@@ -361,7 +361,7 @@ defmodule Dmhai.Handlers.Proxy do
       {:ok, body, conn} = read_body(conn)
       d = Jason.decode!(body || "{}")
 
-      allowed_keys = ~w(accounts cloudModels ollamaEndpoint compactTurns keepRecent condenseFacts modelLabels openaiKey googleKey anthropicKey confidantModel assistantModel workerModel webSearchModel imageDescriberModel videoDescriberModel profileExtractorModel maxToolResultChars workerContextN workerContextM logTrace)
+      allowed_keys = ~w(accounts cloudModels ollamaEndpoint compactTurns keepRecent condenseFacts modelLabels openaiKey googleKey anthropicKey confidantModel assistantModel workerModel webSearchModel imageDescriberModel videoDescriberModel profileExtractorModel maxToolResultChars logTrace)
       allowed = Map.take(d, allowed_keys)
 
       query!(Repo, "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",

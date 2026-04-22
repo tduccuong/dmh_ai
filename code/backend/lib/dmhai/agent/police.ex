@@ -14,7 +14,7 @@ defmodule Dmhai.Agent.Police do
 
   What remains: file-system safety.
 
-    - Reads via `read_file` / `list_dir` / `parse_document` /
+    - Reads via `read_file` / `list_dir` /
       `extract_content` are permitted anywhere OUTSIDE `/data/` (system
       paths like `/usr/share`) or within the caller's own `session_root`
       (its workspace + data dir).
@@ -32,7 +32,7 @@ defmodule Dmhai.Agent.Police do
 
   require Logger
 
-  @read_path_tools ["read_file", "list_dir", "parse_document", "extract_content"]
+  @read_path_tools ["read_file", "list_dir", "extract_content"]
   @write_path_tools ["write_file"]
   @shell_tools ["run_script", "spawn_task"]
 
@@ -48,7 +48,6 @@ defmodule Dmhai.Agent.Police do
     "extract_content",
     "read_file",
     "write_file",
-    "parse_document",
     "spawn_task"
   ]
 

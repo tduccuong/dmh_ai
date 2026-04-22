@@ -176,9 +176,22 @@ defmodule Dmhai.Web.Search do
         end)
       end)
 
+      # Use yield_many + shutdown instead of await_many so a single
+      # stalled fetch (CMP/rate-limit/Jina stall) doesn't exit the whole
+      # tool call. We keep whatever completed in time and kill the rest.
       pages =
         fetch_tasks
-        |> Task.await_many(timeout)
+        |> Task.yield_many(timeout)
+        |> Enum.map(fn {task, res} ->
+          case res do
+            {:ok, value} ->
+              value
+            _ ->
+              _ = Task.shutdown(task, :brutal_kill)
+              nil
+          end
+        end)
+        |> Enum.reject(&is_nil/1)
         |> Enum.reduce({[], 0}, fn {url, title, text}, {acc, used} ->
           remaining = budget - used
           if remaining <= 0 do

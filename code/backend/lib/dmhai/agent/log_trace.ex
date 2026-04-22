@@ -13,11 +13,13 @@ defmodule Dmhai.Agent.LogTrace do
       /data/system_logs/llm_trace.log
 
   Each entry is tagged with:
-    [Origin: <origin>]  — top-level context: confidant, assistant, worker, system, search
+    [Origin: <origin>]  — top-level context: confidant, assistant, system, search
     [Path:   <path>]    — module.function of the call site
-    [Role:   <role>]    — what this LLM call does: master, worker, summarizer, compactor, etc.
+    [Role:   <role>]    — what this LLM call does: assistant, confidant, ImageDescriber,
+                          VideoDescriber, Compactor, Summarizer, WebSearch, ProfileExtractor,
+                          Namer, etc.
     [Model:  <model>]   — provider::pool::model string
-    [Phase:  <phase>]   — plan / execute:stepN:iterN / classify / compact / detect / describe / etc.
+    [Phase:  <phase>]   — turn / classify / compact / detect / describe / etc.
 
   Callers pass a `trace: %{origin:, path:, role:, phase:}` keyword to LLM.call/stream.
   The model field is filled in by the LLM module.

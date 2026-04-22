@@ -18,7 +18,6 @@ defmodule Dmhai.Tools.Registry do
     Dmhai.Tools.ReadFile,
     Dmhai.Tools.WriteFile,
     Dmhai.Tools.Calculator,
-    Dmhai.Tools.ParseDocument,
     Dmhai.Tools.ExtractContent,
     Dmhai.Tools.SpawnTask,
     Dmhai.Tools.SaveCredential,

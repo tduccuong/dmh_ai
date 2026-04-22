@@ -32,7 +32,6 @@ defmodule Dmhai.Agent.ProgressLabel do
     "read_file"         => "path",
     "write_file"        => "path",
     "list_dir"          => "path",
-    "parse_document"    => "path",
     "extract_content"   => "path",
     "create_task"       => "task_title",
     "fetch_task"        => "task_id",

@@ -5,12 +5,33 @@ defmodule Itgr.ContextEngine do
   use ExUnit.Case, async: false
 
   alias Dmhai.Agent.ContextEngine
+  alias Dmhai.Repo
+  import Ecto.Adapters.SQL, only: [query!: 3]
 
   defp session(opts) do
     %{
       "messages" => Keyword.get(opts, :messages, []),
       "context"  => Keyword.get(opts, :context, nil)
     }
+  end
+
+  defp insert_session(session_id, user_id, messages, ctx \\ nil) do
+    now = System.os_time(:millisecond)
+    query!(Repo,
+      "INSERT INTO sessions (id, user_id, mode, messages, context, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
+      [session_id, user_id, "assistant",
+       Jason.encode!(messages),
+       if(ctx, do: Jason.encode!(ctx), else: nil),
+       now, now])
+  end
+
+  defp read_context(session_id) do
+    r = query!(Repo, "SELECT context FROM sessions WHERE id=?", [session_id])
+    case r.rows do
+      [[nil]]        -> nil
+      [[json]]       -> Jason.decode!(json)
+      _              -> nil
+    end
   end
 
   defp user_msg(text),      do: %{"role" => "user",      "content" => text}
@@ -268,8 +289,9 @@ defmodule Itgr.ContextEngine do
   end
 
   test "should_compact? returns true when turn count exceeds the threshold" do
-    # Default threshold is 90. Build 100 messages (50 pairs) to exceed it.
-    msgs = Enum.flat_map(1..50, fn i ->
+    # Default threshold is 50 (master_compact_turn_threshold). Build 60
+    # messages (30 pairs) to exceed it.
+    msgs = Enum.flat_map(1..30, fn i ->
       [user_msg("question #{i} " <> String.duplicate("x", 10)),
        assistant_msg("answer #{i}")]
     end)
@@ -283,5 +305,126 @@ defmodule Itgr.ContextEngine do
     end)
     ctx = %{"summary" => "prior", "summary_up_to_index" => 99}
     refute ContextEngine.should_compact?(session(messages: msgs, context: ctx))
+  end
+
+  test "should_compact? triggers on char budget even when turn count is under threshold" do
+    # A few turns with very long content: 3 pairs × 60k chars of content
+    # blows past the char trigger (0.45 × 64_000 × 4 = 115_200 chars) while
+    # staying far below the 50-turn-message threshold.
+    fat = String.duplicate("x", 30_000)
+    msgs = Enum.flat_map(1..3, fn i -> [user_msg("q#{i} " <> fat), assistant_msg("a#{i} " <> fat)] end)
+    assert ContextEngine.should_compact?(session(messages: msgs))
+  end
+
+  # ─── compact!/3 end-to-end ────────────────────────────────────────────────
+
+  test "compact! persists summary to sessions.context with the correct cutoff" do
+    session_id = T.uid()
+    user_id    = T.uid()
+    # 30 messages; @keep_recent is 20, so indices 0..9 get summarised.
+    msgs = T.conversation(15)
+    insert_session(session_id, user_id, msgs)
+
+    T.stub_llm_call(fn _model, _messages, _opts -> {:ok, "SUMMARY_OK"} end)
+
+    :ok = ContextEngine.compact!(session_id, user_id, %{"messages" => msgs, "context" => nil})
+
+    ctx = read_context(session_id)
+    assert ctx["summary"] == "SUMMARY_OK"
+    # keep_from = max(cutoff + 1, length(msgs) - @keep_recent) = max(0, 30 - 20) = 10
+    # summary_up_to_index = keep_from - 1 = 9
+    assert ctx["summary_up_to_index"] == 9
+  end
+
+  test "compact! is a no-op when there's nothing new since the last cutoff" do
+    session_id = T.uid()
+    user_id    = T.uid()
+    msgs = T.conversation(5)  # 10 messages
+    prior_ctx = %{"summary" => "old summary", "summary_up_to_index" => 99}
+    insert_session(session_id, user_id, msgs, prior_ctx)
+
+    # If the stub fires, we flag it.
+    stub_fired = :counters.new(1, [])
+    T.stub_llm_call(fn _model, _messages, _opts ->
+      :counters.add(stub_fired, 1, 1)
+      {:ok, "SHOULD_NOT_FIRE"}
+    end)
+
+    :ok = ContextEngine.compact!(session_id, user_id, %{"messages" => msgs, "context" => prior_ctx})
+
+    assert :counters.get(stub_fired, 1) == 0
+    # Context unchanged on disk
+    ctx = read_context(session_id)
+    assert ctx["summary"] == "old summary"
+    assert ctx["summary_up_to_index"] == 99
+  end
+
+  test "compact! injects the [Previous summary] exchange when a prior summary exists" do
+    session_id = T.uid()
+    user_id    = T.uid()
+    msgs = T.conversation(15)
+    prior_ctx = %{"summary" => "PRIOR_SUMMARY_TEXT", "summary_up_to_index" => -1}
+    insert_session(session_id, user_id, msgs, prior_ctx)
+
+    captured_messages = :ets.new(:cap_msgs, [:public, :set])
+    T.stub_llm_call(fn _model, messages, _opts ->
+      :ets.insert(captured_messages, {:m, messages})
+      {:ok, "NEW_SUMMARY"}
+    end)
+
+    :ok = ContextEngine.compact!(session_id, user_id, %{"messages" => msgs, "context" => prior_ctx})
+
+    [{:m, m}] = :ets.lookup(captured_messages, :m)
+    # First message should be [Previous summary] — injected before the
+    # messages to summarise.
+    first = hd(m)
+    assert first.role == "user"
+    assert String.starts_with?(first.content, "[Previous summary]")
+    assert String.contains?(first.content, "PRIOR_SUMMARY_TEXT")
+
+    # And the ack follows immediately.
+    second = Enum.at(m, 1)
+    assert second.role == "assistant"
+    assert String.contains?(second.content, "Understood")
+  end
+
+  test "compact! leaves sessions.context untouched when the LLM call fails" do
+    session_id = T.uid()
+    user_id    = T.uid()
+    msgs = T.conversation(15)
+    insert_session(session_id, user_id, msgs)
+
+    T.stub_llm_call(fn _model, _messages, _opts -> {:error, :network_down} end)
+
+    :ok = ContextEngine.compact!(session_id, user_id, %{"messages" => msgs, "context" => nil})
+
+    # Context row not set (nil encoded as NULL).
+    assert read_context(session_id) == nil
+  end
+
+  test "compact! keeps the last @keep_recent messages outside the summary" do
+    session_id = T.uid()
+    user_id    = T.uid()
+    # 50 messages → keep_from = max(0, 50 - 20) = 30 → summary covers indices 0..29.
+    msgs = T.conversation(25)
+    insert_session(session_id, user_id, msgs)
+
+    captured = :ets.new(:cap_count, [:public, :set])
+    T.stub_llm_call(fn _model, messages, _opts ->
+      # Count user/assistant messages in the input that correspond to
+      # summarised turns (exclude the final instruction).
+      content_msgs = length(messages) - 1   # last msg is the instruction
+      :ets.insert(captured, {:n, content_msgs})
+      {:ok, "SUM"}
+    end)
+
+    :ok = ContextEngine.compact!(session_id, user_id, %{"messages" => msgs, "context" => nil})
+
+    ctx = read_context(session_id)
+    assert ctx["summary_up_to_index"] == 29
+
+    # 30 messages summarised; no [Previous summary] prefix this run.
+    [{:n, n}] = :ets.lookup(captured, :n)
+    assert n == 30
   end
 end

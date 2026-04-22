@@ -26,7 +26,9 @@ defmodule Dmhai.Agent.ContextEngine do
 
   # Simple token estimate: chars / 4 ≈ tokens.
   @chars_per_token 4
-  @estimated_context_tokens 8_192     # conservative default (works for all models)
+  # Usable context-window size in tokens — now pulled from AgentSettings
+  # (setting `estimatedContextTokens`, default 64_000) so operators can
+  # tune for the actual model in use without a code change.
 
   # Number of the most-recent messages to leave untouched during compaction
   # so the model always has fresh context.
@@ -305,7 +307,7 @@ defmodule Dmhai.Agent.ContextEngine do
 
     recent_turns = length(recent)
     recent_chars = estimate_chars(recent)
-    token_budget = @estimated_context_tokens * @chars_per_token
+    token_budget = AgentSettings.estimated_context_tokens() * @chars_per_token
 
     recent_turns > AgentSettings.master_compact_turn_threshold() or
       recent_chars > token_budget * AgentSettings.master_compact_fraction()

@@ -14,7 +14,7 @@ defmodule Dmhai.Agent.AgentSettings do
 
   @defaults %{
     "confidantModel"         => "gemini-3-flash-preview:cloud",
-    "assistantModel"         => "nemotron-3-nano:30b-cloud",
+    "assistantModel"         => "gpt-oss:120b-cloud",
     "workerModel"          => "nemotron-3-nano:30b-cloud",
     "compactorModel"       => "gemini-3-flash-preview:cloud",
     "summarizerModel"      => "gemini-3-flash-preview:cloud",
@@ -28,9 +28,21 @@ defmodule Dmhai.Agent.AgentSettings do
 
   @spawn_task_timeout_secs_default 30
   @max_tool_result_chars_default 8_000
-  @master_compact_turn_threshold_default 90
+  @master_compact_turn_threshold_default 50
   @master_compact_fraction_default 0.45
   @max_assistant_tool_rounds_default 50
+
+  # Estimated usable context window (in tokens) of the assistant LLM.
+  # Used by ContextEngine.should_compact? to derive the char-based
+  # compaction trigger. Conservative floor across current cloud models
+  # (gpt-oss 120b ~128k, nemotron ~128k, gemini 1M). Operators can tune
+  # via the `estimatedContextTokens` setting.
+  @estimated_context_tokens_default 64_000
+
+  # Document extraction
+  @min_extracted_text_chars_default 50
+  @ocr_pages_per_chunk_default 8
+  @ocr_page_cap_default 16
 
   # Web / HTTP defaults
   @http_user_agent_default "Mozilla/5.0 (compatible; DMH-AI/1.0)"
@@ -98,6 +110,23 @@ defmodule Dmhai.Agent.AgentSettings do
   @doc "Per-turn safety cap on tool-call roundtrips before the turn aborts with a carry-on message."
   @spec max_assistant_tool_rounds() :: pos_integer()
   def max_assistant_tool_rounds, do: int_setting("maxAssistantToolRounds", @max_assistant_tool_rounds_default)
+
+  @doc "Minimum post-trim char count for an `extract_content` result to count as 'meaningful' (not blank/scanned)."
+  @spec min_extracted_text_chars() :: pos_integer()
+  def min_extracted_text_chars, do: int_setting("minExtractedTextChars", @min_extracted_text_chars_default)
+
+  @doc "How many rendered PDF pages to send per vision-LLM OCR call."
+  @spec ocr_pages_per_chunk() :: pos_integer()
+  def ocr_pages_per_chunk, do: int_setting("ocrPagesPerChunk", @ocr_pages_per_chunk_default)
+
+  @doc "Hard cap on PDF page count for OCR. Above this, extract_content fails with a nudge to split the file."
+  @spec ocr_page_cap() :: pos_integer()
+  def ocr_page_cap, do: int_setting("ocrPageCap", @ocr_page_cap_default)
+
+  @doc "Estimated usable context-window size (in tokens) of the assistant LLM."
+  @spec estimated_context_tokens() :: pos_integer()
+  def estimated_context_tokens,
+    do: int_setting("estimatedContextTokens", @estimated_context_tokens_default)
 
   @doc "HTTP User-Agent string for outbound web requests."
   @spec http_user_agent() :: String.t()

@@ -307,14 +307,142 @@ defmodule Dmhai.Tools.ExtractContent do
 
   # ── documents ──────────────────────────────────────────────────────────────
 
+  # PDF extraction path:
+  #   1. pdftotext -layout → if meaningful text, done.
+  #   2. Else the PDF is scanned / image-only. Skip pandoc (useless for
+  #      PDFs) and go straight to OCR: render each page with pdftoppm,
+  #      chunk by AgentSettings.ocr_pages_per_chunk/0, send each chunk to
+  #      the image-describer vision model, concat results.
+  #   3. If the page count exceeds AgentSettings.ocr_page_cap/0, refuse
+  #      rather than blowing up on a book-length scan.
   defp parse_pdf(path) do
+    pdftotext_output =
+      try do
+        case System.cmd("pdftotext", ["-layout", path, "-"], stderr_to_stdout: true) do
+          {output, 0} -> output
+          _           -> ""
+        end
+      rescue
+        _ -> ""
+      end
+
+    if meaningful?(pdftotext_output) do
+      truncate(pdftotext_output)
+    else
+      Logger.info("[ExtractContent] pdftotext returned non-meaningful output (#{byte_size(pdftotext_output)} bytes) — falling back to OCR")
+      ocr_pdf(path)
+    end
+  end
+
+  defp ocr_pdf(path) do
+    cap = AgentSettings.ocr_page_cap()
+
+    case count_pdf_pages(path) do
+      {:error, reason} ->
+        {:error, "Cannot OCR PDF: #{reason}"}
+
+      {:ok, n} when n > cap ->
+        {:error,
+         "PDF has #{n} pages (>#{cap} OCR cap). OCR skipped — ask the user to split the file " <>
+           "or provide a text-based version."}
+
+      {:ok, n} ->
+        render_and_ocr(path, n)
+    end
+  end
+
+  defp count_pdf_pages(path) do
     try do
-      case System.cmd("pdftotext", ["-layout", path, "-"], stderr_to_stdout: true) do
-        {output, 0} when output != "" -> truncate(output)
-        _                             -> run_pandoc(path)
+      case System.cmd("pdfinfo", [path], stderr_to_stdout: true) do
+        {output, 0} ->
+          case Regex.run(~r/^Pages:\s+(\d+)/m, output) do
+            [_, n_str] ->
+              case Integer.parse(n_str) do
+                {n, _} when n > 0 -> {:ok, n}
+                _                 -> {:error, "pdfinfo returned unparseable page count"}
+              end
+
+            _ ->
+              {:error, "pdfinfo output missing Pages field"}
+          end
+
+        {err, code} ->
+          {:error, "pdfinfo exited #{code}: #{String.slice(err, 0, 200)}"}
       end
     rescue
-      _ -> run_pandoc(path)
+      _ -> {:error, "pdfinfo is not installed"}
+    end
+  end
+
+  defp render_and_ocr(path, n_pages) do
+    dir = "/tmp/dmhai_ocr_#{System.unique_integer([:positive])}"
+    File.mkdir_p!(dir)
+
+    try do
+      case System.cmd(
+             "pdftoppm",
+             ["-r", "200", "-png", path, Path.join(dir, "page")],
+             stderr_to_stdout: true
+           ) do
+        {_, 0} -> :ok
+        {err, code} -> throw({:render_fail, "pdftoppm exited #{code}: #{String.slice(err, 0, 200)}"})
+      end
+
+      frames =
+        1..n_pages
+        |> Enum.map(fn i ->
+          # pdftoppm zero-pads to match digit count of n_pages.
+          width = n_pages |> Integer.digits() |> length()
+          padded = i |> Integer.to_string() |> String.pad_leading(max(width, 1), "0")
+          Path.join(dir, "page-#{padded}.png")
+        end)
+        |> Enum.map(fn p ->
+          case File.read(p) do
+            {:ok, bin} -> {:ok, Base.encode64(bin)}
+            {:error, r} -> throw({:render_fail, "cannot read rendered page #{p}: #{inspect(r)}"})
+          end
+        end)
+        |> Enum.map(fn {:ok, b64} -> b64 end)
+
+      chunk_size = AgentSettings.ocr_pages_per_chunk()
+      chunks     = Enum.chunk_every(frames, chunk_size)
+
+      # Sequential — keeps pressure off the cloud-account pool.
+      {texts, _offset} =
+        Enum.reduce(chunks, {[], 0}, fn chunk, {acc, offset} ->
+          start_page = offset + 1
+          case describe_ocr_chunk(chunk, start_page) do
+            {:ok, text} -> {[text | acc], offset + length(chunk)}
+            {:error, r} -> throw({:ocr_fail, r})
+          end
+        end)
+
+      combined = texts |> Enum.reverse() |> Enum.join("\n\n")
+      truncate(combined)
+    catch
+      {:render_fail, r} -> {:error, "OCR render failed: #{r}"}
+      {:ocr_fail, r}    -> {:error, "OCR vision call failed: #{inspect(r)}"}
+    after
+      File.rm_rf(dir)
+    end
+  end
+
+  defp describe_ocr_chunk(frames, start_page) do
+    prompt =
+      "These are consecutive pages from a scanned PDF, starting at page #{start_page}. " <>
+        "Transcribe every visible character VERBATIM. Prefix each page with a heading " <>
+        "`## Page N` where N is its absolute page number. Preserve line breaks, paragraph " <>
+        "structure, headings, bullets, and tables. Do NOT summarise, translate, or add " <>
+        "commentary — only the exact text on the page."
+
+    messages = [%{role: "user", content: prompt, images: frames}]
+    trace = %{origin: "assistant", path: "ExtractContent.ocr_pdf", role: "OcrPdf", phase: "ocr"}
+
+    case LLM.call(AgentSettings.image_describer_model(), messages, trace: trace) do
+      {:ok, result} when is_binary(result) and result != "" -> {:ok, result}
+      other ->
+        Logger.warning("[ExtractContent] OCR chunk LLM call failed: #{inspect(other)}")
+        {:error, "OCR vision call returned no content"}
     end
   end
 
@@ -323,7 +451,13 @@ defmodule Dmhai.Tools.ExtractContent do
       case System.cmd("pandoc", ["--to=markdown", "--wrap=none", path],
                       stderr_to_stdout: true) do
         {output, 0} ->
-          truncate(output)
+          if meaningful?(output) do
+            truncate(output)
+          else
+            {:error,
+             "pandoc returned no meaningful text from this file. " <>
+               "It may be empty, corrupt, or in an unsupported format."}
+          end
 
         {err, code} ->
           Logger.warning("[ExtractContent] pandoc exited #{code}: #{String.slice(err, 0, 200)}")
@@ -336,15 +470,29 @@ defmodule Dmhai.Tools.ExtractContent do
 
   defp read_text(path) do
     case File.read(path) do
-      {:ok, content} -> truncate(content)
-      {:error, r}    -> {:error, "Cannot read file: #{r}"}
+      {:ok, content} ->
+        if meaningful?(content) do
+          truncate(content)
+        else
+          {:error, "File is empty or contains no readable text."}
+        end
+
+      {:error, r} ->
+        {:error, "Cannot read file: #{r}"}
     end
   end
 
   defp try_pandoc_then_read(path) do
     case run_pandoc(path) do
       {:ok, _} = ok -> ok
-      _             -> read_text(path)
+      _             ->
+        case read_text(path) do
+          {:ok, _} = ok -> ok
+          {:error, _}   ->
+            {:error,
+             "Cannot extract text from this file format (ext=#{Path.extname(path)}). " <>
+               "Pandoc failed and raw read returned no meaningful content."}
+        end
     end
   end
 
@@ -355,6 +503,20 @@ defmodule Dmhai.Tools.ExtractContent do
       {:ok, text}
     end
   end
+
+  # "Meaningful" == at least AgentSettings.min_extracted_text_chars/0 of non-
+  # whitespace, non-form-feed content after trim. Guards against extractors
+  # that succeed (exit 0) but return only `\n\x0c\n` — the scanned-PDF
+  # failure mode that triggered this whole fix.
+  defp meaningful?(text) when is_binary(text) do
+    stripped =
+      text
+      |> String.replace(~r/[\s\f\x0c]+/u, "")
+      |> String.trim()
+
+    String.length(stripped) >= AgentSettings.min_extracted_text_chars()
+  end
+  defp meaningful?(_), do: false
 
   # ── helpers ────────────────────────────────────────────────────────────────
 

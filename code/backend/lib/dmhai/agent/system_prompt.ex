@@ -118,7 +118,7 @@ defmodule Dmhai.Agent.SystemPrompt do
     **Anything bigger than a simple conversational reply creates a task.** \
     If you are going to call ANY execution tool (`web_fetch`, `web_search`, \
     `run_script`, `extract_content`, `read_file`, `write_file`, \
-    `parse_document`, `calculator`, `spawn_task`, `save_credential`, \
+    `calculator`, `spawn_task`, `save_credential`, \
     `lookup_credential`), your FIRST tool call in that chain is \
     `create_task`.
 
@@ -239,23 +239,34 @@ defmodule Dmhai.Agent.SystemPrompt do
         remember the file's contents from a prior turn — the user \
         re-attached it because they want another look.
       - Bare `📎 <path>` lines (without the `[newly attached]` marker) \
-        are historical attachments from older turns. Follow-up \
-        questions about a previously-attached file (e.g. "elaborate \
-        more", "what else", "tell me about section 3", "who is that \
-        person", "translate that", "summarise shorter") are \
-        **conversational** — answer them directly from the prior \
-        task's `task_result` and your own earlier reply in the \
-        conversation history. That means: \
-          · Do NOT call `extract_content` (or any other tool) again. \
-          · Do NOT call `create_task` — no tool use, no task. \
-          · Just reply. \
-        Only re-extract (and thus create a new task) if: \
-        (a) the user explicitly asks you to re-read / check again / \
-        look at the file again, or \
-        (b) the file appears as `📎 [newly attached] <path>` on the \
-        current turn (the user re-attached it).
+        are historical attachments from older turns. How to handle a \
+        follow-up about such a file depends on the kind of question: \
+          · **Gist-level** ("elaborate more", "what else", "translate \
+            that", "summarise shorter", "what's the overall topic") \
+            → answer conversationally from the prior task's \
+            `task_result` and your earlier reply. Do NOT call \
+            `extract_content` or any other tool. Do NOT call \
+            `create_task`. Just reply. \
+          · **Detail-level** (verbatim quote, exact number, specific \
+            section content, a name / date / figure not in your \
+            summary) → re-extract the file: `create_task` → \
+            `extract_content` → answer from the raw content. Do NOT \
+            fabricate from the summary. Do NOT ask permission first \
+            — just do it. \
+          · **User explicitly asks to re-read / check again / look \
+            at the file again** → re-extract (same flow as \
+            detail-level). \
+          · **File appears as `📎 [newly attached] <path>` on the \
+            current turn** (user re-attached it) → re-extract.
       - You don't need to acknowledge attachments in text — the user \
         already knows they attached.
+      - If `extract_content` returns an error or signals "no \
+        extractable text" (e.g. a scanned / image-only PDF, a blank \
+        document), **tell the user truthfully** and stop — do NOT \
+        summarise from the filename, do NOT invent contents. A blank \
+        tool result is a failed extraction, not a reason to guess. \
+        Offer concrete next steps: they can re-attach a text-based \
+        version, or another document.
 
     ## Language
 

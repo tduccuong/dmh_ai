@@ -781,12 +781,20 @@ defmodule Dmhai.Agent.UserAgent do
         args_log = args |> Jason.encode!() |> String.slice(0, 600)
         Dmhai.SysLog.log("[ASSISTANT] tool=#{name} args=#{args_log}")
         exec_result = Dmhai.Tools.Registry.execute(name, args, ctx)
-        Dmhai.Agent.SessionProgress.mark_tool_done(row.id)
 
+        # Flip to 'done' on success, delete the pending row on error so
+        # rejected attempts don't leave ghost rows in the chat timeline
+        # — the model will retry and a fresh row will be written for the
+        # eventual successful call.
         content =
           case exec_result do
-            {:ok, result}    -> format_tool_result(result)
-            {:error, reason} -> "Error: #{reason}"
+            {:ok, result} ->
+              Dmhai.Agent.SessionProgress.mark_tool_done(row.id)
+              format_tool_result(result)
+
+            {:error, reason} ->
+              Dmhai.Agent.SessionProgress.delete(row.id)
+              "Error: #{reason}"
           end
 
         %{role: "tool", content: content, tool_call_id: tool_call_id}

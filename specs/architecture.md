@@ -127,7 +127,7 @@ Dmhai.Agent.*     — agent runtime: UserAgent, TaskRuntime (periodic
 
 Dmhai.Tools.*     — assistant-callable tools: RunScript, ReadFile, WriteFile,
                     WebFetch, WebSearch, Calculator,
-                    ParseDocument, ExtractContent, SpawnTask,
+                    ExtractContent, SpawnTask,
                     CreateTask, UpdateTask, Registry
 
 Dmhai.Web.*       — web-fetch subsystem (see §Web Fetch):
@@ -440,11 +440,16 @@ handle_confidant_chat(conn, user, body, session_id)
            if files:  file content appended to message
 ```
 
-**Compaction** triggers when `recent_turns > masterCompactTurnThreshold (90)` OR
-`recent_chars > masterCompactFraction (45%) of context budget`. `compact!` calls the
+**Compaction** triggers when `recent_turns > masterCompactTurnThreshold (50)` OR
+`recent_chars > masterCompactFraction (45%) of (estimatedContextTokens × 4)`.
+The char-budget side derives from `AgentSettings.estimated_context_tokens()`
+(default `64_000`, tunable so operators can match the actual model's window;
+multiply by ~4 chars/token to get the char budget). `compact!` calls the
 compactor LLM (`AgentSettings.compactor_model()`, NOT hardcoded) and writes
-`{"summary", "summary_up_to_index"}` to `sessions.context`. Old messages are retained in
-the DB and remain available for keyword retrieval.
+`{"summary", "summary_up_to_index"}` to `sessions.context`. The most recent
+`@keep_recent = 20` messages are always left outside the summary so fresh
+context is preserved. Old messages are retained in the DB and remain
+available for keyword retrieval.
 
 ### Media Pipeline
 
@@ -856,9 +861,42 @@ pdftotext/pandoc for docs) runs at most once per session per file.
 Even if the model wrongly creates a re-extract task, the dedup short-
 circuits the expensive work.
 
+**PDF extraction chain with OCR fallback** — `extract_content` handles
+PDFs in this order:
+
+1. `pdftotext -layout` → test result against `meaningful?/1` (trimmed
+   length ≥ `AgentSettings.min_extracted_text_chars()`, default 50).
+2. If meaningful → return. Otherwise the PDF is scanned / image-only;
+   skip pandoc (doesn't help PDFs) and enter the OCR path.
+3. `pdfinfo` → page count `n`. If `n > AgentSettings.ocr_page_cap()`
+   (default 16), return an error telling the model to ask the user to
+   split the file.
+4. `pdftoppm -r 200 -png` renders all `n` pages into a temp dir.
+5. Pages are chunked by `AgentSettings.ocr_pages_per_chunk()` (default
+   8, aligned with the video-frame batch) and each chunk is sent as a
+   single vision-LLM call (`image_describer_model`) with a transcribe-
+   verbatim prompt. **Chunks run sequentially** to keep pressure off
+   the cloud-account pool.
+6. Chunk outputs are concatenated and truncated to `@max_doc_chars`.
+7. Temp dir is cleaned in an `after` block.
+
+Hard-coded 50 / 8 / 16 are `AgentSettings` defaults so operators can
+tune them without a code change (per the no-magic-numbers rule).
+
+**Doc / unknown paths — honest failure** — `run_pandoc`, `read_text`,
+and `try_pandoc_then_read` all check `meaningful?/1` on their output.
+Empty / near-empty / whitespace-only results now return `{:error, ...}`
+instead of `{:ok, ""}`. Combined with the `## Attachments` prompt rule
+("if extract_content returns an error, tell the user truthfully — do
+NOT summarise from the filename"), this closes the hallucination
+failure mode where a silent empty extraction was interpreted as
+license to fabricate content from the filename.
+
 Execution tools (unchanged from prior phases):
 `web_fetch`, `web_search`, `run_script`, `extract_content`, `read_file`,
-`write_file`, `calculator`, `parse_document`, `spawn_task`, `get_date`.
+`write_file`, `calculator`, `spawn_task`, `get_date`.
+(`parse_document` was retired — `extract_content` absorbed its doc
+routing and added the OCR fallback for scanned PDFs.)
 
 Credential tools (per-user persistent credential store; see
 `Dmhai.Agent.Credentials`):
@@ -986,8 +1024,7 @@ Checks:
    preceded (in the session, not just this turn) by an active
    `create_task`.
    - Gated tools: `run_script`, `web_fetch`, `web_search`,
-     `extract_content`, `read_file`, `write_file`, `parse_document`,
-     `spawn_task`.
+     `extract_content`, `read_file`, `write_file`, `spawn_task`.
    - Bypass: task-management tools themselves (`create_task`,
      `update_task`, `fetch_task`), credential tools (`save_credential`,
      `lookup_credential`), and read-only utilities (`datetime`,
@@ -1492,7 +1529,7 @@ string that is handed to the model as the `tool` role message's content.
 Rules:
 
 - **Binary in → binary out, verbatim.** Text-oriented tools (`run_script`,
-  `read_file`, `parse_document`, `extract_content`, `datetime`) return raw
+  `read_file`, `extract_content`, `datetime`) return raw
   strings. The model sees exactly the text a human would see.
 - **Map / list in → pretty JSON out.** Metadata-oriented tools (`create_task`,
   `update_task`, `fetch_task`, `web_search`, `web_fetch`, `save_credential`,
@@ -1602,7 +1639,7 @@ Models ending in `:cloud` / `-cloud` auto-route to cloud pool. Cloud keys manage
 | Role | Default |
 |------|---------|
 | Confidant | `gemini-3-flash-preview:cloud` |
-| Assistant (session loop) | `nemotron-3-nano:30b-cloud` |
+| Assistant (session loop) | `gpt-oss:120b-cloud` |
 | Context Compactor | `gemini-3-flash-preview:cloud` |
 | Progress Summariser (on-demand) | `gemini-3-flash-preview:cloud` |
 | Web Search Detector | `ministral-3:14b-cloud` |
@@ -1617,8 +1654,9 @@ Models ending in `:cloud` / `-cloud` auto-route to cloud pool. Cloud keys manage
 | `maxAssistantToolRounds` | 50 | Per-turn cap on tool-call roundtrips; abort turn if exceeded |
 | `maxToolResultChars` | 8000 | Truncation threshold for tool results fed back into context |
 | `spawnTaskTimeoutSecs` | 30 | Bash command timeout inside spawn_task |
-| `masterCompactTurnThreshold` | 90 | Session compaction turn count trigger |
+| `masterCompactTurnThreshold` | 50 | Session compaction trigger by message count |
 | `masterCompactFraction` | 0.45 | Session compaction char-budget fraction |
+| `estimatedContextTokens` | 64_000 | Usable context-window size driving the char-budget trigger |
 | `execErrorStreakNudge` | 3 | Consecutive exec-tool failures before a nudge is appended to the model's context |
 
 ---
