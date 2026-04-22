@@ -404,22 +404,48 @@ defmodule Dmhai.Agent.LLM do
     err_key     = {__MODULE__, :err,        self()}
     think_key   = {__MODULE__, :think_buf,  self()}
     in_think_key = {__MODULE__, :in_think,  self()}
+    chunks_key  = {__MODULE__, :chunks,     self()}
+    first_byte_key = {__MODULE__, :first_byte, self()}
 
     Process.put(text_key,     "")
     Process.put(calls_key,    [])
     Process.put(buf_key,      "")
     Process.put(think_key,    "")
     Process.put(in_think_key, false)
+    Process.put(chunks_key,   0)
     Process.delete(err_key)
+    Process.delete(first_byte_key)
+
+    body_size = body |> Jason.encode!() |> byte_size()
+    req_id    = :erlang.unique_integer([:positive, :monotonic])
+    t0        = System.monotonic_time(:millisecond)
+
+    Logger.info("[LLM:http req=#{req_id}] stream BEGIN model=#{model_str} body_bytes=#{body_size} url=#{url}")
+    Dmhai.SysLog.log("[LLM:http req=#{req_id}] stream BEGIN model=#{model_str} body_bytes=#{body_size}")
+
+    # See do_call_request for why we force `Connection: close` on outbound
+    # LLM calls — Finch pool reuse over Ollama's TLS keepalive was the
+    # root cause of the silent multi-minute recv hangs.
+    headers_no_reuse = [{"connection", "close"} | headers]
 
     result =
       Req.post(url,
         json: body,
-        headers: headers,
-        receive_timeout: :infinity,
+        headers: headers_no_reuse,
+        receive_timeout: 180_000,
         retry: false,
         finch: Dmhai.Finch,
         into: fn {:data, data}, {req, resp} ->
+          # Record first-byte latency once — the gap between BEGIN and first
+          # chunk tells us whether Ollama / network is slow to START replying
+          # vs slow while streaming.
+          if is_nil(Process.get(first_byte_key)) do
+            fb_ms = System.monotonic_time(:millisecond) - t0
+            Process.put(first_byte_key, fb_ms)
+            Logger.info("[LLM:http req=#{req_id}] stream FIRST_BYTE_MS=#{fb_ms}")
+          end
+          Process.put(chunks_key, Process.get(chunks_key) + 1)
+
           combined = Process.get(buf_key) <> data
           lines = String.split(combined, "\n")
           {complete, [leftover]} = Enum.split(lines, length(lines) - 1)
@@ -480,13 +506,23 @@ defmodule Dmhai.Agent.LLM do
         end
       )
 
-    stream_err = Process.get(err_key)
-    full_text  = Process.get(text_key)
-    tool_calls = Process.get(calls_key)
+    stream_err   = Process.get(err_key)
+    full_text    = Process.get(text_key)
+    tool_calls   = Process.get(calls_key)
+    chunks_count = Process.get(chunks_key) || 0
+    first_byte   = Process.get(first_byte_key)
     Process.delete(text_key)
     Process.delete(calls_key)
     Process.delete(buf_key)
     Process.delete(err_key)
+    Process.delete(chunks_key)
+    Process.delete(first_byte_key)
+
+    t_end    = System.monotonic_time(:millisecond)
+    elapsed  = t_end - t0
+    req_summary = "[LLM:http req=#{req_id}] stream END total_ms=#{elapsed} first_byte_ms=#{inspect(first_byte)} chunks=#{chunks_count} text_chars=#{String.length(full_text)} tool_calls=#{length(tool_calls)} err=#{inspect(stream_err)}"
+    Logger.info(req_summary)
+    Dmhai.SysLog.log(req_summary)
 
     cond do
       stream_err != nil ->
@@ -559,20 +595,60 @@ defmodule Dmhai.Agent.LLM do
   end
 
   defp do_call_request(url, headers, body, model_str, on_tokens) do
-    case Req.post(url,
-           json: body,
-           headers: headers,
-           receive_timeout: :infinity,
-           pool_timeout: 30_000,
-           retry: false,
-           finch: Dmhai.Finch
-         ) do
+    # ── HTTP-path instrumentation (diagnostics for outbound call hangs) ──
+    # Wraps Req.post with monotonic-time stamps around every boundary so we
+    # can see exactly where a slow call is spending its time:
+    #   t0  request prepared (body serialised below via Req's :json opt)
+    #   t1  Req.post returns (connection acquired, request sent, response
+    #       fully received → only blocks on network)
+    #   t2  response body parsed, final tuple returned
+    body_size = body |> Jason.encode!() |> byte_size()
+    req_id    = :erlang.unique_integer([:positive, :monotonic])
+    t0        = System.monotonic_time(:millisecond)
+
+    Logger.info("[LLM:http req=#{req_id}] call BEGIN model=#{model_str} body_bytes=#{body_size} url=#{url}")
+    Dmhai.SysLog.log("[LLM:http req=#{req_id}] call BEGIN model=#{model_str} body_bytes=#{body_size}")
+
+    # `Connection: close` forces Finch to terminate the TCP/TLS session
+    # after the response. No connection is returned to the pool, so the
+    # next LLM call gets a fresh handshake — immune to the zombie-
+    # connection hang we hit on Ollama Cloud's keep-alive sockets (their
+    # edge silently detaches some backend state between requests on the
+    # same connection, and we'd otherwise block on recv forever waiting
+    # for a response that never comes). The ~150 ms handshake overhead
+    # is negligible against multi-second LLM response times.
+    # See specs/architecture.md §Outbound HTTP for LLM calls.
+    headers_no_reuse = [{"connection", "close"} | headers]
+
+    req_result =
+      Req.post(url,
+        json: body,
+        headers: headers_no_reuse,
+        receive_timeout: 180_000,
+        retry: false,
+        finch: Dmhai.Finch
+      )
+
+    t1       = System.monotonic_time(:millisecond)
+    elapsed1 = t1 - t0
+
+    case req_result do
       {:ok, %{status: 200, body: resp_body}} ->
-        parse_response(resp_body, model_str, on_tokens)
+        resp_size =
+          case resp_body do
+            m when is_map(m) or is_list(m) -> m |> Jason.encode!() |> byte_size()
+            b when is_binary(b)            -> byte_size(b)
+            _                              -> 0
+          end
+        Logger.info("[LLM:http req=#{req_id}] call OK status=200 network_ms=#{elapsed1} resp_bytes=#{resp_size}")
+        result = parse_response(resp_body, model_str, on_tokens)
+        t2 = System.monotonic_time(:millisecond)
+        Logger.info("[LLM:http req=#{req_id}] call DONE parse_ms=#{t2 - t1} total_ms=#{t2 - t0}")
+        result
 
       {:ok, %{status: 429, body: resp_body}} ->
         err_msg = get_in(resp_body, ["error"]) || ""
-        Logger.warning("[LLM] call 429 #{model_str}: #{inspect(resp_body)}")
+        Logger.warning("[LLM:http req=#{req_id}] call 429 elapsed_ms=#{elapsed1} model=#{model_str}: #{inspect(resp_body)}")
         if String.contains?(to_string(err_msg), "weekly usage limit") do
           {:error, :quota_exhausted}
         else
@@ -580,15 +656,15 @@ defmodule Dmhai.Agent.LLM do
         end
 
       {:ok, %{status: status, body: resp_body}} when status >= 500 ->
-        Logger.error("[LLM] call HTTP #{status} #{model_str}: #{inspect(resp_body)}")
+        Logger.error("[LLM:http req=#{req_id}] call HTTP #{status} elapsed_ms=#{elapsed1} #{model_str}: #{inspect(resp_body)}")
         {:error, :server_error}
 
       {:ok, %{status: status, body: resp_body}} ->
-        Logger.error("[LLM] call HTTP #{status} #{model_str}: #{inspect(resp_body)}")
+        Logger.error("[LLM:http req=#{req_id}] call HTTP #{status} elapsed_ms=#{elapsed1} #{model_str}: #{inspect(resp_body)}")
         {:error, "HTTP #{status}"}
 
       {:error, reason} ->
-        Logger.error("[LLM] call failed #{model_str}: #{inspect(reason)}")
+        Logger.error("[LLM:http req=#{req_id}] call FAILED elapsed_ms=#{elapsed1} model=#{model_str}: #{inspect(reason)}")
         {:error, reason}
     end
   end

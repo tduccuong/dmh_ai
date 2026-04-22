@@ -624,10 +624,26 @@ defmodule Dmhai.Agent.UserAgent do
           session_turn_loop(new_messages, model, ctx, round + 1)
 
         {:ok, text} when is_binary(text) and text != "" ->
-          Dmhai.SysLog.log("[ASSISTANT] round=#{round} text(#{String.length(text)} chars)")
-          {:ok, _assistant_ts} =
-            append_session_message(ctx.session_id, ctx.user_id,
-                                   %{role: "assistant", content: text})
+          case Dmhai.Agent.Police.check_assistant_text(text) do
+            {:rejected, reason} ->
+              # Model emitted what meant to be a tool call as plain text.
+              # Nudge back and recurse — same self-correction pattern as
+              # the other Police gates. The broken text is NOT persisted
+              # to session.messages; only the corrected response will be.
+              Dmhai.SysLog.log("[ASSISTANT] round=#{round} rejected text='#{String.slice(text, 0, 80)}' — nudging for retry")
+              new_messages =
+                messages ++ [
+                  %{role: "assistant", content: text},
+                  %{role: "user",      content: reason}
+                ]
+              session_turn_loop(new_messages, model, ctx, round + 1)
+
+            :ok ->
+              Dmhai.SysLog.log("[ASSISTANT] round=#{round} text(#{String.length(text)} chars)")
+              {:ok, _assistant_ts} =
+                append_session_message(ctx.session_id, ctx.user_id,
+                                       %{role: "assistant", content: text})
+          end
 
         {:ok, ""} ->
           Dmhai.SysLog.log("[ASSISTANT] round=#{round} empty response — no message persisted")
@@ -643,10 +659,12 @@ defmodule Dmhai.Agent.UserAgent do
     end
   end
 
-  # Execute each tool call: write a pending session_progress row (spinner
-  # visible on the next FE poll, max 500 ms later), run the tool via
-  # ToolRegistry, flip the row to done. Returns the tool_result messages
-  # for the LLM's next round.
+  # Execute each tool call: Police-gate first (task-discipline check —
+  # rejects execution-class tool calls when no active task exists for the
+  # session, so the model is forced to call create_task first), then write
+  # a pending session_progress row, run the tool via ToolRegistry, flip
+  # the row to done. Returns the tool_result messages for the LLM's next
+  # round.
   defp execute_tools(calls, ctx) do
     Enum.map(calls, fn call ->
       name         = get_in(call, ["function", "name"]) || ""
@@ -662,21 +680,40 @@ defmodule Dmhai.Agent.UserAgent do
         task_id:    args["task_id"]
       }
 
-      progress_label = Dmhai.Agent.ProgressLabel.format(name, args)
-      {:ok, row} = Dmhai.Agent.SessionProgress.append_tool_pending(progress_ctx, progress_label)
+      # Police gate 1 — tool-name validity. Rejects garbled blobs /
+      # hallucinated names before we ever log or dispatch. Silent to the
+      # user (no progress row). Model reads the error on its next round
+      # and retries with a clean name. See §Police::Tool-name validity.
+      with :ok <- Dmhai.Agent.Police.check_tool_known(name),
+           # Police gate 2 — task discipline. Silent to the user. Same
+           # self-correction pattern.
+           :ok <- Dmhai.Agent.Police.check_task_discipline(name, ctx) do
+        progress_label = Dmhai.Agent.ProgressLabel.format(name, args)
+        # `update_task(status: "done")` is pure cleanup — the final
+        # assistant message IS the completion event from the user's
+        # perspective. Hide the row so it doesn't appear as noise before
+        # the final answer renders. Other update_task variants (status
+        # transitions, task_spec rewrites, intvl_sec changes) stay visible.
+        hide_row = name == "update_task" and args["status"] == "done"
+        {:ok, row} = Dmhai.Agent.SessionProgress.append(progress_ctx, "tool", progress_label,
+                                                        status: "pending", hidden: hide_row)
 
-      args_log = args |> Jason.encode!() |> String.slice(0, 600)
-      Dmhai.SysLog.log("[ASSISTANT] tool=#{name} args=#{args_log}")
-      exec_result = Dmhai.Tools.Registry.execute(name, args, ctx)
-      Dmhai.Agent.SessionProgress.mark_tool_done(row.id)
+        args_log = args |> Jason.encode!() |> String.slice(0, 600)
+        Dmhai.SysLog.log("[ASSISTANT] tool=#{name} args=#{args_log}")
+        exec_result = Dmhai.Tools.Registry.execute(name, args, ctx)
+        Dmhai.Agent.SessionProgress.mark_tool_done(row.id)
 
-      content =
-        case exec_result do
-          {:ok, result}    -> format_tool_result(result)
-          {:error, reason} -> "Error: #{reason}"
-        end
+        content =
+          case exec_result do
+            {:ok, result}    -> format_tool_result(result)
+            {:error, reason} -> "Error: #{reason}"
+          end
 
-      %{role: "tool", content: content, tool_call_id: tool_call_id}
+        %{role: "tool", content: content, tool_call_id: tool_call_id}
+      else
+        {:rejected, reason} ->
+          %{role: "tool", content: reason, tool_call_id: tool_call_id}
+      end
     end)
   end
 

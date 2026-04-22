@@ -36,6 +36,22 @@ defmodule Dmhai.Agent.Police do
   @write_path_tools ["write_file"]
   @shell_tools ["run_script", "spawn_task"]
 
+  # Execution-class tools: must be preceded by an active create_task in
+  # the session. Anything not in this list is unconditionally allowed —
+  # including create_task / update_task / fetch_task themselves (how the
+  # model complies), credential tools (read-only wrt task state), and
+  # trivial utilities (datetime, calculator).
+  @gated_tools [
+    "run_script",
+    "web_fetch",
+    "web_search",
+    "extract_content",
+    "read_file",
+    "write_file",
+    "parse_document",
+    "spawn_task"
+  ]
+
   @abs_path_regex ~r{(?:^|\s|[=<>|;`'"(])(/[^\s"'`;&|<>()\$\\]+)}
   @redirect_regex ~r{>>?\s+(/[^\s"'`;&|<>()\$\\]+)}
   @write_cmd_regex ~r{\b(?:tee|touch|mkdir|truncate)\s+(?:-\S+\s+)*(/[^\s"'`;&|<>()\$\\]+)}
@@ -64,6 +80,54 @@ defmodule Dmhai.Agent.Police do
   def rejection_msg(reason) do
     "REJECTED (#{reason}): Fix this specific violation before continuing. Do not repeat the same mistake."
   end
+
+  @doc """
+  Per-tool-call gate enforced at execution time (inside `execute_tools`).
+  Rejects an execution-class tool call when the session has no active
+  (pending/ongoing) task row — i.e. when the model has forgotten the
+  "every substantive action needs create_task first" rule from
+  `system_prompt.ex`. The rejection comes back to the model as a
+  tool-result error string, which the model reads in its next round and
+  self-corrects by calling create_task.
+
+  Tools outside `@gated_tools` (create_task/update_task/fetch_task,
+  credential tools, datetime, calculator) bypass this gate.
+
+  `ctx` must carry `:session_id` — non-session callers bypass.
+  """
+  @spec check_task_discipline(String.t(), map()) :: :ok | {:rejected, String.t()}
+  def check_task_discipline(name, ctx) when is_binary(name) do
+    cond do
+      name not in @gated_tools ->
+        :ok
+
+      not Map.has_key?(ctx, :session_id) ->
+        :ok
+
+      has_active_task?(ctx[:session_id]) ->
+        :ok
+
+      true ->
+        reason =
+          "Error: you must call create_task first before using `#{name}`. " <>
+          "Every substantive action in Assistant mode needs its own task row. " <>
+          "Call create_task(task_title, task_spec, task_type: \"one_off\", language: ...) " <>
+          "first — the new task row is created with status=ongoing automatically — " <>
+          "then retry `#{name}`. When finished, call " <>
+          "update_task(task_id, status: \"done\", task_result: \"<summary>\")."
+
+        Logger.warning("[Police] REJECTED task_discipline: tool=#{name} session=#{inspect(ctx[:session_id])}")
+        Dmhai.SysLog.log("[POLICE] REJECTED task_discipline: tool=#{name} session=#{inspect(ctx[:session_id])}")
+        {:rejected, reason}
+    end
+  end
+
+  defp has_active_task?(session_id) when is_binary(session_id) do
+    session_id
+    |> Dmhai.Agent.Tasks.active_for_session()
+    |> Enum.any?(fn t -> t.task_status in ["pending", "ongoing"] end)
+  end
+  defp has_active_task?(_), do: true
 
   # ── path safety internals ──────────────────────────────────────────────
 
@@ -200,4 +264,85 @@ defmodule Dmhai.Agent.Police do
       _ -> %{}
     end
   end
+
+  @doc """
+  Per-tool-call gate: reject when the emitted `name` doesn't correspond to
+  a registered tool. Guards against model output malformation where the
+  model stuffs garbled or hallucinated content into `function.name`
+  (we've seen ~1000-char blobs, including entire natural-language
+  responses glued together with LRM separators, as the name field).
+
+  The rejection message enumerates the valid tool names so the next-round
+  corrective tool_result gives the model the concrete vocabulary to
+  recover with. Same silent-to-user handling as task_discipline —
+  the progress row is never written for an unknown-tool rejection.
+  """
+  @spec check_tool_known(String.t()) :: :ok | {:rejected, String.t()}
+  def check_tool_known(name) when is_binary(name) do
+    if Dmhai.Tools.Registry.known?(name) do
+      :ok
+    else
+      name_preview = String.slice(name, 0, 120)
+
+      reason =
+        "Error: `#{name_preview}` is not a valid tool name. " <>
+          "Pick one of: " <>
+          Enum.join(Dmhai.Tools.Registry.names(), ", ") <>
+          ". Each tool_call must have a plain tool name in the `function.name` " <>
+          "field and the arguments as a JSON object in `function.arguments`. " <>
+          "Retry with the correct structure."
+
+      Logger.warning("[Police] REJECTED tool_unknown: name=#{inspect(String.slice(name, 0, 200))}")
+      Dmhai.SysLog.log("[POLICE] REJECTED tool_unknown: name=#{inspect(String.slice(name, 0, 200))}")
+      {:rejected, reason}
+    end
+  end
+  def check_tool_known(_), do: {:rejected, "Error: tool_call `function.name` must be a string."}
+
+  @doc """
+  Guard on the TEXT round's final content. Catches the failure mode where
+  a model (devstral-small-2:24b, in particular) emits what it MEANT to be
+  a tool_call as the assistant message's content field — e.g. the entire
+  content is just the string `"update_task"` or `"create_task(...)"` — so
+  the turn ends without actually calling the tool and the task stays
+  stuck in `ongoing`.
+
+  Conservative detector: fires only when the trimmed text is EXACTLY a
+  registered tool name, OR has the shape `tool_name(…)` where `tool_name`
+  is registered. Never fires on legitimate short replies like "Done.",
+  "Yes", or any multi-word text that happens to contain a tool name
+  somewhere.
+
+  On rejection the session loop injects a corrective user-role message
+  and recurses one more round; the bad text is never persisted.
+  """
+  @spec check_assistant_text(String.t()) :: :ok | {:rejected, String.t()}
+  def check_assistant_text(text) when is_binary(text) do
+    trimmed = String.trim(text)
+    names = Dmhai.Tools.Registry.names()
+
+    exact_match = trimmed in names
+
+    call_shape_match =
+      case Regex.run(~r/^([a-z_][a-z0-9_]*)\s*\(/iu, trimmed, capture: :all_but_first) do
+        [prefix] -> prefix in names
+        _ -> false
+      end
+
+    if exact_match or call_shape_match do
+      reason =
+        "Your response was the text `#{String.slice(trimmed, 0, 120)}` which " <>
+          "looks like a tool invocation emitted as plain text. Tool actions " <>
+          "must live in the `tool_calls` array of your response, not in " <>
+          "message content. If you meant to call a tool, retry with the " <>
+          "proper tool_call structure. Otherwise, write a real reply."
+
+      Logger.warning("[Police] REJECTED assistant_text: #{inspect(String.slice(trimmed, 0, 200))}")
+      Dmhai.SysLog.log("[POLICE] REJECTED assistant_text: #{inspect(String.slice(trimmed, 0, 200))}")
+      {:rejected, reason}
+    else
+      :ok
+    end
+  end
+  def check_assistant_text(_), do: :ok
 end

@@ -432,6 +432,31 @@ UIManager.isPdf = async function(file) {
     return bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46;
 };
 
+// Content-based fallback for files whose extension / MIME doesn't match
+// any known-supported format. Reads the first 4 KB and classifies as
+// "textual" when: zero NULL bytes AND ≥90% of bytes are printable ASCII
+// or whitespace (tab / LF / CR). Catches .json, .yaml, .toml, .md,
+// source code, logs, etc. Binary garbage is rejected upfront via a
+// modal — better safe than sorry, no server-side explosion later.
+UIManager.sniffLooksTextual = async function(file) {
+    try {
+        var slice = await file.slice(0, 4096).arrayBuffer();
+        var bytes = new Uint8Array(slice);
+        if (bytes.length === 0) return true; // empty file: treat as text
+        var printable = 0;
+        for (var i = 0; i < bytes.length; i++) {
+            var b = bytes[i];
+            if (b === 0) return false; // NULL byte = definitely binary
+            if ((b >= 0x20 && b < 0x7F) || b === 0x09 || b === 0x0A || b === 0x0D) {
+                printable++;
+            }
+        }
+        return printable / bytes.length >= 0.90;
+    } catch (e) {
+        return false;
+    }
+};
+
 UIManager.detectOfficeFormat = async function(file) {
     var slice = await file.slice(0, 4).arrayBuffer();
     var bytes = new Uint8Array(slice);
@@ -501,10 +526,23 @@ UIManager.handleFileSelect = async function(files) {
             var isPdf = await self.isPdf(file);
             var officeFormat = (!isImage && !isVideo && !isText && !isPdf) ? await self.detectDocxOrXlsx(file) : null;
 
+            // Fallback for files whose extension/MIME isn't in any known
+            // list (.json, .yaml, .toml, .md, .csv, source code, logs, …):
+            // sniff the first 4 KB — if it looks textual (no NULL bytes,
+            // mostly printable ASCII/UTF-8), treat as text. Binary
+            // garbage that would explode server-side is blocked upfront
+            // with a modal explaining the reject.
             if (!isImage && !isVideo && !isText && !isPdf && !officeFormat) {
-                self.setStatus(t('unsupported1') + file.name + t('unsupported2') + IMAGE_EXTS.join('/') + '.');
-                setTimeout(function() { self.setStatus(''); }, 4000);
-                continue;
+                var looksTextual = await self.sniffLooksTextual(file);
+                if (looksTextual) {
+                    isText = true;
+                } else {
+                    Modal.alert(
+                        'Unsupported file',
+                        'Sorry, we do not support this format. Could you please try another file?'
+                    );
+                    continue;
+                }
             }
 
             if ((isImage || isVideo) && file.size > MEDIA_MAX_SIZE_BYTES) {

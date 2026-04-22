@@ -211,9 +211,27 @@ defmodule Dmhai.Agent.SystemPrompt do
     ## Attachments
 
     Lines in the user's message starting with `📎 ` are uploaded file paths \
-    (e.g. `📎 workspace/photo.jpg`). Read them via `extract_content(path: …)` \
-    when you need their content. You don't need to acknowledge them — the \
-    user already knows they attached.
+    (e.g. `📎 workspace/photo.jpg`).
+
+    A line with the form `📎 [newly attached] workspace/<name>` appears \
+    only on the CURRENT turn's user message and only for files the user \
+    is attaching right now — it's a transient marker the runtime adds to \
+    help you distinguish a fresh attachment from paths that have been \
+    sitting in conversation history from earlier turns. Rules:
+
+      - For every `📎 [newly attached] <path>` line in the current \
+        turn's user message, you MUST call `extract_content(path: <path>)` \
+        to read the file fresh, as part of a proper task cycle \
+        (`create_task` → `extract_content` → `update_task(done)`). Do \
+        NOT skip the re-read just because you recognise the path or \
+        remember the file's contents from a prior turn — the user \
+        re-attached it because they want another look.
+      - Bare `📎 <path>` lines (without the `[newly attached]` marker) \
+        are historical attachments from older turns. Don't re-extract \
+        them unless the user's current question is specifically about \
+        one of them; rely on your prior-turn answers instead.
+      - You don't need to acknowledge attachments in text — the user \
+        already knows they attached.
 
     ## Language
 

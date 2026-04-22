@@ -41,6 +41,13 @@
         if (this._taskPoll) clearInterval(this._taskPoll);
         var self = this;
         var sid = this.currentSession && this.currentSession.id;
+
+        // Always render once immediately so a session switch clears the
+        // previously-rendered task rows, even if the new session has no
+        // tasks (refreshSessionTasks would otherwise return changed=false
+        // when both old and new are empty arrays).
+        self.renderTaskList();
+
         var tick = function() {
             if (!self.currentSession || self.currentSession.id !== sid) {
                 clearInterval(self._taskPoll);
@@ -66,7 +73,6 @@
         };
         this._taskPollMs = ACTIVE_POLL_MS;
         this._taskPoll = setInterval(tick, ACTIVE_POLL_MS);
-        // Kick one immediately so the UI isn't blank.
         tick();
     };
 

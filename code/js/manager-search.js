@@ -183,7 +183,10 @@ UIManager.sendMessage = async function() {
             self.renderChat();
         }
 
-        if ((sessionAtSend.messages.length - 1) % 8 === 0) {
+        // Auto-name fires on the first assistant reply (len=2) and every
+        // 4 turns thereafter (len=10, 18, …). `length - 2` because each
+        // turn appends exactly TWO messages (user + assistant).
+        if ((sessionAtSend.messages.length - 2) % 8 === 0) {
             self.autoNameSession(sessionAtSend);
         }
     }
@@ -322,9 +325,15 @@ UIManager.pollTurnToCompletion = function(sessionAtSend, onComplete, onError, ab
             }
             var data = await res.json();
 
-            // Merge new messages (usually the assistant's final answer for this turn).
+            // Merge new messages. Dedup guarded by ts — pollTurnToCompletion
+            // and startProgressPolling each carry their own msg_since baseline;
+            // at turn handoff both may fetch the same just-persisted message.
+            // Without this guard the same assistant reply renders twice.
             (data.messages || []).forEach(function(m) {
-                sessionAtSend.messages.push(m);
+                var alreadyHave = (sessionAtSend.messages || []).some(function(x) {
+                    return typeof x.ts === 'number' && x.ts === m.ts && x.role === m.role;
+                });
+                if (!alreadyHave) sessionAtSend.messages.push(m);
                 if (typeof m.ts === 'number' && m.ts > msgSince) msgSince = m.ts;
                 if (m.role === 'assistant') sawAssistantMessage = true;
             });

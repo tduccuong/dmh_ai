@@ -30,6 +30,17 @@ defmodule Dmhai.Tools.Registry do
     Enum.map(@tools, & &1.definition())
   end
 
+  @doc "List of all tool names known to the registry."
+  @spec names() :: [String.t()]
+  def names do
+    Enum.map(@tools, & &1.name())
+  end
+
+  @doc "True if the given name corresponds to a registered tool."
+  @spec known?(String.t()) :: boolean()
+  def known?(name) when is_binary(name), do: name in names()
+  def known?(_), do: false
+
   @doc "Executes a tool by name. Returns {:ok, result} or {:error, reason}."
   def execute(name, args, context) do
     case Enum.find(@tools, &(&1.name() == name)) do

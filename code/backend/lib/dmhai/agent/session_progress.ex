@@ -36,16 +36,21 @@ defmodule Dmhai.Agent.SessionProgress do
 
   @doc """
   Insert a progress row. Returns `{:ok, row}` where `row` is the map the
-  FE will receive over the SSE `{"progress": ...}` frame (id, kind, status,
-  label, task_id, ts). Callers use `row.id` later with `mark_tool_done/1`
-  to flip a pending tool row to done.
+  FE would receive over the poll delta (id, kind, status, label, task_id,
+  ts). Callers use `row.id` later with `mark_tool_done/1` to flip a
+  pending tool row to done.
 
   opts:
     - `:status` — 'pending' | 'done' (tool rows only)
+    - `:hidden` — when true, row is persisted but filtered out of
+                   `fetch_for_session/2`. Use for internal-only rows
+                   (Police rejections, routine cleanup flips) that the
+                   user shouldn't see in their chat timeline.
   """
   @spec append(map(), String.t(), String.t(), keyword()) :: {:ok, map()}
   def append(ctx, kind, label, opts \\ []) do
     status = Keyword.get(opts, :status)
+    hidden = if Keyword.get(opts, :hidden, false), do: 1, else: 0
     now    = System.os_time(:millisecond)
 
     session_id = ctx[:session_id] || ctx["session_id"]
@@ -56,10 +61,10 @@ defmodule Dmhai.Agent.SessionProgress do
     %{rows: [[id]]} =
       query!(Repo, """
       INSERT INTO session_progress
-        (session_id, user_id, task_id, kind, status, label, ts)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+        (session_id, user_id, task_id, kind, status, label, hidden, ts)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       RETURNING id
-      """, [session_id, user_id, task_id, kind, status, stored_label, now])
+      """, [session_id, user_id, task_id, kind, status, stored_label, hidden, now])
 
     {:ok,
      %{
@@ -70,6 +75,7 @@ defmodule Dmhai.Agent.SessionProgress do
        kind: kind,
        status: status,
        label: stored_label,
+       hidden: hidden == 1,
        ts: now
      }}
   end
@@ -117,13 +123,17 @@ defmodule Dmhai.Agent.SessionProgress do
   @doc """
   FE cursor: fetch all progress rows for a session after a given integer id.
   Client polls with `since` = id of the last row it rendered.
+
+  Rows with `hidden = 1` are filtered out here so the FE timeline never
+  shows them. They're still in the DB (admin / audit can reach them via
+  direct SQL).
   """
   @spec fetch_for_session(String.t(), integer()) :: [map()]
   def fetch_for_session(session_id, since_id \\ 0) do
     r = query!(Repo, """
     SELECT id, session_id, user_id, task_id, kind, status, label, ts
     FROM session_progress
-    WHERE session_id=? AND id > ?
+    WHERE session_id=? AND id > ? AND hidden = 0
     ORDER BY id ASC
     """, [session_id, since_id])
 

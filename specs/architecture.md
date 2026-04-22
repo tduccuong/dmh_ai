@@ -160,7 +160,9 @@ HTTP request
     ├── BlockScanners plug    — drop known scanner UAs
     ├── SecurityHeaders plug  — CSP, HSTS
     ├── Plug.Static           — /app/static
-    ├── RateLimit plug        — per-IP sliding window
+    ├── RateLimit plug        — per-user (token-keyed) sliding window,
+    │                           falls back to per-IP for pre-auth paths.
+    │                           See §Rate limiting below for tiers.
     │
     └── Router
           ├── public     — /auth/login, /api/* (Ollama proxy), /search
@@ -320,8 +322,14 @@ GET /sessions/:id/poll?msg_since=<ts>&prog_since=<id>
 
 **FE rendering**:
 
-- New `messages` delta is merged into `currentSession.messages` by ts
-  (optimistic user entries patched in place).
+- New `messages` delta is merged into `currentSession.messages` by ts —
+  **dedup-guarded**: before pushing an incoming message, check whether
+  `session.messages` already contains an entry with the same `ts`; skip
+  the push if so. Required because two polling loops coexist
+  (`pollTurnToCompletion` during an active turn, `startProgressPolling`
+  between turns) — each with its own `msg_since` baseline — and a
+  handoff race can otherwise let both fetch the same just-persisted
+  message and double-push it.
 - New `progress` delta is merged into `currentSession.progress` by id
   (upsert — done-flips overwrite the prior pending row).
 - `stream_buffer` is rendered in the streaming placeholder (the same
@@ -697,9 +705,27 @@ get their own `create_task`.
 
 ### Attachment routing
 
+**FE file-format gate** (`manager-chat.js :: handleFileSelect`). Before
+uploading, the FE decides if the file is supported:
+
+1. Known-format fast paths: image extension (`.png/.jpg/.jpeg/.gif/…`),
+   `file.type` starts with `video/` or `text/`, PDF magic bytes, office-
+   format (DOCX/XLSX via ZIP signature + internal XML detection).
+2. **Content sniff fallback** — for files that match none of the
+   above (e.g. `.json`, `.yaml`, `.toml`, source-code files, logs
+   without a common extension), read the first 4 KB and check whether
+   it's textual: zero NULL bytes AND ≥90% of bytes are printable
+   ASCII / tab / newline. If yes, treat as text and upload normally.
+3. Otherwise: reject with a modal dialog ("Sorry, we do not support
+   this format. Could you please try another file?") and do NOT
+   upload. This is the "better safe than sorry" guard — the BE still
+   has `extract_content`'s fallback for oddly-extensioned text, but
+   binary garbage that would explode at tool-call time is blocked at
+   the edge.
+
 **Uniform attachment pipeline — no format-specific shortcuts.** In
 Assistant mode every attachment — image, video, PDF, DOCX, XLSX, plain
-text, anything else — follows the same path:
+text, anything else that passed the sniff — follows the same path:
 
 1. FE uploads the raw file to `/assets` (permanent user-accessible
    storage) AND to `/upload-session-attachment` (writes it to
@@ -724,6 +750,38 @@ plain-text branches) is an implementation detail — the model's mental
 model is "one path per attachment, one tool call to read, one task per
 substantive action". No attachment type is ever auto-injected into the
 LLM context in Assistant mode.
+
+#### Distinguishing fresh vs stale `📎 ` lines
+
+The model can see `📎 ` lines in every user message — current AND
+historical (they stay in `session.messages` forever). Without a fresh
+vs stale signal, the model tends to trust its prior-turn memory of a
+file ("I already extracted it once") and skip re-reading when the user
+re-attaches the same path. That's wrong — re-attaching is an explicit
+signal the user wants another look.
+
+**Mechanism: context-build-time transient marker**. At
+`ContextEngine.build_assistant_messages/2` (called at the start of
+every turn), the LLM input array is built from `session.messages`. At
+that build step we rewrite each `📎 ` line in the **last** user message
+only to `📎 [newly attached] workspace/...`. Prior user messages keep
+their bare `📎 ` lines.
+
+- No DB mutation — `session.messages` is untouched. Marker lives purely
+  in the ephemeral LLM message array for this turn.
+- Self-expiring — on the next turn, a different user message becomes
+  "last". The previously-marked message now renders bare in the LLM
+  input. No stale markers.
+- Deterministic signal for the model AND for future Police checks: the
+  set of "fresh attachments this turn" is exactly the `📎 ` paths in
+  the last user message.
+
+Prompt rule (in `system_prompt.ex :: assistant_base :: ## Attachments`):
+every `📎 [newly attached]`-prefixed line in the current turn's user
+message must be passed to `extract_content` as part of a fresh task
+cycle (`create_task` → `extract_content` → `update_task(done)`). Do
+not rely on prior-turn memory even when the path matches a file you
+read before — the user re-attached it for a reason.
 
 When a task involves a specific subset of the attachments listed on the
 user message, the model passes those `📎 workspace/...` paths in the
@@ -848,13 +906,70 @@ next turn and continues. No ctx-snapshot persistence is needed.
 
 ---
 
-## Police (shrunk)
+## Police
 
-Retained:
-- **Path safety** — `check_tool_calls/3` still validates any `path`
-  argument resolves inside `session_root` via `Dmhai.Util.Path.resolve/2`.
-  `run_script` still scans for `rm` / `rmdir` / `cp -r` that target paths
-  outside `workspace_dir`.
+Runtime gate that runs inside `execute_tools` per individual tool call.
+The gate is the enforcement mechanism for what the prompt asks of the
+model — when the model forgets or cheats, Police rejects the call
+before it runs and returns a tool-result the model can read + correct on.
+
+Checks:
+
+1. **Task discipline** — every execution-class tool call must be
+   preceded (in the session, not just this turn) by an active
+   `create_task`.
+   - Gated tools: `run_script`, `web_fetch`, `web_search`,
+     `extract_content`, `read_file`, `write_file`, `parse_document`,
+     `spawn_task`.
+   - Bypass: task-management tools themselves (`create_task`,
+     `update_task`, `fetch_task`), credential tools (`save_credential`,
+     `lookup_credential`), and read-only utilities (`datetime`,
+     `calculator`).
+   - Rule: if no task in the session is currently in `pending` or
+     `ongoing` status, the call is rejected with
+     `"Error: you must call create_task first before using <tool>. …"`
+     Model self-corrects in the next round by calling create_task.
+   - Order-in-batch is tolerated: if the model's batch is
+     `[create_task, run_script]`, execute_tools processes them
+     sequentially, create_task runs first and flips the task to
+     `ongoing`, so the subsequent `run_script` check passes.
+   - **Not user-visible**: the rejection row is written with
+     `hidden = 1` (see §Hidden progress rows below) so it stays in the
+     DB for audit/debug but never renders in the chat. The tool-result
+     error still reaches the LLM on the next round; that's what drives
+     self-correction.
+
+2. **Tool-name validity** — the tool_call's `function.name` must match
+   a tool registered in `Dmhai.Tools.Registry`. Guards against model
+   output malformation where the model emits a garbled or hallucinated
+   name (we've seen devstral emit ~1000-char blobs — entire JSON
+   argument payloads concatenated with its own natural-language reply —
+   as the `name` field). Rejection message enumerates the valid tool
+   names so the model self-corrects on the next round. Same silent-to-
+   user handling as task discipline (no progress row written).
+
+3. **Text-round sanity** — when the model ends a turn with a text
+   response (i.e. no tool_calls), `Police.check_assistant_text/1`
+   inspects that text. If the trimmed content is EXACTLY a registered
+   tool name (e.g. `"update_task"`) or has the shape `tool_name(...)`
+   where `tool_name` is a registered tool, it's treated as the model
+   emitting what it MEANT to be a tool_call but put in the content
+   field instead — a devstral-class failure mode we've observed in
+   production. Instead of persisting that text as the final assistant
+   reply, the session loop appends a corrective user-role message
+   (*"Your response was '<tool_name>' which looks like a tool name
+   emitted as text — tool actions must live in the `tool_calls` array,
+   not message content. Retry."*) and recurses one more round.
+   Silent to the user — the broken text is never persisted; only the
+   corrected response lands in `session.messages`. Conservative by
+   design: it fires only on EXACT tool-name match or clear call-shape,
+   never on legitimate short replies like "Done." or "Yes".
+
+4. **Path safety** — `check_tool_calls/3` still validates any `path`
+   argument resolves inside `session_root` via `Dmhai.Util.Path.resolve/2`.
+   `run_script` still scans for `rm` / `rmdir` / `cp -r` that target paths
+   outside `workspace_dir`. (Retained from pre-#101; wiring invocation is
+   pending.)
 
 Removed:
 - Signal protocol rules (`step_signal` batching, `task_signal` ordering,
@@ -863,7 +978,182 @@ Removed:
   doesn't produce the loop-trap failure mode that required it; rely on
   the per-turn max_assistant_tool_rounds cap instead.
 
+### Hidden progress rows
+
+`session_progress` has a `hidden INTEGER DEFAULT 0` column. Rows written
+with `hidden = 1` stay in the DB for audit / debugging (you can still
+see them via direct SQL or an admin tool) but are filtered out of the
+FE-facing reader `SessionProgress.fetch_for_session/2` — so the user's
+chat timeline never surfaces them. `SessionProgress.append/4` exposes
+the `:hidden` option (default `false`). Current uses:
+
+- **Police rejections**: the "you must call create_task first" row is
+  hidden. The model still gets the error in its tool-result and
+  self-corrects; the user sees only the corrected retry, not the
+  blocked attempt.
+- **`update_task(status: "done")` calls**: the final-cleanup progress
+  row is hidden. The assistant's actual final message IS the completion
+  event from the user's perspective; a trailing "UpdateTask('done')"
+  row before the answer is noise. Other `update_task` variants
+  (status="pending" for redo, status="paused", `task_spec` rewrites,
+  `intvl_sec` changes) stay visible — those are meaningful state
+  changes, not cleanup.
+
+The mechanism is generic: any future "internal plumbing that shouldn't
+clutter the chat" can pass `hidden: true` at append time.
+
 ---
+
+## Rate limiting (`Dmhai.Plugs.RateLimit`)
+
+Hammer-backed sliding window, one bucket per (key, tier). The key is
+**the authenticated user** whenever the request carries a valid bearer
+token; otherwise it falls back to **the client IP** (real IP from
+`X-Forwarded-For` when present, else `conn.remote_ip`). Running
+in the plug chain BEFORE the route dispatcher, so it guards every
+path — but it does a cheap bearer-token → `users.id` lookup inline
+whenever `Authorization` is present so the bucket scopes properly.
+
+### Why per-user, not per-IP
+
+The original design was per-IP. That breaks for our target deployment
+(SME, up to ~50 users sharing an office NAT gateway → **single public
+IP**). Under per-IP keying, 50 legitimate users polling the chat API
+at 2 req/s collide in the same bucket and hit the general-tier cap in
+under a second — the 429 error users saw in chat was this exact race
+against the post-polling refactor.
+
+Per-user keying isolates each user's bucket regardless of NAT. The
+pre-auth fallback (IP-keyed) retains flood protection for the login
+endpoint, where no user_id is available yet.
+
+### Tiers and caps (per-minute, per key)
+
+| Tier | Cap | Key | Paths |
+|------|-----|-----|-------|
+| `:auth` | 8 | **IP** (pre-auth) | `/auth/*` — login flood protection |
+| `:upload` | 30 | user | `/assets`, `/describe-video`, `/describe-image` |
+| `:poll` | 200 | user | `/sessions/:id/poll`, `/sessions/:id/tasks`, `/sessions/:id/progress` |
+| `:general` | 120 | user | everything else |
+
+**Sizing the `:poll` tier**: the FE's active-turn cadence is 500 ms on
+`/poll` = 120 req/min. Idle cadence is 5 s = 12 req/min. Add task-list
+sidebar polling at ~3 s while tasks are active = 20 req/min. Sum:
+~140 req/min nominal. Cap at 200 leaves headroom for two tabs viewing
+the same session, brief double-polling during session switch, and
+transient bursts while scrolling history.
+
+### Aggregate load — 50-user SME scenario
+
+Per user, at steady state, active session polling: 2 req/s to `/poll`.
+All 50 users active simultaneously:
+
+- `/poll` requests: 50 × 2 = **100 req/s** aggregate = 6 000 req/min
+- Each `/poll` = one SELECT on `sessions` + one on `session_progress`
+  + one on `tasks` via `fetch_next_due/1`. All three indexed. SQLite
+  comfortably serves hundreds of such queries per second on local
+  disk; Bandit has no measurable overhead at this scale.
+- No bucket collides: each user sits in their own `"user:<id>:poll"`
+  bucket with 200 req/min capacity, so none of the 50 is ever
+  false-throttled.
+
+### Known tradeoffs
+
+- **No horizontal scaling yet**. Hammer's default backend is an in-
+  memory ETS table, single-node. If / when we split the BE across
+  multiple nodes, Hammer needs the distributed-ETS or Redis backend.
+  Small-SME deployments run one node, so this is acceptable for now.
+- **Token-to-user lookup on every request**. The plug does an
+  `auth_tokens` JOIN per request for authed paths. That's one indexed
+  SELECT on a small table — measured < 1 ms. If it becomes a
+  bottleneck (10 000+ req/s range) we'd cache token → user_id in an
+  ETS with short TTL, same pattern as existing rate-limit buckets.
+- **IP fallback for anonymous paths can still be NAT-collided**. A
+  brute-force login attack from 50 different machines on the same
+  office NAT looks like one IP. `/auth` tier's 8 req/min cap is
+  already narrow enough that this doesn't meaningfully change the
+  threat model — an attacker behind NAT still can't out-slow-scan a
+  human typing a password.
+- **Sudden cadence bursts during reconnects**. When a user's tab
+  wakes from sleep or switches sessions rapidly, the FE may briefly
+  fire several polls concurrently. The 200-cap has enough slack to
+  absorb this, but if we ever see false-throttles here the right fix
+  is on the FE (`AbortController` the previous polling loop before
+  starting a new one).
+
+### Future todos
+
+- **Move off polling to a persistent channel (SSE / WebSocket)** when
+  the user base exceeds the low-hundreds mark. Polling at 500 ms is
+  fine for 50-user SME deployments but scales at O(users) per second
+  indefinitely; a single long-lived SSE per user is O(1). This is a
+  larger architectural decision — see §Polling-based delivery for the
+  tradeoffs we weighed; revisit when we hit the scale that forces it.
+- **Operator-facing tier overrides** in `AgentSettings`. Today the
+  tier caps are module constants. If a specific deployment needs
+  higher throughput (e.g. power users doing heavy scripting), a
+  config row lets the admin tune without a code push.
+- **Distributed Hammer backend** once we move to multi-node. The
+  migration is backend-swap only — key format and tier scaffolding
+  stay the same.
+- **Per-tier telemetry**: log how often each tier's cap is actually
+  hit, per user, so we can tune the caps from data rather than
+  guesses. Hammer already exposes a count; we just don't surface it.
+
+---
+
+## Outbound HTTP for LLM calls
+
+Outbound HTTP from the app goes through one shared Finch pool
+(`Dmhai.Finch`, size 10, `conn_max_idle_time: 30_000`). Most callers
+(SearXNG, Jina reader, Telegram, `/assets` proxy) benefit from
+connection reuse — same hosts, steady traffic, no observed issues.
+
+**LLM calls specifically opt OUT of connection reuse.** Both
+`do_call_request/5` and `do_stream_request/6` in
+`lib/dmhai/agent/llm.ex` add a `Connection: close` header on every
+outbound request. This instructs Finch to terminate the TCP/TLS
+session after the response; no connection is returned to the pool.
+
+### Why
+
+Observed in production (see `[LLM:finch] host=ollama.com` telemetry
+in system.log): Ollama Cloud's edge silently detaches backend state
+between two successive requests on the same keepalive socket. The
+second request sends its bytes, the server never emits a response,
+no FIN / RST / TLS alert is observed on the client socket, and Finch
+blocks forever in `recv` (previously with
+`receive_timeout: :infinity` — a 6-plus-minute mystery hang that
+eventually cleared when some unrelated timeout elsewhere broke the
+socket). The failure mode is specific to reused connections: first
+requests on a freshly-connected socket always succeeded, only
+subsequent reuses were at risk.
+
+### Tradeoffs
+
+- **Cost**: one fresh TLS handshake per LLM call (~50–200 ms). For
+  requests whose server-side work takes multiple seconds, that's a
+  few-percent overhead — invisible in practice.
+- **Gain**: eliminates an entire class of silent multi-minute hang
+  whose only visible symptom was the user's chat window sitting on
+  a spinner with nothing happening in any log.
+
+### Belt-and-suspenders
+
+`receive_timeout: 180_000` (3 min) caps any individual LLM HTTP call
+— if something else ever silently hangs at the network level, we
+error out rather than blocking forever. The retry + account rotation
+inside `do_cloud_call/6` and `do_cloud_stream/7` covers transport
+errors.
+
+### Other outbound HTTP is unaffected
+
+SearXNG / Jina / Telegram / proxy paths still use pooled Finch
+connections with their existing receive_timeout values. They don't
+exhibit the same failure pattern because they don't talk to Ollama
+Cloud's edge. When adding a new outbound caller, use pooled Finch by
+default; only opt-out with `Connection: close` if you observe
+zombie-connection hangs against that specific host.
 
 ---
 

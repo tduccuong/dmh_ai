@@ -113,9 +113,33 @@ defmodule Dmhai.Agent.ContextEngine do
     {prefix, history_llm, relevant_msgs, last_msgs} =
       build_core(session_data, [], files, nil)
 
+    # Assistant-mode only: rewrite `📎 ` lines in the LAST user message to
+    # `📎 [newly attached] ` so the model can distinguish attachments the
+    # user just re-posted (must be re-extracted) from older ones still
+    # living in conversation history (do not re-extract). Purely ephemeral
+    # — session.messages stays bare.
+    last_msgs = mark_fresh_attachments(last_msgs)
+
     task_list_block = build_task_list_block(active_tasks, recent_done, base_level: 2)
 
     [system_msg] ++ prefix ++ history_llm ++ relevant_msgs ++ task_list_block ++ last_msgs
+  end
+
+  # Inject the `[newly attached]` transient marker on `📎 ` lines of the
+  # last user message in the LLM input array. No effect on persisted
+  # session.messages — the marker is purely a per-turn signal to the LLM.
+  # The marker naturally expires on the next turn: whichever message is
+  # "last" then gets the marker, and all others render bare.
+  defp mark_fresh_attachments([]), do: []
+  defp mark_fresh_attachments(msgs) do
+    {prev, [last]} = Enum.split(msgs, -1)
+    if (last[:role] || last["role"]) == "user" do
+      content = last[:content] || last["content"] || ""
+      marked  = String.replace(content, ~r/^📎\s+/mu, "📎 [newly attached] ")
+      prev ++ [Map.put(last, :content, marked)]
+    else
+      msgs
+    end
   end
 
   @doc """

@@ -51,11 +51,73 @@ defmodule Dmhai.Application do
         if Application.get_env(:dmhai, :run_startup_check, true), do: Dmhai.StartupCheck.run()
         Dmhai.DB.Init.run()
         Dmhai.DomainBlocker.load_from_db()
+        attach_finch_telemetry()
         Logger.info("Sessions API on :3000")
         {:ok, pid}
 
       error ->
         error
     end
+  end
+
+  # Diagnostic telemetry for outbound HTTP debugging — surfaces Finch's
+  # connection lifecycle + queuing so we can tell whether a slow LLM call
+  # is (a) queued waiting for a pool slot, (b) connecting, (c) sending,
+  # (d) reading response. Prefixed `[LLM:finch]` for easy log filtering
+  # alongside the `[LLM:http req=N]` boundaries added to do_call_request /
+  # do_stream_request. Filter only the :ollama.com host so we don't drown
+  # in SearXNG / Jina / Telegram chatter.
+  defp attach_finch_telemetry do
+    events = [
+      [:finch, :queue, :start],
+      [:finch, :queue, :stop],
+      [:finch, :queue, :exception],
+      [:finch, :connect, :start],
+      [:finch, :connect, :stop],
+      [:finch, :send, :start],
+      [:finch, :send, :stop],
+      [:finch, :recv, :start],
+      [:finch, :recv, :stop],
+      [:finch, :request, :start],
+      [:finch, :request, :stop],
+      [:finch, :request, :exception],
+      [:finch, :reused_connection],
+      [:finch, :conn_max_idle_time_exceeded],
+      [:finch, :pool_max_idle_time_exceeded]
+    ]
+
+    :telemetry.attach_many(
+      "dmhai-finch-debug",
+      events,
+      &__MODULE__.handle_finch_event/4,
+      nil
+    )
+  end
+
+  @doc false
+  def handle_finch_event(event, measurements, metadata, _config) do
+    host = metadata[:host] || (metadata[:request] && metadata[:request].host) || ""
+
+    if String.contains?(to_string(host), "ollama") do
+      dur_ms = case measurements[:duration] do
+        n when is_integer(n) -> System.convert_time_unit(n, :native, :millisecond)
+        _ -> nil
+      end
+
+      suffix =
+        case event do
+          [:finch, phase, :stop] -> "#{phase} STOP dur_ms=#{dur_ms}"
+          [:finch, phase, :start] -> "#{phase} START"
+          [:finch, phase, :exception] -> "#{phase} EXCEPTION kind=#{inspect(metadata[:kind])} reason=#{inspect(metadata[:reason])}"
+          [:finch, :reused_connection] -> "reused_connection"
+          [:finch, :conn_max_idle_time_exceeded] -> "conn_max_idle_time_exceeded"
+          [:finch, :pool_max_idle_time_exceeded] -> "pool_max_idle_time_exceeded"
+          other -> inspect(other)
+        end
+
+      Logger.info("[LLM:finch] host=#{host} #{suffix}")
+    end
+  rescue
+    _ -> :ok  # never let a telemetry handler crash the emitter
   end
 end

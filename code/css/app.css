@@ -43,7 +43,11 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
 .model-dropdown-item.selected { color: #e0c8ff; background: #241a34; }
 .model-dropdown-item.disabled { color: #4a3860; cursor: default; font-style: italic; }
 .model-dropdown-item.disabled:hover { background: none; }
-.sessions-list { flex: 1; overflow-y: auto; margin-top: 20px; }
+/* flex: 1 1 0 (not plain `flex: 1`) so that when the task-list section
+   is also displayed it can claim equal height — both buckets share the
+   available sidebar space 50/50. min-height: 0 lets overflow-y kick in
+   instead of the list stretching the whole sidebar. */
+.sessions-list { flex: 1 1 0; min-height: 0; overflow-y: auto; margin-top: 20px; }
 .session-item { padding: 8px 10px; margin-bottom: 2px; border-radius: 6px; cursor: pointer; background: transparent; transition: background 0.15s; display: flex; align-items: center; gap: 6px; border-left: 3px solid transparent; }
 .session-item:hover { background: rgba(255,255,255,0.05); }
 .session-item.active { background: rgba(200,120,48,0.18); border-left-color: #c87830; }
@@ -426,13 +430,24 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
 
 /* ── Task-list sidebar (#102) ─────────────────────────────────────────
    Lives under #sessions-list in the left sidebar. Scoped to the current
-   session. Visible only in Assistant mode (Confidant hides via JS). */
+   session. Visible only in Assistant mode (Confidant hides via JS).
+
+   Layout: `flex: 1 1 0` mirrors the sessions-list above it so the two
+   sections share the sidebar's remaining vertical space 50/50. The
+   section itself is a flex column — the header stays pinned at the top
+   while the `.task-list` child handles overflow, so 1000 tasks just
+   scroll locally rather than pushing the settings button off-screen. */
 .task-list-section {
+    flex: 1 1 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
     margin-top: 14px;
     padding-top: 12px;
     border-top: 1px solid #22192f;
 }
 .task-list-header {
+    flex: 0 0 auto;
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -457,6 +472,9 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
     text-align: center;
 }
 .task-list {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
     display: flex;
     flex-direction: column;
     gap: 1px;
@@ -505,7 +523,10 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
     padding: 5px 10px;
     cursor: pointer;
     font-size: 12.5px;
-    color: #c8b8e8;
+    /* Brighter title text — previous #c8b8e8 blended too far into the
+       sidebar background; this sits closer to the DMH-AI header so the
+       user's eye registers the row at a glance. */
+    color: #ebe3ff;
     border-left: 2px solid transparent;
     transition: background 100ms;
 }
@@ -521,15 +542,15 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
     opacity: 0.6;
 }
 .task-bucket-recent .task-row {
-    opacity: 0.5;
+    opacity: 0.7;
     font-size: 11.5px;
 }
-.task-bucket-recent .task-row:hover { opacity: 0.9; }
+.task-bucket-recent .task-row:hover { opacity: 1; }
 
 .task-type-icon {
     flex-shrink: 0;
     width: 12px;
-    color: #8a7fa0;
+    color: #b0a3cc;
     font-size: 11px;
     text-align: center;
 }
@@ -543,7 +564,7 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
 .task-meta {
     flex-shrink: 0;
     font-size: 10.5px;
-    color: #6f6482;
+    color: #a394bc;
     font-family: ui-monospace, Menlo, Consolas, monospace;
 }
 

@@ -166,6 +166,7 @@ defmodule Dmhai.DB.Init do
       kind TEXT NOT NULL,                     -- 'tool' | 'thinking' | 'summary'
       status TEXT,                            -- 'pending' | 'done' (tool only — mutated in place)
       label TEXT,                             -- human-readable one-liner for FE rendering
+      hidden INTEGER NOT NULL DEFAULT 0,      -- 1 = persisted for audit only, never shown in the FE timeline
       ts INTEGER NOT NULL
     )
     """)

@@ -503,6 +503,10 @@ defmodule Dmhai.Handlers.Data do
     query!(Repo, "DELETE FROM video_descriptions WHERE session_id=?", [session_id])
     query!(Repo, "DELETE FROM session_token_stats WHERE session_id=?", [session_id])
     query!(Repo, "DELETE FROM worker_token_stats WHERE session_id=?", [session_id])
+    # Cascade task + session_progress rows so deleted sessions don't
+    # leave orphans in the sidebar or DB (Tasks.delete_for_session/1
+    # wipes both tables for this session_id).
+    Dmhai.Agent.Tasks.delete_for_session(session_id)
 
     session_dir = user_asset_dir(user.email, session_id)
     if File.dir?(session_dir) do

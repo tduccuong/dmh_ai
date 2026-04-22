@@ -328,10 +328,19 @@ UIManager.startProgressPolling = function() {
             if (res.ok) {
                 var data = await res.json();
 
+                // Dedup by (ts, role) — pollTurnToCompletion and this idle
+                // loop each track msg_since independently; at turn handoff
+                // both may fetch the same just-persisted row. Without dedup
+                // the same assistant reply would render twice.
                 (data.messages || []).forEach(function(m) {
-                    self.currentSession.messages.push(m);
+                    var alreadyHave = (self.currentSession.messages || []).some(function(x) {
+                        return typeof x.ts === 'number' && x.ts === m.ts && x.role === m.role;
+                    });
+                    if (!alreadyHave) {
+                        self.currentSession.messages.push(m);
+                        changed = true;
+                    }
                     if (typeof m.ts === 'number' && m.ts > msgSince) msgSince = m.ts;
-                    changed = true;
                 });
 
                 (data.progress || []).forEach(function(p) {
