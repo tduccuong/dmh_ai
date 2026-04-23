@@ -548,6 +548,122 @@ defmodule Dmhai.Agent.Police do
   def check_fresh_attachments_read(_, _), do: :ok
 
   @doc """
+  Per-tool-call gate: reject when the same `(tool_name, significant_arg)`
+  combination has already been invoked earlier in THIS turn. Prevents
+  the "model creates two identical tasks in a row for one follow-up" /
+  "model re-extracts the same PDF twice" misbehaviour we see on weaker
+  models like gemini-3-flash.
+
+  `prior_messages` is the in-turn message accumulator — a list containing
+  every assistant-role message with `tool_calls` emitted earlier in this
+  turn (either in a prior round, OR earlier in the CURRENT batch of
+  tool_calls from one LLM response). Cross-turn repeats are NOT flagged
+  here — those are addressed by the `Recently-extracted files` prompt
+  block and the `[newly attached]` marker logic.
+
+  Significance key per tool:
+
+    * `create_task`     → `task_title` (downcased + trimmed)
+    * `extract_content` → `path` (case-sensitive; Linux FS)
+    * `web_search`      → `query` (downcased + trimmed)
+
+  Tools outside this list bypass the check (no significance key defined).
+  """
+  @spec check_no_duplicate_tool_call(String.t(), map(), [map()]) ::
+          :ok | {:rejected, {atom(), String.t()}}
+  def check_no_duplicate_tool_call(name, args, prior_messages)
+      when is_binary(name) and is_map(args) and is_list(prior_messages) do
+    case significant_key(name, args) do
+      nil ->
+        :ok
+
+      key ->
+        if already_called?(name, key, prior_messages) do
+          reason =
+            "Error: you already called `#{name}` with the same significant argument " <>
+              "(#{describe_key(name)}=#{inspect(key)}) earlier in THIS turn. " <>
+              "Duplicate calls aren't useful — the earlier call's result is " <>
+              "already in your context as a `role: \"tool\"` message. Either " <>
+              "answer the user from the earlier result, or call a DIFFERENT " <>
+              "tool to move the task forward. Do not repeat yourself."
+
+          Logger.warning(
+            "[Police] REJECTED duplicate_tool_call_in_turn: tool=#{name} key=#{inspect(key)}"
+          )
+
+          Dmhai.SysLog.log(
+            "[POLICE] REJECTED duplicate_tool_call_in_turn: tool=#{name} key=#{inspect(key)}"
+          )
+
+          {:rejected, {:duplicate_tool_call_in_turn, reason}}
+        else
+          :ok
+        end
+    end
+  end
+  def check_no_duplicate_tool_call(_, _, _), do: :ok
+
+  # Pick the "significant argument" that defines a duplicate. Normalised
+  # forms let "Explain X" / "explain x " be treated as the same title.
+  defp significant_key("create_task", args) do
+    case args["task_title"] do
+      t when is_binary(t) ->
+        n = t |> String.trim() |> String.downcase()
+        if n == "", do: nil, else: n
+
+      _ ->
+        nil
+    end
+  end
+
+  defp significant_key("extract_content", args) do
+    case args["path"] do
+      p when is_binary(p) and p != "" -> String.trim(p)
+      _ -> nil
+    end
+  end
+
+  defp significant_key("web_search", args) do
+    case args["query"] do
+      q when is_binary(q) ->
+        n = q |> String.trim() |> String.downcase()
+        if n == "", do: nil, else: n
+
+      _ ->
+        nil
+    end
+  end
+
+  defp significant_key(_, _), do: nil
+
+  defp describe_key("create_task"),     do: "task_title"
+  defp describe_key("extract_content"), do: "path"
+  defp describe_key("web_search"),      do: "query"
+  defp describe_key(_),                 do: "arg"
+
+  # Walk the prior messages, extract every assistant-role tool_call's
+  # (name, significant_key), return true if any match the current pair.
+  defp already_called?(name, key, prior_messages) do
+    Enum.any?(prior_messages, fn msg ->
+      role  = msg[:role] || msg["role"]
+      calls = msg[:tool_calls] || msg["tool_calls"] || []
+
+      if role == "assistant" and is_list(calls) do
+        Enum.any?(calls, fn c ->
+          fn_map    = c["function"] || c[:function] || %{}
+          call_name = fn_map["name"] || fn_map[:name] || ""
+          raw_args  = fn_map["arguments"] || fn_map[:arguments] || %{}
+          call_args = if is_binary(raw_args), do: decode_or_empty(raw_args), else: raw_args
+
+          call_name == name and significant_key(call_name, call_args) == key
+        end)
+      else
+        false
+      end
+    end)
+  end
+
+  @doc """
   Pull the set of `📎 [newly attached] <path>` paths from the last
   user-role message in a message array. Used at turn start to snapshot
   the "must be read this turn" set for

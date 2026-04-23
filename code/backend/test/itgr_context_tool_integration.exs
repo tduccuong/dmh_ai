@@ -10,7 +10,7 @@
 defmodule Itgr.ContextToolIntegration do
   use ExUnit.Case, async: false
 
-  alias Dmhai.Agent.{ContextEngine, AttachmentPaths}
+  alias Dmhai.Agent.{ContextEngine, AttachmentPaths, UserAgent}
   alias Dmhai.Repo
   import Ecto.Adapters.SQL, only: [query!: 3]
 
@@ -21,6 +21,28 @@ defmodule Itgr.ContextToolIntegration do
     query!(Repo,
       "INSERT INTO sessions (id, user_id, mode, messages, tool_history, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
       [sid, uid_, "assistant", "[]", tool_history_json, now, now])
+  end
+
+  # Build session_data the SAME WAY the production code path does — via
+  # UserAgent.load_session/2 — so tests exercise the real wiring instead
+  # of synthesising a map that happens to satisfy ContextEngine's
+  # contract. The itgr_session_context_contract.exs suite protects the
+  # contract itself; these tests focus on downstream logic.
+  defp load_session_data(sid, uid_, extra_messages) do
+    # Patch in the test's "current user message" by rewriting
+    # sessions.messages — this keeps load_session/2 honest (it reads
+    # messages from the DB row, not from a side channel).
+    case extra_messages do
+      [] ->
+        :ok
+
+      _ ->
+        query!(Repo, "UPDATE sessions SET messages=? WHERE id=?",
+               [Jason.encode!(extra_messages), sid])
+    end
+
+    {:ok, _model, sd} = UserAgent.load_session(sid, uid_)
+    sd
   end
 
   defp find_msg(msgs, role, pred) do
@@ -68,7 +90,7 @@ defmodule Itgr.ContextToolIntegration do
   test "absent when tool_history is empty (pure-chat session)" do
     sid = uid(); uid_ = uid()
     seed_session(sid, uid_)
-    sd = session_data(sid, [user_msg("hi")])
+    sd = load_session_data(sid, uid_, [user_msg("hi")])
 
     msgs = ContextEngine.build_assistant_messages(sd, active_tasks: [], recent_done: [])
     refute find_msg(msgs, "user", &String.starts_with?(&1, "## Recently-extracted files"))
@@ -106,7 +128,7 @@ defmodule Itgr.ContextToolIntegration do
     ]
 
     seed_session(sid, uid_, Jason.encode!(tool_history))
-    sd = session_data(sid, [user_msg("tell me more about task 1")])
+    sd = load_session_data(sid, uid_, [user_msg("tell me more about task 1")])
 
     done_task = %{
       task_id: task_id, task_num: 1,
@@ -145,7 +167,7 @@ defmodule Itgr.ContextToolIntegration do
 
     tool_history = [entry.(100), entry.(200)]
     seed_session(sid, uid_, Jason.encode!(tool_history))
-    sd = session_data(sid, [user_msg("hi")])
+    sd = load_session_data(sid, uid_, [user_msg("hi")])
 
     msgs = ContextEngine.build_assistant_messages(sd, active_tasks: [], recent_done: [])
     block = find_msg(msgs, "user", &String.starts_with?(&1, "## Recently-extracted files"))
@@ -159,8 +181,4 @@ defmodule Itgr.ContextToolIntegration do
   # ─── Helpers ─────────────────────────────────────────────────────────────
 
   defp user_msg(content), do: %{"role" => "user", "content" => content}
-
-  defp session_data(sid, msgs) do
-    %{"id" => sid, "messages" => msgs, "context" => nil}
-  end
 end

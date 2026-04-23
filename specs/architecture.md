@@ -468,6 +468,14 @@ immediate follow-ups without re-running the tool.
   (matched by `ts`). This reconstructs the OpenAI-style
   `user → assistant(tool_calls) → tool(result) → assistant(final text)`
   shape models expect.
+- **Contract**: `build_assistant_messages/2` REQUIRES `session_data["id"]`
+  (non-empty binary) and raises `ArgumentError` if it's missing. The id
+  drives both `ToolHistory.load/1` and the `## Recently-extracted files`
+  block — silently skipping them would disable Phase-3 features without
+  any visible symptom. Loud-failure contract prevents the regression we
+  hit when `UserAgent.load_session/2` forgot to populate the key. The
+  loader, and any direct test-side session_data construction, must
+  include `"id"`.
 - Entries age out naturally past the N-turn window; pathological
   extraction marathons are bounded by the byte budget (oldest-first
   eviction).
@@ -1157,12 +1165,27 @@ Checks:
    outside `workspace_dir`. (Retained from pre-#101; wiring invocation is
    pending.)
 
+6. **Duplicate-tool-call-in-turn** — `check_no_duplicate_tool_call/3`
+   rejects a tool call whose `(name, significant_arg)` has already been
+   invoked earlier in THIS turn. Significance key per tool:
+   `create_task` → `task_title` (case-insensitive, trimmed);
+   `extract_content` → `path` (case-sensitive, Linux FS);
+   `web_search` → `query` (case-insensitive, trimmed). Tools outside
+   that list bypass. Scans both the in-turn message accumulator (prior
+   rounds) AND earlier calls in the SAME batch (one LLM response with
+   multiple tool_calls) — `execute_tools/3` threads a rolling pseudo-
+   message list through `Enum.map_reduce/3` so a second call in the
+   same batch sees the first. Cross-turn repeats are NOT flagged here —
+   those are addressed by the `## Recently-extracted files` prompt
+   block and the `[newly attached]` marker logic. Tagged rejection
+   `{:duplicate_tool_call_in_turn, reason}` → `[[ISSUE:...]]` marker →
+   `ctx.nudges` counter bump → 3-strike escalation. Catches the
+   "create_task twice with same title for one follow-up question"
+   misbehaviour we see on weaker models like gemini-3-flash.
+
 Removed:
 - Signal protocol rules (`step_signal` batching, `task_signal` ordering,
   terminal-tool exclusivity) — protocol is gone, rules along with it.
-- Repeated-identical-tool-call kill switch — the conversational model
-  doesn't produce the loop-trap failure mode that required it; rely on
-  the per-turn max_assistant_tool_rounds cap instead.
 
 ### Hidden progress rows
 

@@ -361,6 +361,9 @@ defmodule Dmhai.Agent.UserAgent do
       data_dir:      data_dir,
       workspace_dir: workspace_dir,
       log_trace:     AgentSettings.log_trace(),
+      # Snapshot the initial message count so the duplicate-tool-call
+      # police check only sees within-turn accumulator, never history.
+      turn_start_idx: length(llm_messages),
       role:          "assistant",
       model:         model
     }
@@ -623,6 +626,10 @@ defmodule Dmhai.Agent.UserAgent do
       workspace_dir: workspace_dir,
       log_trace:     AgentSettings.log_trace(),
       fresh_attachment_paths: fresh_attachment_paths,
+      # Snapshot the initial message count so the duplicate-tool-call
+      # police check can slice `messages[turn_start_idx..]` and see only
+      # the in-turn accumulator — never cross-turn repeats.
+      turn_start_idx: length(llm_messages),
       # Model-behaviour telemetry inputs — every Police rejection bumps a
       # counter row for this (role, model, issue_type, tool_name).
       role:          "assistant",
@@ -685,7 +692,7 @@ defmodule Dmhai.Agent.UserAgent do
           StreamBuffer.clear(ctx.session_id, ctx.user_id)
 
           assistant_msg = %{role: "assistant", content: "", tool_calls: calls}
-          tool_result_msgs_raw = execute_tools(calls, ctx)
+          tool_result_msgs_raw = execute_tools(calls, messages, ctx)
 
           # Tally any tagged Police rejections from this round and bump
           # the matching nudge counters. Returns the cleaned messages
@@ -951,83 +958,108 @@ defmodule Dmhai.Agent.UserAgent do
   # a pending session_progress row, run the tool via ToolRegistry, flip
   # the row to done. Returns the tool_result messages for the LLM's next
   # round.
-  defp execute_tools(calls, ctx) do
-    Enum.map(calls, fn call ->
-      name         = get_in(call, ["function", "name"]) || ""
-      args         = get_in(call, ["function", "arguments"]) || %{}
-      tool_call_id = call["id"] || ""
+  #
+  # `messages` is the current LLM call input — the Police duplicate-call
+  # check slices `messages[turn_start_idx..]` to scope its view to this
+  # turn's accumulator only. Within a single batch of calls (one LLM
+  # response with multiple tool_calls) we also dedupe by appending a
+  # synthetic assistant message per iteration so later calls see earlier
+  # ones.
+  defp execute_tools(calls, messages, ctx) do
+    turn_start_idx = Map.get(ctx, :turn_start_idx, 0)
+    in_turn_prior  = Enum.drop(messages, turn_start_idx)
 
-      # Update-task side effect: when update_task(task_id, status: "ongoing")
-      # fires, the current task_id becomes the active one for subsequent
-      # progress rows. We infer it below from the args when present.
-      progress_ctx = %{
-        session_id: ctx.session_id,
-        user_id:    ctx.user_id,
-        task_id:    args["task_id"]
-      }
+    {results, _final_prior} =
+      Enum.map_reduce(calls, in_turn_prior, fn call, prior_acc ->
+        name         = get_in(call, ["function", "name"]) || ""
+        args         = get_in(call, ["function", "arguments"]) || %{}
+        tool_call_id = call["id"] || ""
 
-      # Police gate 1 — tool-name validity. Rejects garbled blobs /
-      # hallucinated names before we ever log or dispatch. Silent to the
-      # user (no progress row). Model reads the error on its next round
-      # and retries with a clean name. See §Police::Tool-name validity.
-      with :ok <- Dmhai.Agent.Police.check_tool_known(name),
-           # Police gate 2 — task discipline. Silent to the user. Same
-           # self-correction pattern.
-           :ok <- Dmhai.Agent.Police.check_task_discipline(name, ctx),
-           # Police gate 3 — tool-call schema compliance. Generic check
-           # against the tool's own definition (required fields + types).
-           # Schema-driven nudge example returned on failure.
-           :ok <- Dmhai.Agent.Police.check_tool_call_schema(name, args) do
-        progress_label = Dmhai.Agent.ProgressLabel.format(name, args)
-        # `update_task(status: "done")` is pure cleanup — the final
-        # assistant message IS the completion event from the user's
-        # perspective. Hide the row so it doesn't appear as noise before
-        # the final answer renders. Other update_task variants (status
-        # transitions, task_spec rewrites, intvl_sec changes) stay visible.
-        hide_row = name == "update_task" and args["status"] == "done"
-        {:ok, row} = Dmhai.Agent.SessionProgress.append(progress_ctx, "tool", progress_label,
-                                                        status: "pending", hidden: hide_row)
+        # Update-task side effect: when update_task(task_id, status: "ongoing")
+        # fires, the current task_id becomes the active one for subsequent
+        # progress rows. We infer it below from the args when present.
+        progress_ctx = %{
+          session_id: ctx.session_id,
+          user_id:    ctx.user_id,
+          task_id:    args["task_id"]
+        }
 
-        args_log = args |> Jason.encode!() |> String.slice(0, 600)
-        Dmhai.SysLog.log("[ASSISTANT] tool=#{name} args=#{args_log}")
-        # Thread the progress row id through ctx so tools with parallel
-        # internals (web_search, OCR extract) can stream sub-activity
-        # labels into session_progress.sub_labels for the FE to rotate.
-        tool_ctx = Map.put(ctx, :progress_row_id, row.id)
-        exec_result = Dmhai.Tools.Registry.execute(name, args, tool_ctx)
+        tool_msg =
+          # Police gate 1 — tool-name validity. Rejects garbled blobs /
+          # hallucinated names before we ever log or dispatch. Silent to the
+          # user (no progress row). Model reads the error on its next round
+          # and retries with a clean name. See §Police::Tool-name validity.
+          with :ok <- Dmhai.Agent.Police.check_tool_known(name),
+               # Police gate 2 — task discipline. Silent to the user. Same
+               # self-correction pattern.
+               :ok <- Dmhai.Agent.Police.check_task_discipline(name, ctx),
+               # Police gate 3 — tool-call schema compliance. Generic check
+               # against the tool's own definition (required fields + types).
+               # Schema-driven nudge example returned on failure.
+               :ok <- Dmhai.Agent.Police.check_tool_call_schema(name, args),
+               # Police gate 4 — within-turn duplicate-tool-call. Blocks
+               # the "create_task twice with same title" / "extract_content
+               # the same PDF twice" misbehaviour we saw on gemini-3-flash.
+               :ok <- Dmhai.Agent.Police.check_no_duplicate_tool_call(name, args, prior_acc) do
+            progress_label = Dmhai.Agent.ProgressLabel.format(name, args)
+            # `update_task(status: "done")` is pure cleanup — the final
+            # assistant message IS the completion event from the user's
+            # perspective. Hide the row so it doesn't appear as noise before
+            # the final answer renders. Other update_task variants (status
+            # transitions, task_spec rewrites, intvl_sec changes) stay visible.
+            hide_row = name == "update_task" and args["status"] == "done"
+            {:ok, row} = Dmhai.Agent.SessionProgress.append(progress_ctx, "tool", progress_label,
+                                                            status: "pending", hidden: hide_row)
 
-        # Flip to 'done' on success, delete the pending row on error so
-        # rejected attempts don't leave ghost rows in the chat timeline
-        # — the model will retry and a fresh row will be written for the
-        # eventual successful call.
-        content =
-          case exec_result do
-            {:ok, result} ->
-              Dmhai.Agent.SessionProgress.mark_tool_done(row.id)
-              format_tool_result(result)
+            args_log = args |> Jason.encode!() |> String.slice(0, 600)
+            Dmhai.SysLog.log("[ASSISTANT] tool=#{name} args=#{args_log}")
+            # Thread the progress row id through ctx so tools with parallel
+            # internals (web_search, OCR extract) can stream sub-activity
+            # labels into session_progress.sub_labels for the FE to rotate.
+            tool_ctx = Map.put(ctx, :progress_row_id, row.id)
+            exec_result = Dmhai.Tools.Registry.execute(name, args, tool_ctx)
 
-            {:error, reason} ->
-              Dmhai.Agent.SessionProgress.delete(row.id)
-              "Error: #{reason}"
+            # Flip to 'done' on success, delete the pending row on error so
+            # rejected attempts don't leave ghost rows in the chat timeline
+            # — the model will retry and a fresh row will be written for the
+            # eventual successful call.
+            content =
+              case exec_result do
+                {:ok, result} ->
+                  Dmhai.Agent.SessionProgress.mark_tool_done(row.id)
+                  format_tool_result(result)
+
+                {:error, reason} ->
+                  Dmhai.Agent.SessionProgress.delete(row.id)
+                  "Error: #{reason}"
+              end
+
+            %{role: "tool", content: content, tool_call_id: tool_call_id}
+          else
+            # Plain string rejection (legacy Police checks) — return as a
+            # tool-result message, no issue tracking.
+            {:rejected, reason} when is_binary(reason) ->
+              %{role: "tool", content: reason, tool_call_id: tool_call_id}
+
+            # Tagged rejection `{issue_atom, reason}` — emit a marker in the
+            # message that the session loop can sniff later to bump the
+            # matching counter in ctx.nudges AND record a telemetry row.
+            # Marker format: `[[ISSUE:<atom>:<tool_name>]]` — tool_name
+            # allows the stats row to be scoped per-tool.
+            {:rejected, {issue_atom, reason}} when is_atom(issue_atom) ->
+              marker = "[[ISSUE:#{issue_atom}:#{name}]]\n"
+              %{role: "tool", content: marker <> reason, tool_call_id: tool_call_id}
           end
 
-        %{role: "tool", content: content, tool_call_id: tool_call_id}
-      else
-        # Plain string rejection (legacy Police checks) — return as a
-        # tool-result message, no issue tracking.
-        {:rejected, reason} when is_binary(reason) ->
-          %{role: "tool", content: reason, tool_call_id: tool_call_id}
+        # Append a synthetic assistant-role message for this call so later
+        # calls in the SAME batch see it and dedupe against it. Rejected
+        # calls also contribute — the model should not "double down" on a
+        # rejected duplicate within the same round either.
+        pseudo = %{"role" => "assistant", "tool_calls" => [call]}
+        {tool_msg, prior_acc ++ [pseudo]}
+      end)
 
-        # Tagged rejection `{issue_atom, reason}` — emit a marker in the
-        # message that the session loop can sniff later to bump the
-        # matching counter in ctx.nudges AND record a telemetry row.
-        # Marker format: `[[ISSUE:<atom>:<tool_name>]]` — tool_name
-        # allows the stats row to be scoped per-tool.
-        {:rejected, {issue_atom, reason}} when is_atom(issue_atom) ->
-          marker = "[[ISSUE:#{issue_atom}:#{name}]]\n"
-          %{role: "tool", content: marker <> reason, tool_call_id: tool_call_id}
-      end
-    end)
+    results
   end
 
   # Normalise a tool's {:ok, result} payload into the string that the model
@@ -1067,9 +1099,19 @@ defmodule Dmhai.Agent.UserAgent do
 
   # ── small helpers ─────────────────────────────────────────────────────────
 
+  @doc false
   # Load session model + full session data (messages + context + mode) from DB.
-  # Returns {:ok, model, %{"messages" => [...], "context" => %{...}, "mode" => "confidant"|"assistant"}}
-  defp load_session(session_id, user_id) do
+  # Returns {:ok, model, %{"id" => ..., "messages" => [...], "context" => %{...}, "mode" => "confidant"|"assistant"}}
+  #
+  # The `"id"` field is REQUIRED by ContextEngine.build_assistant_messages/2
+  # (needed to load tool_history for the Recently-extracted-files block and
+  # tool_call/tool_result interleaving). Omitting it silently disables both
+  # features — see the contract assertion in ContextEngine.
+  #
+  # Exposed as `def` (not `defp`) so the load-contract integration test can
+  # exercise the EXACT production code path without manually constructing a
+  # session_data map (the failure mode we hit when the id wiring broke).
+  def load_session(session_id, user_id) do
     try do
       result =
         query!(Repo, "SELECT model, messages, context, mode FROM sessions WHERE id=? AND user_id=?",
@@ -1085,7 +1127,11 @@ defmodule Dmhai.Agent.UserAgent do
               _                       -> %{}
             end
 
-          {:ok, model || "", %{"messages" => messages, "context" => context, "mode" => mode || "confidant"}}
+          {:ok, model || "",
+           %{"id" => session_id,
+             "messages" => messages,
+             "context" => context,
+             "mode" => mode || "confidant"}}
 
         _ ->
           {:error, "Session not found"}

@@ -86,8 +86,31 @@ function renderProgressRow(row) {
 
 UIManager.renderChat = function() {
     const container = document.getElementById('chat-container');
+
+    // Detach the streaming placeholder (created at turn start in
+    // manager-search.js, id='streaming-body') before wiping the chat
+    // DOM. Two reasons:
+    //  (1) Preserves the same DOM node so `_updateStreamPlaceholder`'s
+    //      in-place innerHTML updates keep working tick-to-tick.
+    //  (2) Avoids re-rendering the whole accumulating answer (markdown +
+    //      math) on every poll tick — that's what caused the visible
+    //      flash at turn completion.
+    // Reattached at the very end so the placeholder stays chronologically
+    // last in the timeline.
+    var streamingMessage = null;
+    var streamingBody = document.getElementById('streaming-body');
+    if (streamingBody) {
+        streamingMessage = streamingBody.closest('.message.assistant');
+        if (streamingMessage && streamingMessage.parentNode === container) {
+            container.removeChild(streamingMessage);
+        }
+    }
+
     container.innerHTML = '';
-    if (!this.currentSession) return;
+    if (!this.currentSession) {
+        if (streamingMessage) container.appendChild(streamingMessage);
+        return;
+    }
     var sessionId = this.currentSession.id;
     var renderSession = this.currentSession;
     var timeline = buildSessionTimeline(this.currentSession);
@@ -262,22 +285,31 @@ UIManager.renderChat = function() {
         }
         container.appendChild(div);
     });
-    // If there's an active stream for this session, render a live placeholder
-    var streamEntry = this._streamMap.get(this.currentSession.id);
-    if (streamEntry) {
-        var streamDiv = document.createElement('div');
-        streamDiv.className = 'message assistant';
-        if (streamEntry.content) {
-            var streamHdr = buildMsgHeaderEl({ role: 'assistant', ts: Date.now() }, streamEntry.session);
-            streamDiv.appendChild(streamHdr);
+    // Streaming placeholder handling:
+    //   - If we detached an existing placeholder at the top → reattach the
+    //     SAME node. Preserves its content + node identity for
+    //     `_updateStreamPlaceholder` to keep writing into.
+    //   - Otherwise (initial render / session reload), build a fresh
+    //     placeholder from `_streamMap` if one is pending.
+    if (streamingMessage) {
+        container.appendChild(streamingMessage);
+    } else {
+        var streamEntry = this._streamMap.get(this.currentSession.id);
+        if (streamEntry) {
+            var streamDiv = document.createElement('div');
+            streamDiv.className = 'message assistant';
+            if (streamEntry.content) {
+                var streamHdr = buildMsgHeaderEl({ role: 'assistant', ts: Date.now() }, streamEntry.session);
+                streamDiv.appendChild(streamHdr);
+            }
+            var streamBody = document.createElement('div');
+            streamBody.className = 'msg-body';
+            streamBody.id = 'streaming-body';
+            streamBody.innerHTML = streamEntry.searchWarning + renderWithMath(streamEntry.content);
+            addCopyButtons(streamBody); wrapTables(streamBody);
+            streamDiv.appendChild(streamBody);
+            container.appendChild(streamDiv);
         }
-        var streamBody = document.createElement('div');
-        streamBody.className = 'msg-body';
-        streamBody.id = 'streaming-body';
-        streamBody.innerHTML = streamEntry.searchWarning + renderWithMath(streamEntry.content);
-        addCopyButtons(streamBody); wrapTables(streamBody);
-        streamDiv.appendChild(streamBody);
-        container.appendChild(streamDiv);
     }
     container.scrollTop = container.scrollHeight;
 };

@@ -121,8 +121,25 @@ defmodule Dmhai.Agent.ContextEngine do
     # without re-running the tool — the raw tool output is back in
     # context. Older turns' tool messages age out per the N-turn and
     # byte caps enforced by ToolHistory.save_turn.
-    session_id   = session_data["id"]
-    tool_history = if session_id, do: Dmhai.Agent.ToolHistory.load(session_id), else: []
+    #
+    # `session_data["id"]` is REQUIRED — a missing id here silently
+    # disables both the tool_history injection AND the Recently-extracted
+    # files block below, leaving the model blind to retained tool output.
+    # Raise loudly so any future wiring break fails immediately instead of
+    # degrading behavior invisibly.
+    session_id =
+      case session_data["id"] do
+        sid when is_binary(sid) and sid != "" ->
+          sid
+        other ->
+          raise ArgumentError,
+            "ContextEngine.build_assistant_messages/2: session_data must include a non-empty \"id\" key " <>
+              "(got #{inspect(other)}). This id drives ToolHistory.load and the Recently-extracted " <>
+              "files block — silently skipping them would disable Phase-3 features. Ensure load_session/2 " <>
+              "(or any caller constructing session_data) populates \"id\"."
+      end
+
+    tool_history = Dmhai.Agent.ToolHistory.load(session_id)
     history_llm  = Dmhai.Agent.ToolHistory.inject(history_llm, tool_history)
 
     # Build a runtime directory naming the files whose raw extracted

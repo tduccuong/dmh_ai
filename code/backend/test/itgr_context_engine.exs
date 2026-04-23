@@ -9,7 +9,12 @@ defmodule Itgr.ContextEngine do
   import Ecto.Adapters.SQL, only: [query!: 3]
 
   defp session(opts) do
+    # `"id"` is required by build_assistant_messages/2's contract
+    # assertion — it drives ToolHistory.load + the Recently-extracted
+    # files block. These tests don't care about the actual id value,
+    # so a random uid is fine; what matters is that the key is present.
     %{
+      "id"       => Keyword.get(opts, :id, T.uid()),
       "messages" => Keyword.get(opts, :messages, []),
       "context"  => Keyword.get(opts, :context, nil)
     }

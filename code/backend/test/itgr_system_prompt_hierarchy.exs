@@ -85,6 +85,38 @@ defmodule Itgr.SystemPromptHierarchy do
            "section order drifted: #{inspect(sections_in_order)} map to #{inspect(indices)}"
   end
 
+  # ─── Attachments decision tree — step ordering ──────────────────────────
+
+  # The bare-📎 follow-up decision tree must put "check Recently-extracted
+  # first" ABOVE "Detail-level → re-extract". If the order drifts the
+  # model re-extracts files that are already in context (regression we hit
+  # with gemini-3-flash in session 1776956365474). Lock the order in.
+  test "assistant: bare-📎 decision tree puts Recently-extracted check before the re-extract branches" do
+    prompt = SystemPrompt.generate_assistant([])
+
+    recently_extracted_check = :binary.match(prompt, "Is the file listed in `## Recently-extracted files`")
+    detail_branch            = :binary.match(prompt, "Detail-level question")
+    gist_branch              = :binary.match(prompt, "Gist-level question")
+    stop_marker              = :binary.match(prompt, "STOP HERE")
+
+    refute recently_extracted_check == :nomatch, "Recently-extracted check missing from the Attachments tree"
+    refute detail_branch == :nomatch,            "Detail-level branch missing"
+    refute gist_branch == :nomatch,              "Gist-level branch missing"
+    refute stop_marker == :nomatch,              "Missing STOP HERE short-circuit marker"
+
+    {re_pos, _} = recently_extracted_check
+    {detail_pos, _} = detail_branch
+    {gist_pos, _} = gist_branch
+    {stop_pos, _} = stop_marker
+
+    assert re_pos < detail_pos,
+           "Recently-extracted check must appear BEFORE Detail-level branch"
+    assert re_pos < gist_pos,
+           "Recently-extracted check must appear BEFORE Gist-level branch"
+    assert stop_pos < detail_pos,
+           "STOP HERE marker must sit inside the Recently-extracted branch (before the Detail-level branch)"
+  end
+
   # ─── Confidant ────────────────────────────────────────────────────────────
 
   test "confidant: heading hierarchy is coherent" do

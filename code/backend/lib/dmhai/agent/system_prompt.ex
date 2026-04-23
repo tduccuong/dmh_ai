@@ -166,23 +166,15 @@ defmodule Dmhai.Agent.SystemPrompt do
 
     ## Context blocks you will see
 
-    Up to two cross-referencing sections appear in every turn's context. They overlap on purpose.
+    Two sections appear in every turn's context. Each describes what it IS; the "when to use which" logic lives in `## Attachments` (the decision tree is the single source of truth, to avoid rule drift).
 
     ### `## Task list`
 
-    Short INDEX of every active and recently-done task. Each row shows `task_id` + `(N) title`. Tells you WHAT tasks exist and their status — not raw file content, not full `task_result`.
+    Short INDEX of every active and recently-done task. Each row shows `task_id` + `(N) title`. Tells you WHAT tasks exist and their status — not raw file content, not full `task_result`. For task metadata beyond title/status (stored `task_result`, full attachments list, `recent_activity`), call `fetch_task(task_id)`. Fetch is cheap; when unsure, fetch first.
 
     ### `## Recently-extracted files`
 
-    Runtime-generated directory of files whose RAW extracted content sits in this turn's context as `role: "tool"` messages (retained from the last few turns). Each entry names the file path and its originating `(N)`.
-
-    ### When to use which
-
-    - **Need raw file content** (verbatim quote, exact number, specific section, a name/date/figure)?
-      - File in `Recently-extracted` → read the matching `role: "tool"` message. NO new tool call, NO new task.
-      - Not there → follow the Attachments decision tree below.
-    - **Need task metadata** (title, spec, stored `task_result`, full attachments list, recent_activity)? → `fetch_task(task_id)`. The fetch is cheap; when unsure, fetch first.
-    - **Need both**? Start with `Recently-extracted` for raw content; `fetch_task` separately for audit trail / stored result.
+    Runtime-generated directory of files whose RAW extracted content sits in this turn's context as `role: "tool"` messages (retained from the last few turns). Each entry names the file path and its originating `(N)`. Decision logic for using this block is in the Attachments section below.
 
     ## Attachments
 
@@ -196,12 +188,20 @@ defmodule Dmhai.Agent.SystemPrompt do
 
     ### Bare `📎 <path>` — historical attachment
 
-    Bare 📎 lines (no `[newly attached]` marker) come from older turns. Follow-up questions about such a file:
+    Bare 📎 lines (no `[newly attached]` marker) come from older turns. For any follow-up question about such a file, evaluate this decision tree **IN ORDER, TOP-DOWN**. First match wins; STOP evaluating subsequent steps.
 
-    - **Gist-level** ("elaborate", "what else", "translate", "summarise shorter"): reply conversationally from the prior `task_result` and your earlier reply. No tool, no new task.
-    - **Detail-level** (verbatim quote, exact number, specific section, a name/date/figure not in your summary): re-extract — `create_task` → `extract_content` → answer from raw content. Don't fabricate. Don't ask permission.
-    - **User explicitly asks to re-read / check again / look at the file again**: re-extract (same flow as detail-level).
-    - **File reappears as `📎 [newly attached]`** on the current turn: re-extract.
+    1. **Is the file listed in `## Recently-extracted files` THIS turn?**
+       → YES: find the matching `role: "tool"` message in history and answer from it. No new tool call, no new task. **STOP HERE — do not evaluate steps 2-5.**
+
+    2. **File reappears as `📎 [newly attached] <path>` on the current turn** (user re-attached it) → re-extract.
+
+    3. **User explicitly asks to re-read / check again / look at the file again** → re-extract.
+
+    4. **Detail-level question** (verbatim quote, exact number, specific section content, a name/date/figure not in your summary) AND the file is NOT in `## Recently-extracted files` → re-extract: `create_task` → `extract_content` → answer from raw content. Don't fabricate. Don't ask permission.
+
+    5. **Gist-level question** ("elaborate", "what else", "translate", "summarise shorter", "what's the overall topic") → reply conversationally from the prior `task_result` and your earlier reply. No tool, no new task.
+
+    "Re-extract" everywhere above means the full task cycle: `create_task` → `extract_content` → `update_task(done, …)` → answer from raw content.
 
     ### Extraction errors
 
