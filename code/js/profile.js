@@ -298,6 +298,18 @@ const SettingsModal = {
                     .catch(function() { return { models: [] }; });
                 var localPromise = OllamaAPI.fetchModels().catch(function() { return []; });
                 var results = await Promise.all([registryPromise, localPromise]);
+                // Stale-response guard: between the debounced `setTimeout` firing
+                // and the `await` resolving, the user may have kept typing. By
+                // then the input value has advanced (e.g. `nem` → `nemo`), a new
+                // debounce timer fired, and a second fetch is in flight. When the
+                // EARLIER fetch resolves AFTER the newer one has already
+                // populated `sugg`, its results get appended on top — producing
+                // duplicates (every `nemo` match also matches `nem`, so each
+                // appears twice). `clearTimeout` on an already-fired timer is a
+                // no-op, so we can't cancel the pending await; instead, compare
+                // the captured `q` to the current input value and abort when
+                // they've diverged.
+                if ((input.value || '').trim().toLowerCase() !== q) return;
                 var registryModels = (results[0] && results[0].models) || [];
                 var localModels    = results[1] || [];
                 // Partition by name. `:cloud` and `-cloud` are Ollama's

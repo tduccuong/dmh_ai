@@ -395,7 +395,7 @@ defmodule Dmhai.Tools.ExtractContent do
       # Surface the render step so the FE's rotating tool-row label
       # reflects actual sub-activity rather than sitting on a spinner.
       Dmhai.Agent.SessionProgress.append_sub_label(
-        rid, "RenderPdf(\"#{n_pages} pages\")")
+        rid, "RenderPdf → #{n_pages} pages")
 
       case System.cmd(
              "pdftoppm",
@@ -431,7 +431,7 @@ defmodule Dmhai.Tools.ExtractContent do
           start_page = offset + 1
           end_page   = offset + length(chunk)
           Dmhai.Agent.SessionProgress.append_sub_label(
-            rid, "OcrPage(\"pages #{start_page}-#{end_page} of #{n_pages}\")")
+            rid, "OcrPage → pages #{start_page}-#{end_page} of #{n_pages}")
           case describe_ocr_chunk(chunk, start_page) do
             {:ok, text} -> {[text | acc], offset + length(chunk)}
             {:error, r} -> throw({:ocr_fail, r})

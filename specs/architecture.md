@@ -1050,6 +1050,40 @@ within a session is nil by design. A user who wants two truly independent
 threads of work creates a second chat session; each session has its own
 GenServer and its own task list.
 
+### Interrupt cleanup — what happens when the user hits Stop
+
+`cancel_current_task/1` runs four cleanups in order:
+
+1. **Kill the Task process** via `Process.exit(task_pid, :kill)`. This
+   cascades through the BEAM exit chain: `Task.async` children spawned
+   inside the tool (e.g. `Web.Search.call_search_engine`'s parallel
+   searxng queries) are LINKED, so they die with the parent; Finch /
+   Req sockets close as the caller-process DOWN is detected, sending
+   FIN/RST to searxng / Jina / model endpoints. Outbound HTTP work
+   stops within milliseconds; no processes leak.
+2. **Clear `sessions.stream_buffer`** so the next FE poll sees
+   `is_working=false` with a genuinely empty buffer.
+3. **Delete zombie pending `session_progress` rows**
+   (`SessionProgress.delete_pending_for_session/1`). The killed task
+   had written a `status='pending'` row in `execute_tools` before the
+   tool ran, but can't run its own `mark_tool_done` / `delete` cleanup
+   after the kill. Without this step, `fetch_for_session/2` keeps
+   re-returning the zombie row on every poll (its SQL explicitly
+   includes pending rows regardless of cursor, so FE can pick up
+   live `sub_label` updates on in-flight tools), the CSS
+   `progress-spin` keeps animating, and the FE's `_rotateSubLabels`
+   interval keeps cycling through the dead tool's URLs forever.
+4. **Cancel ongoing tasks** for this session (`Tasks.mark_cancelled` +
+   `task_result="Interrupted by user"`). They surface in the
+   `### done` section of the next turn's task list so the user can
+   ask to resume (`update_task(status: "pending")` reopens).
+
+FE counterpart: the stop-btn click handler also filters
+`currentSession.progress` locally (dropping `status='pending'` rows)
+and calls `renderChat()` before the BE's cleanup has propagated. This
+makes the stop feel instant even though `/agent/interrupt` is
+fire-and-forget.
+
 ---
 
 ## Completion & output
@@ -1182,6 +1216,66 @@ Checks:
    `ctx.nudges` counter bump → 3-strike escalation. Catches the
    "create_task twice with same title for one follow-up question"
    misbehaviour we see on weaker models like gemini-3-flash.
+
+7. **Consecutive-web_search** — `check_no_consecutive_web_search/3`
+   rejects a `web_search` call when the IMMEDIATELY-PRIOR tool call in
+   this turn was also `web_search`. Rationale: one `web_search` already
+   fans out 2-3 parallel queries in the BE (see
+   `Dmhai.Web.Search.generate_queries`), so back-to-back web_searches
+   are wasted effort. Intra-batch AND inter-round covered via the same
+   pseudo-message threading as rule #6. Alternating patterns are
+   allowed (`web_search` → `run_script` → `web_search`) — the gate only
+   blocks literal consecutivity. The nudge is TEACHING: it tells the
+   model the correct research loop (digest results → dig with a
+   DIFFERENT tool on concrete findings → only re-search if a genuine
+   gap remains). Tagged `{:consecutive_web_search, reason}` → same
+   marker / counter / escalation plumbing. Catches the "slight query
+   reword spam" failure mode where gemini-3-flash chains 3-4 near-
+   identical web_searches that the duplicate gate (rule #6) can't
+   catch because the query strings technically differ.
+
+8. **Single periodic task per chat session** —
+   `check_no_duplicate_periodic_task_in_session/3` rejects
+   `create_task(task_type: "periodic", ...)` when the session already
+   has an ACTIVE periodic task (any non-terminal state: `pending`,
+   `ongoing`, or `paused`). Policy rationale: each periodic task fires
+   on its own 30-s (or other `intvl_sec`) timer, and if a model spawns
+   multiple periodics for a single user ask, silent turns compound —
+   we saw 4 periodic rows spawned from one "give me a joke every 30
+   sec" request with `nemotron-3-nano:30b-cloud`, producing 6+ pickups
+   per 30-s window instead of 1. Unlike rule #6 (keys on `task_title`),
+   this gate keys on `task_type` alone, so it catches the failure mode
+   regardless of whether the duplicate titles match.
+
+   The nudge is USER-FACING: it tells the model exactly what to say
+   back to the user, naming the existing task as `(N) <title>` and
+   explaining the policy ("DMH-AI only supports 1 periodic task per
+   chat session"). If the user genuinely wants a different periodic
+   schedule, the model must propose cancelling the existing one first
+   and WAIT for confirmation — no silent replacement. If the model was
+   trying to progress an existing periodic mid-`[Task due:]` pickup,
+   the nudge redirects it to `update_task` with the provided task_id.
+   `Tasks.session_active_periodic/1` supplies the `(task_num, title,
+   task_id)` tuple the nudge embeds.
+
+### Complementary prompt guidance (periodic task pickup)
+
+`run_assistant_silent`'s synthetic `[Task due: <id> — <title>]` message
+now explicitly forbids `create_task` during a pickup and spells out the
+three-step workflow (run tools → `update_task(task_id: <id>, status:
+"done", task_result: ...)` → final text). It also tells the model its
+final text IS the task output (the joke, quote, status) with no
+meta-prefix like "Joke delivered:" or "Task complete" — matches the
+`## No bookkeeping in user-facing text` rule from the base prompt but
+re-states it in the task-pickup context where weaker models drift.
+Rule #8 is the runtime safety net for when this guidance doesn't stick.
+
+**Prompt-level counterpart to #7**: the Assistant prompt's new
+`## Tool selection` section teaches the model WHICH tool matches WHICH
+question shape up-front — "if the user names a service with an HTTP
+API or CLI you can invoke (Ollama, GitHub, systemd, a local daemon),
+the answer is at the endpoint — use `run_script`, not `web_search`."
+Rule #7 is the runtime safety net for when that guidance doesn't stick.
 
 Removed:
 - Signal protocol rules (`step_signal` batching, `task_signal` ordering,

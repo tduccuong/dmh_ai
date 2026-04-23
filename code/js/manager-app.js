@@ -67,9 +67,15 @@ UIManager.initializeApp = async function() {
             this.renderTaskList();
         }
 
-        // Start notification polling for Assistant worker updates
-        var pollMs = parseInt(this._prefs && this._prefs.notificationPollInterval) || 5000;
-        NotificationPoller.start(pollMs);
+        // NotificationPoller is DORMANT — the BE's router does not
+        // implement `/notifications`, so every poll would 404 and spam
+        // the devtools console. It was designed for a BE-push channel
+        // that the current polling-based architecture no longer needs
+        // (`startProgressPolling` in this file already delivers all
+        // session / message / progress deltas). The implementation
+        // stays in core.js so it can be revived cheaply if we ever add
+        // a real `/notifications` endpoint for push-style delivery.
+        // Previously: `NotificationPoller.start(pollMs)`.
     } catch (e) {
         console.error('Failed to load sessions:', e);
     }
@@ -239,8 +245,24 @@ UIManager.createNewSession = async function() {
     }
     await SessionStore.setCurrentSessionId(empty.id);
     this.currentSession = empty;
+    // Reset the renderChat scroll-policy counter for the new session
+    // (same as switchSession). Without this, a prior session's count
+    // carries over and the new session's first render may not scroll
+    // to bottom.
+    this._lastRenderedMsgCount = 0;
     await this.renderSessions();
     this.renderChat();
+    // Arm `startProgressPolling` for the new session — mirror what
+    // switchSession already does. Without this, the session ID swap on
+    // line `this.currentSession = empty;` above triggers the old
+    // polling loop's session-mismatch bail on its next tick
+    // (`self.currentSession.id !== sid` → `_progressPoll = null`), and
+    // nothing ever arms a new loop for `empty.id`. Result: all
+    // background deliveries (periodic-task firings, any assistant
+    // message landing without a user-initiated turn) silently never
+    // reach the FE, because the delta-polling that would fetch them is
+    // dead. This was the "periodic jokes don't show up on FE" symptom.
+    this.startProgressPolling();
     // Mirror switchSession's Tasks-sidebar housekeeping so the sidebar
     // actually reflects the newly-focused session. Otherwise the old
     // session's tasks stay rendered until something else retriggers it.
@@ -261,6 +283,13 @@ UIManager.switchSession = async function(id) {
     this.currentSession = await SessionStore.getSession(id);
     await SessionStore.setCurrentSessionId(id);
     this.clearTaskStatusArea();
+    // Reset the "new message arrived?" counter used by renderChat's
+    // scroll policy. On session switch the first render should scroll
+    // to the bottom naturally (the loaded session has N messages; prev
+    // was 0 → counts as "new" → scrolls to end, which is the expected
+    // UX). Without the reset, a prior session's count carries over and
+    // the new session's initial render may not pin to bottom.
+    this._lastRenderedMsgCount = 0;
     await this.refreshSessionProgress();
     this.renderChat();
     this.startProgressPolling();
@@ -358,21 +387,44 @@ UIManager.startProgressPolling = function() {
                     var replaced = false;
                     for (var pi = 0; pi < self.currentSession.progress.length; pi++) {
                         if (self.currentSession.progress[pi].id === p.id) {
-                            self.currentSession.progress[pi] = p;
+                            // Only mark "changed" when the upsert ACTUALLY
+                            // differs from what we already have. `/poll`
+                            // re-emits every pending row on every tick for
+                            // live sub_label rotation, so without this
+                            // check we'd trigger a renderChat rebuild
+                            // every 500 ms just to paint the same DOM —
+                            // that's what drove the flicker regression.
+                            var prev = self.currentSession.progress[pi];
+                            if (JSON.stringify(prev) !== JSON.stringify(p)) {
+                                self.currentSession.progress[pi] = p;
+                                changed = true;
+                            }
                             replaced = true;
                             break;
                         }
                     }
-                    if (!replaced) self.currentSession.progress.push(p);
+                    if (!replaced) {
+                        self.currentSession.progress.push(p);
+                        changed = true;
+                    }
                     if (typeof p.id === 'number' && p.id > progSince) progSince = p.id;
-                    changed = true;
                 });
 
                 isWorking = !!data.is_working;
             }
         } catch (e) {}
 
-        if (changed) self.renderChat();
+        // Wrap renderChat so a render error doesn't kill the poll loop
+        // forever. Before this guard, a single throw (e.g. null container
+        // during a teardown, KaTeX failure on bad markdown) would prevent
+        // the trailing setTimeout from running and polling would silently
+        // stop — exactly the failure mode where periodic-task jokes
+        // landed in the DB but never reached the FE.
+        if (changed) {
+            try { self.renderChat(); } catch (e) {
+                if (typeof console !== 'undefined') console.error('[startProgressPolling] renderChat threw', e);
+            }
+        }
         var nextMs = isWorking ? 500 : 5000;
         self._progressPoll = setTimeout(tick, nextMs);
     }

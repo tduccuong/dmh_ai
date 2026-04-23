@@ -243,7 +243,12 @@ defmodule Dmhai.Agent.UserAgent do
   defp cancel_current_task(%{current_task: {_ref, task_pid, reply_pid, session_id}} = state) do
     # Actually kill the running Task — this cancels any in-flight LLM /
     # web_fetch HTTP calls, preventing further token burn and any
-    # downstream tool work from continuing.
+    # downstream tool work from continuing. All Finch / Req sockets
+    # owned by the killed process close as part of the BEAM exit cascade
+    # (Task.async children are LINKED, so they die with the parent;
+    # Finch detects the caller DOWN and closes the connection), so
+    # outbound HTTP to searxng / Jina / model endpoints terminates
+    # cleanly — searxng workers discover broken pipe and go idle.
     if is_pid(task_pid) and Process.alive?(task_pid) do
       Process.exit(task_pid, :kill)
     end
@@ -254,6 +259,17 @@ defmodule Dmhai.Agent.UserAgent do
     # Clear stream_buffer so the FE's next poll sees is_working=false
     # and the "Aborted" banner can reflect a genuine settled state.
     Dmhai.Agent.StreamBuffer.clear(session_id, state.user_id)
+
+    # Remove zombie `status='pending'` session_progress rows for this
+    # session. The killed task was in the middle of a tool call — it
+    # had written a pending row in `execute_tools` but couldn't run its
+    # own `mark_tool_done` / `delete` cleanup after the kill. Without
+    # this, `fetch_for_session/2` keeps re-returning the zombie row on
+    # every poll (its SQL explicitly includes pending rows regardless
+    # of cursor), the CSS `progress-spin` keeps animating, and the
+    # `_rotateSubLabels` FE interval keeps cycling through the dead
+    # tool's sub_labels forever.
+    Dmhai.Agent.SessionProgress.delete_pending_for_session(session_id)
 
     # Mark any tasks the model had flipped to 'ongoing' this turn as
     # 'cancelled' with task_result="Interrupted by user". They surface
@@ -341,10 +357,36 @@ defmodule Dmhai.Agent.UserAgent do
     # so the model knows what to act on. Not persisted — it's an internal
     # prompt, not user input. The model's final assistant text IS persisted
     # via append_session_message below.
+    #
+    # Two instructions land hard here because they're the exact compliance
+    # failures we saw with nemotron-3-nano:30b-cloud on periodic tasks:
+    #
+    #   1. "This is a PICKUP of the EXISTING task `<id>` — use
+    #      update_task, not create_task." Catches the nemotron failure
+    #      mode where each pickup spawned a fresh periodic row, one of
+    #      the causes of the exponential-amplification bug (Police gate
+    #      6 now also rejects the runtime side).
+    #
+    #   2. "Your final text IS the task output. No 'Joke delivered:',
+    #      'Task complete', or similar meta-prefix." Catches the nemotron
+    #      habit of producing a real reply PLUS a bookkeeping-style line,
+    #      both persisted, cluttering the session timeline.
     synthetic = %{role: "user",
-                  content: "[Task due: `#{task.task_id}` — #{task.task_title}] " <>
-                           "Pick this task up now. Run whatever execution tools you need, " <>
-                           "then call update_task(status: \"done\", task_result: ...) when finished."}
+                  content:
+                    "[Task due: `#{task.task_id}` — #{task.task_title}]\n\n" <>
+                    "This is a PICKUP of the EXISTING periodic task `#{task.task_id}`. " <>
+                    "You MUST progress it via `update_task(task_id: \"#{task.task_id}\", ...)`. " <>
+                    "Do NOT call `create_task` — a new task row here is always a bug " <>
+                    "(one periodic per session is enforced at runtime).\n\n" <>
+                    "Workflow:\n" <>
+                    "  1. Run whatever execution tools you need (web_fetch, run_script, etc.) " <>
+                    "to produce the task's fresh output.\n" <>
+                    "  2. Call `update_task(task_id: \"#{task.task_id}\", status: \"done\", " <>
+                    "task_result: \"<short summary>\")` — this auto-reschedules the next cycle.\n" <>
+                    "  3. Your final text IS the task output (the joke, the quote, the status — " <>
+                    "whatever this task produces). Write it directly in the user's language. " <>
+                    "NO meta-prefix like \"Joke delivered:\", \"Task complete\", \"Here is your...\", " <>
+                    "\"Your update:\". The user just wants the content."}
 
     llm_messages = llm_messages ++ [synthetic]
 
@@ -369,6 +411,23 @@ defmodule Dmhai.Agent.UserAgent do
     }
 
     Dmhai.SysLog.log("[ASSISTANT:auto] user=#{user_id} session=#{session_id} task=#{task.task_id} title=#{String.slice(task.task_title || "", 0, 60)}")
+
+    # Flip the task to 'ongoing' at pickup start — mirrors how
+    # `create_task` stamps a fresh one_off as 'ongoing' from the moment
+    # it exists (see Dmhai.Tools.CreateTask). This closes the cadence-
+    # correctness gap for periodic pickups: without it, a silent turn
+    # starts with the task in 'pending' (that's how the previous pickup's
+    # mark_done left it) and relies on the model calling
+    # `update_task(status: "ongoing")` or `... "done"` to advance it.
+    # If the model skips both transitions (nemotron-3-nano frequently
+    # does), `auto_close_ongoing_tasks` at end of the text round filters
+    # for status=="ongoing" and finds nothing → `mark_done` never fires
+    # → `time_to_pickup` stays in the past → `maybe_trigger_next_due`
+    # re-dispatches {:task_due} immediately → burst fire until the model
+    # eventually complies. Marking ongoing here guarantees auto_close
+    # will catch the pickup's completion and reschedule for the next
+    # intvl_sec window regardless of model behaviour.
+    Tasks.mark_ongoing(task.task_id)
 
     session_turn_loop(llm_messages, model, ctx, 0)
 
@@ -1000,7 +1059,27 @@ defmodule Dmhai.Agent.UserAgent do
                # Police gate 4 — within-turn duplicate-tool-call. Blocks
                # the "create_task twice with same title" / "extract_content
                # the same PDF twice" misbehaviour we saw on gemini-3-flash.
-               :ok <- Dmhai.Agent.Police.check_no_duplicate_tool_call(name, args, prior_acc) do
+               :ok <- Dmhai.Agent.Police.check_no_duplicate_tool_call(name, args, prior_acc),
+               # Police gate 5 — no two `web_search` calls in a row. A single
+               # web_search already fans out 2-3 parallel queries in the BE,
+               # so back-to-back web_searches are redundant. Catches the
+               # "model spams web_search with slightly reworded queries
+               # instead of digesting the first result" failure mode. The
+               # nudge TEACHES the correct loop: digest → dig with a
+               # different tool → re-search only if a genuine gap remains.
+               :ok <- Dmhai.Agent.Police.check_no_consecutive_web_search(name, args, prior_acc),
+               # Police gate 6 — one periodic task per session. Rejects
+               # create_task(task_type: "periodic") when the session
+               # already has an active periodic. Catches the failure
+               # mode where a model spawns multiple periodics for one
+               # user ask, each firing on its own timer → exponential
+               # amplification of silent turns (observed with
+               # nemotron-3-nano:30b-cloud: 4 periodic tasks for a
+               # single "joke every 30 sec" ask). The nudge is
+               # user-facing: it tells the model exactly what to reply
+               # so the user sees a coherent explanation naming the
+               # existing task's (N).
+               :ok <- Dmhai.Agent.Police.check_no_duplicate_periodic_task_in_session(name, args, ctx) do
             progress_label = Dmhai.Agent.ProgressLabel.format(name, args)
             # `update_task(status: "done")` is pure cleanup — the final
             # assistant message IS the completion event from the user's

@@ -184,8 +184,20 @@ defmodule Dmhai.Handlers.Data do
         new_msgs = Enum.filter(all_msgs, fn m -> (m["ts"] || 0) > msg_since end)
         progress = Dmhai.Agent.SessionProgress.fetch_for_session(session_id, prog_since)
 
-        has_active_task = Dmhai.Agent.Tasks.fetch_next_due(session_id) != nil
-        is_working = is_binary(stream_buffer) or has_active_task
+        # `is_working` drives the FE poll cadence: true → 500 ms, false
+        # → 5 s idle. Three conditions feed it:
+        #   (1) stream_buffer non-null — assistant mid-turn emitting text.
+        #   (2) fetch_next_due hit — a task is due NOW (past pickup).
+        #   (3) periodic task armed for the FUTURE — a pickup is coming
+        #       within the next ~30 s (whichever interval the user chose).
+        # Without (3), a 30-s periodic task would give the FE a 28-s lull
+        # of idle polling between firings, letting fresh assistant
+        # messages wait up to 5 s before rendering (5-s idle cadence).
+        # With (3), the FE stays on 500 ms while the periodic is in
+        # rotation and sees each joke land almost immediately.
+        has_due_task      = Dmhai.Agent.Tasks.fetch_next_due(session_id) != nil
+        has_armed_periodic = Dmhai.Agent.Tasks.has_pending_periodic_for_session(session_id)
+        is_working = is_binary(stream_buffer) or has_due_task or has_armed_periodic
 
         json(conn, 200, %{
           messages:      new_msgs,

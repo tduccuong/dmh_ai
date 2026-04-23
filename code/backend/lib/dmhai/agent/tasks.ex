@@ -274,6 +274,64 @@ defmodule Dmhai.Agent.Tasks do
   end
 
   @doc """
+  True when the session has at least one periodic task armed for a
+  FUTURE pickup. Unlike `fetch_next_due/2` (which filters to
+  `time_to_pickup <= now`), this returns true even during the 28-second
+  "between-firings" lull of a 30s periodic cycle. Drives the
+  `is_working` flag in `/sessions/:id/poll` so the FE keeps the fast
+  500 ms poll cadence while a periodic is in rotation — otherwise it
+  falls back to the 5 s idle cadence, adding up to 5 s of lag between
+  a joke landing in the DB and the user seeing it.
+  """
+  @spec has_pending_periodic_for_session(String.t()) :: boolean()
+  def has_pending_periodic_for_session(session_id) when is_binary(session_id) do
+    r = query!(Repo, """
+    SELECT 1
+    FROM tasks
+    WHERE session_id=?
+      AND task_type='periodic'
+      AND task_status='pending'
+      AND time_to_pickup IS NOT NULL
+    LIMIT 1
+    """, [session_id])
+    r.rows != []
+  end
+
+  @doc """
+  Return the single ACTIVE periodic task for a session (non-terminal —
+  `pending` | `ongoing` | `paused`), or `nil` if none exists. "Active"
+  here is broader than `has_pending_periodic_for_session/1`'s "armed for
+  future pickup" check: we also count an `ongoing` periodic (a pickup
+  currently mid-turn) and a `paused` one (explicitly suspended by the
+  user), because the one-periodic-per-session policy must hold
+  regardless of which active state the existing task is in.
+
+  Used by the Police single-periodic gate to produce a nudge that
+  names `(task_num)` + `task_title` of the existing task, so the model
+  can relay that to the user verbatim ("we already have task (N) …").
+
+  Returns the first match by `created_at ASC` so the "existing" task is
+  the oldest surviving one — stable across repeated polls.
+  """
+  @spec session_active_periodic(String.t()) :: map() | nil
+  def session_active_periodic(session_id) when is_binary(session_id) do
+    r = query!(Repo, """
+    SELECT #{@select_cols}
+    FROM tasks
+    WHERE session_id=?
+      AND task_type='periodic'
+      AND task_status IN ('pending', 'ongoing', 'paused')
+    ORDER BY created_at ASC
+    LIMIT 1
+    """, [session_id])
+
+    case r.rows do
+      [row] -> row_to_map(row)
+      _     -> nil
+    end
+  end
+
+  @doc """
   Tasks that were ongoing when the app went down — on boot we revert them
   to pending so the next session turn can pick up where the log left off.
   """

@@ -664,6 +664,163 @@ defmodule Dmhai.Agent.Police do
   end
 
   @doc """
+  Per-tool-call gate enforcing the "one periodic task per chat session"
+  policy. Rejects `create_task(task_type: "periodic", ...)` when the
+  session already has an ACTIVE periodic task (pending / ongoing /
+  paused — any non-terminal state).
+
+  The nudge is educational AND user-facing: it tells the model exactly
+  what to say to the user, naming the existing periodic by its
+  per-session `(N)` number + title so the reply is concrete. If the
+  user genuinely wants a different periodic schedule, the model should
+  propose cancelling the existing one first and wait for confirmation —
+  no unilateral replacement.
+
+  Only fires on `create_task` with `task_type: "periodic"`. All other
+  tool calls bypass. `ctx[:session_id]` is required (non-session
+  callers bypass).
+  """
+  @spec check_no_duplicate_periodic_task_in_session(String.t(), map(), map()) ::
+          :ok | {:rejected, {atom(), String.t()}}
+  def check_no_duplicate_periodic_task_in_session("create_task", args, ctx)
+      when is_map(args) and is_map(ctx) do
+    cond do
+      args["task_type"] != "periodic" ->
+        :ok
+
+      not Map.has_key?(ctx, :session_id) ->
+        :ok
+
+      true ->
+        case Dmhai.Agent.Tasks.session_active_periodic(ctx[:session_id]) do
+          nil ->
+            :ok
+
+          existing ->
+            reason = build_duplicate_periodic_reason(existing)
+
+            Logger.warning(
+              "[Police] REJECTED duplicate_periodic_task_in_session: " <>
+                "session=#{inspect(ctx[:session_id])} existing=#{existing.task_id}"
+            )
+
+            Dmhai.SysLog.log(
+              "[POLICE] REJECTED duplicate_periodic_task_in_session: " <>
+                "session=#{inspect(ctx[:session_id])} existing=#{existing.task_id}"
+            )
+
+            {:rejected, {:duplicate_periodic_task_in_session, reason}}
+        end
+    end
+  end
+  def check_no_duplicate_periodic_task_in_session(_, _, _), do: :ok
+
+  defp build_duplicate_periodic_reason(existing) do
+    num = existing.task_num || "?"
+    title = existing.task_title || "(untitled)"
+
+    "Error: this chat session already has an active periodic task — " <>
+      "task (#{num}) `#{existing.task_id}` — #{title}. " <>
+      "DMH-AI supports at most ONE periodic task per chat session, " <>
+      "so this `create_task(task_type: \"periodic\", ...)` is rejected.\n\n" <>
+      "What to do next:\n" <>
+      "  (a) If the user ASKED for a different periodic schedule, do NOT " <>
+      "create a new one silently. Reply to them IN THEIR LANGUAGE with " <>
+      "exactly this information: \"We already have task (#{num}) " <>
+      "running periodically in this session. DMH-AI only supports 1 " <>
+      "periodic task per chat session. I can cancel task (#{num}) first, " <>
+      "then set up the new one — want me to do that?\" Then WAIT for " <>
+      "their answer; do not act unilaterally.\n" <>
+      "  (b) If the user is asking a regular question, call " <>
+      "`create_task(task_type: \"one_off\", ...)` instead — not " <>
+      "periodic.\n" <>
+      "  (c) If you were trying to PROGRESS the existing periodic task " <>
+      "(this happens during a `[Task due: ...]` pickup), use " <>
+      "`update_task(task_id: \"#{existing.task_id}\", ...)` — do NOT " <>
+      "call `create_task`. A second periodic row is always a bug."
+  end
+
+  @doc """
+  Per-tool-call gate: reject a `web_search` call when the immediately-
+  preceding tool call in this turn was ALSO `web_search`.
+
+  Rationale: one `web_search` already fans out 2-3 parallel search
+  queries in the BE (see `Dmhai.Web.Search.generate_queries`), so a
+  second consecutive call is redundant — the model should either answer
+  from what it already has OR reach for a DIFFERENT tool
+  (`run_script` with a direct API call when the question targets a
+  named service, `web_fetch` when it has a specific URL in mind).
+
+  Alternating is fine: `web_search` → `run_script` → `web_search` is
+  allowed when each step has a legitimate role. The gate only fires on
+  TWO web_searches with nothing between them.
+
+  `prior_messages` — the in-turn message accumulator (same shape as
+  `check_no_duplicate_tool_call/3`). Intra-batch duplicates AND
+  inter-round repeats are both covered because `execute_tools/3`
+  appends a synthetic assistant message per tool_call as it iterates.
+  """
+  @spec check_no_consecutive_web_search(String.t(), map(), [map()]) ::
+          :ok | {:rejected, {atom(), String.t()}}
+  def check_no_consecutive_web_search("web_search", _args, prior_messages)
+      when is_list(prior_messages) do
+    case last_tool_call_name(prior_messages) do
+      "web_search" ->
+        reason =
+          "Error: your immediately-prior tool call was `web_search`, and one " <>
+            "`web_search` already runs 2-3 parallel queries in the backend. " <>
+            "Calling it again right now is wasted effort.\n\n" <>
+            "The correct research loop is:\n" <>
+            "  1. DIGEST what the first `web_search` already returned — read " <>
+            "the snippets, identify names/URLs/terms that emerged.\n" <>
+            "  2. DIG DEEPER with a DIFFERENT tool on those findings: " <>
+            "`web_fetch` a specific URL the snippets mentioned; `run_script` " <>
+            "with `curl`/`jq` against a named service's API; `extract_content` " <>
+            "on a document you pulled down.\n" <>
+            "  3. Once you have concrete findings, THEN — and only if a gap " <>
+            "genuinely remains — consider another `web_search` with a query " <>
+            "refined by what you just learned. This is when the alternating " <>
+            "pattern `web_search` → (other tool) → `web_search` is legitimate.\n\n" <>
+            "What not to do: chaining two `web_search` calls back-to-back with " <>
+            "slightly reworded queries. The parallel fan-out of a single call " <>
+            "already covers that variance, and repeating doesn't unlock new " <>
+            "sources — it just burns tokens and stalls the turn."
+
+        Logger.warning("[Police] REJECTED consecutive_web_search")
+        Dmhai.SysLog.log("[POLICE] REJECTED consecutive_web_search")
+        {:rejected, {:consecutive_web_search, reason}}
+
+      _ ->
+        :ok
+    end
+  end
+  def check_no_consecutive_web_search(_, _, _), do: :ok
+
+  # Walk `prior_messages` newest-to-oldest, find the last assistant-role
+  # message that carries a non-empty `tool_calls` list, return the name
+  # of its LAST tool_call. The "last call in the last batch" is the
+  # correct signal for consecutivity — task-bookkeeping calls
+  # (create_task / update_task) emitted between web_searches are still
+  # tool calls and break the sequence by design (if the model is
+  # transitioning tasks, it's probably a different search intent).
+  defp last_tool_call_name(messages) do
+    messages
+    |> Enum.reverse()
+    |> Enum.find_value(fn msg ->
+      role  = msg[:role] || msg["role"]
+      calls = msg[:tool_calls] || msg["tool_calls"] || []
+
+      if role == "assistant" and is_list(calls) and calls != [] do
+        last_call = List.last(calls)
+        fn_map    = last_call["function"] || last_call[:function] || %{}
+        fn_map["name"] || fn_map[:name]
+      else
+        nil
+      end
+    end)
+  end
+
+  @doc """
   Pull the set of `📎 [newly attached] <path>` paths from the last
   user-role message in a message array. Used at turn start to snapshot
   the "must be read this turn" set for

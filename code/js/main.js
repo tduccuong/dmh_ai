@@ -156,9 +156,10 @@ const UIManager = {
         document.getElementById('stop-gen-btn').addEventListener('click', function() {
             // Tell the BE to actually kill the in-flight turn — this
             // aborts LLM / web_fetch HTTP calls, clears stream_buffer,
-            // and marks any ongoing tasks for this session as cancelled
-            // with task_result="Interrupted by user". Fire-and-forget:
-            // we don't wait for the response before tearing down the UI.
+            // deletes zombie pending session_progress rows, and marks any
+            // ongoing tasks for this session as cancelled with
+            // task_result="Interrupted by user". Fire-and-forget: we
+            // don't wait for the response before tearing down the UI.
             apiFetch('/agent/interrupt', { method: 'POST' }).catch(function() {});
 
             if (self._streamController) { self._streamController.abort(); self._streamController = null; }
@@ -174,6 +175,23 @@ const UIManager = {
             self.setStatus('');
             document.getElementById('stop-gen-btn').style.display = 'none';
             document.getElementById('scroll-bottom-btn').style.display = 'none';
+
+            // Self-heal: drop any `status='pending'` progress rows from
+            // the local session cache and re-render immediately. The BE
+            // is already deleting these server-side in cancel_current_task,
+            // but the POST is fire-and-forget — we don't wait for it.
+            // Without this local clear, the next idle poll would still see
+            // the rows in the FE cache, keep the spinner animating, and
+            // the sub_labels rotator would keep cycling through a dead
+            // tool's URLs until the BE delete propagates. Doing it here
+            // makes the stop feel instant.
+            if (self.currentSession && Array.isArray(self.currentSession.progress)) {
+                self.currentSession.progress = self.currentSession.progress.filter(function(p) {
+                    return p && p.status !== 'pending';
+                });
+                self.renderChat();
+            }
+
             if (self.currentSession && (self.currentSession.messages.length - 2) % 8 === 0) {
                 self.autoNameSession(self.currentSession);
             }

@@ -300,4 +300,227 @@ defmodule Itgr.SessionContextContract do
                  "extract_content", %{"path" => "workspace/x.pdf"}, prior)
     end
   end
+
+  # ─── Consecutive web_search Police gate ─────────────────────────────────
+
+  describe "Police.check_no_consecutive_web_search/3" do
+    defp ws_tool_msg(name) do
+      %{"role" => "assistant", "tool_calls" => [
+        %{"id" => uid(),
+          "function" => %{"name" => name, "arguments" => %{}}}
+      ]}
+    end
+
+    defp ws_tool_msg_multi(names) do
+      %{"role" => "assistant", "tool_calls" =>
+        Enum.map(names, fn n ->
+          %{"id" => uid(), "function" => %{"name" => n, "arguments" => %{}}}
+        end)}
+    end
+
+    test ":ok when prior-message list is empty (first web_search of the turn)" do
+      assert :ok = Police.check_no_consecutive_web_search(
+                     "web_search", %{"query" => "anything"}, [])
+    end
+
+    test ":ok when the current call isn't web_search — gate only targets web_search" do
+      prior = [ws_tool_msg("web_search")]
+
+      # run_script right after web_search is the ENCOURAGED path (dig deeper).
+      assert :ok = Police.check_no_consecutive_web_search(
+                     "run_script", %{"script" => "curl x"}, prior)
+    end
+
+    test "rejects web_search when the prior-round tool call was also web_search" do
+      prior = [ws_tool_msg("web_search")]
+
+      assert {:rejected, {:consecutive_web_search, reason}} =
+               Police.check_no_consecutive_web_search(
+                 "web_search", %{"query" => "q2"}, prior)
+
+      # Nudge must TEACH the correct loop, not just scold.
+      assert reason =~ "DIGEST"
+      assert reason =~ "DIG DEEPER"
+      assert reason =~ "web_fetch"
+      assert reason =~ "run_script"
+    end
+
+    test "rejects INTRA-BATCH: second web_search in the same batch after a first web_search" do
+      # execute_tools appends a per-call pseudo-message as it iterates, so
+      # within one batch [web_search, web_search] the second call sees the
+      # first in prior_acc and must be rejected.
+      prior = [ws_tool_msg("web_search")]
+
+      assert {:rejected, {:consecutive_web_search, _}} =
+               Police.check_no_consecutive_web_search(
+                 "web_search", %{"query" => "q2"}, prior)
+    end
+
+    test ":ok when alternating: web_search → run_script → web_search" do
+      # The canonical LEGITIMATE pattern: search, dig with a different tool,
+      # then refine-search based on what was found.
+      prior = [
+        ws_tool_msg("web_search"),
+        ws_tool_msg("run_script")
+      ]
+
+      assert :ok = Police.check_no_consecutive_web_search(
+                     "web_search", %{"query" => "refined"}, prior)
+    end
+
+    test ":ok when alternating: web_search → web_fetch → web_search" do
+      prior = [
+        ws_tool_msg("web_search"),
+        ws_tool_msg("web_fetch")
+      ]
+
+      assert :ok = Police.check_no_consecutive_web_search(
+                     "web_search", %{"query" => "refined"}, prior)
+    end
+
+    test "mixed-batch: the LAST call in the last batch determines the gate" do
+      # Last batch was [create_task, web_search]. Current web_search is
+      # rejected because the last tool-call in that batch was web_search.
+      prior = [ws_tool_msg_multi(["create_task", "web_search"])]
+
+      assert {:rejected, {:consecutive_web_search, _}} =
+               Police.check_no_consecutive_web_search(
+                 "web_search", %{"query" => "q"}, prior)
+    end
+
+    test "mixed-batch alternate: prior batch ended with run_script → web_search allowed" do
+      # Last batch was [web_search, run_script]. Current web_search is OK
+      # because the immediately-prior call was run_script.
+      prior = [ws_tool_msg_multi(["web_search", "run_script"])]
+
+      assert :ok = Police.check_no_consecutive_web_search(
+                     "web_search", %{"query" => "q"}, prior)
+    end
+
+    test "ignores non-assistant messages in prior history" do
+      # Tool-result messages and user messages between assistant turns
+      # shouldn't confuse the walk-backwards lookup.
+      prior = [
+        ws_tool_msg("web_search"),
+        %{"role" => "tool", "content" => "...results...", "tool_call_id" => "x"},
+        %{"role" => "user", "content" => "follow up"}
+      ]
+
+      assert {:rejected, {:consecutive_web_search, _}} =
+               Police.check_no_consecutive_web_search(
+                 "web_search", %{"query" => "q"}, prior)
+    end
+  end
+
+  # ─── Single-periodic-per-session Police gate ─────────────────────────────
+
+  describe "Police.check_no_duplicate_periodic_task_in_session/3" do
+    alias Dmhai.Agent.Tasks
+    alias Dmhai.Repo
+    import Ecto.Adapters.SQL, only: [query!: 3]
+
+    defp seed_plain_session(sid, user_id) do
+      now = System.os_time(:millisecond)
+      query!(Repo,
+        "INSERT OR IGNORE INTO sessions (id, user_id, mode, messages, created_at, updated_at) VALUES (?,?,?,?,?,?)",
+        [sid, user_id, "assistant", "[]", now, now])
+    end
+
+    test ":ok when task_type is not periodic (one_off bypasses the gate)" do
+      sid = uid(); uid_ = uid(); seed_plain_session(sid, uid_)
+      # Seed an existing periodic — but current call is one_off, so the
+      # gate MUST bypass. One_off tasks are never capped.
+      _tid = Tasks.insert(user_id: uid_, session_id: sid,
+                          task_title: "existing", task_spec: "x",
+                          task_type: "periodic", intvl_sec: 30)
+
+      assert :ok = Police.check_no_duplicate_periodic_task_in_session(
+                     "create_task",
+                     %{"task_type" => "one_off", "task_title" => "something new"},
+                     %{session_id: sid})
+    end
+
+    test ":ok when no active periodic exists (first periodic in the session)" do
+      sid = uid(); uid_ = uid(); seed_plain_session(sid, uid_)
+
+      assert :ok = Police.check_no_duplicate_periodic_task_in_session(
+                     "create_task",
+                     %{"task_type" => "periodic", "task_title" => "joke every 30s"},
+                     %{session_id: sid})
+    end
+
+    test ":ok for non-create_task calls (gate only guards creation)" do
+      sid = uid(); uid_ = uid(); seed_plain_session(sid, uid_)
+      _tid = Tasks.insert(user_id: uid_, session_id: sid,
+                          task_title: "jokes", task_spec: "x",
+                          task_type: "periodic", intvl_sec: 30)
+
+      assert :ok = Police.check_no_duplicate_periodic_task_in_session(
+                     "update_task",
+                     %{"task_type" => "periodic"},
+                     %{session_id: sid})
+    end
+
+    test ":ok when ctx lacks session_id (non-session callers bypass)" do
+      sid = uid(); uid_ = uid(); seed_plain_session(sid, uid_)
+      _tid = Tasks.insert(user_id: uid_, session_id: sid,
+                          task_title: "jokes", task_spec: "x",
+                          task_type: "periodic", intvl_sec: 30)
+
+      assert :ok = Police.check_no_duplicate_periodic_task_in_session(
+                     "create_task",
+                     %{"task_type" => "periodic"},
+                     %{})
+    end
+
+    test "rejects second periodic when session already has a pending periodic" do
+      sid = uid(); uid_ = uid(); seed_plain_session(sid, uid_)
+      tid = Tasks.insert(user_id: uid_, session_id: sid,
+                         task_title: "joke every 30s", task_spec: "x",
+                         task_type: "periodic", intvl_sec: 30)
+
+      assert {:rejected, {:duplicate_periodic_task_in_session, reason}} =
+               Police.check_no_duplicate_periodic_task_in_session(
+                 "create_task",
+                 %{"task_type" => "periodic", "task_title" => "stock quote every 60s"},
+                 %{session_id: sid})
+
+      # Nudge must be educational AND user-facing — the model needs to
+      # relay the specific phrasing to the user.
+      assert reason =~ "already has an active periodic"
+      assert reason =~ "DMH-AI supports at most ONE periodic"
+      assert reason =~ "DMH-AI only supports 1 periodic task per chat session"
+      # Must name the existing task's id so the model can reference it.
+      assert reason =~ tid
+      # Must mention the (N) number format so the user sees a stable ref.
+      assert reason =~ ~r/task \(\d+\)|task \(\?\)/
+    end
+
+    test "rejects even when existing periodic is ongoing (mid-turn)" do
+      sid = uid(); uid_ = uid(); seed_plain_session(sid, uid_)
+      tid = Tasks.insert(user_id: uid_, session_id: sid,
+                         task_title: "active", task_spec: "x",
+                         task_type: "periodic", intvl_sec: 30)
+      Tasks.mark_ongoing(tid)
+
+      assert {:rejected, {:duplicate_periodic_task_in_session, _}} =
+               Police.check_no_duplicate_periodic_task_in_session(
+                 "create_task",
+                 %{"task_type" => "periodic", "task_title" => "another"},
+                 %{session_id: sid})
+    end
+
+    test ":ok after existing periodic is cancelled (slot freed)" do
+      sid = uid(); uid_ = uid(); seed_plain_session(sid, uid_)
+      tid = Tasks.insert(user_id: uid_, session_id: sid,
+                         task_title: "going away", task_spec: "x",
+                         task_type: "periodic", intvl_sec: 30)
+      Tasks.mark_cancelled(tid)
+
+      assert :ok = Police.check_no_duplicate_periodic_task_in_session(
+                     "create_task",
+                     %{"task_type" => "periodic", "task_title" => "replacement"},
+                     %{session_id: sid})
+    end
+  end
 end

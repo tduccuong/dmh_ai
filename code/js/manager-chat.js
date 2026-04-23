@@ -27,6 +27,53 @@ function buildSessionTimeline(session) {
 // Date.now() math gives a stable index regardless of render cadence.
 var SUB_LABEL_ROTATE_MS = 700;
 
+// Per-label state for the sub_labels rotator. Keyed by the `.progress-label`
+// DOM element so rows can be garbage-collected naturally once removed from
+// the timeline (WeakMap doesn't keep them alive). Each value is an array of
+// strings pulled from row.sub_labels.
+var _subLabelsMap = new WeakMap();
+var _subLabelsInterval = null;
+
+// Write the label's text. Plain textContent + CSS ellipsis; no fancy
+// span-splitting. Labels from the BE are now in `ToolName: content`
+// shape (see `Dmhai.Agent.ProgressLabel`), and the CSS on
+// `.progress-label` handles truncation from the right edge on narrow
+// viewports — the `content` part is where the ellipsis lands. We keep
+// the full raw text on `title=` so hover on desktop surfaces the
+// untruncated form, which is especially useful for long URLs in
+// WebFetch / SearXNG sub-labels.
+function writeProgressLabel(label, raw, _kind) {
+    label.textContent = raw;
+    label.title = raw;
+}
+
+// Walk every pending tool row that carries sub_labels and refresh its
+// displayed label for the current time slice. Stops the interval
+// automatically when no rotating rows remain — no idle heartbeat.
+function _rotateSubLabels() {
+    var nodes = document.querySelectorAll('.progress-row.progress-tool.progress-status-pending');
+    var anyRotating = false;
+    for (var i = 0; i < nodes.length; i++) {
+        var node = nodes[i];
+        var label = node.querySelector('.progress-label');
+        if (!label) continue;
+        var subs = _subLabelsMap.get(label);
+        if (!subs || subs.length === 0) continue;
+        anyRotating = true;
+        var idx = Math.floor(Date.now() / SUB_LABEL_ROTATE_MS) % subs.length;
+        writeProgressLabel(label, subs[idx], 'tool');
+    }
+    if (!anyRotating) {
+        clearInterval(_subLabelsInterval);
+        _subLabelsInterval = null;
+    }
+}
+
+function _ensureSubLabelsRotator() {
+    if (_subLabelsInterval) return;
+    _subLabelsInterval = setInterval(_rotateSubLabels, SUB_LABEL_ROTATE_MS);
+}
+
 function renderProgressRow(row) {
     var div = document.createElement('div');
     div.className = 'progress-row progress-' + row.kind +
@@ -45,47 +92,67 @@ function renderProgressRow(row) {
     div.appendChild(icon);
     var label = document.createElement('span');
     label.className = 'progress-label';
+
     // While a tool row is still pending and the BE has reported sub-
     // activity labels (parallel URL fetches, etc.), rotate through them
-    // round-robin. Time-based index so cadence is smooth regardless of
-    // render frequency. Once the row flips to done, restore the main
-    // `ToolName(args)` label.
-    var raw = row.label || '';
-    if (row.kind === 'tool' && row.status === 'pending'
-        && Array.isArray(row.sub_labels) && row.sub_labels.length > 0) {
+    // round-robin. The rotator runs on its own timer (see
+    // `_ensureSubLabelsRotator`) — initial paint just seeds the current
+    // slice; subsequent swaps happen in-place at the text level, no DOM
+    // rebuild. Once the row flips to done, the rotator stops touching it
+    // and the main `ToolName → args` label stays.
+    var hasRotating = row.kind === 'tool' && row.status === 'pending'
+        && Array.isArray(row.sub_labels) && row.sub_labels.length > 0;
+
+    var raw;
+    if (hasRotating) {
+        _subLabelsMap.set(label, row.sub_labels);
         var idx = Math.floor(Date.now() / SUB_LABEL_ROTATE_MS) % row.sub_labels.length;
         raw = row.sub_labels[idx];
-    }
-    // For tool rows with the `ToolName("content")` shape, split into
-    // prefix/content/suffix spans so flex + ellipsis can shrink the
-    // middle to fit the viewport width while keeping the trailing `")`
-    // visible. Non-matching labels (or non-tool rows) stay as a single
-    // wrapping span — current behaviour.
-    var m = row.kind === 'tool' && raw.match(/^([A-Za-z0-9_]+\(")([\s\S]*)("\))$/);
-    if (m) {
-        label.classList.add('progress-label-trunc');
-        label.title = raw;  // full text on hover
-        var pre = document.createElement('span');
-        pre.className = 'progress-label-prefix';
-        pre.textContent = m[1];
-        var mid = document.createElement('span');
-        mid.className = 'progress-label-content';
-        mid.textContent = m[2];
-        var suf = document.createElement('span');
-        suf.className = 'progress-label-suffix';
-        suf.textContent = m[3];
-        label.appendChild(pre);
-        label.appendChild(mid);
-        label.appendChild(suf);
     } else {
-        label.textContent = raw;
+        raw = row.label || '';
     }
+
+    writeProgressLabel(label, raw, row.kind);
     div.appendChild(label);
+
+    if (hasRotating) _ensureSubLabelsRotator();
+
     return div;
+}
+
+// Sub-pixel tolerance for the "was the user at the bottom?" check. Used by
+// both renderChat and _updateStreamPlaceholder so auto-follow behavior
+// stays consistent. ~40px absorbs iOS momentum-scroll over-scroll and
+// Android sub-pixel roundoff without losing pin-to-bottom accuracy.
+const SCROLL_STICKY_PX = 40;
+
+function isAtBottom(container) {
+    return (container.scrollHeight - container.scrollTop - container.clientHeight) < SCROLL_STICKY_PX;
 }
 
 UIManager.renderChat = function() {
     const container = document.getElementById('chat-container');
+    if (!container) return;  // DOM torn down / not ready — nothing to render into.
+
+    // Snapshot scroll intent BEFORE mutating the DOM. Two independent
+    // signals decide whether we scroll to bottom after the rebuild:
+    //   (a) wasAtBottom: user was pinned to the bottom pre-render → keep
+    //       them pinned post-render (natural chat auto-follow).
+    //   (b) newMessageArrived: `session.messages` grew since the previous
+    //       renderChat. Forces a scroll-to-bottom regardless of the
+    //       pre-render geometry, because a new assistant reply —
+    //       especially a periodic-task delivery that lands while the user
+    //       isn't actively in a turn — is always something we want them
+    //       to see immediately. Without this, pre-render geometry checks
+    //       can misfire (e.g., scrollTop drifted when the streaming body
+    //       was detached) and land the fresh message below the viewport.
+    // Pattern shared with main.js:191,203.
+    const wasAtBottom = isAtBottom(container);
+    const msgCount = (this.currentSession && Array.isArray(this.currentSession.messages))
+        ? this.currentSession.messages.length : 0;
+    const prevCount = this._lastRenderedMsgCount || 0;
+    const newMessageArrived = msgCount > prevCount;
+    this._lastRenderedMsgCount = msgCount;
 
     // Detach the streaming placeholder (created at turn start in
     // manager-search.js, id='streaming-body') before wiping the chat
@@ -299,8 +366,16 @@ UIManager.renderChat = function() {
             var streamDiv = document.createElement('div');
             streamDiv.className = 'message assistant';
             if (streamEntry.content) {
+                // Content already flowing — full message row (header + body).
                 var streamHdr = buildMsgHeaderEl({ role: 'assistant', ts: Date.now() }, streamEntry.session);
                 streamDiv.appendChild(streamHdr);
+            } else {
+                // Turn in flight, nothing streamed yet (tool phase) —
+                // hide the row so progress rows don't appear sandwiched
+                // between the user message and an empty assistant card.
+                // `_updateStreamPlaceholder` will un-hide and prepend the
+                // header on first content. Matches the sendMessage setup.
+                streamDiv.style.display = 'none';
             }
             var streamBody = document.createElement('div');
             streamBody.className = 'msg-body';
@@ -311,7 +386,12 @@ UIManager.renderChat = function() {
             container.appendChild(streamDiv);
         }
     }
-    container.scrollTop = container.scrollHeight;
+
+    // Scroll policy:
+    //   - new message arrived → always scroll to bottom (show it).
+    //   - otherwise, only re-pin if the user was already at the bottom.
+    //     If they scrolled up to re-read history, their position stays.
+    if (newMessageArrived || wasAtBottom) container.scrollTop = container.scrollHeight;
 };
 
 // Scale a video down to VIDEO_WORKSPACE_MAX_PX resolution at VIDEO_WORKSPACE_BITRATE

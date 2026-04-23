@@ -108,6 +108,26 @@ defmodule Dmhai.Agent.SessionProgress do
     :ok
   end
 
+  @doc """
+  Delete every row still in `status='pending'` for a given session.
+  Called from `UserAgent.cancel_current_task/1` after `Process.exit(:kill)`
+  so zombie rows don't persist — the killed task can't run its own
+  `mark_tool_done` / `delete` cleanup in `execute_tools`, which leaves
+  the row forever at `status='pending'` in the DB. `fetch_for_session/2`
+  re-returns every pending row on every poll (for live sub_label
+  updates on in-flight tools), so leaving zombies keeps the FE rotating
+  through a dead tool's URLs indefinitely.
+
+  Returns `:ok` regardless of how many rows were affected.
+  """
+  @spec delete_pending_for_session(String.t()) :: :ok
+  def delete_pending_for_session(session_id) when is_binary(session_id) do
+    query!(Repo,
+      "DELETE FROM session_progress WHERE session_id=? AND status='pending'",
+      [session_id])
+    :ok
+  end
+
   # Cap the sub_labels array so a long-running tool can't grow it without
   # bound. Each new append also trims the head; FE renders round-robin so
   # the oldest entries fall off naturally.

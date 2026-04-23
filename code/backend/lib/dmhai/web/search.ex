@@ -151,7 +151,7 @@ defmodule Dmhai.Web.Search do
         status_text = "🔍 #{q.text}"
         send_status(reply_pid, status_text)
         Dmhai.Agent.SessionProgress.append_sub_label(
-          progress_row_id, "SearXNG(\"#{q.text}\")")
+          progress_row_id, "SearXNG → #{q.text}")
         do_search(q.text, q.lang, category)
       end)
     end)
@@ -187,7 +187,7 @@ defmodule Dmhai.Web.Search do
         Task.async(fn ->
           send_status(reply_pid, "📄 #{String.slice(result.url, 0, 60)}")
           Dmhai.Agent.SessionProgress.append_sub_label(
-            progress_row_id, "WebFetch(\"#{result.url}\")")
+            progress_row_id, "WebFetch → #{result.url}")
           fetch_page_content(result.url)
         end)
       end)

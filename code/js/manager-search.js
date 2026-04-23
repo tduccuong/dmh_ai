@@ -111,27 +111,39 @@ UIManager.sendMessage = async function() {
     // --- Set up streaming UI immediately (before await) so layout is correct from the start ---
     const container = document.getElementById('chat-container');
     var userMsgEl = container.lastElementChild;
-    const originalScrollHeight = container.scrollHeight; // capture before adding assistantDiv
 
     // assistantTs is not captured at click time — BE stamps it when it
     // persists the final assistant message and echoes it back in the
     // {done, user_ts, assistant_ts} SSE frame (see CLAUDE.md rule #9).
     let assistantTs = null;
+
+    // Build the streaming placeholder but keep it HIDDEN until actual
+    // content starts flowing. Otherwise the empty `.message.assistant`
+    // row (styled with padding + dark background) would show as an
+    // empty box immediately at send time, and any tool-call progress
+    // rows that arrive during the turn render BETWEEN the user message
+    // and that empty box — which reads as "tool calls above the
+    // assistant's reply", confusing chronology. By hiding the
+    // placeholder, the timeline shows: user → tool rows → (nothing)
+    // until the model actually starts producing its answer, at which
+    // point `_updateStreamPlaceholder` reveals the placeholder AND
+    // prepends the header. Matches natural reading order.
     const assistantDiv = document.createElement('div');
     assistantDiv.className = 'message assistant';
-    let assistantHdr = null; // created on first chunk so header only appears when streaming starts
+    assistantDiv.style.display = 'none';
     const bodyDiv = document.createElement('div');
     bodyDiv.className = 'msg-body';
     bodyDiv.id = 'streaming-body';
     assistantDiv.appendChild(bodyDiv);
-    // Temporarily give bodyDiv height so user message can scroll to the top
-    bodyDiv.style.minHeight = container.clientHeight + 'px';
     container.appendChild(assistantDiv);
-    // Scroll so user's new message appears at the top
-    if (userMsgEl) {
-        var msgScrollPos = userMsgEl.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop;
-        container.scrollTop = msgScrollPos;
-    }
+
+    // Scroll the just-sent user message to the top of the viewport.
+    // Native `scrollIntoView` degrades gracefully when there isn't enough
+    // content below (it just scrolls as far as possible), so we no longer
+    // need the `minHeight = clientHeight` padding hack on the streaming
+    // body — the browser handles "not enough scroll room" correctly.
+    // Equivalent behavior on desktop + iOS Safari + Android Chrome.
+    if (userMsgEl) userMsgEl.scrollIntoView({ block: 'start', behavior: 'auto' });
 
     // Do NOT PUT session.messages here. The BE persists the user message
     // itself (with a BE-stamped ts) inside /agent/chat before dispatching
@@ -147,17 +159,16 @@ UIManager.sendMessage = async function() {
     document.getElementById('stop-label').textContent = t('stopGen');
     document.getElementById('stop-gen-btn').style.display = '';
 
-    // Initial status is "thinking" — the model hasn't produced any visible
-    // output yet. We flip to "answering" inside _updateStreamPlaceholder
-    // the first time stream_buffer becomes non-empty (i.e. when the first
-    // word of the final answer lands in the polling delta). For Assistant
-    // mode turns that never stream (LLM.call vs LLM.stream) the status
-    // stays on "thinking" until the whole message drops in.
-    if (!assistantHdr) {
-        assistantHdr = buildMsgHeaderEl({ role: 'assistant', ts: Date.now() }, sessionAtSend);
-        assistantDiv.insertBefore(assistantHdr, bodyDiv);
-        self.setStatusHtml(modeRoleHtml(sessionAtSend) + t('thinking'));
-    }
+    // Initial status bar shows "thinking" — the model hasn't produced any
+    // visible output yet. `_updateStreamPlaceholder` flips the status to
+    // "answering" the first time stream_buffer becomes non-empty, and at
+    // that same moment reveals the assistant message row (creates the
+    // header + unhides the placeholder). For Assistant-mode turns that
+    // never stream (e.g. pure tool-chain with the final text arriving
+    // via append_session_message only), the placeholder stays hidden —
+    // onComplete's renderChat rebuilds from session.messages and
+    // renders the real message from scratch in its natural slot.
+    self.setStatusHtml(modeRoleHtml(sessionAtSend) + t('thinking'));
 
     // Called by pollTurnToCompletion once the turn is done. The final
     // assistant message has already been merged into sessionAtSend.messages
@@ -197,7 +208,6 @@ UIManager.sendMessage = async function() {
     function onError(err) {
         var errBody = document.getElementById('streaming-body') || self._activeBodyDiv;
         if (errBody) {
-            errBody.style.minHeight = '';
             var errMsg = hasVideo
                 ? '⚠ ' + modeRole(sessionAtSend) + " doesn't support video input. Please switch to another one."
                 : '⚠ ' + (err && err.message ? err.message : 'No response received — please try again.');
@@ -277,9 +287,11 @@ UIManager.sendMessage = async function() {
             }
         }
 
-        // Kick off the turn-watching polling loop. Runs until `is_working`
-        // goes false and we've seen a new assistant message, then hands off
-        // to the idle-cadence polling owned by switchSession / initializeApp.
+        // Kick off the turn-watching polling loop. Runs until a new
+        // assistant message has landed AND the stream_buffer has cleared
+        // (precise "this turn is done" signal — see exit gate inside
+        // pollTurnToCompletion). Then hands off to the idle-cadence
+        // polling owned by switchSession / initializeApp.
         self.pollTurnToCompletion(sessionAtSend, onComplete, onError, pipelineController.signal);
     }).catch(function(err) {
         if (err.name !== 'AbortError') onError(err);
@@ -370,17 +382,41 @@ UIManager.pollTurnToCompletion = function(sessionAtSend, onComplete, onError, ab
             // Streaming buffer → rendered in the streaming placeholder div.
             self._updateStreamPlaceholder(sessionAtSend, data.stream_buffer);
 
-            // Re-render chat so new progress rows / messages appear in
-            // the correct chronological slot.
-            if (self.currentSession && self.currentSession.id === sessionAtSend.id) {
-                self.renderChat();
+            // Only re-render the whole chat when there's an actual delta
+            // in persisted state (a new message, or a progress-row upsert).
+            // Stream-buffer-only ticks go through _updateStreamPlaceholder
+            // above, which writes in-place to the preserved streaming-body
+            // node — no need to rebuild the surrounding DOM. This kills the
+            // 500ms full-rebuild cadence that caused the flicker.
+            var hasMsgDelta  = (data.messages  || []).length > 0;
+            var hasProgDelta = (data.progress  || []).length > 0;
+            if ((hasMsgDelta || hasProgDelta) && self.currentSession && self.currentSession.id === sessionAtSend.id) {
+                // Same resilience as startProgressPolling's tick — a render
+                // error must not kill the polling loop. Otherwise a single
+                // bad markdown parse could freeze the whole turn in
+                // mid-flight.
+                try { self.renderChat(); } catch (e) {
+                    if (typeof console !== 'undefined') console.error('[pollTurnToCompletion] renderChat threw', e);
+                }
             }
 
-            // Completion: BE idle AND we've seen a fresh assistant message
-            // land in `messages`. Covers both text-only turns and tool-chain
-            // turns. Stream buffer being null further confirms the turn is
-            // finalised.
-            if (!data.is_working && sawAssistantMessage && !data.stream_buffer) {
+            // Completion: a fresh assistant message has landed AND no round
+            // is currently streaming tokens.
+            //
+            // Intentionally NOT gating on `!data.is_working`: that flag now
+            // also means "a periodic task is armed in this session" (kept
+            // FE on 500 ms cadence so periodic deliveries render within
+            // ~500 ms instead of up to 5 s), so a periodic rescheduled at
+            // the end of this turn would pin `is_working=true` forever and
+            // `onComplete` would never fire — leaving `isStreaming=true`,
+            // send button disabled, user locked out. The precise "this
+            // turn is done" signal is just: final text landed
+            // (`sawAssistantMessage` — only final-text messages are
+            // persisted to `session.messages`) AND no round is actively
+            // streaming (`!stream_buffer`). Turns can't run concurrently
+            // (`UserAgent.current_task` serializes them), so a different
+            // turn's assistant message can't prematurely trip this.
+            if (sawAssistantMessage && !data.stream_buffer) {
                 onComplete();
                 return;
             }
@@ -408,16 +444,35 @@ UIManager._updateStreamPlaceholder = function(sessionAtSend, streamBuffer) {
     if (!streamBuffer) return;
 
     // First non-empty stream_buffer means the LLM just produced its first
-    // word of final answer — flip the status indicator from "thinking"
-    // to "answering" so the user knows output is flowing in now. After
-    // the flip we don't switch back even if later polls return null (the
-    // final message is about to land in the messages delta anyway).
+    // word of final answer. Three things happen on this flip:
+    //   (1) Status indicator: "thinking" → "answering".
+    //   (2) Reveal the hidden `.message.assistant` placeholder that was
+    //       created up-front in sendMessage. Up to this point the user
+    //       sees only their own message + any tool-call progress rows —
+    //       no empty assistant row sandwiched between them.
+    //   (3) Prepend the assistant header above the body, so the reveal
+    //       shows a complete message row, not an orphaned body div.
+    // After the flip we don't switch back even if later polls return
+    // null (the final message is about to land in the messages delta
+    // anyway).
     if (!entry.hasContentFlag) {
         entry.hasContentFlag = true;
         var mode = (sessionAtSend && sessionAtSend.mode) || 'confidant';
         var icon = (typeof MODE_ICONS !== 'undefined' && MODE_ICONS[mode]) || '';
         var label = mode === 'assistant' ? 'Assistant' : 'Confidant';
         this.setStatusHtml(icon + label + t('answering'));
+
+        var firstBody = document.getElementById('streaming-body');
+        if (firstBody) {
+            var assistantDiv = firstBody.closest('.message.assistant');
+            if (assistantDiv) {
+                assistantDiv.style.display = '';
+                if (!assistantDiv.querySelector('.msg-header')) {
+                    var hdr = buildMsgHeaderEl({ role: 'assistant', ts: Date.now() }, sessionAtSend);
+                    assistantDiv.insertBefore(hdr, firstBody);
+                }
+            }
+        }
     }
 
     entry.content = streamBuffer;
@@ -429,9 +484,22 @@ UIManager._updateStreamPlaceholder = function(sessionAtSend, streamBuffer) {
             self._renderPending = false;
             var activeBody = document.getElementById('streaming-body');
             if (!activeBody) return;
+
+            // Snapshot auto-follow intent BEFORE the write, so we can
+            // re-pin to the bottom only if the user was already there.
+            // Same contract as renderChat: scrolled-up users are never
+            // yanked while the stream flows.
+            var chatContainer = document.getElementById('chat-container');
+            var wasAtBottom = chatContainer &&
+                (chatContainer.scrollHeight - chatContainer.scrollTop - chatContainer.clientHeight) < 40;
+
             activeBody.innerHTML = renderWithMath(streamBuffer);
             addCopyButtons(activeBody);
             wrapTables(activeBody);
+
+            if (wasAtBottom && chatContainer) {
+                chatContainer.scrollTop = chatContainer.scrollHeight;
+            }
         });
     }
 };

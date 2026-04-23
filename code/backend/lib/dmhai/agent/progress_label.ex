@@ -10,15 +10,21 @@ defmodule Dmhai.Agent.ProgressLabel do
   The raw LLM tool-call payload (`run_script({"script":"#!/bin/bash\\n..."})`)
   is ugly for the FE. This module returns a short, friendly one-liner:
 
-      RunScript("#!/bin/bash Scan the local network for devices that might …")
-      WebFetch("https://vnexpress.net/hai-a-hau-miss-world-vietnam-ve-que-…")
-      CreateTask("Research quarterly revenue figures")
+      RunScript → #!/bin/bash Scan the local network for devices that might …
+      WebFetch → https://vnexpress.net/hai-a-hau-miss-world-vietnam-ve-que-…
+      CreateTask → Research quarterly revenue figures
 
   Shape:
     - Tool name → PascalCase
-    - Primary descriptive argument → sliced to `@preview_words` words and
-      quoted
-    - No-arg tools (datetime) → bare `DateTime()`
+    - `" → "` separator — no wrapping quotes / parentheses. The FE
+      renders the label as a single ellipsis-truncated span; parenthesis
+      wrapping forced the closing `")` to the right edge on wide
+      viewports and looked weird. The arrow is visually lighter than a
+      colon and reads as "tool applied to this argument" — scans well
+      left-to-right on desktop and truncates cleanly from the right on
+      narrow (mobile) viewports.
+    - Primary descriptive argument → sliced to `@preview_words` words.
+    - No-arg tools (datetime) → bare `DateTime`.
   """
 
   @preview_words 18
@@ -52,8 +58,8 @@ defmodule Dmhai.Agent.ProgressLabel do
     preview = preview_for(name, args)
 
     case preview do
-      "" -> "#{pretty}()"
-      p  -> "#{pretty}(\"#{p}\")"
+      "" -> pretty
+      p  -> "#{pretty} → #{p}"
     end
   end
 
@@ -87,7 +93,8 @@ defmodule Dmhai.Agent.ProgressLabel do
 
   # Collapse whitespace (so multi-line scripts don't blow up the preview),
   # trim to `@preview_words` whitespace-separated words, append ellipsis if
-  # truncated. Escapes any embedded double-quotes so the label stays parseable.
+  # truncated. No quote-escaping needed — the label format no longer wraps
+  # the preview in quotes.
   defp truncate_words(""), do: ""
   defp truncate_words(text) when is_binary(text) do
     words =
@@ -98,8 +105,6 @@ defmodule Dmhai.Agent.ProgressLabel do
 
     slice = Enum.take(words, @preview_words)
     body = Enum.join(slice, " ")
-
-    body = String.replace(body, "\"", "\\\"")
 
     if length(words) > @preview_words, do: body <> " …", else: body
   end
