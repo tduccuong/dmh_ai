@@ -140,21 +140,35 @@ defmodule Dmhai.Web.Search do
   @spec call_search_engine([map()], String.t(), keyword()) ::
           %{snippets: [map()], pages: [map()]}
   def call_search_engine(queries, category, opts \\ []) do
-    reply_pid = Keyword.get(opts, :reply_pid)
+    reply_pid       = Keyword.get(opts, :reply_pid)
+    progress_row_id = Keyword.get(opts, :progress_row_id)
     max_fetch = AgentSettings.web_search_max_fetch_pages()
     budget    = AgentSettings.web_search_fetch_content_budget()
     timeout   = AgentSettings.web_search_total_timeout_ms()
 
     search_tasks = Enum.map(queries, fn q ->
       Task.async(fn ->
-        send_status(reply_pid, "🔍 #{q.text}")
+        status_text = "🔍 #{q.text}"
+        send_status(reply_pid, status_text)
+        Dmhai.Agent.SessionProgress.append_sub_label(
+          progress_row_id, "SearXNG(\"#{q.text}\")")
         do_search(q.text, q.lang, category)
       end)
     end)
 
+    # yield_many so one stalled SearXNG query doesn't exit the whole
+    # call. Matches the fetch-side pattern; keep the two in sync.
     all_results =
       search_tasks
-      |> Task.await_many(timeout)
+      |> Task.yield_many(timeout)
+      |> Enum.map(fn {task, res} ->
+        case res do
+          {:ok, value} -> value
+          _ ->
+            _ = Task.shutdown(task, :brutal_kill)
+            []
+        end
+      end)
       |> Enum.reduce({[], MapSet.new()}, fn results, {acc, seen} ->
         Enum.reduce(results, {acc, seen}, fn r, {a, s} ->
           if MapSet.member?(s, r.url), do: {a, s}, else: {a ++ [r], MapSet.put(s, r.url)}
@@ -172,6 +186,8 @@ defmodule Dmhai.Web.Search do
       fetch_tasks = Enum.map(top, fn result ->
         Task.async(fn ->
           send_status(reply_pid, "📄 #{String.slice(result.url, 0, 60)}")
+          Dmhai.Agent.SessionProgress.append_sub_label(
+            progress_row_id, "WebFetch(\"#{result.url}\")")
           fetch_page_content(result.url)
         end)
       end)

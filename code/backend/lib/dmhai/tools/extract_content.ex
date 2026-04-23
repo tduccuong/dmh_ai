@@ -98,13 +98,18 @@ defmodule Dmhai.Tools.ExtractContent do
       cond do
         MapSet.member?(@image_exts, ext) -> extract_image(abs)
         MapSet.member?(@video_exts, ext) -> extract_video(abs)
-        ext == ".pdf"                    -> parse_pdf(abs)
+        ext == ".pdf"                    -> parse_pdf(abs, ctx)
         MapSet.member?(@pandoc_exts, ext) -> run_pandoc(abs)
         MapSet.member?(@text_exts, ext)  -> read_text(abs)
         true                             -> try_pandoc_then_read(abs)
       end
     end
   end
+
+  # Helper — safely pull progress_row_id from ctx (ctx may be nil for
+  # non-session callers like media handlers).
+  defp row_id(ctx) when is_map(ctx), do: Map.get(ctx, :progress_row_id)
+  defp row_id(_), do: nil
 
   # Scan the most recent done tasks for the session and return the first
   # whose `task_spec` listed this path as an attachment and whose
@@ -114,10 +119,17 @@ defmodule Dmhai.Tools.ExtractContent do
   defp find_prior_extraction(session_id, path) do
     Dmhai.Agent.Tasks.recent_done_for_session(session_id, @prior_scan_limit)
     |> Enum.find(fn t ->
-      spec   = Map.get(t, :task_spec) || ""
+      # Primary source: structured attachments column. Fallback: legacy
+      # regex parse of task_spec (for pre-migration rows) so dedup keeps
+      # working during the transition window.
+      cols =
+        case Map.get(t, :attachments) do
+          list when is_list(list) and list != [] -> list
+          _                                       -> Dmhai.Agent.ContextEngine.extract_attachments(Map.get(t, :task_spec) || "")
+        end
+
       result = Map.get(t, :task_result) || ""
-      path in Dmhai.Agent.ContextEngine.extract_attachments(spec) and
-        String.trim(result) != ""
+      path in cols and String.trim(result) != ""
     end)
     |> case do
       nil  -> :none
@@ -315,7 +327,7 @@ defmodule Dmhai.Tools.ExtractContent do
   #      the image-describer vision model, concat results.
   #   3. If the page count exceeds AgentSettings.ocr_page_cap/0, refuse
   #      rather than blowing up on a book-length scan.
-  defp parse_pdf(path) do
+  defp parse_pdf(path, ctx) do
     pdftotext_output =
       try do
         case System.cmd("pdftotext", ["-layout", path, "-"], stderr_to_stdout: true) do
@@ -330,11 +342,11 @@ defmodule Dmhai.Tools.ExtractContent do
       truncate(pdftotext_output)
     else
       Logger.info("[ExtractContent] pdftotext returned non-meaningful output (#{byte_size(pdftotext_output)} bytes) — falling back to OCR")
-      ocr_pdf(path)
+      ocr_pdf(path, ctx)
     end
   end
 
-  defp ocr_pdf(path) do
+  defp ocr_pdf(path, ctx) do
     cap = AgentSettings.ocr_page_cap()
 
     case count_pdf_pages(path) do
@@ -347,7 +359,7 @@ defmodule Dmhai.Tools.ExtractContent do
            "or provide a text-based version."}
 
       {:ok, n} ->
-        render_and_ocr(path, n)
+        render_and_ocr(path, n, ctx)
     end
   end
 
@@ -374,11 +386,17 @@ defmodule Dmhai.Tools.ExtractContent do
     end
   end
 
-  defp render_and_ocr(path, n_pages) do
+  defp render_and_ocr(path, n_pages, ctx) do
     dir = "/tmp/dmhai_ocr_#{System.unique_integer([:positive])}"
     File.mkdir_p!(dir)
+    rid = row_id(ctx)
 
     try do
+      # Surface the render step so the FE's rotating tool-row label
+      # reflects actual sub-activity rather than sitting on a spinner.
+      Dmhai.Agent.SessionProgress.append_sub_label(
+        rid, "RenderPdf(\"#{n_pages} pages\")")
+
       case System.cmd(
              "pdftoppm",
              ["-r", "200", "-png", path, Path.join(dir, "page")],
@@ -411,6 +429,9 @@ defmodule Dmhai.Tools.ExtractContent do
       {texts, _offset} =
         Enum.reduce(chunks, {[], 0}, fn chunk, {acc, offset} ->
           start_page = offset + 1
+          end_page   = offset + length(chunk)
+          Dmhai.Agent.SessionProgress.append_sub_label(
+            rid, "OcrPage(\"pages #{start_page}-#{end_page} of #{n_pages}\")")
           case describe_ocr_chunk(chunk, start_page) do
             {:ok, text} -> {[text | acc], offset + length(chunk)}
             {:error, r} -> throw({:ocr_fail, r})

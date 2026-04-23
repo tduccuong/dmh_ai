@@ -30,12 +30,15 @@ defmodule Dmhai.Tools.UpdateTask do
   @impl true
   def description,
     do:
-      "Update an existing task's status, description, or interval. " <>
+      "Update an existing task's status, title, description, or interval. " <>
         "status='ongoing' when you start working on it; 'done' when finished " <>
         "(periodic tasks auto-reschedule); 'paused' for a temporary halt; " <>
-        "'cancelled' for permanent termination. Pass task_spec to rewrite " <>
-        "the description in place (e.g. user redirected the task). Pass " <>
-        "intvl_sec to change a periodic task's interval."
+        "'cancelled' for permanent termination. When finalizing with " <>
+        "status='done', also refine task_title to a short one-sentence " <>
+        "summary of the outcome so the user can recall the task later. " <>
+        "Pass task_spec to rewrite the description in place (e.g. user " <>
+        "redirected the task). Pass intvl_sec to change a periodic task's " <>
+        "interval."
 
   @impl true
   def execute(args, _ctx) do
@@ -46,10 +49,12 @@ defmodule Dmhai.Tools.UpdateTask do
          {:ok, attachments}     <- resolve_attachments(args),
          :ok                    <- apply_status(task_id, args["status"], args["task_result"]),
          :ok                    <- apply_spec_and_attachments(task, args["task_spec"], attachments),
+         :ok                    <- apply_title(task_id, args["task_title"]),
          :ok                    <- apply_intvl(task_id, args["intvl_sec"]) do
 
       Logger.info("[UpdateTask] task=#{task_id} status=#{inspect(args["status"])} " <>
                   "spec?=#{args["task_spec"] not in [nil, ""]} " <>
+                  "title?=#{args["task_title"] not in [nil, ""]} " <>
                   "attachments?=#{attachments != :unchanged} " <>
                   "intvl?=#{args["intvl_sec"] != nil}")
       {:ok, %{task_id: task_id, ok: true}}
@@ -99,6 +104,15 @@ defmodule Dmhai.Tools.UpdateTask do
             type: "string",
             description: "Rewrite the task description in place (e.g. after a user redirect)."
           },
+          task_title: %{
+            type: "string",
+            description:
+              "Rewrite the task title. Most useful when finalizing with " <>
+                "status='done': the initial title was chosen from a short " <>
+                "user message and is usually vague — refine it to ONE short " <>
+                "sentence (≲ 60 chars) that captures the outcome in the " <>
+                "user's language, so they can recall the task weeks later."
+          },
           intvl_sec: %{
             type: "integer",
             description: "New interval in seconds for a periodic task (must be > 0)."
@@ -141,43 +155,35 @@ defmodule Dmhai.Tools.UpdateTask do
   # Combined spec + attachments apply: either may be present, neither, or
   # both. When attachments change, we always re-run the normalisation over
   # the effective task_spec (new or existing).
-  defp apply_spec_and_attachments(task, new_spec, :unchanged) do
-    case new_spec do
-      nil -> :ok
-      ""  -> :ok
-      s when is_binary(s) ->
-        # Re-apply existing attachments during the spec rewrite so 📎 lines
-        # don't get dropped accidentally when the assistant rewrites the
-        # description text without re-supplying attachments.
-        existing   = Dmhai.Agent.ContextEngine.extract_attachments(task.task_spec)
-        normalised = Dmhai.Agent.AttachmentPaths.normalise_spec(s, existing)
-
-        with :ok <- require_non_empty_post_normalise(normalised) do
-          Tasks.update_spec(task.task_id, normalised)
-          :ok
-        end
-      other ->
-        {:error, "update_task: invalid task_spec=#{inspect(other)}"}
-    end
-  end
-  defp apply_spec_and_attachments(task, new_spec, attachments) when is_list(attachments) do
-    base =
-      case new_spec do
-        nil                 -> task.task_spec || ""
-        ""                  -> task.task_spec || ""
-        s when is_binary(s) -> s
-        other               -> throw({:bad_spec, other})
-      end
-
-    normalised = Dmhai.Agent.AttachmentPaths.normalise_spec(base, attachments)
-
-    with :ok <- require_non_empty_post_normalise(normalised) do
-      Tasks.update_spec(task.task_id, normalised)
+  # Spec and attachments are independent now — spec is pure prose in its
+  # own column, attachments live in tasks.attachments (JSON array). Each
+  # is written separately.
+  defp apply_spec_and_attachments(task, new_spec, attachments_arg) do
+    with :ok <- apply_spec(task, new_spec),
+         :ok <- apply_attachments(task, attachments_arg) do
       :ok
     end
-  catch
-    {:bad_spec, other} -> {:error, "update_task: invalid task_spec=#{inspect(other)}"}
   end
+
+  defp apply_spec(_task, nil), do: :ok
+  defp apply_spec(_task, ""),  do: :ok
+  defp apply_spec(task, s) when is_binary(s) do
+    cleaned = Dmhai.Agent.AttachmentPaths.clean_spec(s)
+    with :ok <- require_non_empty_post_normalise(cleaned) do
+      Tasks.update_spec(task.task_id, cleaned)
+      :ok
+    end
+  end
+  defp apply_spec(_task, other),
+    do: {:error, "update_task: invalid task_spec=#{inspect(other)}"}
+
+  defp apply_attachments(_task, :unchanged), do: :ok
+  defp apply_attachments(task, list) when is_list(list) do
+    Tasks.update_attachments(task.task_id, list)
+    :ok
+  end
+  defp apply_attachments(_task, other),
+    do: {:error, "update_task: invalid attachments=#{inspect(other)}"}
 
   # Mirror of create_task's guard — same root cause (model packs attachments
   # into task_spec while leaving `attachments` empty), same nudge.
@@ -192,6 +198,24 @@ defmodule Dmhai.Tools.UpdateTask do
          "question/request text in task_spec."}
     end
   end
+
+  # Refine the task title — primary use-case is when `status='done'` to
+  # replace the vague creation-time title with a richer one-line summary
+  # based on the final answer. Strips any transient `[newly attached]`
+  # marker the model may have copied from its input context.
+  defp apply_title(_task_id, nil), do: :ok
+  defp apply_title(_task_id, ""),  do: :ok
+  defp apply_title(task_id, title) when is_binary(title) do
+    cleaned = Dmhai.Agent.AttachmentPaths.strip_transient_markers(title) |> String.trim()
+    if cleaned == "" do
+      :ok
+    else
+      Tasks.update_title(task_id, cleaned)
+      :ok
+    end
+  end
+  defp apply_title(_, other), do:
+    {:error, "update_task: invalid task_title=#{inspect(other)}"}
 
   defp apply_intvl(_task_id, nil), do: :ok
   defp apply_intvl(task_id, intvl) when is_integer(intvl) and intvl > 0 do

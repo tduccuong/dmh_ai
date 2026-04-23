@@ -115,6 +115,25 @@ defmodule Dmhai.Agent.ContextEngine do
     {prefix, history_llm, relevant_msgs, last_msgs} =
       build_core(session_data, [], files, nil)
 
+    # Re-inject the last N turns' tool_call / tool_result messages right
+    # before their matching final-assistant text in history. Lets the
+    # model answer immediate follow-ups ("elaborate on section 3")
+    # without re-running the tool — the raw tool output is back in
+    # context. Older turns' tool messages age out per the N-turn and
+    # byte caps enforced by ToolHistory.save_turn.
+    session_id   = session_data["id"]
+    tool_history = if session_id, do: Dmhai.Agent.ToolHistory.load(session_id), else: []
+    history_llm  = Dmhai.Agent.ToolHistory.inject(history_llm, tool_history)
+
+    # Build a runtime directory naming the files whose raw extracted
+    # content sits in the retention window — cross-referenced to their
+    # originating task_num. Lets the model see at a glance which
+    # filenames it can answer from retained `role: "tool"` messages
+    # without re-extracting. Empty when no extract_content ran in the
+    # last N turns.
+    extracted_files_block =
+      build_recently_extracted_block(tool_history, active_tasks, recent_done)
+
     # Assistant-mode only: rewrite `📎 ` lines in the LAST user message to
     # `📎 [newly attached] ` so the model can distinguish attachments the
     # user just re-posted (must be re-extracted) from older ones still
@@ -124,7 +143,7 @@ defmodule Dmhai.Agent.ContextEngine do
 
     task_list_block = build_task_list_block(active_tasks, recent_done, base_level: 2)
 
-    [system_msg] ++ prefix ++ history_llm ++ relevant_msgs ++ task_list_block ++ last_msgs
+    [system_msg] ++ prefix ++ history_llm ++ relevant_msgs ++ task_list_block ++ extracted_files_block ++ last_msgs
   end
 
   # Inject the `[newly attached]` transient marker on `📎 ` lines of the
@@ -218,19 +237,22 @@ defmodule Dmhai.Agent.ContextEngine do
   defp render_done_section(tasks, sub) do
     lines =
       Enum.map_join(tasks, "\n", fn t ->
-        "- `#{t.task_id}` — #{t.task_title}"
+        "- `#{t.task_id}` — #{num_label(t)}#{t.task_title}"
       end)
     "#{sub} done\n\n" <> lines
   end
 
   # Both active and done tasks render the same `task_id` format: a backticked
   # id immediately following the title marker. Active tasks use a Markdown
-  # heading (`#### \`id\` — title`); done tasks use a bullet (`- \`id\` — title`).
+  # heading (`#### \`id\` — (N) title`); done tasks use a bullet.
   # The heading-level `task_id` keeps the identifier adjacent to the title
   # so the model can always reference it verbatim when calling update_task
   # / fetch_task — never needs to invent one.
+  # The `(N)` prefix is the per-session human-readable task number — the
+  # user can refer to "task 1" / "task (2)" / "the 3rd task" and the model
+  # maps it to the corresponding task_id by matching this number.
   defp render_task_block(task, heading) do
-    title_line = "#{heading} `#{task.task_id}` — #{task.task_title}"
+    title_line = "#{heading} `#{task.task_id}` — #{num_label(task)}#{task.task_title}"
 
     fields =
       [
@@ -250,10 +272,134 @@ defmodule Dmhai.Agent.ContextEngine do
        do: "**Pick up time:** " <> format_ts(ts)
   defp pickup_line(_), do: nil
 
+  # Render the per-session "(N) " prefix; empty string for legacy rows
+  # pre-dating the task_num column (task_num is NULL).
+  defp num_label(%{task_num: n}) when is_integer(n) and n > 0, do: "(#{n}) "
+  defp num_label(_), do: ""
+
+  # Build the "Recently-extracted files" directory block — user/assistant
+  # pair, injected between the task-list block and the current user
+  # message. Walks tool_history, pulls every `extract_content` tool_call's
+  # `path` argument, cross-references it to the originating task_num via
+  # task_id (from the same retained turn's update_task — or falling back
+  # to any task whose attachments column contains the path). Truthful by
+  # construction: only files whose raw content is actually still in the
+  # retained window appear. Returns `[]` when nothing is extracted.
+  defp build_recently_extracted_block(tool_history, active_tasks, recent_done) do
+    entries = collect_extracted_file_entries(tool_history, active_tasks, recent_done)
+
+    case entries do
+      [] -> []
+      _ ->
+        lines =
+          Enum.map_join(entries, "\n", fn e ->
+            tn = if e.task_num, do: "from task (#{e.task_num})", else: "(task unknown)"
+            "- `#{e.path}` — #{tn}"
+          end)
+
+        body =
+          "## Recently-extracted files\n\n" <>
+            "The raw extracted content of each file below is currently " <>
+            "in your context as a `role: \"tool\"` message (retained from " <>
+            "recent turns). Answer follow-up questions about these files " <>
+            "directly from those tool messages — do NOT call " <>
+            "`extract_content` on them again.\n\n" <>
+            lines
+
+        [
+          %{role: "user",      content: body},
+          %{role: "assistant", content: "Understood."}
+        ]
+    end
+  end
+
+  defp collect_extracted_file_entries(tool_history, active_tasks, recent_done) do
+    all_tasks = (active_tasks || []) ++ (recent_done || [])
+
+    # Map: task_id → task_num (for cross-reference)
+    tid_to_num =
+      all_tasks
+      |> Enum.flat_map(fn t ->
+        case {Map.get(t, :task_id), Map.get(t, :task_num)} do
+          {tid, tn} when is_binary(tid) and is_integer(tn) -> [{tid, tn}]
+          _ -> []
+        end
+      end)
+      |> Map.new()
+
+    # Walk tool_history (each entry = one turn's worth of tool_call/tool_result
+    # messages) and collect every extract_content path. Same entry's update_task
+    # call (if any) tells us which task_id owns this extraction.
+    tool_history
+    |> Enum.flat_map(fn entry -> extract_paths_from_entry(entry, tid_to_num) end)
+    |> Enum.uniq_by(& &1.path)
+  end
+
+  defp extract_paths_from_entry(entry, tid_to_num) do
+    msgs = Map.get(entry, "messages") || Map.get(entry, :messages) || []
+
+    # Find the task_id the model worked against this turn — inferred from
+    # any task_id it passed (update_task / fetch_task) or created
+    # (create_task return, but we don't have that here — fall back to
+    # scanning args for a task_id key).
+    task_id =
+      msgs
+      |> Enum.flat_map(fn m -> tool_call_args(m) end)
+      |> Enum.find_value(fn args -> args["task_id"] end)
+
+    task_num = task_id && Map.get(tid_to_num, task_id)
+
+    msgs
+    |> Enum.flat_map(fn m -> tool_call_args(m) end)
+    |> Enum.flat_map(fn args ->
+      case {args["path"], tool_call_name(args)} do
+        {path, _name} when is_binary(path) and path != "" -> [%{path: path, task_num: task_num}]
+        _ -> []
+      end
+    end)
+  end
+
+  # Returns list of argument maps for `extract_content` tool_calls in a
+  # single message (assistant with tool_calls). We also include args
+  # for update_task / fetch_task so we can pick up task_id references.
+  defp tool_call_args(msg) do
+    calls = msg["tool_calls"] || msg[:tool_calls] || []
+    role  = msg["role"] || msg[:role]
+
+    if role == "assistant" and is_list(calls) do
+      Enum.flat_map(calls, fn c ->
+        fn_map = c["function"] || c[:function] || %{}
+        name   = fn_map["name"] || ""
+        args   = fn_map["arguments"] || %{}
+        args   = if is_binary(args), do: Jason.decode!(args), else: args
+
+        case name do
+          "extract_content" -> [Map.put(args, "__tool__", name)]
+          "update_task"     -> [Map.put(args, "__tool__", name)]
+          "fetch_task"      -> [Map.put(args, "__tool__", name)]
+          _                 -> []
+        end
+      end)
+    else
+      []
+    end
+  end
+
+  defp tool_call_name(args), do: Map.get(args, "__tool__")
+
   defp attachments_line(task) do
-    case extract_attachments(task.task_spec) do
+    # Structured attachments column is authoritative. For legacy tasks
+    # (pre-migration) it's [] — fall back to the old regex parser so
+    # their attachments still render during transition.
+    paths =
+      case Map.get(task, :attachments) do
+        list when is_list(list) and list != [] -> list
+        _                                       -> extract_attachments(task.task_spec)
+      end
+
+    case paths do
       [] -> nil
-      paths ->
+      _  ->
         "**Attachments:**\n" <>
           Enum.map_join(paths, "\n", fn p -> "- #{p}" end)
     end
@@ -546,9 +692,22 @@ defmodule Dmhai.Agent.ContextEngine do
     if pending, do: pairs ++ [pending], else: pairs
   end
 
-  defp to_llm_msg(%{"role" => r, "content" => c}), do: %{role: r, content: c}
-  defp to_llm_msg(%{role: r, content: c}),          do: %{role: r, content: c}
-  defp to_llm_msg(msg),                             do: msg
+  # Preserves `ts` when present so downstream consumers (ToolHistory.inject)
+  # can match assistant messages back to their retained tool_call pairs.
+  # LLM APIs ignore unknown fields in messages, so this is harmless on
+  # the wire.
+  defp to_llm_msg(%{"role" => r, "content" => c} = m),
+    do: maybe_ts(%{role: r, content: c}, m)
+  defp to_llm_msg(%{role: r, content: c} = m),
+    do: maybe_ts(%{role: r, content: c}, m)
+  defp to_llm_msg(msg), do: msg
+
+  defp maybe_ts(out, src) do
+    case src[:ts] || src["ts"] do
+      ts when is_integer(ts) -> Map.put(out, :ts, ts)
+      _                       -> out
+    end
+  end
 
   # Find the last user message's text content in a list.
   defp last_user_content(messages) do

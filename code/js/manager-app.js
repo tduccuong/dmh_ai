@@ -241,7 +241,16 @@ UIManager.createNewSession = async function() {
     this.currentSession = empty;
     await this.renderSessions();
     this.renderChat();
-    if (currentMode === 'assistant') this.showAssistantHint();
+    // Mirror switchSession's Tasks-sidebar housekeeping so the sidebar
+    // actually reflects the newly-focused session. Otherwise the old
+    // session's tasks stay rendered until something else retriggers it.
+    if (currentMode === 'assistant') {
+        this.showAssistantHint();
+        if (this.startTaskListPolling) this.startTaskListPolling();
+    } else {
+        if (this._taskPoll) { clearInterval(this._taskPoll); this._taskPoll = null; }
+        if (this.renderTaskList) this.renderTaskList();
+    }
     document.getElementById('message-input').focus();
 };
 

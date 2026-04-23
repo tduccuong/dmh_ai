@@ -15,7 +15,40 @@ defmodule Dmhai.DB.Init do
     File.mkdir_p(Dmhai.Constants.assets_dir())
 
     create_tables()
+    migrate_columns()
     seed_admin()
+  end
+
+  # Additive schema migrations — idempotent. Safe on fresh installs because
+  # CREATE TABLE above already has the new columns; the ALTER here catches
+  # older DBs where the column is missing.
+  # SQLite has no `ADD COLUMN IF NOT EXISTS` so we catch the duplicate-column
+  # error and move on.
+  defp migrate_columns do
+    add_column_if_missing("session_progress", "sub_labels", "TEXT DEFAULT NULL")
+    # Per-session human-readable task number: (1), (2), (3), … Surfaced in
+    # the task-list block + FE sidebar so the user can say "tell me more
+    # about task 1" and the model can map it to the internal task_id.
+    add_column_if_missing("tasks", "task_num", "INTEGER")
+    # First-class attachments column — JSON array of workspace/data paths.
+    # Previously derived via regex from task_spec text; that was fragile
+    # (model collapses newlines → regex misses 📎). Structured column is
+    # the source of truth for fetch_task, the task-list block, and dedup.
+    add_column_if_missing("tasks", "attachments", "TEXT DEFAULT NULL")
+    # Per-session tool-result retention window (last N turns' tool_call /
+    # tool_result messages, JSON). Lets the model answer follow-up
+    # questions immediately after a tool run without re-extracting,
+    # while still capped so extraction marathons can't balloon context.
+    add_column_if_missing("sessions", "tool_history", "TEXT DEFAULT NULL")
+  end
+
+  defp add_column_if_missing(table, column, type_and_default) do
+    try do
+      query!(Repo, "ALTER TABLE #{table} ADD COLUMN #{column} #{type_and_default}")
+      Logger.info("[DB.Init] added #{table}.#{column}")
+    rescue
+      _ -> :ok
+    end
   end
 
   defp create_tables do
@@ -30,6 +63,7 @@ defmodule Dmhai.DB.Init do
       mode TEXT DEFAULT 'confidant',
       stream_buffer TEXT,                   -- partial final-answer tokens being streamed from the LLM; NULL when idle
       stream_buffer_ts INTEGER,             -- last stream_buffer update ts (ms); used by FE polling to detect change
+      tool_history TEXT DEFAULT NULL,       -- JSON: last-N-turn tool_call / tool_result messages for context retention
       created_at INTEGER,
       updated_at INTEGER DEFAULT 0
     )
@@ -137,6 +171,7 @@ defmodule Dmhai.DB.Init do
       task_id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
       session_id TEXT NOT NULL,
+      task_num INTEGER,                        -- per-session monotonic from 1; display label (1), (2), …
       task_type TEXT NOT NULL,                 -- 'one_off' | 'periodic'
       intvl_sec INTEGER NOT NULL DEFAULT 0,
       task_title TEXT,
@@ -148,6 +183,7 @@ defmodule Dmhai.DB.Init do
       time_to_pickup INTEGER,                  -- unix ms; when to next pick up this task
                                                -- (periodic next cycle; one_off future-dated)
       language TEXT NOT NULL DEFAULT 'en',
+      attachments TEXT DEFAULT NULL,           -- JSON array of workspace/data paths (structured; not parsed from spec)
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     )
@@ -166,6 +202,7 @@ defmodule Dmhai.DB.Init do
       kind TEXT NOT NULL,                     -- 'tool' | 'thinking' | 'summary'
       status TEXT,                            -- 'pending' | 'done' (tool only — mutated in place)
       label TEXT,                             -- human-readable one-liner for FE rendering
+      sub_labels TEXT DEFAULT NULL,           -- JSON array of sub-activity labels (for tools with parallel internals)
       hidden INTEGER NOT NULL DEFAULT 0,      -- 1 = persisted for audit only, never shown in the FE timeline
       ts INTEGER NOT NULL
     )

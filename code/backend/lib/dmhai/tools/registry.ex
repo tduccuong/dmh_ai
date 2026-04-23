@@ -40,6 +40,21 @@ defmodule Dmhai.Tools.Registry do
   def known?(name) when is_binary(name), do: name in names()
   def known?(_), do: false
 
+  @doc """
+  Return the OpenAI-function-calling definition for a named tool, or
+  `nil` if the name isn't registered. Used by Police's schema-validation
+  check to inspect required fields / property types when building a
+  schema-driven nudge example.
+  """
+  @spec definition_for(String.t()) :: map() | nil
+  def definition_for(name) when is_binary(name) do
+    case Enum.find(@tools, &(&1.name() == name)) do
+      nil  -> nil
+      tool -> tool.definition()
+    end
+  end
+  def definition_for(_), do: nil
+
   @doc "Executes a tool by name. Returns {:ok, result} or {:error, reason}."
   def execute(name, args, context) do
     case Enum.find(@tools, &(&1.name() == name)) do

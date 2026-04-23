@@ -61,9 +61,12 @@ defmodule Dmhai.Agent.UserAgent do
 
   defstruct [
     :user_id,
-    # current inline task: nil | {task_ref, reply_pid, session_id}
-    # session_id is retained so that on turn completion we can check
-    # Tasks.fetch_next_due/1 and auto-chain the next pending task.
+    # current inline task: nil | {task_ref, task_pid, reply_pid, session_id}
+    # - task_pid is the running Task's process (needed for Process.exit
+    #   on user interrupt — cancels in-flight LLM/fetch calls).
+    # - session_id is retained so on turn completion we can check
+    #   Tasks.fetch_next_due/1 and auto-chain the next pending task,
+    #   and on interrupt we can mark that session's ongoing tasks cancelled.
     current_task: nil,
     # per-platform opaque state (e.g. %{telegram: %{chat_id: "123"}})
     platform_state: %{}
@@ -175,7 +178,7 @@ defmodule Dmhai.Agent.UserAgent do
   # pending task with `time_to_pickup <= now`. If so, self-send
   # {:task_due, task_id} so the next turn runs silently for that task.
   @impl true
-  def handle_info({ref, _result}, %{current_task: {ref, _reply_pid, session_id}} = state) do
+  def handle_info({ref, _result}, %{current_task: {ref, _task_pid, _reply_pid, session_id}} = state) do
     Process.demonitor(ref, [:flush])
     maybe_trigger_next_due(session_id)
     {:noreply, %{state | current_task: nil}, @idle_timeout}
@@ -188,7 +191,7 @@ defmodule Dmhai.Agent.UserAgent do
   end
 
   # Inline task crashed
-  def handle_info({:DOWN, ref, :task, _pid, reason}, %{current_task: {ref, reply_pid, _sid}} = state) do
+  def handle_info({:DOWN, ref, :task, _pid, reason}, %{current_task: {ref, _task_pid, reply_pid, _sid}} = state) do
     Logger.error("[UserAgent] inline task crashed user=#{state.user_id} reason=#{inspect(reason)}")
     send(reply_pid, {:error, "Internal error — please try again"})
     {:noreply, %{state | current_task: nil}, @idle_timeout}
@@ -237,9 +240,38 @@ defmodule Dmhai.Agent.UserAgent do
 
   defp cancel_current_task(%{current_task: nil} = state), do: state
 
-  defp cancel_current_task(%{current_task: {_ref, reply_pid, _sid}} = state) do
+  defp cancel_current_task(%{current_task: {_ref, task_pid, reply_pid, session_id}} = state) do
+    # Actually kill the running Task — this cancels any in-flight LLM /
+    # web_fetch HTTP calls, preventing further token burn and any
+    # downstream tool work from continuing.
+    if is_pid(task_pid) and Process.alive?(task_pid) do
+      Process.exit(task_pid, :kill)
+    end
+
+    # Tell whoever was listening (reply_pid) the turn was interrupted.
     send(reply_pid, {:error, :interrupted})
+
+    # Clear stream_buffer so the FE's next poll sees is_working=false
+    # and the "Aborted" banner can reflect a genuine settled state.
+    Dmhai.Agent.StreamBuffer.clear(session_id, state.user_id)
+
+    # Mark any tasks the model had flipped to 'ongoing' this turn as
+    # 'cancelled' with task_result="Interrupted by user". They surface
+    # in the `### done` section of the next turn's task list; the user
+    # can ask to resume and the model reopens them via update_task.
+    cancel_ongoing_tasks_for_session(session_id)
+
     %{state | current_task: nil}
+  end
+
+  defp cancel_ongoing_tasks_for_session(session_id) do
+    session_id
+    |> Tasks.list_for_session()
+    |> Enum.filter(&(&1.task_status == "ongoing"))
+    |> Enum.each(fn t ->
+      Logger.info("[UserAgent] interrupt cancelling ongoing task=#{t.task_id}")
+      Tasks.mark_cancelled(t.task_id, "Interrupted by user")
+    end)
   end
 
   # Post-turn hook: check for another pending task in the same session
@@ -277,7 +309,9 @@ defmodule Dmhai.Agent.UserAgent do
     # we still carry a dummy value in the state tuple for structural
     # consistency with user-initiated turns (see :handle_info({ref, _})).
     dummy_pid = spawn(fn -> :ok end)
-    {:noreply, %{state | current_task: {spawned.ref, dummy_pid, session_id}}, @idle_timeout}
+    {:noreply,
+     %{state | current_task: {spawned.ref, spawned.pid, dummy_pid, session_id}},
+     @idle_timeout}
   end
 
   # Silent equivalent of run_assistant for auto-triggered task pickups.
@@ -402,7 +436,9 @@ defmodule Dmhai.Agent.UserAgent do
           end
         end)
 
-      {:reply, :ok, %{state | current_task: {task.ref, reply_pid, command.session_id}}, @idle_timeout}
+      {:reply, :ok,
+       %{state | current_task: {task.ref, task.pid, reply_pid, command.session_id}},
+       @idle_timeout}
     end
   end
 
@@ -643,10 +679,22 @@ defmodule Dmhai.Agent.UserAgent do
           StreamBuffer.clear(ctx.session_id, ctx.user_id)
 
           assistant_msg = %{role: "assistant", content: "", tool_calls: calls}
-          tool_result_msgs = execute_tools(calls, ctx)
+          tool_result_msgs_raw = execute_tools(calls, ctx)
 
-          new_messages = messages ++ [assistant_msg] ++ tool_result_msgs
-          session_turn_loop(new_messages, model, ctx, round + 1)
+          # Tally any tagged Police rejections from this round and bump
+          # the matching nudge counters. Returns the cleaned messages
+          # with the internal `[[ISSUE:...]]` marker stripped so the
+          # model just sees the nudge prose.
+          {ctx, tool_result_msgs} = bump_nudge_counters(ctx, tool_result_msgs_raw)
+
+          case maybe_abort_on_model_behavior_issue(ctx, model) do
+            :continue ->
+              new_messages = messages ++ [assistant_msg] ++ tool_result_msgs
+              session_turn_loop(new_messages, model, ctx, round + 1)
+
+            :aborted ->
+              :ok
+          end
 
         {:ok, text} when is_binary(text) and text != "" ->
           case Dmhai.Agent.Police.check_assistant_text(text) do
@@ -684,19 +732,35 @@ defmodule Dmhai.Agent.UserAgent do
                   session_turn_loop(new_messages, model, ctx, round + 1)
 
                 :ok ->
-                  Dmhai.SysLog.log("[ASSISTANT] round=#{round} text(#{String.length(text)} chars)")
-                  {:ok, _assistant_ts} =
+                  # Strip tool-call bookkeeping annotations the model may
+                  # have tacked on to its answer ("[used: update_task(…)]",
+                  # "[via: web_search]", etc.). Police already rejected
+                  # flagrant cases at stream-end; this is the belt-and-
+                  # braces strip for anything that slipped through.
+                  clean_text = Dmhai.Agent.TextSanitizer.strip_task_bookkeeping(text)
+                  if clean_text != text do
+                    Logger.info("[UserAgent] stripped task-bookkeeping (#{String.length(text) - String.length(clean_text)} chars) from assistant text at persistence")
+                  end
+                  Dmhai.SysLog.log("[ASSISTANT] round=#{round} text(#{String.length(clean_text)} chars)")
+                  {:ok, assistant_ts} =
                     append_session_message(ctx.session_id, ctx.user_id,
-                                           %{role: "assistant", content: text})
+                                           %{role: "assistant", content: clean_text})
                   # Stream buffer had the progressive text; clear it now that
                   # the permanent message is persisted, so the FE's streaming
                   # placeholder gives way to the real message on next poll.
                   StreamBuffer.clear(ctx.session_id, ctx.user_id)
+                  # Snapshot this turn's tool_call/tool_result messages
+                  # into the session's rolling tool-history window so the
+                  # NEXT turn's context builder can inject them back and
+                  # answer immediate follow-ups without re-running tools.
+                  tool_msgs = collect_tool_messages(messages)
+                  Dmhai.Agent.ToolHistory.save_turn(
+                    ctx.session_id, ctx.user_id, assistant_ts, tool_msgs)
                   # Runtime auto-close: if the model worked on any task this
                   # turn but forgot to call update_task(status: "done"), close
                   # them now using the final answer as task_result. Keeps the
                   # task list clean without relying on model compliance.
-                  auto_close_ongoing_tasks(ctx.session_id, text)
+                  auto_close_ongoing_tasks(ctx.session_id, clean_text)
               end
           end
 
@@ -724,6 +788,89 @@ defmodule Dmhai.Agent.UserAgent do
   # applied to periodic re-arm: routine bookkeeping handled by the
   # runtime, not the model. Periodic tasks re-schedule themselves via
   # Tasks.mark_done/2's built-in branch.
+  # Filter the in-turn message accumulator down to the tool_call-emitting
+  # assistant messages AND their paired tool-result messages. These form
+  # one retained turn entry in ToolHistory. User messages and the final
+  # assistant text are omitted — they're already in session.messages.
+  defp collect_tool_messages(messages) do
+    Enum.filter(messages, fn m ->
+      role         = m[:role] || m["role"]
+      tool_calls   = m[:tool_calls] || m["tool_calls"] || []
+      tool_call_id = m[:tool_call_id] || m["tool_call_id"]
+
+      cond do
+        role == "assistant" and is_list(tool_calls) and tool_calls != [] -> true
+        role == "tool"      and is_binary(tool_call_id) and tool_call_id != "" -> true
+        true -> false
+      end
+    end)
+  end
+
+  # Escalation threshold — the model gets this many chances to fix a
+  # tagged Police misbehavior within a single turn before we give up
+  # and surface an internal-error message to the user.
+  @model_behavior_nudge_limit 3
+
+  # Sniff tool_result messages for `[[ISSUE:<atom>]]` markers left by
+  # execute_tools/2: bump the matching counter in ctx.nudges AND strip
+  # the marker from the message content so the model sees only the
+  # human-readable nudge prose.
+  defp bump_nudge_counters(ctx, tool_result_msgs) do
+    existing = Map.get(ctx, :nudges, %{})
+    marker_re = ~r/^\[\[ISSUE:([a-z_]+)\]\]\n?/u
+
+    {nudges_after, clean_msgs} =
+      Enum.map_reduce(tool_result_msgs, existing, fn msg, acc ->
+        raw = msg[:content] || msg["content"] || ""
+
+        case Regex.run(marker_re, raw) do
+          [full, atom_name] ->
+            key = String.to_atom(atom_name)
+            new_acc = Map.update(acc, key, 1, &(&1 + 1))
+            cleaned = String.replace_prefix(raw, full, "")
+            {Map.put(msg, :content, cleaned), new_acc}
+
+          _ ->
+            {msg, acc}
+        end
+      end)
+      |> then(fn {msgs, acc} -> {acc, msgs} end)
+
+    {Map.put(ctx, :nudges, nudges_after), clean_msgs}
+  end
+
+  # Check every counter against the limit. If any has reached it,
+  # emit the user-facing error, log a critical ModelBehaviorIssue,
+  # and return :aborted so the turn loop stops.
+  defp maybe_abort_on_model_behavior_issue(ctx, model) do
+    nudges = Map.get(ctx, :nudges, %{})
+
+    over =
+      Enum.find(nudges, fn {_k, count} -> count >= @model_behavior_nudge_limit end)
+
+    case over do
+      nil ->
+        :continue
+
+      {issue, count} ->
+        Logger.error(
+          "[ModelBehaviorIssue] type=#{issue} model=#{model} session=#{ctx.session_id} count=#{count} — " <>
+            "model exceeded nudge budget; aborting turn"
+        )
+        Dmhai.SysLog.log(
+          "[CRITICAL] ModelBehaviorIssue type=#{issue} model=#{model} " <>
+            "session=#{ctx.session_id} count=#{count}"
+        )
+
+        user_msg = "Internal AI model error — we're investigating and working to fix. " <>
+                     "Sorry for the inconvenience."
+        StreamBuffer.clear(ctx.session_id, ctx.user_id)
+        {:ok, _} = append_session_message(ctx.session_id, ctx.user_id,
+                                          %{role: "assistant", content: user_msg})
+        :aborted
+    end
+  end
+
   defp auto_close_ongoing_tasks(session_id, assistant_text) do
     # Cap the task_result snippet — don't dump an entire multi-kilobyte
     # answer into every ongoing task row. First ~500 chars is enough
@@ -767,7 +914,11 @@ defmodule Dmhai.Agent.UserAgent do
       with :ok <- Dmhai.Agent.Police.check_tool_known(name),
            # Police gate 2 — task discipline. Silent to the user. Same
            # self-correction pattern.
-           :ok <- Dmhai.Agent.Police.check_task_discipline(name, ctx) do
+           :ok <- Dmhai.Agent.Police.check_task_discipline(name, ctx),
+           # Police gate 3 — tool-call schema compliance. Generic check
+           # against the tool's own definition (required fields + types).
+           # Schema-driven nudge example returned on failure.
+           :ok <- Dmhai.Agent.Police.check_tool_call_schema(name, args) do
         progress_label = Dmhai.Agent.ProgressLabel.format(name, args)
         # `update_task(status: "done")` is pure cleanup — the final
         # assistant message IS the completion event from the user's
@@ -780,7 +931,11 @@ defmodule Dmhai.Agent.UserAgent do
 
         args_log = args |> Jason.encode!() |> String.slice(0, 600)
         Dmhai.SysLog.log("[ASSISTANT] tool=#{name} args=#{args_log}")
-        exec_result = Dmhai.Tools.Registry.execute(name, args, ctx)
+        # Thread the progress row id through ctx so tools with parallel
+        # internals (web_search, OCR extract) can stream sub-activity
+        # labels into session_progress.sub_labels for the FE to rotate.
+        tool_ctx = Map.put(ctx, :progress_row_id, row.id)
+        exec_result = Dmhai.Tools.Registry.execute(name, args, tool_ctx)
 
         # Flip to 'done' on success, delete the pending row on error so
         # rejected attempts don't leave ghost rows in the chat timeline
@@ -799,8 +954,19 @@ defmodule Dmhai.Agent.UserAgent do
 
         %{role: "tool", content: content, tool_call_id: tool_call_id}
       else
-        {:rejected, reason} ->
+        # Plain string rejection (legacy Police checks) — return as a
+        # tool-result message, no issue tracking.
+        {:rejected, reason} when is_binary(reason) ->
           %{role: "tool", content: reason, tool_call_id: tool_call_id}
+
+        # Tagged rejection `{issue_atom, reason}` — emit a marker in the
+        # message that the session loop can sniff later to bump the
+        # matching counter in ctx.nudges. Stored in `content` as a
+        # parseable prefix; cheap way to plumb side-info without
+        # changing this function's return type.
+        {:rejected, {issue_atom, reason}} when is_atom(issue_atom) ->
+          marker = "[[ISSUE:#{issue_atom}]]\n"
+          %{role: "tool", content: marker <> reason, tool_call_id: tool_call_id}
       end
     end)
   end

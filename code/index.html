@@ -103,6 +103,10 @@
                         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
                         <span id="user-settings-label">Settings</span>
                     </button>
+                    <button class="user-dropdown-item" id="user-ai-settings-btn" style="display:none">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>
+                        <span id="user-ai-settings-label">AI Model Settings</span>
+                    </button>
                     <button class="user-dropdown-item" id="user-conv-settings-btn" style="display:none">
                         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
                         <span id="user-conv-settings-label">Conversation Settings</span>
@@ -305,7 +309,7 @@
                                 <input id="cloud-acct-key" class="settings-input" type="password" placeholder="API key" style="flex:2">
                                 <button class="settings-add-btn" id="cloud-acct-add-btn">+ Add</button>
                             </div>
-                            <div id="cloud-acct-error" style="display:none;color:#e05060;font-size:12px;margin-top:6px;"></div>
+                            <div id="cloud-acct-error" class="settings-msg" style="display:none;color:#e05060;"></div>
                         </div>
                     </div>
                     <!-- Section 2: Ollama Local Endpoint -->
@@ -319,14 +323,16 @@
                                 <input id="settings-ollama-url" class="settings-input" placeholder="localhost or 192.168.1.10" style="flex:3">
                                 <button class="settings-add-btn" id="settings-ollama-url-save">Save</button>
                             </div>
-                            <div id="settings-ollama-url-msg" style="display:none;font-size:12px;margin-top:6px;line-height:1.5;"></div>
+                            <div id="settings-ollama-url-msg" class="settings-msg" style="display:none;"></div>
                         </div>
                     </div>
-                    <!-- Section 3: Assistant Model -->
+                </div>
+                <!-- Page: AI Model Settings -->
+                <div class="settings-page" id="page-ai-models">
                     <div class="settings-section">
                         <div class="settings-section-title">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-                            Assistant Model
+                            Assistant
                         </div>
                         <div class="settings-subsection">
                             <div class="role-picker-current" id="assistant-model-current"></div>
@@ -336,17 +342,94 @@
                             </div>
                         </div>
                     </div>
-                    <!-- Section 4: Confidant Model -->
                     <div class="settings-section">
                         <div class="settings-section-title">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
-                            Confidant Model
+                            Confidant
                         </div>
                         <div class="settings-subsection">
                             <div class="role-picker-current" id="confidant-model-current"></div>
                             <div class="settings-search-wrap">
                                 <input id="confidant-model-search" class="settings-input" placeholder="Search model name...">
                                 <div class="settings-suggestions" id="confidant-model-suggestions"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="settings-section">
+                        <div class="settings-section-title">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+                            Image Describer
+                        </div>
+                        <div class="settings-subsection">
+                            <div class="role-picker-current" id="imageDescriber-model-current"></div>
+                            <div class="settings-search-wrap">
+                                <input id="imageDescriber-model-search" class="settings-input" placeholder="Search model name...">
+                                <div class="settings-suggestions" id="imageDescriber-model-suggestions"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="settings-section">
+                        <div class="settings-section-title">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
+                            Video Describer
+                        </div>
+                        <div class="settings-subsection">
+                            <div class="role-picker-current" id="videoDescriber-model-current"></div>
+                            <div class="settings-search-wrap">
+                                <input id="videoDescriber-model-search" class="settings-input" placeholder="Search model name...">
+                                <div class="settings-suggestions" id="videoDescriber-model-suggestions"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="settings-section">
+                        <div class="settings-section-title">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                            Web Search Classifier
+                        </div>
+                        <div class="settings-subsection">
+                            <div class="role-picker-current" id="webSearch-model-current"></div>
+                            <div class="settings-search-wrap">
+                                <input id="webSearch-model-search" class="settings-input" placeholder="Search model name...">
+                                <div class="settings-suggestions" id="webSearch-model-suggestions"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="settings-section">
+                        <div class="settings-section-title">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                            Context Compactor
+                        </div>
+                        <div class="settings-subsection">
+                            <div class="role-picker-current" id="compactor-model-current"></div>
+                            <div class="settings-search-wrap">
+                                <input id="compactor-model-search" class="settings-input" placeholder="Search model name...">
+                                <div class="settings-suggestions" id="compactor-model-suggestions"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="settings-section">
+                        <div class="settings-section-title">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="14" y2="18"/></svg>
+                            Task Summarizer
+                        </div>
+                        <div class="settings-subsection">
+                            <div class="role-picker-current" id="summarizer-model-current"></div>
+                            <div class="settings-search-wrap">
+                                <input id="summarizer-model-search" class="settings-input" placeholder="Search model name...">
+                                <div class="settings-suggestions" id="summarizer-model-suggestions"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="settings-section">
+                        <div class="settings-section-title">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                            Profile Extractor
+                        </div>
+                        <div class="settings-subsection">
+                            <div class="role-picker-current" id="profileExtractor-model-current"></div>
+                            <div class="settings-search-wrap">
+                                <input id="profileExtractor-model-search" class="settings-input" placeholder="Search model name...">
+                                <div class="settings-suggestions" id="profileExtractor-model-suggestions"></div>
                             </div>
                         </div>
                     </div>
@@ -360,24 +443,24 @@
                             <span id="settings-chat-section-title">Chat</span>
                         </div>
                         <div class="settings-subsection">
-                            <div class="settings-add-row" style="align-items:center;gap:8px;">
-                                <label id="settings-compact-turns-label" style="white-space:nowrap;font-size:13px;color:var(--text-secondary)">Compact after messages</label>
-                                <input id="settings-compact-turns" class="settings-input" type="number" min="10" max="500" style="width:70px;flex:none;">
+                            <div class="settings-add-row">
+                                <label id="settings-compact-turns-label" class="settings-row-label">Compact after messages</label>
+                                <input id="settings-compact-turns" class="settings-input settings-num-sm" type="number" min="10" max="500">
                                 <button class="settings-add-btn" id="settings-compact-turns-save">Save</button>
                             </div>
-                            <div class="settings-add-row" style="align-items:center;gap:8px;margin-top:8px;">
-                                <label id="settings-keep-recent-label" style="white-space:nowrap;font-size:13px;color:var(--text-secondary)">Keep recent messages</label>
-                                <input id="settings-keep-recent" class="settings-input" type="number" min="4" max="200" placeholder="auto" style="width:70px;flex:none;">
+                            <div class="settings-add-row">
+                                <label id="settings-keep-recent-label" class="settings-row-label">Keep recent messages</label>
+                                <input id="settings-keep-recent" class="settings-input settings-num-sm" type="number" min="4" max="200" placeholder="auto">
                                 <button class="settings-add-btn" id="settings-keep-recent-save">Save</button>
                             </div>
-                            <div class="settings-add-row" style="align-items:center;gap:8px;margin-top:8px;">
-                                <label style="white-space:nowrap;font-size:13px;color:var(--text-secondary)">Max tool result chars</label>
-                                <input id="settings-max-tool-result-chars" class="settings-input" type="number" min="500" max="100000" style="width:80px;flex:none;">
+                            <div class="settings-add-row">
+                                <label class="settings-row-label">Max tool result chars</label>
+                                <input id="settings-max-tool-result-chars" class="settings-input settings-num-md" type="number" min="500" max="100000">
                                 <button class="settings-add-btn" id="settings-max-tool-result-chars-save">Save</button>
                             </div>
-                            <div class="settings-add-row" style="align-items:center;gap:8px;margin-top:8px;">
-                                <label style="white-space:nowrap;font-size:13px;color:var(--text-secondary)">Trace LLM calls to file</label>
-                                <input id="settings-log-trace" type="checkbox" style="width:16px;height:16px;flex:none;accent-color:var(--accent);">
+                            <div class="settings-add-row">
+                                <label class="settings-row-label">Trace LLM calls to file</label>
+                                <input id="settings-log-trace" class="settings-checkbox" type="checkbox">
                             </div>
                         </div>
                     </div>
@@ -388,9 +471,9 @@
                             <span id="settings-multimedia-section-title">Multimedia</span>
                         </div>
                         <div class="settings-subsection">
-                            <div class="settings-add-row" style="align-items:center;gap:8px;">
-                                <label id="settings-video-detail-label" style="white-space:nowrap;font-size:13px;color:var(--text-secondary)">Video analysis depth</label>
-                                <select id="settings-video-detail" class="settings-input" style="flex:1;min-width:0;">
+                            <div class="settings-add-row">
+                                <label id="settings-video-detail-label" class="settings-row-label">Video analysis depth</label>
+                                <select id="settings-video-detail" class="settings-input">
                                     <option value="low">Low (4 frames)</option>
                                     <option value="medium">Medium (8 frames)</option>
                                     <option value="high">High (12 frames)</option>
@@ -405,14 +488,14 @@
                             <span id="settings-profile-section-title">Companion Memory</span>
                         </div>
                         <div class="settings-subsection">
-                            <div class="settings-add-row" style="align-items:center;gap:8px;">
-                                <label id="settings-condense-facts-label" style="white-space:nowrap;font-size:13px;color:var(--text-secondary)">Condense after facts</label>
-                                <input id="settings-condense-facts" class="settings-input" type="number" min="10" max="500" style="width:70px;flex:none;">
+                            <div class="settings-add-row">
+                                <label id="settings-condense-facts-label" class="settings-row-label">Condense after facts</label>
+                                <input id="settings-condense-facts" class="settings-input settings-num-sm" type="number" min="10" max="500">
                                 <button class="settings-add-btn" id="settings-condense-facts-save">Save</button>
                             </div>
                         </div>
                         <div class="settings-subsection">
-                            <button class="settings-add-btn" id="settings-profile-clear-btn" style="background:#5a2020;">Clear memory</button>
+                            <button class="settings-add-btn settings-add-btn-danger" id="settings-profile-clear-btn">Clear memory</button>
                         </div>
                     </div>
                 </div>

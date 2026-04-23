@@ -39,6 +39,8 @@ function applyLanguage() {
     document.getElementById('settings-profile-clear-btn').textContent = t('profileClear');
     var convSettingsLabel = document.getElementById('user-conv-settings-label');
     if (convSettingsLabel) convSettingsLabel.textContent = t('convSettings');
+    var aiSettingsLabel = document.getElementById('user-ai-settings-label');
+    if (aiSettingsLabel) aiSettingsLabel.textContent = t('aiModelSettings');
     document.getElementById('user-about-btn').lastChild.textContent = t('aboutBtn');
     document.getElementById('about-desc').textContent = t('aboutDesc');
     document.getElementById('about-legal-title').textContent = t('aboutLegalTitle');
@@ -152,6 +154,13 @@ const UIManager = {
         applyLanguage();
 
         document.getElementById('stop-gen-btn').addEventListener('click', function() {
+            // Tell the BE to actually kill the in-flight turn — this
+            // aborts LLM / web_fetch HTTP calls, clears stream_buffer,
+            // and marks any ongoing tasks for this session as cancelled
+            // with task_result="Interrupted by user". Fire-and-forget:
+            // we don't wait for the response before tearing down the UI.
+            apiFetch('/agent/interrupt', { method: 'POST' }).catch(function() {});
+
             if (self._streamController) { self._streamController.abort(); self._streamController = null; }
             if (self._thinkBodyEl) {
                 self._thinkBodyEl.textContent = digestThinking(self._thinkingContent || '', true);
@@ -512,6 +521,10 @@ const UIManager = {
             document.getElementById('user-dropdown').classList.remove('open');
             SettingsModal.open();
         });
+        document.getElementById('user-ai-settings-btn').addEventListener('click', function() {
+            document.getElementById('user-dropdown').classList.remove('open');
+            SettingsModal.open('page-ai-models');
+        });
         document.getElementById('user-conv-settings-btn').addEventListener('click', function() {
             document.getElementById('user-dropdown').classList.remove('open');
             SettingsModal.open('page-conversation');
@@ -546,6 +559,7 @@ const UIManager = {
             document.getElementById('user-manage-sep').style.display = isAdmin ? '' : 'none';
             document.getElementById('user-profiles-btn').style.display = isAdmin ? '' : 'none';
             document.getElementById('user-settings-btn').style.display = isAdmin ? '' : 'none';
+            document.getElementById('user-ai-settings-btn').style.display = isAdmin ? '' : 'none';
             document.getElementById('user-conv-settings-btn').style.display = isAdmin ? '' : 'none';
             document.getElementById('user-settings-sep').style.display = isAdmin ? '' : 'none';
         }

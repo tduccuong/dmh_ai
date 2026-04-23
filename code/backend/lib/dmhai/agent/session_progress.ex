@@ -108,6 +108,50 @@ defmodule Dmhai.Agent.SessionProgress do
     :ok
   end
 
+  # Cap the sub_labels array so a long-running tool can't grow it without
+  # bound. Each new append also trims the head; FE renders round-robin so
+  # the oldest entries fall off naturally.
+  @sub_labels_cap 20
+
+  @doc """
+  Append a label to the `sub_labels` JSON array of a pending tool row.
+  Used by tools whose execution has parallel or multi-step internals
+  (web_search's SearXNG fan-out, URL fetches, JinaReader fallback; OCR
+  chunk calls) — gives the FE enough signal to rotate a lively indicator
+  while the tool is running. No-op when `id` is nil (caller has no row).
+
+  Atomic via SQLite's `json_insert` — safe when called concurrently by
+  parallel fetch tasks. Trims to the last `@sub_labels_cap` entries.
+  """
+  @spec append_sub_label(integer() | nil, String.t()) :: :ok
+  def append_sub_label(nil, _label), do: :ok
+  def append_sub_label(id, label) when is_integer(id) and is_binary(label) do
+    try do
+      # json_insert appends at '$[#]'; then extract last @sub_labels_cap elements
+      # via a bounded slice. SQLite's json() functions are transaction-safe so
+      # concurrent callers never lose appends.
+      query!(Repo, """
+      UPDATE session_progress
+      SET sub_labels = (
+        SELECT CASE
+          WHEN json_array_length(arr) <= ? THEN arr
+          ELSE (
+            SELECT json_group_array(value)
+            FROM json_each(arr)
+            WHERE json_each.key >= json_array_length(arr) - ?
+          )
+        END
+        FROM (SELECT json_insert(COALESCE(sub_labels, '[]'), '$[#]', ?) AS arr)
+      )
+      WHERE id = ?
+      """, [@sub_labels_cap, @sub_labels_cap, label, id])
+    rescue
+      e -> require Logger; Logger.warning("[SessionProgress] append_sub_label failed: #{Exception.message(e)}")
+    end
+    :ok
+  end
+  def append_sub_label(_, _), do: :ok
+
   @doc "Convenience: write a 'thinking' row."
   @spec append_thinking(map(), String.t()) :: {:ok, integer()}
   def append_thinking(ctx, label), do: append(ctx, "thinking", label)
@@ -123,7 +167,7 @@ defmodule Dmhai.Agent.SessionProgress do
   @spec fetch_for_task(String.t()) :: [map()]
   def fetch_for_task(task_id) do
     r = query!(Repo, """
-    SELECT id, session_id, user_id, task_id, kind, status, label, ts
+    SELECT id, session_id, user_id, task_id, kind, status, label, sub_labels, ts
     FROM session_progress
     WHERE task_id=?
     ORDER BY id ASC
@@ -142,10 +186,19 @@ defmodule Dmhai.Agent.SessionProgress do
   """
   @spec fetch_for_session(String.t(), integer()) :: [map()]
   def fetch_for_session(session_id, since_id \\ 0) do
+    # Returns:
+    #   - rows with id > since_id (standard delta-load cursor), PLUS
+    #   - any row still in status='pending' regardless of id, so the FE
+    #     picks up sub_labels appended to an already-rendered pending tool
+    #     row (e.g. web_search's parallel fetches emit sub-activity after
+    #     the row was first seen).
+    # The FE upserts by id, so re-returning a pending row is harmless —
+    # it just refreshes sub_labels on the existing cached entry.
     r = query!(Repo, """
-    SELECT id, session_id, user_id, task_id, kind, status, label, ts
+    SELECT id, session_id, user_id, task_id, kind, status, label, sub_labels, ts
     FROM session_progress
-    WHERE session_id=? AND id > ? AND hidden = 0
+    WHERE session_id=? AND hidden = 0
+      AND (id > ? OR status='pending')
     ORDER BY id ASC
     """, [session_id, since_id])
 
@@ -163,7 +216,18 @@ defmodule Dmhai.Agent.SessionProgress do
   end
   defp truncate(other), do: inspect(other)
 
-  defp row_to_map([id, session_id, user_id, task_id, kind, status, label, ts]) do
+  defp row_to_map([id, session_id, user_id, task_id, kind, status, label, sub_labels_json, ts]) do
+    sub_labels =
+      case sub_labels_json do
+        nil  -> []
+        ""   -> []
+        json when is_binary(json) ->
+          case Jason.decode(json) do
+            {:ok, list} when is_list(list) -> list
+            _                               -> []
+          end
+      end
+
     %{
       id: id,
       session_id: session_id,
@@ -172,6 +236,7 @@ defmodule Dmhai.Agent.SessionProgress do
       kind: kind,
       status: status,
       label: label,
+      sub_labels: sub_labels,
       ts: ts
     }
   end

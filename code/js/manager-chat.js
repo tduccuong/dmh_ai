@@ -23,6 +23,10 @@ function buildSessionTimeline(session) {
     return entries;
 }
 
+// Rotation cadence for sub_labels (ms). Independent of poll interval —
+// Date.now() math gives a stable index regardless of render cadence.
+var SUB_LABEL_ROTATE_MS = 700;
+
 function renderProgressRow(row) {
     var div = document.createElement('div');
     div.className = 'progress-row progress-' + row.kind +
@@ -41,7 +45,41 @@ function renderProgressRow(row) {
     div.appendChild(icon);
     var label = document.createElement('span');
     label.className = 'progress-label';
-    label.textContent = row.label || '';
+    // While a tool row is still pending and the BE has reported sub-
+    // activity labels (parallel URL fetches, etc.), rotate through them
+    // round-robin. Time-based index so cadence is smooth regardless of
+    // render frequency. Once the row flips to done, restore the main
+    // `ToolName(args)` label.
+    var raw = row.label || '';
+    if (row.kind === 'tool' && row.status === 'pending'
+        && Array.isArray(row.sub_labels) && row.sub_labels.length > 0) {
+        var idx = Math.floor(Date.now() / SUB_LABEL_ROTATE_MS) % row.sub_labels.length;
+        raw = row.sub_labels[idx];
+    }
+    // For tool rows with the `ToolName("content")` shape, split into
+    // prefix/content/suffix spans so flex + ellipsis can shrink the
+    // middle to fit the viewport width while keeping the trailing `")`
+    // visible. Non-matching labels (or non-tool rows) stay as a single
+    // wrapping span — current behaviour.
+    var m = row.kind === 'tool' && raw.match(/^([A-Za-z0-9_]+\(")([\s\S]*)("\))$/);
+    if (m) {
+        label.classList.add('progress-label-trunc');
+        label.title = raw;  // full text on hover
+        var pre = document.createElement('span');
+        pre.className = 'progress-label-prefix';
+        pre.textContent = m[1];
+        var mid = document.createElement('span');
+        mid.className = 'progress-label-content';
+        mid.textContent = m[2];
+        var suf = document.createElement('span');
+        suf.className = 'progress-label-suffix';
+        suf.textContent = m[3];
+        label.appendChild(pre);
+        label.appendChild(mid);
+        label.appendChild(suf);
+    } else {
+        label.textContent = raw;
+    }
     div.appendChild(label);
     return div;
 }

@@ -16,14 +16,23 @@ defmodule Dmhai.Tools.WebSearch do
   # different framing ("Say YES/NO"), same underlying criteria; the two can
   # be DRYed later if they drift.
   @tool_description """
-  **Critical `web_search` rule:**
-  1. `web_search` tool is EXPENSIVE — only call when the answer to the user needs:
+  `web_search` performs the search AND returns the content of the top results in this exact shape — a numbered list where each item is:
+
+      N. <title>
+      <url>
+      [fetched]
+      <content>
+
+  The `[fetched]` tag means the content is here in its entirety — it is all we have for that URL. Do NOT call `web_fetch` on any URL that appears in your recent `web_search` result; there is nothing more to retrieve. Compile your answer directly from this content, and include the source URL alongside each claim so the user can click through and read for themselves.
+
+  **When to call `web_search`:**
     - Breaking news, sports scores, stock/crypto prices, weather, live events, headlines.
     - Current technical information, GitHub repos, library/framework versions, or StackOverflow-style answers that could have changed.
     - Statistics, laws, regulations, prices, or figures that change over time.
     - A person's recent news, current job, or latest work.
     - Anything you're unsure about or that could be outdated.
-  2. Calling `web_search` for any other reasons will be REJECTED.
+
+  Calling `web_search` for any other reason will be REJECTED.
   """
 
   @impl true
@@ -51,8 +60,9 @@ defmodule Dmhai.Tools.WebSearch do
   end
 
   @impl true
-  def execute(%{"query" => query}, _context) do
-    {:ok, format_result(WebSearchEngine.search(query, [], :assistant))}
+  def execute(%{"query" => query}, context) do
+    opts = [progress_row_id: Map.get(context || %{}, :progress_row_id)]
+    {:ok, format_result(WebSearchEngine.search(query, [], :assistant, opts))}
   end
 
   def execute(_, _), do: {:error, "Missing required argument: query"}
@@ -68,9 +78,13 @@ defmodule Dmhai.Tools.WebSearch do
       snippets
       |> Enum.with_index(1)
       |> Enum.flat_map(fn {s, i} ->
+        # Content is either the full fetched page text OR the SearXNG
+        # snippet if the fetch didn't yield anything usable. Either way
+        # it's all we have for this URL — tag every entry `[fetched]`
+        # so the model doesn't try web_fetch on any of them.
         content = Map.get(pages_by_url, s.url) || String.slice(s.snippet, 0, @max_snippet_chars)
         if content != "" do
-          ["#{i}. #{s.title}\n#{s.url}\n#{content}"]
+          ["#{i}. #{s.title}\n#{s.url}\n[fetched]\n#{content}"]
         else
           []
         end

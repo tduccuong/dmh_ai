@@ -15,7 +15,6 @@ defmodule Dmhai.Agent.AgentSettings do
   @defaults %{
     "confidantModel"         => "gemini-3-flash-preview:cloud",
     "assistantModel"         => "gpt-oss:120b-cloud",
-    "workerModel"          => "nemotron-3-nano:30b-cloud",
     "compactorModel"       => "gemini-3-flash-preview:cloud",
     "summarizerModel"      => "gemini-3-flash-preview:cloud",
     "webSearchModel"       => "ministral-3:14b-cloud",
@@ -43,6 +42,14 @@ defmodule Dmhai.Agent.AgentSettings do
   @min_extracted_text_chars_default 50
   @ocr_pages_per_chunk_default 8
   @ocr_page_cap_default 16
+
+  # Tool-result retention — number of recent turns whose tool_call /
+  # tool_result message pairs stay in the Assistant's context on the
+  # next turn, so follow-up questions can be answered without re-
+  # extracting. Bounded independently by a byte budget so a chain of
+  # heavy OCRs can't balloon context.
+  @tool_result_retention_turns_default 5
+  @tool_result_retention_bytes_default 120_000
 
   # Web / HTTP defaults
   @http_user_agent_default "Mozilla/5.0 (compatible; DMH-AI/1.0)"
@@ -85,6 +92,9 @@ defmodule Dmhai.Agent.AgentSettings do
   def confidant_model,          do: model_for("confidantModel")
   def assistant_model,          do: model_for("assistantModel")
   def compactor_model,        do: model_for("compactorModel")
+  # worker_model retired 2026-04-23 — legacy master/worker split is gone.
+  # Do not re-introduce; use assistant_model/confidant_model or a
+  # role-specific accessor instead.
   def summarizer_model,       do: model_for("summarizerModel")
   def web_search_model,       do: model_for("webSearchModel")
   def image_describer_model,  do: model_for("imageDescriberModel")
@@ -127,6 +137,16 @@ defmodule Dmhai.Agent.AgentSettings do
   @spec estimated_context_tokens() :: pos_integer()
   def estimated_context_tokens,
     do: int_setting("estimatedContextTokens", @estimated_context_tokens_default)
+
+  @doc "Number of recent turns whose tool_call / tool_result messages are retained in context."
+  @spec tool_result_retention_turns() :: pos_integer()
+  def tool_result_retention_turns,
+    do: int_setting("toolResultRetentionTurns", @tool_result_retention_turns_default)
+
+  @doc "Upper byte budget for retained tool messages. When exceeded, oldest-first eviction trims to fit."
+  @spec tool_result_retention_bytes() :: pos_integer()
+  def tool_result_retention_bytes,
+    do: int_setting("toolResultRetentionBytes", @tool_result_retention_bytes_default)
 
   @doc "HTTP User-Agent string for outbound web requests."
   @spec http_user_agent() :: String.t()

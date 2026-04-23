@@ -178,6 +178,14 @@
         icon.textContent = t.task_type === 'periodic' ? '\u21BB' : '\u25B8';
         row.appendChild(icon);
 
+        // Per-session "(N)" number — gives the user a short handle they
+        // can reference in a message ("tell me more about task 1").
+        if (typeof t.task_num === 'number' && t.task_num > 0) {
+            var numSpan = document.createElement('span');
+            numSpan.className = 'task-num';
+            numSpan.textContent = '(' + t.task_num + ')';
+            row.appendChild(numSpan);
+        }
         var title = document.createElement('span');
         title.className = 'task-title';
         title.textContent = t.task_title || '(untitled)';

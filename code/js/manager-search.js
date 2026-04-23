@@ -353,7 +353,12 @@ UIManager.pollTurnToCompletion = function(sessionAtSend, onComplete, onError, ab
                     }
                 }
                 if (!replaced) sessionAtSend.progress.push(p);
-                if (typeof p.id === 'number' && p.id > progSince) progSince = p.id;
+                // Only advance the cursor past FINALIZED rows. Pending
+                // rows are re-emitted by the BE (for sub_labels updates),
+                // and we also need their eventual pending → done flip
+                // to come back in a later poll — which only happens if
+                // the cursor hasn't moved past their id yet.
+                if (typeof p.id === 'number' && p.status !== 'pending' && p.id > progSince) progSince = p.id;
             });
 
             // Mirror onto currentSession (may have changed if user switched away).

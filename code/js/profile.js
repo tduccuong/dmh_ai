@@ -44,17 +44,20 @@ const Settings = {
         this._ollamaEndpoint = url || '';
         AppConfig.saveOllamaEndpoint(url);
     },
-    // Agent model settings
+    // Agent model settings — one per BE role. Empty string means
+    // "use the @defaults value baked into AgentSettings".
     _confidantModel: '',
     _assistantModel: '',
-    _workerModel: '',
+    _compactorModel: '',
+    _summarizerModel: '',
     _webSearchModel: '',
     _imageDescriberModel: '',
     _videoDescriberModel: '',
     _profileExtractorModel: '',
     get confidantModel() { return this._confidantModel; },
     get assistantModel() { return this._assistantModel; },
-    get workerModel() { return this._workerModel; },
+    get compactorModel() { return this._compactorModel; },
+    get summarizerModel() { return this._summarizerModel; },
     get webSearchModel() { return this._webSearchModel; },
     get imageDescriberModel() { return this._imageDescriberModel; },
     get videoDescriberModel() { return this._videoDescriberModel; },
@@ -75,8 +78,11 @@ const Settings = {
                 ollamaEndpoint: this._ollamaEndpoint, compactTurns: this._compactTurns,
                 keepRecent: this._keepRecent, condenseFacts: this._condenseFacts,
                 videoDetail: this._videoDetail, modelLabels: this._modelLabels,
-                confidantModel: this._confidantModel, assistantModel: this._assistantModel,
-                workerModel: this._workerModel, webSearchModel: this._webSearchModel,
+                confidantModel: this._confidantModel,
+                assistantModel: this._assistantModel,
+                compactorModel: this._compactorModel,
+                summarizerModel: this._summarizerModel,
+                webSearchModel: this._webSearchModel,
                 imageDescriberModel: this._imageDescriberModel,
                 videoDescriberModel: this._videoDescriberModel,
                 profileExtractorModel: this._profileExtractorModel,
@@ -114,12 +120,13 @@ const Settings = {
                     this._modelLabels = d.modelLabels;
                 }
                 // Agent model settings
-                if (d.confidantModel) this._confidantModel = d.confidantModel;
-                if (d.assistantModel) this._assistantModel = d.assistantModel;
-                if (d.workerModel) this._workerModel = d.workerModel;
-                if (d.webSearchModel) this._webSearchModel = d.webSearchModel;
-                if (d.imageDescriberModel) this._imageDescriberModel = d.imageDescriberModel;
-                if (d.videoDescriberModel) this._videoDescriberModel = d.videoDescriberModel;
+                if (d.confidantModel)        this._confidantModel        = d.confidantModel;
+                if (d.assistantModel)        this._assistantModel        = d.assistantModel;
+                if (d.compactorModel)        this._compactorModel        = d.compactorModel;
+                if (d.summarizerModel)       this._summarizerModel       = d.summarizerModel;
+                if (d.webSearchModel)        this._webSearchModel        = d.webSearchModel;
+                if (d.imageDescriberModel)   this._imageDescriberModel   = d.imageDescriberModel;
+                if (d.videoDescriberModel)   this._videoDescriberModel   = d.videoDescriberModel;
                 if (d.profileExtractorModel) this._profileExtractorModel = d.profileExtractorModel;
                 if (d.maxToolResultChars !== undefined) this._maxToolResultChars = parseInt(d.maxToolResultChars) || 8000;
                 if (d.logTrace !== undefined) this._logTrace = d.logTrace === true;
@@ -172,11 +179,23 @@ const UserProfile = {
 };
 
 const SettingsModal = {
+    // All BE model roles that have a picker in the AI Model Settings page.
+    // Keep in sync with the HTML sections in `page-ai-models` and with
+    // `AgentSettings.model_for/1` keys on the BE.
+    _ROLES: [
+        'assistant', 'confidant',
+        'imageDescriber', 'videoDescriber',
+        'webSearch', 'compactor', 'summarizer', 'profileExtractor'
+    ],
+    _roleField: function(role) {
+        // 'assistant' → '_assistantModel', 'imageDescriber' → '_imageDescriberModel'
+        return '_' + role + 'Model';
+    },
     open: async function(page) {
         await Settings.load();
         this._renderAccounts();
-        this._renderRoleCurrent('assistant');
-        this._renderRoleCurrent('confidant');
+        var self = this;
+        this._ROLES.forEach(function(r) { self._renderRoleCurrent(r); });
         document.getElementById('settings-ollama-url').value = AppConfig.ollamaEndpoint || '';
         document.getElementById('settings-compact-turns').value = Settings._compactTurns;
         document.getElementById('settings-keep-recent').value = Settings._keepRecent > 0 ? Settings._keepRecent : '';
@@ -187,7 +206,10 @@ const SettingsModal = {
         var targetPage = page || 'page-model';
         document.querySelectorAll('.settings-page').forEach(function(p) { p.classList.remove('active'); });
         document.getElementById(targetPage).classList.add('active');
-        document.getElementById('settings-modal-title').textContent = t(targetPage === 'page-conversation' ? 'convSettings' : 'sysSettings');
+        var titleKey = targetPage === 'page-conversation' ? 'convSettings'
+                     : targetPage === 'page-ai-models'   ? 'aiModelSettings'
+                     : 'sysSettings';
+        document.getElementById('settings-modal-title').textContent = t(titleKey);
         document.getElementById('settings-overlay').classList.add('open');
     },
     close: function() {
@@ -237,7 +259,7 @@ const SettingsModal = {
     _renderRoleCurrent: function(role) {
         var el = document.getElementById(role + '-model-current');
         if (!el) return;
-        var selected = (role === 'assistant') ? Settings._assistantModel : Settings._confidantModel;
+        var selected = Settings[this._roleField(role)];
         if (selected && String(selected).trim()) {
             el.innerHTML = 'Current: <span class="role-picker-current-name">' + selected + '</span>';
         } else {
@@ -317,9 +339,8 @@ const SettingsModal = {
     _setRoleModel: function(role, name) {
         name = (name || '').trim();
         if (!name) return;
-        if (role === 'assistant') Settings._assistantModel = name;
-        else if (role === 'confidant') Settings._confidantModel = name;
-        else return;
+        if (this._ROLES.indexOf(role) === -1) return;
+        Settings[this._roleField(role)] = name;
         Settings._persist();
         SettingsModal._renderRoleCurrent(role);
         var input = document.getElementById(role + '-model-search');
@@ -363,13 +384,13 @@ const SettingsModal = {
             document.getElementById('cloud-acct-key').value = '';
             self._renderAccounts();
         });
-        // Role-picker search (Assistant & Confidant). Both read the same
-        // local /tags list and partition by name: `:cloud` / `-cloud` → cloud,
-        // everything else → local. Clicking a suggestion persists the
-        // selection immediately — BE's AgentSettings reads fresh from DB on
-        // each model_for/1 call, so the next LLM call for the role routes
-        // to the new choice with no restart.
-        ['assistant', 'confidant'].forEach(function(role) {
+        // Role-picker search (all BE roles in AI Model Settings page).
+        // Each picker queries local /tags + /registry?q=, partitions by
+        // name (`:cloud` / `-cloud` → cloud, else local), and on click
+        // persists the selection immediately — BE's AgentSettings reads
+        // fresh from DB on each model_for/1 call, so the next LLM call
+        // for the role routes to the new choice with no restart.
+        self._ROLES.forEach(function(role) {
             self._bindRolePicker(role);
         });
         // Local Ollama URL save

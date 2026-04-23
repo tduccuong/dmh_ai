@@ -42,8 +42,8 @@ defmodule Dmhai.Tools.CreateTask do
          {:ok, task_type}          <- normalise_type(args["task_type"]),
          {:ok, intvl_sec}          <- normalise_intvl(task_type, args["intvl_sec"]),
          {:ok, attachments}        <- Dmhai.Agent.AttachmentPaths.validate(args["attachments"]),
-         normalised_spec           <- Dmhai.Agent.AttachmentPaths.normalise_spec(args["task_spec"], attachments),
-         :ok                       <- require_non_empty_post_normalise(normalised_spec) do
+         cleaned_spec              <- Dmhai.Agent.AttachmentPaths.clean_spec(args["task_spec"]),
+         :ok                       <- require_non_empty_post_normalise(cleaned_spec) do
 
       cleaned_title    = Dmhai.Agent.AttachmentPaths.strip_transient_markers(args["task_title"])
 
@@ -54,7 +54,8 @@ defmodule Dmhai.Tools.CreateTask do
           task_type:   task_type,
           intvl_sec:  intvl_sec,
           task_title:  cleaned_title,
-          task_spec:   normalised_spec,
+          task_spec:   cleaned_spec,
+          attachments: attachments,
           # Start as 'ongoing' — the model just created this because it's
           # about to execute it in this same turn. 'pending' is reserved for
           # periodic tasks awaiting their next cycle and for tasks resurrected

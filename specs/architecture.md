@@ -451,6 +451,75 @@ compactor LLM (`AgentSettings.compactor_model()`, NOT hardcoded) and writes
 context is preserved. Old messages are retained in the DB and remain
 available for keyword retrieval.
 
+**Tool-result retention (`Dmhai.Agent.ToolHistory`)** — orthogonal to
+compaction. Retains the last N turns' raw `tool_call` / `tool_result`
+message pairs in the `sessions.tool_history` JSON column so the next
+turn can inject them back into the LLM input — the model answers
+immediate follow-ups without re-running the tool.
+
+- `UserAgent` snapshots a turn's tool messages into `ToolHistory.save_turn/4`
+  right after persisting the final assistant text; the save function
+  trims to `AgentSettings.tool_result_retention_turns()` (default `5`) and
+  a byte budget `AgentSettings.tool_result_retention_bytes()` (default
+  `120_000` chars).
+- `ContextEngine.build_assistant_messages/2` calls
+  `ToolHistory.inject/2` to interleave each saved entry back into
+  `history_llm` **immediately before its matching assistant-text message**
+  (matched by `ts`). This reconstructs the OpenAI-style
+  `user → assistant(tool_calls) → tool(result) → assistant(final text)`
+  shape models expect.
+- Entries age out naturally past the N-turn window; pathological
+  extraction marathons are bounded by the byte budget (oldest-first
+  eviction).
+- Independent budget from compaction: compaction's char trigger counts
+  only `session.messages` text — tool_history is a separate ceiling.
+
+**First-class `tasks.attachments` column** — JSON array of workspace/data
+paths. Source of truth for `fetch_task`, the task-list block
+`**Attachments:**` line, and `extract_content`'s dedup scan. Previously
+derived via regex from `task_spec` text, which broke when the model
+flattened newlines and left `📎` mid-line. `create_task` / `update_task`
+write the validated `attachments` argument directly into the column —
+no merging into task_spec. Legacy rows (pre-migration) fall back to the
+regex parser so existing tasks keep working. `AttachmentPaths.clean_spec/1`
+scrubs any `📎 ` references the model embeds in `task_spec` so the
+stored spec is pure prose.
+
+**Per-session human-readable `tasks.task_num`** — monotonic integer from 1,
+shown as `(N)` in the task-list block and FE sidebar. Users reference
+tasks by number ("tell me more about task 1", "redo task (2)");
+`system_prompt.ex` teaches the model to map these references to the
+matching `task_id` from the block.
+
+**Runtime `## Recently-extracted files` directory** — generated on each
+turn by `ContextEngine.build_recently_extracted_block/3` from the
+current `tool_history` state. Lists every file whose `extract_content`
+tool_call appears in the retention window, cross-referenced to its
+originating task_num. Empty on non-extraction sessions. Injected
+between the task-list block and the current user message as a
+user/assistant pair ("Understood."). Purpose: give the model a
+self-expiring directory of "files whose raw content is in my
+retained `role: "tool"` messages right now" so it answers
+follow-ups from retained content instead of re-running
+`extract_content`.
+
+**Generic Police schema validation** (`check_tool_call_schema/2`) —
+validates every tool_call against the tool's declared
+`definition/0`. Catches missing required args and wrong types.
+Generates a schema-driven nudge example from the tool's own property
+descriptions (no hardcoded values — `<string>` / `<integer>` /
+`[...]` placeholders plus verbatim `description` lines). Tagged
+rejections (`{issue_atom, reason}`) flow through `execute_tools/2`
+into the message marker `[[ISSUE:<atom>]]`, which `session_turn_loop`
+strips from the model-visible message AND counts in `ctx.nudges`.
+Once any issue's counter hits `@model_behavior_nudge_limit = 3`,
+`maybe_abort_on_model_behavior_issue/2` terminates the turn,
+persists the user-facing "Internal AI model error" message, and
+emits `[ModelBehaviorIssue] type=<atom> model=<...> session=<...>
+count=<n>` at error level plus a `[CRITICAL]` SysLog entry.
+Purpose: during the dev phase, surface which models trip which
+rules and how often — primary data for production model selection.
+
 ### Media Pipeline
 
 Client pre-processes before the `/agent/chat` call:
@@ -1657,6 +1726,8 @@ Models ending in `:cloud` / `-cloud` auto-route to cloud pool. Cloud keys manage
 | `masterCompactTurnThreshold` | 50 | Session compaction trigger by message count |
 | `masterCompactFraction` | 0.45 | Session compaction char-budget fraction |
 | `estimatedContextTokens` | 64_000 | Usable context-window size driving the char-budget trigger |
+| `toolResultRetentionTurns` | 5 | Number of recent turns whose tool_call/tool_result messages stay in context |
+| `toolResultRetentionBytes` | 120_000 | Byte ceiling for retained tool messages (oldest-first eviction on overflow) |
 | `execErrorStreakNudge` | 3 | Consecutive exec-tool failures before a nudge is appended to the model's context |
 
 ---

@@ -290,6 +290,12 @@ defmodule Dmhai.Router do
     end
   end
 
+  post "/agent/interrupt" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      AgentChat.post_interrupt(conn, user)
+    end
+  end
+
   post "/tools/execute" do
     with {:ok, conn, user} <- check_auth(conn) do
       Tools.post_execute(conn, user)

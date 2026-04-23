@@ -242,6 +242,22 @@ defmodule Dmhai.Handlers.AgentChat do
   end
   defp parse_files(_), do: []
 
+  @doc """
+  POST /agent/interrupt — user-initiated stop of the current turn.
+
+  Asks the user's UserAgent to kill the in-flight task (brutally,
+  cancelling any pending LLM / fetch calls), marks any ongoing task
+  rows for the affected session as cancelled with task_result
+  "Interrupted by user", and clears stream_buffer so the FE sees a
+  clean final state on the next poll.
+
+  Safe no-op when the user has no active turn. Always returns 202.
+  """
+  def post_interrupt(conn, user) do
+    Dmhai.Agent.UserAgent.interrupt(user.id)
+    json(conn, 202, %{ok: true})
+  end
+
   defp json(conn, status, data) do
     conn
     |> put_resp_content_type("application/json")

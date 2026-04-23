@@ -33,15 +33,10 @@ defmodule Itgr.ToolCapability do
     }
   }
 
-  # The two model roles that invoke tools in production:
-  # - assistantModel: classifier + Assistant Loop (create_task, read_task_status, plan, run_script, …)
-  # - workerModel:    alias kept for settings back-compat; same model class as assistantModel
+  # The single model role that invokes tools in production:
+  # - assistantModel: session loop (create_task, extract_content, run_script, …)
   defp tool_using_models do
-    [
-      {"assistantModel", AgentSettings.assistant_model()},
-      {"workerModel",    AgentSettings.worker_model()}
-    ]
-    |> Enum.uniq_by(fn {_, m} -> m end)
+    [{"assistantModel", AgentSettings.assistant_model()}]
   end
 
   # ─── Test 1: basic tool-call capability ───────────────────────────────────

@@ -109,7 +109,7 @@ defmodule Dmhai.Handlers.Data do
       tasks =
         session_id
         |> Dmhai.Agent.Tasks.list_for_session()
-        |> Enum.map(&Map.take(&1, [:task_id, :task_title, :task_type, :task_status,
+        |> Enum.map(&Map.take(&1, [:task_id, :task_num, :task_title, :task_type, :task_status,
                                     :intvl_sec, :task_spec, :task_result,
                                     :time_to_pickup, :language,
                                     :created_at, :updated_at]))

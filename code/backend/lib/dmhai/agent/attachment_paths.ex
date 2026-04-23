@@ -76,35 +76,29 @@ defmodule Dmhai.Agent.AttachmentPaths do
     do: {:error, "attachment path must be a string, got: #{inspect(other)}"}
 
   @doc """
-  Normalise a `task_spec` by:
-    1. Stripping any existing `📎`-prefixed lines (the assistant may
-       have hand-embedded them — we ignore those; the `attachments`
-       argument is authoritative).
-    2. Appending `📎 <path>` lines from the validated list, separated
-       from the description by a blank line.
+  Scrub a `task_spec` for storage: strips `[newly attached]` transient
+  markers and any `📎 <path>` references the model embedded (whether at
+  line start or inline — the model often flattens newlines). Attachment
+  paths live in the structured `tasks.attachments` column now, so the
+  spec should be pure prose.
 
-  Called by `create_task` and `update_task` when they accept an
-  `attachments` argument.
+  Called by `create_task` and `update_task` before writing to the DB.
   """
-  @spec normalise_spec(String.t(), [String.t()]) :: String.t()
-  def normalise_spec(spec, attachments) when is_binary(spec) and is_list(attachments) do
-    base =
-      spec
-      |> strip_transient_markers()
-      |> String.split("\n")
-      |> Enum.reject(fn line -> Regex.match?(~r/^\s*📎\s+/u, line) end)
-      |> Enum.join("\n")
-      |> String.trim_trailing()
-
-    case attachments do
-      [] ->
-        base
-
-      paths ->
-        attachment_block = Enum.map_join(paths, "\n", fn p -> "📎 " <> p end)
-        base <> "\n\n" <> attachment_block
-    end
+  @spec clean_spec(String.t()) :: String.t()
+  def clean_spec(spec) when is_binary(spec) do
+    spec
+    |> strip_transient_markers()
+    # Drop `📎 <workspace|data>/<non-ws>` runs anywhere in the text.
+    # Covers both own-line and mid-line emissions. Trailing punctuation
+    # on the path (if any) is unusual enough to leave as-is.
+    |> (&Regex.replace(~r/\s*📎\s+(?:workspace|data)\/\S+/u, &1, "")).()
+    |> String.trim()
   end
+  def clean_spec(_), do: ""
+
+  @doc "Back-compat: old callers may still pass (spec, []) — treat as clean_spec/1."
+  @spec normalise_spec(String.t(), [String.t()]) :: String.t()
+  def normalise_spec(spec, _attachments) when is_binary(spec), do: clean_spec(spec)
 
   @doc """
   Strip any `[newly attached] ` context-build-time marker from a string.

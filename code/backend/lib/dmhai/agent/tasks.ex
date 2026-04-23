@@ -19,29 +19,36 @@ defmodule Dmhai.Agent.Tasks do
   import Ecto.Adapters.SQL, only: [query!: 3]
 
   @select_cols """
-  task_id, user_id, session_id, task_type, intvl_sec, task_title,
+  task_id, user_id, session_id, task_num, task_type, intvl_sec, task_title,
   task_spec, task_status, task_result, time_to_pickup,
-  language, created_at, updated_at
+  language, attachments, created_at, updated_at
   """
 
   @doc """
   Insert a fresh task row. Returns the task_id.
   One_off: time_to_pickup defaults to now (immediate pickup).
   Periodic: time_to_pickup defaults to now (first cycle is immediate).
+  `task_num` is a per-session monotonic integer starting at 1, used as
+  the user-visible "(N)" label in the task sidebar and task-list block.
   """
   def insert(attrs) do
-    task_id = attrs[:task_id] || generate_id()
-    now     = System.os_time(:millisecond)
+    task_id   = attrs[:task_id] || generate_id()
+    session_id = attrs[:session_id]
+    now       = System.os_time(:millisecond)
+    task_num  = next_task_num(session_id)
+
+    attachments_json = encode_attachments(attrs[:attachments])
 
     query!(Repo, """
-    INSERT INTO tasks (task_id, user_id, session_id, task_type, intvl_sec,
+    INSERT INTO tasks (task_id, user_id, session_id, task_num, task_type, intvl_sec,
                        task_title, task_spec, task_status, time_to_pickup,
-                       language, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       language, attachments, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, [
       task_id,
       attrs[:user_id],
-      attrs[:session_id],
+      session_id,
+      task_num,
       attrs[:task_type] || "one_off",
       attrs[:intvl_sec] || 0,
       attrs[:task_title] || "",
@@ -49,10 +56,41 @@ defmodule Dmhai.Agent.Tasks do
       attrs[:task_status] || "pending",
       attrs[:time_to_pickup] || now,
       attrs[:language] || "en",
+      attachments_json,
       now, now
     ])
 
     task_id
+  end
+
+  @doc "Replace a task's attachments (JSON array on disk)."
+  def update_attachments(task_id, attachments) when is_list(attachments) do
+    now = System.os_time(:millisecond)
+    query!(Repo, "UPDATE tasks SET attachments=?, updated_at=? WHERE task_id=?",
+           [encode_attachments(attachments), now, task_id])
+    :ok
+  end
+
+  # Accepts a list of validated path strings → JSON. `nil` / non-list →
+  # stored as NULL so we can cleanly distinguish "no attachments set"
+  # from "explicitly empty".
+  defp encode_attachments(list) when is_list(list) and list != [], do: Jason.encode!(list)
+  defp encode_attachments([]), do: Jason.encode!([])
+  defp encode_attachments(_), do: nil
+
+  # Next per-session task_num = max(existing) + 1, starting at 1. Gaps
+  # from deleted rows are accepted — numbering is stable per row, so
+  # (1), (2), (4) after a delete of (3) is fine; less surprising to the
+  # user than renumbering on the fly.
+  defp next_task_num(nil), do: 1
+  defp next_task_num(session_id) do
+    r = query!(Repo,
+      "SELECT COALESCE(MAX(task_num), 0) + 1 FROM tasks WHERE session_id=?",
+      [session_id])
+    case r.rows do
+      [[n]] when is_integer(n) -> n
+      _ -> 1
+    end
   end
 
   def get(task_id) do
@@ -105,14 +143,26 @@ defmodule Dmhai.Agent.Tasks do
     end
   end
 
-  def mark_cancelled(task_id) do
+  def mark_cancelled(task_id, task_result \\ nil) do
     now = System.os_time(:millisecond)
-    query!(Repo, """
-    UPDATE tasks SET task_status='cancelled',
-                    time_to_pickup=NULL,
-                    updated_at=?
-    WHERE task_id=?
-    """, [now, task_id])
+
+    if is_binary(task_result) and task_result != "" do
+      query!(Repo, """
+      UPDATE tasks SET task_status='cancelled',
+                      task_result=?,
+                      time_to_pickup=NULL,
+                      updated_at=?
+      WHERE task_id=?
+      """, [task_result, now, task_id])
+    else
+      query!(Repo, """
+      UPDATE tasks SET task_status='cancelled',
+                      time_to_pickup=NULL,
+                      updated_at=?
+      WHERE task_id=?
+      """, [now, task_id])
+    end
+
     Dmhai.Agent.TaskRuntime.cancel_pickup(task_id)
   end
 
@@ -136,6 +186,13 @@ defmodule Dmhai.Agent.Tasks do
   end
 
   @doc "Update the task's spec text in place (used for mid-run adjustment)."
+  def update_title(task_id, new_title) when is_binary(new_title) and new_title != "" do
+    now = System.os_time(:millisecond)
+    query!(Repo, "UPDATE tasks SET task_title=?, updated_at=? WHERE task_id=?",
+           [new_title, now, task_id])
+    :ok
+  end
+
   def update_spec(task_id, new_spec) do
     now = System.os_time(:millisecond)
     query!(Repo, """
@@ -273,13 +330,14 @@ defmodule Dmhai.Agent.Tasks do
   # ── private ─────────────────────────────────────────────────────────────
 
   defp row_to_map([
-    task_id, user_id, session_id, task_type, intvl_sec, task_title, task_spec,
-    task_status, task_result, time_to_pickup, language, created_at, updated_at
+    task_id, user_id, session_id, task_num, task_type, intvl_sec, task_title, task_spec,
+    task_status, task_result, time_to_pickup, language, attachments_json, created_at, updated_at
   ]) do
     %{
       task_id: task_id,
       user_id: user_id,
       session_id: session_id,
+      task_num: task_num,
       task_type: task_type,
       intvl_sec: intvl_sec,
       task_title: task_title,
@@ -288,10 +346,24 @@ defmodule Dmhai.Agent.Tasks do
       task_result: task_result,
       time_to_pickup: time_to_pickup,
       language: language || "en",
+      attachments: decode_attachments(attachments_json),
       created_at: created_at,
       updated_at: updated_at
     }
   end
+
+  # Decode the JSON array column. `nil` (legacy rows pre-dating the
+  # column, or explicit "unset") returns `[]`. Malformed JSON also
+  # returns `[]` — never crashes the caller.
+  defp decode_attachments(nil), do: []
+  defp decode_attachments(""),  do: []
+  defp decode_attachments(json) when is_binary(json) do
+    case Jason.decode(json) do
+      {:ok, list} when is_list(list) -> list
+      _ -> []
+    end
+  end
+  defp decode_attachments(_), do: []
 
   defp generate_id do
     :crypto.strong_rand_bytes(9) |> Base.url_encode64(padding: false)

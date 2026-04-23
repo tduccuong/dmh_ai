@@ -57,7 +57,7 @@ defmodule Dmhai.Tools.FetchTask do
            task_result:    task.task_result,
            time_to_pickup: task.time_to_pickup,
            language:       task.language,
-           attachments:    ContextEngine.extract_attachments(task.task_spec),
+           attachments:    task_attachments(task),
            created_at:     task.created_at,
            updated_at:     task.updated_at,
            recent_activity: activity
@@ -66,6 +66,16 @@ defmodule Dmhai.Tools.FetchTask do
   end
 
   def execute(_args, _ctx), do: {:error, "fetch_task requires a non-empty 'task_id' argument"}
+
+  # Structured attachments column is authoritative. Legacy rows
+  # (pre-migration) fall back to regex-parsed-from-spec so existing
+  # tasks keep working during the transition.
+  defp task_attachments(task) do
+    case Map.get(task, :attachments) do
+      list when is_list(list) and list != [] -> list
+      _                                       -> ContextEngine.extract_attachments(task.task_spec)
+    end
+  end
 
   @impl true
   def definition do

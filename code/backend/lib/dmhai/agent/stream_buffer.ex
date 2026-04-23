@@ -105,10 +105,17 @@ defmodule Dmhai.Agent.StreamBuffer do
   # ── private ───────────────────────────────────────────────────────────
 
   defp do_write(session_id, user_id, text, ts) do
+    # Sanitize before every flush so the FE never polls a partial
+    # pseudo-tool-call annotation (e.g. `[used: update_task({...`).
+    # Truncates at the first tag opener. The in-memory accumulator
+    # keeps the raw text intact — Police still sees the full bad
+    # output at stream-end to reject / nudge on.
+    sanitized = Dmhai.Agent.TextSanitizer.truncate_at_bookkeeping(text)
+
     try do
       query!(Repo,
              "UPDATE sessions SET stream_buffer=?, stream_buffer_ts=? WHERE id=? AND user_id=?",
-             [text, ts, session_id, user_id])
+             [sanitized, ts, session_id, user_id])
     rescue
       e -> Logger.error("[StreamBuffer] write failed: #{Exception.message(e)}")
     end

@@ -132,9 +132,20 @@ defmodule Itgr.TaskRuntime do
     {:ok, _a2} = SessionProgress.append_tool_pending(%{session_id: s2, user_id: uid_, task_id: t2}, "y")
     {:ok, a3} = SessionProgress.append_tool_pending(%{session_id: s1, user_id: uid_, task_id: t1}, "z")
 
+    # Full fetch: both of s1's rows, in insertion order.
     rows = SessionProgress.fetch_for_session(s1)
     assert Enum.map(rows, & &1.id) == [a1.id, a3.id]
 
+    # Past-cursor fetch: cursor only suppresses id ≤ since for DONE rows;
+    # pending rows are always re-emitted so the FE can pick up sub_labels
+    # appended to an already-cached pending row (e.g. web_search's
+    # parallel fetches streaming into the same progress row after it
+    # was first seen).
+    rows = SessionProgress.fetch_for_session(s1, a1.id)
+    assert Enum.map(rows, & &1.id) == [a1.id, a3.id]
+
+    # Flip a1 to done → now the cursor suppresses it.
+    :ok = SessionProgress.mark_tool_done(a1.id)
     rows = SessionProgress.fetch_for_session(s1, a1.id)
     assert Enum.map(rows, & &1.id) == [a3.id]
   end

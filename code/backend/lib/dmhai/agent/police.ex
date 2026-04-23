@@ -56,6 +56,130 @@ defmodule Dmhai.Agent.Police do
   @write_cmd_regex ~r{\b(?:tee|touch|mkdir|truncate)\s+(?:-\S+\s+)*(/[^\s"'`;&|<>()\$\\]+)}
 
   @doc """
+  Validate a tool call's arguments against the tool's own declared
+  schema (`Tools.Registry.definition_for/1`). Generic — no per-tool
+  pattern rules. Catches:
+
+    * missing required arguments
+    * wrong argument types (loose: string / integer / array / boolean)
+
+  Returns `:ok` or `{:rejected, {:tool_call_schema, reason}}` where
+  `reason` is a schema-driven nudge showing the correct call shape
+  built from the tool's own property descriptions.
+  """
+  @spec check_tool_call_schema(String.t(), map()) :: :ok | {:rejected, {:tool_call_schema, String.t()}}
+  def check_tool_call_schema(name, args) when is_binary(name) and is_map(args) do
+    case Dmhai.Tools.Registry.definition_for(name) do
+      nil ->
+        :ok
+
+      schema ->
+        params    = schema[:parameters] || %{}
+        props     = params[:properties] || %{}
+        required  = params[:required] || []
+
+        missing = Enum.reject(required, fn k -> present_and_non_empty?(args[to_string(k)]) end)
+
+        type_errs =
+          Enum.flat_map(props, fn {key, prop} ->
+            expected = prop[:type]
+            actual   = args[to_string(key)]
+
+            cond do
+              is_nil(actual) -> []
+              type_ok?(expected, actual) -> []
+              true -> [%{field: to_string(key), expected: expected, got: actual_type(actual)}]
+            end
+          end)
+
+        if missing == [] and type_errs == [] do
+          :ok
+        else
+          reason = build_schema_nudge(name, schema, missing, type_errs)
+          Logger.warning("[Police] REJECTED tool_call_schema: tool=#{name} missing=#{inspect(missing)} type_errs=#{inspect(type_errs)}")
+          Dmhai.SysLog.log("[POLICE] REJECTED tool_call_schema: tool=#{name} missing=#{inspect(missing)} type_errs=#{inspect(type_errs)}")
+          {:rejected, {:tool_call_schema, reason}}
+        end
+    end
+  end
+  def check_tool_call_schema(_, _), do: :ok
+
+  # ── private helpers for schema check ────────────────────────────────────
+
+  defp present_and_non_empty?(nil), do: false
+  defp present_and_non_empty?(""),  do: false
+  defp present_and_non_empty?([]),  do: false
+  defp present_and_non_empty?(_),   do: true
+
+  defp type_ok?("string",  v), do: is_binary(v)
+  defp type_ok?("integer", v), do: is_integer(v) or (is_binary(v) and match?({_, ""}, Integer.parse(v)))
+  defp type_ok?("number",  v), do: is_number(v)
+  defp type_ok?("boolean", v), do: is_boolean(v)
+  defp type_ok?("array",   v), do: is_list(v)
+  defp type_ok?("object",  v), do: is_map(v)
+  defp type_ok?(_, _),         do: true
+
+  defp actual_type(v) when is_binary(v),  do: "string"
+  defp actual_type(v) when is_integer(v), do: "integer"
+  defp actual_type(v) when is_number(v),  do: "number"
+  defp actual_type(v) when is_boolean(v), do: "boolean"
+  defp actual_type(v) when is_list(v),    do: "array"
+  defp actual_type(v) when is_map(v),     do: "object"
+  defp actual_type(_),                    do: "unknown"
+
+  defp build_schema_nudge(name, schema, missing, type_errs) do
+    props    = get_in(schema, [:parameters, :properties]) || %{}
+    required = get_in(schema, [:parameters, :required])   || []
+
+    complaint =
+      cond do
+        missing != [] and type_errs != [] ->
+          "missing required field(s): #{Enum.join(missing, ", ")}; wrong type(s): " <>
+            (Enum.map_join(type_errs, ", ", fn e ->
+              "#{e.field} expected #{e.expected} got #{e.got}"
+            end))
+
+        missing != [] ->
+          "missing required field(s): #{Enum.join(missing, ", ")}"
+
+        true ->
+          "wrong type(s): " <>
+            Enum.map_join(type_errs, ", ", fn e ->
+              "#{e.field} expected #{e.expected} got #{e.got}"
+            end)
+      end
+
+    example = render_schema_example(name, props, required)
+
+    "Malformed tool_call for `#{name}`: #{complaint}.\n\n" <>
+      "Correct shape (placeholders show types; fill in real values):\n\n" <>
+      example <>
+      "\n\nRetry the call with every required field present and correctly typed."
+  end
+
+  defp render_schema_example(name, props, required) do
+    lines =
+      Enum.map_join(props, "\n", fn {key, prop} ->
+        expected_type = prop[:type] || "string"
+        desc          = prop[:description] || ""
+        req?          = to_string(key) in Enum.map(required, &to_string/1)
+        marker        = if req?, do: "(required)", else: "(optional)"
+        placeholder   = type_placeholder(expected_type)
+        "  \"#{key}\": #{placeholder},  // #{marker} #{desc}"
+      end)
+
+    "#{name}({\n#{lines}\n})"
+  end
+
+  defp type_placeholder("string"),  do: "\"<string>\""
+  defp type_placeholder("integer"), do: "<integer>"
+  defp type_placeholder("number"),  do: "<number>"
+  defp type_placeholder("boolean"), do: "<true|false>"
+  defp type_placeholder("array"),   do: "[\"<string>\", …]"
+  defp type_placeholder("object"),  do: "{…}"
+  defp type_placeholder(_),         do: "<value>"
+
+  @doc """
   Check a batch of tool calls against path-safety rules. Skipped entirely
   when `ctx` doesn't carry a `:session_root` (non-loop callers).
   """
@@ -328,19 +452,50 @@ defmodule Dmhai.Agent.Police do
         _ -> false
       end
 
-    if exact_match or call_shape_match do
-      reason =
-        "Your response was the text `#{String.slice(trimmed, 0, 120)}` which " <>
-          "looks like a tool invocation emitted as plain text. Tool actions " <>
-          "must live in the `tool_calls` array of your response, not in " <>
-          "message content. If you meant to call a tool, retry with the " <>
-          "proper tool_call structure. Otherwise, write a real reply."
+    # Detect pseudo-tool-call annotations the model embeds in its text —
+    # the misbehaviour we saw with gemini-flash that led to empty answers.
+    # Shape: `[used: <tool_name>(...)]`, `[via: ...]`, `[called: ...]`,
+    # `[tool: ...]`. The regex only has to match the opening; the
+    # bracket can be anywhere (prefix / middle / suffix). On rejection
+    # the session loop injects a nudge and recurses — the model retries
+    # with a clean text AND (hopefully) real tool_calls for any
+    # updates it intended to make.
+    bookkeeping_match =
+      Regex.match?(~r/\[(used|via|called|tool)\s*:/u, trimmed)
 
-      Logger.warning("[Police] REJECTED assistant_text: #{inspect(String.slice(trimmed, 0, 200))}")
-      Dmhai.SysLog.log("[POLICE] REJECTED assistant_text: #{inspect(String.slice(trimmed, 0, 200))}")
-      {:rejected, reason}
-    else
-      :ok
+    cond do
+      exact_match or call_shape_match ->
+        reason =
+          "Your response was the text `#{String.slice(trimmed, 0, 120)}` which " <>
+            "looks like a tool invocation emitted as plain text. Tool actions " <>
+            "must live in the `tool_calls` array of your response, not in " <>
+            "message content. If you meant to call a tool, retry with the " <>
+            "proper tool_call structure. Otherwise, write a real reply."
+
+        Logger.warning("[Police] REJECTED assistant_text: #{inspect(String.slice(trimmed, 0, 200))}")
+        Dmhai.SysLog.log("[POLICE] REJECTED assistant_text: #{inspect(String.slice(trimmed, 0, 200))}")
+        {:rejected, reason}
+
+      bookkeeping_match ->
+        reason =
+          "Your response contains a pseudo-tool-call annotation of the " <>
+            "form `[used: ...]` / `[via: ...]` / `[called: ...]` / " <>
+            "`[tool: ...]`. These are text decorations — the tool was " <>
+            "NOT actually called, and the user would see this junk in " <>
+            "their chat. Retry with two clean outputs: " <>
+            "(1) if you meant to update a task (status/title/result), " <>
+            "emit a REAL `tool_call` to `update_task` with the right " <>
+            "arguments — do NOT paraphrase it in text; " <>
+            "(2) the user-facing reply must be plain prose in the " <>
+            "user's language, with NO `[...]` tool annotations, NO " <>
+            "task_id references, NO tool-name mentions."
+
+        Logger.warning("[Police] REJECTED assistant_text bookkeeping_leak: #{inspect(String.slice(trimmed, 0, 200))}")
+        Dmhai.SysLog.log("[POLICE] REJECTED assistant_text bookkeeping_leak: #{inspect(String.slice(trimmed, 0, 200))}")
+        {:rejected, reason}
+
+      true ->
+        :ok
     end
   end
   def check_assistant_text(_), do: :ok

@@ -20,7 +20,7 @@ defmodule Dmhai.Tools.WebFetch do
   @impl true
   def description,
     do:
-      "Fetch and read the text content of a URL. Falls back to AMP/archive mirrors for paywalled pages."
+      "Fetch and read the text content of a URL. Use when the user gave you a URL directly, or when you need a URL that is NOT in a recent `web_search` result. If the URL is already in a recent `web_search` result (tagged `[fetched]`), the content is there — do NOT re-fetch. Falls back to AMP/archive mirrors for paywalled pages."
 
   @impl true
   def definition do
