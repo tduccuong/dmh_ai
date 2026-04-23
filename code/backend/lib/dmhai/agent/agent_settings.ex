@@ -24,6 +24,7 @@ defmodule Dmhai.Agent.AgentSettings do
   }
 
   @log_trace_default false
+  @model_behavior_telemetry_enabled_default true
 
   @spawn_task_timeout_secs_default 30
   @max_tool_result_chars_default 8_000
@@ -87,6 +88,11 @@ defmodule Dmhai.Agent.AgentSettings do
   @doc "Whether to write verbatim LLM call traces to <session_root>/log_traces/<task_id>.log."
   @spec log_trace() :: boolean()
   def log_trace, do: bool_setting("logTrace", @log_trace_default)
+
+  @doc "Whether to record model misbehavior occurrences to model_behavior_stats for the admin UI."
+  @spec model_behavior_telemetry_enabled() :: boolean()
+  def model_behavior_telemetry_enabled,
+    do: bool_setting("modelBehaviorTelemetryEnabled", @model_behavior_telemetry_enabled_default)
 
   @doc "Shortcut accessors."
   def confidant_model,          do: model_for("confidantModel")
@@ -206,6 +212,10 @@ defmodule Dmhai.Agent.AgentSettings do
     |> Enum.uniq()
     |> Enum.filter(fn m -> String.ends_with?(m, ":cloud") or String.ends_with?(m, "-cloud") end)
   end
+
+  @doc "Map of every model-role setting key → its baked-in default name. Exposed to the FE via /admin/settings."
+  @spec model_defaults() :: %{String.t() => String.t()}
+  def model_defaults, do: @defaults
 
   defp string_setting(key, default) do
     settings = load()

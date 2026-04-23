@@ -226,6 +226,23 @@ defmodule Dmhai.DB.Init do
     """)
 
     query!(Repo, "CREATE INDEX IF NOT EXISTS idx_user_credentials_user ON user_credentials (user_id)")
+
+    query!(Repo, """
+    CREATE TABLE IF NOT EXISTS model_behavior_stats (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      role          TEXT NOT NULL,              -- 'assistant' | 'confidant' | 'web_search' | 'compactor' | …
+      model         TEXT NOT NULL,              -- routed string, e.g. 'ollama::cloud::gpt-oss:120b-cloud'
+      issue_type    TEXT NOT NULL,              -- 'tool_call_schema' | 'task_discipline' | …
+      tool_name     TEXT NOT NULL DEFAULT '',   -- tool involved (e.g. 'create_task'); '' for non-tool issues
+      count         INTEGER NOT NULL DEFAULT 0,
+      first_seen_at INTEGER NOT NULL,
+      last_seen_at  INTEGER NOT NULL,
+      UNIQUE(role, model, issue_type, tool_name)
+    )
+    """)
+
+    query!(Repo,
+      "CREATE INDEX IF NOT EXISTS idx_model_behavior_stats_model ON model_behavior_stats (model, count DESC)")
   end
 
   defp seed_admin do

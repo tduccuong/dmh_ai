@@ -218,7 +218,7 @@ defmodule Dmhai.Agent.Police do
 
   `ctx` must carry `:session_id` — non-session callers bypass.
   """
-  @spec check_task_discipline(String.t(), map()) :: :ok | {:rejected, String.t()}
+  @spec check_task_discipline(String.t(), map()) :: :ok | {:rejected, {atom(), String.t()}}
   def check_task_discipline(name, ctx) when is_binary(name) do
     cond do
       name not in @gated_tools ->
@@ -241,7 +241,7 @@ defmodule Dmhai.Agent.Police do
 
         Logger.warning("[Police] REJECTED task_discipline: tool=#{name} session=#{inspect(ctx[:session_id])}")
         Dmhai.SysLog.log("[POLICE] REJECTED task_discipline: tool=#{name} session=#{inspect(ctx[:session_id])}")
-        {:rejected, reason}
+        {:rejected, {:task_discipline, reason}}
     end
   end
 
@@ -400,7 +400,7 @@ defmodule Dmhai.Agent.Police do
   recover with. Same silent-to-user handling as task_discipline —
   the progress row is never written for an unknown-tool rejection.
   """
-  @spec check_tool_known(String.t()) :: :ok | {:rejected, String.t()}
+  @spec check_tool_known(String.t()) :: :ok | {:rejected, {atom(), String.t()}}
   def check_tool_known(name) when is_binary(name) do
     if Dmhai.Tools.Registry.known?(name) do
       :ok
@@ -415,12 +415,13 @@ defmodule Dmhai.Agent.Police do
           "field and the arguments as a JSON object in `function.arguments`. " <>
           "Retry with the correct structure."
 
-      Logger.warning("[Police] REJECTED tool_unknown: name=#{inspect(String.slice(name, 0, 200))}")
-      Dmhai.SysLog.log("[POLICE] REJECTED tool_unknown: name=#{inspect(String.slice(name, 0, 200))}")
-      {:rejected, reason}
+      Logger.warning("[Police] REJECTED unknown_tool_name: name=#{inspect(String.slice(name, 0, 200))}")
+      Dmhai.SysLog.log("[POLICE] REJECTED unknown_tool_name: name=#{inspect(String.slice(name, 0, 200))}")
+      {:rejected, {:unknown_tool_name, reason}}
     end
   end
-  def check_tool_known(_), do: {:rejected, "Error: tool_call `function.name` must be a string."}
+  def check_tool_known(_),
+    do: {:rejected, {:unknown_tool_name, "Error: tool_call `function.name` must be a string."}}
 
   @doc """
   Guard on the TEXT round's final content. Catches the failure mode where
@@ -439,7 +440,7 @@ defmodule Dmhai.Agent.Police do
   On rejection the session loop injects a corrective user-role message
   and recurses one more round; the bad text is never persisted.
   """
-  @spec check_assistant_text(String.t()) :: :ok | {:rejected, String.t()}
+  @spec check_assistant_text(String.t()) :: :ok | {:rejected, {atom(), String.t()}}
   def check_assistant_text(text) when is_binary(text) do
     trimmed = String.trim(text)
     names = Dmhai.Tools.Registry.names()
@@ -472,9 +473,9 @@ defmodule Dmhai.Agent.Police do
             "message content. If you meant to call a tool, retry with the " <>
             "proper tool_call structure. Otherwise, write a real reply."
 
-        Logger.warning("[Police] REJECTED assistant_text: #{inspect(String.slice(trimmed, 0, 200))}")
-        Dmhai.SysLog.log("[POLICE] REJECTED assistant_text: #{inspect(String.slice(trimmed, 0, 200))}")
-        {:rejected, reason}
+        Logger.warning("[Police] REJECTED tool_as_plain_text: #{inspect(String.slice(trimmed, 0, 200))}")
+        Dmhai.SysLog.log("[POLICE] REJECTED tool_as_plain_text: #{inspect(String.slice(trimmed, 0, 200))}")
+        {:rejected, {:tool_as_plain_text, reason}}
 
       bookkeeping_match ->
         reason =
@@ -490,9 +491,9 @@ defmodule Dmhai.Agent.Police do
             "user's language, with NO `[...]` tool annotations, NO " <>
             "task_id references, NO tool-name mentions."
 
-        Logger.warning("[Police] REJECTED assistant_text bookkeeping_leak: #{inspect(String.slice(trimmed, 0, 200))}")
-        Dmhai.SysLog.log("[POLICE] REJECTED assistant_text bookkeeping_leak: #{inspect(String.slice(trimmed, 0, 200))}")
-        {:rejected, reason}
+        Logger.warning("[Police] REJECTED assistant_text_bookkeeping: #{inspect(String.slice(trimmed, 0, 200))}")
+        Dmhai.SysLog.log("[POLICE] REJECTED assistant_text_bookkeeping: #{inspect(String.slice(trimmed, 0, 200))}")
+        {:rejected, {:assistant_text_bookkeeping, reason}}
 
       true ->
         :ok
@@ -520,7 +521,7 @@ defmodule Dmhai.Agent.Police do
   rejection message listing the missed paths so the session loop can
   nudge the model to retry.
   """
-  @spec check_fresh_attachments_read([String.t()], [map()]) :: :ok | {:rejected, String.t()}
+  @spec check_fresh_attachments_read([String.t()], [map()]) :: :ok | {:rejected, {atom(), String.t()}}
   def check_fresh_attachments_read([], _messages), do: :ok
   def check_fresh_attachments_read(fresh_paths, messages) when is_list(fresh_paths) do
     read_paths = collect_extracted_paths(messages)
@@ -541,7 +542,7 @@ defmodule Dmhai.Agent.Police do
 
       Logger.warning("[Police] REJECTED fresh_attachments_unread: missed=#{inspect(missed)}")
       Dmhai.SysLog.log("[POLICE] REJECTED fresh_attachments_unread: missed=#{inspect(missed)}")
-      {:rejected, reason}
+      {:rejected, {:fresh_attachments_unread, reason}}
     end
   end
   def check_fresh_attachments_read(_, _), do: :ok

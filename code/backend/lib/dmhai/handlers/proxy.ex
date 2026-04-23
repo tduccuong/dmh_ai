@@ -48,7 +48,12 @@ defmodule Dmhai.Handlers.Proxy do
         _ -> %{}
       end
 
-    json(conn, 200, Map.put(data, "systemModels", Dmhai.Agent.AgentSettings.system_model_names()))
+    payload =
+      data
+      |> Map.put("systemModels",   Dmhai.Agent.AgentSettings.system_model_names())
+      |> Map.put("modelDefaults",  Dmhai.Agent.AgentSettings.model_defaults())
+
+    json(conn, 200, payload)
   end
 
   # GET /model-labels

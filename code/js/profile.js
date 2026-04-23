@@ -9,6 +9,7 @@ const Settings = {
     _accounts: [],
     _cloudModels: [],
     _systemModels: [],
+    _modelDefaults: {},
     _ollamaEndpoint: '',
     _compactTurns: 90,
     _keepRecent: 0,
@@ -99,6 +100,7 @@ const Settings = {
                 this._accounts = Array.isArray(d.accounts) ? d.accounts : [];
                 this._cloudModels = Array.isArray(d.cloudModels) ? d.cloudModels : [];
                 this._systemModels = Array.isArray(d.systemModels) ? d.systemModels : [];
+                this._modelDefaults = (d.modelDefaults && typeof d.modelDefaults === 'object') ? d.modelDefaults : {};
                 if (d.ollamaEndpoint !== undefined) {
                     this._ollamaEndpoint = d.ollamaEndpoint || '';
                     AppConfig.saveOllamaEndpoint(this._ollamaEndpoint);
@@ -260,10 +262,16 @@ const SettingsModal = {
         var el = document.getElementById(role + '-model-current');
         if (!el) return;
         var selected = Settings[this._roleField(role)];
-        if (selected && String(selected).trim()) {
-            el.innerHTML = 'Current: <span class="role-picker-current-name">' + selected + '</span>';
+        var effective = (selected && String(selected).trim())
+            ? selected
+            : (Settings._modelDefaults[role + 'Model'] || '');
+        // Show the actual effective model name; no "(using default)" placeholder.
+        // When the user hasn't overridden, the BE default still resolves to a real
+        // model name — display that so the form is always informative.
+        if (effective) {
+            el.innerHTML = 'Current: <span class="role-picker-current-name">' + effective + '</span>';
         } else {
-            el.innerHTML = 'Current: <span class="role-picker-current-none">(using default)</span>';
+            el.innerHTML = 'Current: <span class="role-picker-current-none">(no default configured)</span>';
         }
     },
     // Debounce map, keyed by role, so the two pickers don't share a timer.

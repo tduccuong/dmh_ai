@@ -360,7 +360,9 @@ defmodule Dmhai.Agent.UserAgent do
       session_root:  Dmhai.Constants.session_root(email, session_id),
       data_dir:      data_dir,
       workspace_dir: workspace_dir,
-      log_trace:     AgentSettings.log_trace()
+      log_trace:     AgentSettings.log_trace(),
+      role:          "assistant",
+      model:         model
     }
 
     Dmhai.SysLog.log("[ASSISTANT:auto] user=#{user_id} session=#{session_id} task=#{task.task_id} title=#{String.slice(task.task_title || "", 0, 60)}")
@@ -620,7 +622,11 @@ defmodule Dmhai.Agent.UserAgent do
       data_dir:      data_dir,
       workspace_dir: workspace_dir,
       log_trace:     AgentSettings.log_trace(),
-      fresh_attachment_paths: fresh_attachment_paths
+      fresh_attachment_paths: fresh_attachment_paths,
+      # Model-behaviour telemetry inputs — every Police rejection bumps a
+      # counter row for this (role, model, issue_type, tool_name).
+      role:          "assistant",
+      model:         model
     }
 
     Dmhai.SysLog.log("[ASSISTANT] user=#{user_id} session=#{session_id} msg=#{String.slice(command.content, 0, 200)} fresh_attachments=#{inspect(fresh_attachment_paths)}")
@@ -698,19 +704,33 @@ defmodule Dmhai.Agent.UserAgent do
 
         {:ok, text} when is_binary(text) and text != "" ->
           case Dmhai.Agent.Police.check_assistant_text(text) do
-            {:rejected, reason} ->
-              # Model emitted what meant to be a tool call as plain text.
-              # Nudge back and recurse — same self-correction pattern as
-              # the other Police gates. The broken text is NOT persisted
-              # to session.messages; only the corrected response will be.
+            {:rejected, tagged_or_reason} ->
+              # Model emitted what meant to be a tool call as plain text,
+              # OR leaked tool-call bookkeeping into user-facing content.
+              # Unpack the tagged tuple when present; fall back to plain
+              # string for backwards compatibility.
+              {issue_atom, reason} =
+                case tagged_or_reason do
+                  {atom, text_reason} when is_atom(atom) -> {atom, text_reason}
+                  plain when is_binary(plain)            -> {:assistant_text, plain}
+                end
+
               Dmhai.SysLog.log("[ASSISTANT] round=#{round} rejected text='#{String.slice(text, 0, 80)}' — nudging for retry")
               StreamBuffer.clear(ctx.session_id, ctx.user_id)
+
+              # Record telemetry + bump nudge counter for this non-tool issue.
+              ctx = record_non_tool_issue(ctx, issue_atom)
+
               new_messages =
                 messages ++ [
                   %{role: "assistant", content: text},
                   %{role: "user",      content: reason}
                 ]
-              session_turn_loop(new_messages, model, ctx, round + 1)
+
+              case maybe_abort_on_model_behavior_issue(ctx, model) do
+                :continue -> session_turn_loop(new_messages, model, ctx, round + 1)
+                :aborted  -> :ok
+              end
 
             :ok ->
               # Before accepting the final text, enforce that every
@@ -721,15 +741,27 @@ defmodule Dmhai.Agent.UserAgent do
               fresh_paths = Map.get(ctx, :fresh_attachment_paths, [])
 
               case Dmhai.Agent.Police.check_fresh_attachments_read(fresh_paths, messages) do
-                {:rejected, reason} ->
+                {:rejected, tagged_or_reason} ->
+                  {issue_atom, reason} =
+                    case tagged_or_reason do
+                      {atom, r} when is_atom(atom) -> {atom, r}
+                      plain when is_binary(plain)  -> {:fresh_attachments_unread, plain}
+                    end
+
                   Dmhai.SysLog.log("[ASSISTANT] round=#{round} rejected fresh-attachment-miss — nudging for retry")
                   StreamBuffer.clear(ctx.session_id, ctx.user_id)
+                  ctx = record_non_tool_issue(ctx, issue_atom)
+
                   new_messages =
                     messages ++ [
                       %{role: "assistant", content: text},
                       %{role: "user",      content: reason}
                     ]
-                  session_turn_loop(new_messages, model, ctx, round + 1)
+
+                  case maybe_abort_on_model_behavior_issue(ctx, model) do
+                    :continue -> session_turn_loop(new_messages, model, ctx, round + 1)
+                    :aborted  -> :ok
+                  end
 
                 :ok ->
                   # Strip tool-call bookkeeping annotations the model may
@@ -811,22 +843,26 @@ defmodule Dmhai.Agent.UserAgent do
   # and surface an internal-error message to the user.
   @model_behavior_nudge_limit 3
 
-  # Sniff tool_result messages for `[[ISSUE:<atom>]]` markers left by
-  # execute_tools/2: bump the matching counter in ctx.nudges AND strip
-  # the marker from the message content so the model sees only the
-  # human-readable nudge prose.
+  # Sniff tool_result messages for `[[ISSUE:<atom>:<tool_name>]]` markers
+  # left by execute_tools/2: bump the matching counter in ctx.nudges,
+  # record a telemetry row, AND strip the marker from the message content
+  # so the model only sees the human-readable nudge prose.
   defp bump_nudge_counters(ctx, tool_result_msgs) do
     existing = Map.get(ctx, :nudges, %{})
-    marker_re = ~r/^\[\[ISSUE:([a-z_]+)\]\]\n?/u
+    marker_re = ~r/^\[\[ISSUE:([a-z_]+):([^\]]*)\]\]\n?/u
+
+    role  = Map.get(ctx, :role, "assistant")
+    model = Map.get(ctx, :model, "unknown")
 
     {nudges_after, clean_msgs} =
       Enum.map_reduce(tool_result_msgs, existing, fn msg, acc ->
         raw = msg[:content] || msg["content"] || ""
 
         case Regex.run(marker_re, raw) do
-          [full, atom_name] ->
+          [full, atom_name, tool_name] ->
             key = String.to_atom(atom_name)
             new_acc = Map.update(acc, key, 1, &(&1 + 1))
+            Dmhai.Agent.ModelBehaviorStats.record(role, model, atom_name, tool_name)
             cleaned = String.replace_prefix(raw, full, "")
             {Map.put(msg, :content, cleaned), new_acc}
 
@@ -837,6 +873,24 @@ defmodule Dmhai.Agent.UserAgent do
       |> then(fn {msgs, acc} -> {acc, msgs} end)
 
     {Map.put(ctx, :nudges, nudges_after), clean_msgs}
+  end
+
+  # Non-tool-call Police rejections (check_assistant_text,
+  # check_fresh_attachments_read) don't flow through execute_tools, so they
+  # can't use the marker-in-content trick. This helper does the equivalent
+  # counter bump + telemetry record inline in the text-round handler.
+  defp record_non_tool_issue(ctx, issue_atom) do
+    role  = Map.get(ctx, :role, "assistant")
+    model = Map.get(ctx, :model, "unknown")
+
+    Dmhai.Agent.ModelBehaviorStats.record(role, model, Atom.to_string(issue_atom), "")
+
+    nudges =
+      ctx
+      |> Map.get(:nudges, %{})
+      |> Map.update(issue_atom, 1, &(&1 + 1))
+
+    Map.put(ctx, :nudges, nudges)
   end
 
   # Check every counter against the limit. If any has reached it,
@@ -853,6 +907,7 @@ defmodule Dmhai.Agent.UserAgent do
         :continue
 
       {issue, count} ->
+        role = Map.get(ctx, :role, "assistant")
         Logger.error(
           "[ModelBehaviorIssue] type=#{issue} model=#{model} session=#{ctx.session_id} count=#{count} — " <>
             "model exceeded nudge budget; aborting turn"
@@ -861,6 +916,10 @@ defmodule Dmhai.Agent.UserAgent do
           "[CRITICAL] ModelBehaviorIssue type=#{issue} model=#{model} " <>
             "session=#{ctx.session_id} count=#{count}"
         )
+        # Record the escalation as its own telemetry row ('escalated_<issue>')
+        # so the admin UI can see how often each rule trips the 3-strike limit.
+        Dmhai.Agent.ModelBehaviorStats.record(
+          role, model, "escalated_#{issue}", "")
 
         user_msg = "Internal AI model error — we're investigating and working to fix. " <>
                      "Sorry for the inconvenience."
@@ -961,11 +1020,11 @@ defmodule Dmhai.Agent.UserAgent do
 
         # Tagged rejection `{issue_atom, reason}` — emit a marker in the
         # message that the session loop can sniff later to bump the
-        # matching counter in ctx.nudges. Stored in `content` as a
-        # parseable prefix; cheap way to plumb side-info without
-        # changing this function's return type.
+        # matching counter in ctx.nudges AND record a telemetry row.
+        # Marker format: `[[ISSUE:<atom>:<tool_name>]]` — tool_name
+        # allows the stats row to be scoped per-tool.
         {:rejected, {issue_atom, reason}} when is_atom(issue_atom) ->
-          marker = "[[ISSUE:#{issue_atom}]]\n"
+          marker = "[[ISSUE:#{issue_atom}:#{name}]]\n"
           %{role: "tool", content: marker <> reason, tool_call_id: tool_call_id}
       end
     end)
