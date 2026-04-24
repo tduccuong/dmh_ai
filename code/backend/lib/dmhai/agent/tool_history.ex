@@ -44,17 +44,17 @@ defmodule Dmhai.Agent.ToolHistory do
   Record a chain's tool messages against its final-assistant ts, then
   trim to the configured turn + byte caps. Entries that roll out of
   retention via `cap_by_turns` / `cap_by_bytes` are archived to
-  `task_turn_archive` if the chain was tagged with a `task_num` (Phase 3
-  — see architecture.md §Task state continuity across chains).
+  `task_turn_archive` if the chain was tagged with a `task_num`.
+  See architecture.md §Task state continuity across chains.
 
   `tool_messages` is the subset of the chain's in-memory message list
   that has role="assistant" with tool_calls, or role="tool" with a
   tool_call_id. User / final assistant-text messages are NOT included
   (they're already in `sessions.messages`).
 
-  `task_num` (optional, Phase 3) tags this chain's tool messages so
-  `fetch_task` can find them. `nil` → untagged; the entry rolls out
-  normally without archival when retention trims.
+  `task_num` (optional) tags this chain's tool messages so `fetch_task`
+  can find them. `nil` → untagged; the entry rolls out normally
+  without archival when retention trims.
 
   No-op when the list is empty (a pure text chain with no tool calls).
   """
@@ -69,14 +69,14 @@ defmodule Dmhai.Agent.ToolHistory do
       entry = %{
         "assistant_ts" => assistant_ts,
         "ts"           => System.os_time(:millisecond),
-        "task_num"     => task_num,                              # Phase 3 tag
+        "task_num"     => task_num,
         "messages"     => Enum.map(tool_messages, &stringify_keys/1)
       }
 
       appended = existing ++ [entry]
       {trimmed, evicted} = cap_and_split(appended)
 
-      # Phase 3: archive evicted entries that carry a task_num.
+      # Archive evicted entries that carry a task_num.
       archive_evicted(evicted, session_id)
 
       query!(Repo,
@@ -142,7 +142,7 @@ defmodule Dmhai.Agent.ToolHistory do
   @doc """
   Load the retained tool_history for a session. Returns a list of
   `%{"assistant_ts" => ts, "messages" => [...]}` maps. Empty on
-  missing row, malformed JSON, or legacy rows without the column.
+  missing row, malformed JSON, or rows with a null column.
   """
   @spec load(String.t()) :: [map()]
   def load(session_id) do

@@ -29,8 +29,8 @@ defmodule Dmhai.Web.CmpDetector do
     # Detected FIRST because they typically produce short bodies that could
     # otherwise slip past a CMP check with :clean.
 
-    # Datadome — the 774-byte captcha page we observed on Reuters with
-    # bare UA. Signature: geo.captcha-delivery.com + the obfuscated config.
+    # Datadome — short captcha page served on bare UAs. Signature:
+    # geo.captcha-delivery.com + the obfuscated config.
     {:datadome, [
       ~r/captcha-delivery\.com/i,
       ~r/geo\.captcha-delivery/i,

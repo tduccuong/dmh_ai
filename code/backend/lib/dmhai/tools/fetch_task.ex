@@ -20,7 +20,7 @@ defmodule Dmhai.Tools.FetchTask do
        window, tagged with this task_num. Give the model its own prior
        tool outputs verbatim.
 
-  Phase 3: takes `task_num: integer`.
+  Takes `task_num: integer`.
   """
 
   @behaviour Dmhai.Tools.Behaviour
@@ -137,9 +137,8 @@ defmodule Dmhai.Tools.FetchTask do
   defp require_session(sid) when is_binary(sid) and sid != "", do: :ok
   defp require_session(_), do: {:error, "fetch_task called without a session context"}
 
-  # Structured attachments column is authoritative. Legacy rows
-  # (pre-migration) fall back to regex-parsed-from-spec so existing
-  # tasks keep working during the transition.
+  # Structured attachments column is authoritative. Fall back to a
+  # regex parse of task_spec when the column is empty.
   defp task_attachments(task) do
     case Map.get(task, :attachments) do
       list when is_list(list) and list != [] -> list

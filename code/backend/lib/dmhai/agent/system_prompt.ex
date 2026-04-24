@@ -45,7 +45,7 @@ defmodule Dmhai.Agent.SystemPrompt do
   end
 
   @doc """
-  System prompt for the Assistant session turn (#101 conversational model).
+  System prompt for the Assistant session turn.
 
   opts:
     - `:profile` — user profile text. Injected silently.

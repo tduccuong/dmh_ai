@@ -160,11 +160,11 @@ defmodule Dmhai.Agent.ContextEngine do
 
     task_list_block = build_task_list_block(active_tasks, recent_done, base_level: 2)
 
-    # Phase 3: active-task anchor — a single `## Active task` block naming
-    # the `(N)` this chain is for. Runtime decides; model follows. Nil
+    # Active-task anchor — a single `## Active task` block naming the
+    # `(N)` this chain is for. Runtime decides; model follows. Nil
     # when no anchor can be derived (free mode). See architecture.md
-    # §Active-task anchor. The anchor is injected between the task list
-    # and the last user message so it's the final framing the model reads
+    # §Active-task anchor. Injected between the task list and the
+    # last user message so it's the final framing the model reads
     # before the user's latest input.
     anchor_block =
       session_id
@@ -174,20 +174,19 @@ defmodule Dmhai.Agent.ContextEngine do
     [system_msg] ++ prefix ++ history_llm ++ relevant_msgs ++ task_list_block ++ extracted_files_block ++ anchor_block ++ last_msgs
   end
 
-  # Phase 3 anchor rendering. Produces a user/assistant pair so the
+  # Anchor rendering. Produces a user/assistant pair so the
   # OpenAI-sequencing contract (alternating roles at conversation
   # boundaries) stays clean. Empty list when no anchor — the model
   # operates in free mode.
   defp render_anchor_block(nil), do: []
   defp render_anchor_block(%{task_num: n}) when is_integer(n) do
     # Anchor wording is deliberately NON-LEADING toward `fetch_task`.
-    # The model's context already carries recent activity for this task
-    # (via the normal session.messages + ToolHistory.inject pipeline),
-    # so fetching is typically redundant — we saw weaker models
-    # reflexively fetch on every chain when the earlier wording said
-    # "if you don't see details, call fetch_task". Fetch is now framed
-    # as a fallback for the specific case where a decision / tool
-    # output was compacted away and the model needs to reload it.
+    # The model's context already carries recent activity for this
+    # task (via session.messages + ToolHistory.inject), so fetching
+    # is typically redundant. Fetch is framed as a fallback for the
+    # specific case where a decision or tool output was compacted
+    # away and the model needs to reload it — prevents weaker models
+    # from reflexively fetching on every chain.
     body =
       "## Active task\n\n" <>
         "- Current task: (#{n})\n" <>
@@ -305,12 +304,12 @@ defmodule Dmhai.Agent.ContextEngine do
     "#{sub} done\n\n" <> lines
   end
 
-  # Phase 3: tasks render by their per-session `(N)` label only —
-  # `task_id` is BE-internal and never exposed to model or user.
-  # Active tasks use a Markdown heading (`#### (N) title`); done
-  # tasks use a bullet. The model references tasks exclusively via
-  # `task_num: N` in verb tool calls; the resolver at the BE tool
-  # boundary maps (session_id, N) → internal task_id.
+  # Tasks render by their per-session `(N)` label only — `task_id`
+  # is BE-internal and never exposed to model or user. Active tasks
+  # use a Markdown heading (`#### (N) title`); done tasks use a
+  # bullet. The model references tasks exclusively via `task_num: N`
+  # in verb tool calls; the resolver at the BE tool boundary maps
+  # (session_id, N) → internal task_id.
   defp render_task_block(task, heading) do
     title_line = "#{heading} #{num_label(task)}#{task.task_title}"
 
@@ -332,8 +331,8 @@ defmodule Dmhai.Agent.ContextEngine do
        do: "**Pick up time:** " <> format_ts(ts)
   defp pickup_line(_), do: nil
 
-  # Render the per-session "(N) " prefix; empty string for legacy rows
-  # pre-dating the task_num column (task_num is NULL).
+  # Render the per-session "(N) " prefix; empty string when the row
+  # has no task_num (NULL).
   defp num_label(%{task_num: n}) when is_integer(n) and n > 0, do: "(#{n}) "
   defp num_label(_), do: ""
 
@@ -457,9 +456,9 @@ defmodule Dmhai.Agent.ContextEngine do
   defp tool_call_name(args), do: Map.get(args, "__tool__")
 
   defp attachments_line(task) do
-    # Structured attachments column is authoritative. For legacy tasks
-    # (pre-migration) it's [] — fall back to the old regex parser so
-    # their attachments still render during transition.
+    # Structured attachments column is authoritative. Fall back to a
+    # regex parse of task_spec when the column is empty so any row
+    # without a populated attachments list still renders its paths.
     paths =
       case Map.get(task, :attachments) do
         list when is_list(list) and list != [] -> list
@@ -547,13 +546,13 @@ defmodule Dmhai.Agent.ContextEngine do
     else
       to_summarize = Enum.slice(msgs, (cutoff + 1)..(keep_from - 1))
 
-      # Phase 3: BEFORE running the compactor LLM, snapshot any
-      # task-tagged messages in `to_summarize` to `task_turn_archive`
-      # grouped by `task_num`. Preserves verbatim per-task history
-      # even as the master session summary compresses the range away
-      # from the LLM's working context. Untagged messages (pure chat)
-      # are represented only by the summary. See architecture.md
-      # §Task state continuity across chains.
+      # Before running the compactor LLM, snapshot any task-tagged
+      # messages in `to_summarize` to `task_turn_archive` grouped by
+      # `task_num`. Preserves verbatim per-task history even as the
+      # master session summary compresses the range away from the
+      # LLM's working context. Untagged messages (pure chat) are
+      # represented only by the summary. See architecture.md §Task
+      # state continuity across chains.
       archive_to_summarize_per_task(session_id, to_summarize)
 
       # Build the compaction input matching the original frontend ContextManager.compact:
@@ -608,7 +607,7 @@ defmodule Dmhai.Agent.ContextEngine do
     end
   end
 
-  # Phase 3 archive hook — called by `compact!/3` before summarisation.
+  # Archive hook — called by `compact!/3` before summarisation.
   # Partitions `to_summarize` by `task_num` tag and persists verbatim
   # snapshots to `task_turn_archive` per task. Untagged messages are
   # dropped here (they'll live on only in the master session summary).

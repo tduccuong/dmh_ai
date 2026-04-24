@@ -380,8 +380,8 @@ defmodule Dmhai.Agent.Tasks do
   Used by `TaskRuntime.rehydrate/0` — periodic ongoing tasks MUST be
   reverted at boot because their cycle's `complete_task` didn't fire,
   but one_off ongoing tasks can legitimately persist across restarts
-  (Phase 2 multi-chain: assistant finished a chain asking the user a
-  clarifying question, waiting for reply). See architecture.md §Boot
+  (the assistant may have ended a chain with a clarifying question
+  and is waiting for the user's reply). See architecture.md §Boot
   rehydration.
   """
   def fetch_orphaned_ongoing_periodic do
@@ -505,9 +505,8 @@ defmodule Dmhai.Agent.Tasks do
     }
   end
 
-  # Decode the JSON array column. `nil` (legacy rows pre-dating the
-  # column, or explicit "unset") returns `[]`. Malformed JSON also
-  # returns `[]` — never crashes the caller.
+  # Decode the JSON array column. `nil` / empty / malformed JSON all
+  # return `[]` — never crash the caller.
   defp decode_attachments(nil), do: []
   defp decode_attachments(""),  do: []
   defp decode_attachments(json) when is_binary(json) do

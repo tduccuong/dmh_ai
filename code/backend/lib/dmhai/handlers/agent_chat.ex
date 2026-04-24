@@ -89,8 +89,8 @@ defmodule Dmhai.Handlers.AgentChat do
     # FE-supplied idempotency key. Persisted alongside the message so a
     # lost POST response + FE retry (or a BE crash + FE poll-based
     # recovery) resolves to the same canonical row instead of creating
-    # a duplicate. See architecture.md §Mid-chain user message
-    # injection. Optional — legacy clients and non-FE POSTs may omit it.
+    # a duplicate. Optional — non-FE POSTs may omit it. See
+    # architecture.md §Mid-chain user message injection.
     client_msg_id =
       case d["client_msg_id"] do
         s when is_binary(s) and byte_size(s) > 0 and byte_size(s) <= 128 -> s
@@ -134,11 +134,11 @@ defmodule Dmhai.Handlers.AgentChat do
       message = %{role: "user", content: stored_content}
       message = if client_msg_id, do: Map.put(message, :client_msg_id, client_msg_id), else: message
 
-      # Phase 3: tag the incoming user message with the current anchor's
-      # task_num (if any). Persists alongside role/content/ts so the
-      # per-task archive can partition correctly when compaction fires.
-      # No anchor → no tag (pure-chat / pre-task-creation messages). See
-      # architecture.md §Per-message task tag.
+      # Tag the incoming user message with the current anchor's
+      # task_num (if any). Persists alongside role / content / ts so
+      # the per-task archive can partition correctly when compaction
+      # fires. No anchor → no tag (pure-chat / pre-task-creation
+      # messages). See architecture.md §Per-message task tag.
       message =
         case Dmhai.Agent.Anchor.task_num_for(session_id) do
           n when is_integer(n) -> Map.put(message, :task_num, n)

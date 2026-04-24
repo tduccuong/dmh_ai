@@ -15,7 +15,7 @@ defmodule Dmhai.Tools.CancelTask do
   other issues (e.g. "the task is stuck, let me cancel and create a
   new one" — use `pickup_task` to resume, or ask the user).
 
-  Phase 3: takes `task_num: integer`.
+  Takes `task_num: integer`.
   """
 
   @behaviour Dmhai.Tools.Behaviour

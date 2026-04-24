@@ -201,11 +201,10 @@ defmodule Dmhai.Router do
     end
   end
 
-  # POST /tasks/:task_id/cancel — sidebar cancel for a single task. The
-  # session-level interrupt path was removed in Phase 2 (the user now
-  # sends a new chat message to redirect the assistant mid-chain); this
-  # endpoint still exists for explicit per-task cancellation from the
-  # sidebar.
+  # POST /tasks/:task_id/cancel — sidebar cancel for a single task.
+  # Session-level interrupts go through mid-chain user-message splice
+  # (the user sends a new chat message to redirect the assistant); this
+  # endpoint is for explicit per-task cancellation from the sidebar.
   post "/tasks/:task_id/cancel" do
     with {:ok, conn, user} <- check_auth(conn) do
       Data.cancel_task(conn, user, task_id)

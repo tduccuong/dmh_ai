@@ -79,7 +79,7 @@ defmodule Dmhai.Util.Path do
   @spec within_session?(String.t(), ctx()) :: boolean()
   def within_session?(abs_path, ctx) do
     case Map.get(ctx, :session_root) do
-      nil  -> true          # no session context = no restriction (legacy callers)
+      nil  -> true          # no session context → no restriction
       root -> within?(abs_path, root)
     end
   end

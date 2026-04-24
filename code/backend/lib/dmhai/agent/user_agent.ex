@@ -63,10 +63,9 @@ defmodule Dmhai.Agent.UserAgent do
     :user_id,
     # current inline task: nil | {task_ref, task_pid, reply_pid, session_id}
     # - task_pid is the running Task's process. It is never force-killed;
-    #   the Phase 2 mid-chain design lets the user redirect the assistant
-    #   by sending a new message, which is spliced into the current chain
-    #   on the next LLM roundtrip. See architecture.md §Mid-chain user
-    #   message injection.
+    #   the user redirects the assistant by sending a new message, which
+    #   is spliced into the current chain on the next LLM roundtrip. See
+    #   architecture.md §Mid-chain user message injection.
     # - session_id is retained so on turn completion we can check
     #   `UserAgentMessages.has_unanswered_user_msg?` (auto-resume a chain
     #   for queued user messages) and `Tasks.fetch_next_due/1` (auto-chain
@@ -133,13 +132,13 @@ defmodule Dmhai.Agent.UserAgent do
     # Boot rehydration of periodic tasks is delegated to
     # `Dmhai.Agent.TaskRuntime` at app startup.
     #
-    # Phase 2 orphan-recovery: self-send `:boot_scan` so that any user
-    # messages persisted to `session.messages` but never answered —
-    # because the prior GenServer crashed or idle-timed-out while work
-    # was queued — are picked up as soon as this instance is alive.
-    # Deferred via send so `init/1` returns promptly; the scan runs
-    # inside the normal mailbox loop. See architecture.md §Boot scan
-    # for orphan recovery.
+    # Orphan recovery: self-send `:boot_scan` so that any user
+    # messages persisted to `session.messages` but never answered
+    # (GenServer was down or idle-timed-out while work was queued)
+    # are picked up as soon as this instance is alive. Deferred via
+    # send so `init/1` returns promptly; the scan runs inside the
+    # normal mailbox loop. See architecture.md §Boot scan for orphan
+    # recovery.
     send(self(), :boot_scan)
     {:ok, %__MODULE__{user_id: user_id}, @idle_timeout}
   end
@@ -189,9 +188,9 @@ defmodule Dmhai.Agent.UserAgent do
   #
   # `result` shape:
   #   * `{:chain_done, watermark_ts}` — Assistant session_chain_loop
-  #   * anything else — Confidant path / legacy; fall back to
-  #     `has_unanswered_user_msg?` (last-entry check) which is
-  #     sufficient because Confidant has no mid-chain semantics.
+  #   * anything else — Confidant path; fall back to
+  #     `has_unanswered_user_msg?` (last-entry check), sufficient
+  #     because Confidant has no mid-chain semantics.
   @impl true
   def handle_info({ref, result}, %{current_task: {ref, _task_pid, _reply_pid, session_id}} = state) do
     Process.demonitor(ref, [:flush])
@@ -237,7 +236,7 @@ defmodule Dmhai.Agent.UserAgent do
     {:noreply, state, @idle_timeout}
   end
 
-  # Stray DOWN — swallow. (Was used for the old worker tracking; TaskRuntime owns workers now.)
+  # Stray DOWN — swallow. TaskRuntime owns worker-like processes.
   def handle_info({:DOWN, _ref, _type, _pid, _reason}, state) do
     {:noreply, state, @idle_timeout}
   end
@@ -266,7 +265,7 @@ defmodule Dmhai.Agent.UserAgent do
     {:noreply, state, @idle_timeout}
   end
 
-  # Phase 2 auto-resume: after a chain finished while the DB shows an
+  # Auto-resume: after a chain finished while the DB shows an
   # unanswered user message for this session, synthesise a minimal
   # AssistantCommand and run the pipeline. The new turn's context build
   # includes the queued message naturally (it's already in session.messages).
@@ -301,11 +300,11 @@ defmodule Dmhai.Agent.UserAgent do
     {:noreply, state, @idle_timeout}
   end
 
-  # Phase 2 boot scan: find Assistant-mode sessions for this user where
-  # the last persisted message is role="user" and self-dispatch an
-  # auto-resume for each. Restores responsiveness after GenServer crash
-  # or idle-timeout + respawn. See architecture.md §Boot scan for
-  # orphan recovery.
+  # Boot scan: find Assistant-mode sessions for this user where the
+  # last persisted message is role="user" and self-dispatch an
+  # auto-resume for each. Restores responsiveness after GenServer
+  # crash or idle-timeout + respawn. See architecture.md §Boot scan
+  # for orphan recovery.
   def handle_info(:boot_scan, state) do
     case Dmhai.Agent.UserAgentMessages.sessions_with_unanswered_user_msg(state.user_id) do
       [] ->
@@ -407,9 +406,9 @@ defmodule Dmhai.Agent.UserAgent do
         active_tasks: active_tasks,
         recent_done:  recent_done,
         files:        [],
-        # Phase 3: forward the silent-pickup target so the anchor block
-        # names this task explicitly (even though no runtime lookup
-        # would otherwise pick a periodic task over other candidates).
+        # Forward the silent-pickup target so the anchor block names
+        # this task explicitly (no runtime lookup would otherwise pick
+        # a periodic task over other candidates).
         silent_turn_task_id: task.task_id
       )
 
@@ -418,19 +417,18 @@ defmodule Dmhai.Agent.UserAgent do
     # prompt, not user input. The model's final assistant text IS persisted
     # via append_session_message below.
     #
-    # Two instructions land hard here because they're the exact compliance
-    # failures we saw with nemotron-3-nano:30b-cloud on periodic tasks:
+    # Two instructions land hard here because they target recurring
+    # compliance failures on weak models:
     #
     #   1. "This is a PICKUP of the EXISTING task `<id>` — use
-    #      complete_task, not create_task." Catches the nemotron failure
-    #      mode where each pickup spawned a fresh periodic row, one of
-    #      the causes of the exponential-amplification bug (Police gate
-    #      6 now also rejects the runtime side).
+    #      complete_task, not create_task." Prevents each pickup from
+    #      spawning a fresh periodic row (Police gate 6 is the runtime
+    #      safety net).
     #
     #   2. "Your final text IS the task output. No 'Joke delivered:',
-    #      'Task complete', or similar meta-prefix." Catches the nemotron
-    #      habit of producing a real reply PLUS a bookkeeping-style line,
-    #      both persisted, cluttering the session timeline.
+    #      'Task complete', or similar meta-prefix." Prevents weak
+    #      models from producing a real reply plus a bookkeeping-style
+    #      line, both persisted, cluttering the session timeline.
     task_num = Map.get(task, :task_num)
 
     synthetic = %{role: "user",
@@ -480,16 +478,12 @@ defmodule Dmhai.Agent.UserAgent do
       # pickup fires for ONE specific task; the model must not use the
       # trigger as an opportunity to create new tasks, cancel the
       # triggered task to start a different one, or touch other tasks'
-      # state. Seen in the wild: the model interpreted a joke-task
-      # pickup as permission to cancel it, create an ASCII-drawing
-      # task, and deliver 3 drawings — all in a single silent turn,
-      # because the user had asked for ASCII in a prior turn. Police
-      # rule #9 reads this ctx key to enforce the one-task-per-silent-
-      # turn invariant.
+      # state. Police rule #9 reads this ctx key to enforce the
+      # one-task-per-silent-turn invariant.
       silent_turn_task_id: task.task_id,
-      # Phase 3: silent-turn anchor starts at the triggered task's
-      # task_num and can flip via back_to_when_done when the model
-      # completes/cancels/pauses the pickup inside the chain. See
+      # Silent-turn anchor starts at the triggered task's task_num and
+      # can flip via back_to_when_done when the model completes /
+      # cancels / pauses the pickup inside the chain. See
       # architecture.md §Anchor mutation via back_to_when_done.
       anchor_task_num: Map.get(task, :task_num),
       last_rendered_anchor_task_num: Map.get(task, :task_num),
@@ -501,19 +495,19 @@ defmodule Dmhai.Agent.UserAgent do
 
     # Flip the task to 'ongoing' at pickup start — the silent-turn
     # entry point acts as an implicit `pickup_task` for the triggered
-    # row (the model doesn't need to re-pickup a task whose pickup this
-    # turn *is*). This closes the cadence-correctness gap for periodic
-    # pickups: without it, a silent turn starts with the task in
-    # 'pending' (that's how the previous pickup's mark_done left it)
-    # and relies on the model calling `complete_task(...)` to advance
-    # it. If the model skips that (nemotron-3-nano frequently did),
-    # `auto_close_ongoing_tasks` at end of the text turn filters for
-    # status=="ongoing" and finds nothing → `mark_done` never fires →
-    # `time_to_pickup` stays in the past → `maybe_trigger_next_due`
-    # re-dispatches {:task_due} immediately → burst fire until the
-    # model eventually complies. Marking ongoing here guarantees
-    # auto_close will catch the pickup's completion and reschedule for
-    # the next intvl_sec window regardless of model behaviour.
+    # row (the model doesn't need to re-pickup a task whose pickup
+    # this turn *is*). Closes the cadence-correctness gap for
+    # periodic pickups: without it, a silent turn starts with the
+    # task `pending` (from the prior pickup's mark_done) and relies
+    # on the model calling `complete_task(...)` to advance it. If the
+    # model skips that, `auto_close_ongoing_tasks` at text-turn end
+    # filters for status=="ongoing" and finds nothing → `mark_done`
+    # never fires → `time_to_pickup` stays in the past →
+    # `maybe_trigger_next_due` re-dispatches {:task_due} immediately
+    # → burst fire until the model eventually complies. Marking
+    # ongoing here guarantees auto_close catches the pickup's
+    # completion and reschedules for the next intvl_sec window
+    # regardless of model behaviour.
     Tasks.mark_ongoing(task.task_id)
 
     result = session_chain_loop(llm_messages, model, ctx, 0)
@@ -526,14 +520,14 @@ defmodule Dmhai.Agent.UserAgent do
     result
   end
 
-  # Phase 2 mid-chain splice: return `messages` with any newly-arrived
-  # user messages appended. "Newly arrived" = rows in `session.messages`
+  # Mid-chain splice: return `messages` with any newly-arrived user
+  # messages appended. "Newly arrived" = rows in `session.messages`
   # whose role="user" and whose `ts` is greater than the greatest `ts`
   # of any user-role entry already present in `messages`. Entries
   # without a `ts` (synthetic `[Task due:]` injections, Police nudges
   # injected as role=user) don't count toward the floor — they have no
-  # DB representation, and we don't want them to block a genuine DB
-  # message from being spliced in. See architecture.md §Mid-chain user
+  # DB representation, so they must not block a genuine DB message
+  # from being spliced in. See architecture.md §Mid-chain user
   # message injection.
   defp splice_mid_chain_user_msgs(messages, %{session_id: session_id}) do
     floor_ts = max_user_ts_in_messages(messages)
@@ -567,10 +561,10 @@ defmodule Dmhai.Agent.UserAgent do
   # both atom- and string-keyed maps, so pass through as-is.
   defp normalize_spliced_msg(m), do: m
 
-  # Phase 3: refresh the prompt's `## Active task` block mid-chain when
-  # the runtime anchor has moved. Appends a synthetic user/assistant
-  # pair to `messages` naming the current anchor (or a "none / free
-  # mode" notice when the anchor has gone nil). Updates ctx's
+  # Refresh the prompt's `## Active task` block mid-chain when the
+  # runtime anchor has moved. Appends a synthetic user/assistant pair
+  # to `messages` naming the current anchor (or a "none / free mode"
+  # notice when the anchor has gone nil). Updates ctx's
   # `last_rendered_anchor_task_num` so subsequent iterations don't
   # re-append the same refresh. No-op when the rendered value already
   # matches the runtime value.
@@ -671,8 +665,8 @@ defmodule Dmhai.Agent.UserAgent do
 
     cond do
       state.current_task && required_mode == "assistant" ->
-        # Phase 2 queuing: the user message is already persisted to
-        # `session.messages` by the HTTP handler. The in-flight chain's
+        # The user message is already persisted to `session.messages`
+        # by the HTTP handler. The in-flight chain's
         # `session_chain_loop` will splice it into the next LLM roundtrip
         # (mid-chain), or the chain-complete hook will auto-resume if
         # the chain finishes before the LLM call picks it up. Either
@@ -849,7 +843,7 @@ defmodule Dmhai.Agent.UserAgent do
   # receive inline image bytes — pixels come via `extract_content` when
   # the model decides to read a particular attachment.
 
-  # ─── Assistant pipeline — conversational session turn (#101) ─────────────
+  # ─── Assistant pipeline — conversational session turn ─────────────
   #
   # One LLM handles the whole conversation: sees the task list + history +
   # current input and decides what to do turn-by-turn. No plan/exec/signal
@@ -884,14 +878,14 @@ defmodule Dmhai.Agent.UserAgent do
     # actually extract_content'd during this chain.
     fresh_attachment_paths = Dmhai.Agent.Police.extract_fresh_attachment_paths(llm_messages)
 
-    # Phase 3: resolve the active-task anchor at chain start. CAN mutate
-    # during the chain via `maybe_mutate_anchor/4` inside `execute_tools`
-    # — pickup_task pushes the prior anchor as the picked-up task's
-    # `back_to_when_done_task_num`; complete/cancel/pause of the current
-    # anchor flips back to that stored back-reference. Drives persisted-
-    # message tagging AND gets refreshed into the prompt's `## Active task`
-    # block at the next turn boundary. See architecture.md §Anchor
-    # mutation via back_to_when_done back-stack.
+    # Resolve the active-task anchor at chain start. Mutates during
+    # the chain via `maybe_mutate_anchor/4` inside `execute_tools`:
+    # pickup_task pushes the prior anchor as the picked-up task's
+    # `back_to_when_done_task_num`; complete / cancel / pause of the
+    # current anchor flips back to that stored back-reference. Drives
+    # persisted-message tagging AND gets refreshed into the prompt's
+    # `## Active task` block at the next turn boundary. See
+    # architecture.md §Anchor mutation via back_to_when_done back-stack.
     anchor = Dmhai.Agent.Anchor.resolve(session_id)
     anchor_task_num = anchor && anchor.task_num
 
@@ -909,14 +903,14 @@ defmodule Dmhai.Agent.UserAgent do
       # the in-chain accumulator — never cross-chain repeats.
       chain_start_idx: length(llm_messages),
       anchor_task_num: anchor_task_num,
-      # Phase 3: track the anchor value most recently rendered into the
-      # prompt's `## Active task` block. Starts equal to the chain-start
-      # anchor (ContextEngine already emitted that block). When
-      # `anchor_task_num` diverges — because a pickup/complete/cancel/
-      # pause inside this chain mutated it — `session_chain_loop`
-      # appends a refresh block before the NEXT LLM call and syncs
-      # this field. Prevents the "stale prompt vs mutated runtime"
-      # incoherence observed in the joke→docker stress test.
+      # Track the anchor value most recently rendered into the prompt's
+      # `## Active task` block. Starts equal to the chain-start anchor
+      # (ContextEngine already emitted that block). When
+      # `anchor_task_num` diverges — because a pickup / complete /
+      # cancel / pause inside this chain mutated it —
+      # `session_chain_loop` appends a refresh block before the NEXT
+      # LLM call and syncs this field, keeping the prompt-side anchor
+      # coherent with the runtime ctx.
       last_rendered_anchor_task_num: anchor_task_num,
       # Model-behaviour telemetry inputs — every Police rejection bumps a
       # counter row for this (role, model, issue_type, tool_name).
@@ -963,19 +957,19 @@ defmodule Dmhai.Agent.UserAgent do
   defp session_chain_loop(messages, model, ctx, turn) do
     max_turns = AgentSettings.max_assistant_turns_per_chain()
 
-    # Phase 2 mid-chain splice: fold any user messages that were
-    # persisted to `session.messages` after this chain started (or after
-    # the previous turn's LLM call returned) into the working messages
-    # list, so the next turn's LLM call sees them as context. Splice
-    # point is SAFE here — we're between turns, so any prior tool_call /
-    # tool_result pair has already been paired up; OpenAI's sequencing
-    # rule isn't violated.
+    # Mid-chain splice: fold any user messages that were persisted to
+    # `session.messages` after this chain started (or after the
+    # previous turn's LLM call returned) into the working messages
+    # list, so the next turn's LLM call sees them as context. Safe
+    # here because we're between turns; any prior tool_call /
+    # tool_result pair has already been paired up, so OpenAI's
+    # sequencing rule isn't violated.
     messages = splice_mid_chain_user_msgs(messages, ctx)
 
-    # Phase 3 anchor refresh: if the runtime anchor has moved from
-    # what the prompt currently says (because a pickup / complete /
-    # cancel / pause in a prior turn of THIS chain mutated it), append
-    # a refreshed `## Active task` block so the next LLM call sees the
+    # Anchor refresh: if the runtime anchor has moved from what the
+    # prompt currently says (because a pickup / complete / cancel /
+    # pause in a prior turn of THIS chain mutated it), append a
+    # refreshed `## Active task` block so the next LLM call sees the
     # updated value. Keeps prompt-side anchor coherent with the
     # runtime ctx. See architecture.md §Anchor mutation.
     {messages, ctx} = maybe_refresh_anchor_block(messages, ctx)
@@ -1151,7 +1145,7 @@ defmodule Dmhai.Agent.UserAgent do
                   # NEXT chain's context builder can inject them back and
                   # answer immediate follow-ups without re-running tools.
                   # Passes the anchor's `task_num` so entries rolling out
-                  # of retention get archived per-task (Phase 3).
+                  # of retention get archived per-task.
                   #
                   # IMPORTANT: slice by `chain_start_idx` FIRST. `messages`
                   # at this point contains (a) the tool_history re-injected
@@ -1195,13 +1189,13 @@ defmodule Dmhai.Agent.UserAgent do
           Dmhai.SysLog.log("[ASSISTANT] turn=#{turn} ERROR: #{inspect(reason)}")
           StreamBuffer.clear(ctx.session_id, ctx.user_id)
 
-          # Phase 3: classify the error. Transient infra issues (API-key
-          # exhaustion, rate-limits, provider 5xx, timeouts) are treated
-          # as a SYSTEM-ERROR class — we auto-pause the active task so
-          # the user's work is preserved, and surface a localised,
-          # non-jargon message asking them to ping us when resolved.
-          # Everything else falls back to the generic `llm_error`
-          # render.
+          # Classify the error. Transient infra issues (API-key
+          # exhaustion, rate-limits, provider 5xx, timeouts) are
+          # treated as a SYSTEM-ERROR class — the runtime auto-pauses
+          # the active task so the user's work is preserved, and
+          # surfaces a localised, non-jargon message asking them to
+          # ping when resolved. Everything else falls back to the
+          # generic `llm_error` render.
           err_msg_payload =
             case classify_llm_error(reason) do
               {:system_error, cause_key} ->
@@ -1314,12 +1308,13 @@ defmodule Dmhai.Agent.UserAgent do
     end
   end
 
-  # Phase 3: tag an assistant message with the chain's anchor `task_num`
-  # when one is set. Called at every `append_session_message` site in
-  # `session_chain_loop` so archived slices can be partitioned per-task
-  # by `ContextEngine.compact!`. Free-mode chains (no anchor) leave the
-  # message untagged — they'll compact into the master session summary
-  # like any pure-chat exchange. See architecture.md §Per-message task tag.
+  # Tag an assistant message with the chain's anchor `task_num` when
+  # one is set. Called at every `append_session_message` site in
+  # `session_chain_loop` so archived slices can be partitioned
+  # per-task by `ContextEngine.compact!`. Free-mode chains (no anchor)
+  # leave the message untagged — they compact into the master session
+  # summary like any pure-chat exchange. See architecture.md
+  # §Per-message task tag.
   defp maybe_tag_task_num(message, ctx) do
     case Map.get(ctx, :anchor_task_num) do
       n when is_integer(n) -> Map.put(message, :task_num, n)
@@ -1445,18 +1440,17 @@ defmodule Dmhai.Agent.UserAgent do
     end
   end
 
-  # Auto-close runs at end of text turn (chain end). PERIODIC-ONLY now —
-  # one_off tasks stay `ongoing` across chains until the model explicitly
-  # calls `complete_task`, which is the only reliable signal that the
-  # objective is done. Was previously indiscriminate and closed
-  # multi-turn one_off conversations prematurely (e.g. user asks
-  # "ssh in and set up nextcloud", assistant needs to ask a clarifying
-  # question, ends turn with text — old auto_close would mark the task
-  # done, next turn's user answer couldn't attach to it).
+  # Auto-close runs at end of text turn (chain end). PERIODIC-ONLY —
+  # one_off tasks stay `ongoing` across chains until the model
+  # explicitly calls `complete_task`, which is the only reliable
+  # signal that the objective is done. A one_off task may legitimately
+  # span multiple chains (e.g. the assistant asks a clarifying
+  # question and waits on the user's next reply), so sweeping ongoing
+  # one_offs would close conversations prematurely.
   #
-  # For periodic tasks, auto-close is still the right thing: the
-  # pickup's "done" = "reschedule next cycle", a structural event the
-  # runtime owns. `Tasks.mark_done/2` dispatches periodic → pending +
+  # For periodic tasks, auto-close is the right thing: the pickup's
+  # "done" = "reschedule next cycle", a structural event the runtime
+  # owns. `Tasks.mark_done/2` dispatches periodic → pending +
   # `time_to_pickup = now + intvl_sec` + `TaskRuntime.schedule_pickup`.
   # If the model forgot `complete_task`, the cadence still holds.
   defp auto_close_ongoing_tasks(session_id, assistant_text) do
@@ -1522,7 +1516,7 @@ defmodule Dmhai.Agent.UserAgent do
                :ok <- Dmhai.Agent.Police.check_tool_call_schema(name, args),
                # Police gate 4 — within-chain duplicate-tool-call. Blocks
                # the "create_task twice with same title" / "extract_content
-               # the same PDF twice" misbehaviour we saw on gemini-3-flash.
+               # the same PDF twice" misbehaviour.
                :ok <- Dmhai.Agent.Police.check_no_duplicate_tool_call(name, args, prior_acc),
                # Police gate 5 — no two `web_search` calls in a row. A single
                # web_search already fans out 2-3 parallel queries in the BE,
@@ -1534,26 +1528,20 @@ defmodule Dmhai.Agent.UserAgent do
                :ok <- Dmhai.Agent.Police.check_no_consecutive_web_search(name, args, prior_acc),
                # Police gate 6 — one periodic task per session. Rejects
                # create_task(task_type: "periodic") when the session
-               # already has an active periodic. Catches the failure
-               # mode where a model spawns multiple periodics for one
-               # user ask, each firing on its own timer → exponential
-               # amplification of silent turns (observed with
-               # nemotron-3-nano:30b-cloud: 4 periodic tasks for a
-               # single "joke every 30 sec" ask). The nudge is
-               # user-facing: it tells the model exactly what to reply
-               # so the user sees a coherent explanation naming the
-               # existing task's (N).
+               # already has an active periodic. Without this a model
+               # can spawn multiple periodics for one user ask, each
+               # firing on its own timer → compounding silent turns.
+               # The nudge is user-facing: it tells the model exactly
+               # what to reply so the user sees a coherent explanation
+               # naming the existing task's (N).
                :ok <- Dmhai.Agent.Police.check_no_duplicate_periodic_task_in_session(name, args, ctx),
                # Police gate 7 — silent-turn scope lock. During a
                # scheduler-triggered silent pickup (ctx carries
                # :silent_turn_task_id), forbid create_task and the
-               # pickup/complete/pause/cancel verbs on any task OTHER
-               # than the triggered one. Catches the "pickup hijack"
-               # failure: model uses the pickup trigger to cancel the
-               # triggered task, create a new periodic the user asked
-               # about in a prior turn, and run multiple deliveries of
-               # the new task — all in one silent turn (observed with
-               # ministral-3:14b-cloud on 2026-04-24).
+               # pickup / complete / pause / cancel verbs on any task
+               # OTHER than the triggered one. A pickup fires for ONE
+               # specific task; the model must not use that trigger as
+               # license to spawn new tasks or touch unrelated ones.
                :ok <- Dmhai.Agent.Police.check_silent_turn_scope(name, args, ctx) do
             progress_label = Dmhai.Agent.ProgressLabel.format(name, args)
             # `complete_task` is pure cleanup — the final assistant
@@ -1598,8 +1586,8 @@ defmodule Dmhai.Agent.UserAgent do
 
             %{role: "tool", content: content, tool_call_id: tool_call_id}
           else
-            # Plain string rejection (legacy Police checks) — return as a
-            # tool-result message, no issue tracking.
+            # Plain string rejection — return as a tool-result message,
+            # no issue tracking.
             {:rejected, reason} when is_binary(reason) ->
               %{role: "tool", content: reason, tool_call_id: tool_call_id}
 
@@ -1619,10 +1607,9 @@ defmodule Dmhai.Agent.UserAgent do
         # rejected duplicate within the same round either.
         pseudo = %{"role" => "assistant", "tool_calls" => [call]}
 
-        # Phase 3 anchor mutation — update ctx.anchor_task_num based on
-        # the verb and its outcome. Also persists back_to_when_done on
-        # pickup_task success. See architecture.md §Anchor mutation via
-        # back_to_when_done back-stack.
+        # Update ctx.anchor_task_num based on the verb and its outcome.
+        # Also persists back_to_when_done on pickup_task success. See
+        # architecture.md §Anchor mutation via back_to_when_done back-stack.
         new_ctx = maybe_mutate_anchor(ctx, name, args, tool_msg)
 
         {tool_msg, {prior_acc ++ [pseudo], new_ctx}}
@@ -1636,14 +1623,14 @@ defmodule Dmhai.Agent.UserAgent do
   # calls pass ctx through unchanged. See §Anchor mutation via
   # back_to_when_done back-stack.
 
-  # `create_task` (Phase 3 lever 2b): the tool inserts with
-  # `status='ongoing'` and we advance the anchor in lockstep —
-  # functionally equivalent to what `pickup_task` does for an
-  # existing task, but wrapped into the same LLM roundtrip. The
-  # previous anchor becomes the new task's `back_to_when_done_task_num`
-  # so complete/cancel/pause can pop back to it. `last_rendered_anchor`
-  # is advanced too (EXPLICIT model-driven transition — no refresh
-  # block needed; the model KNOWS it just created this task).
+  # `create_task`: the tool inserts with `status='ongoing'` and the
+  # runtime advances the anchor in lockstep — functionally equivalent
+  # to what `pickup_task` does for an existing task, but wrapped into
+  # the same LLM roundtrip. The previous anchor becomes the new
+  # task's `back_to_when_done_task_num` so complete / cancel / pause
+  # can pop back to it. `last_rendered_anchor` is advanced too
+  # (EXPLICIT model-driven transition — no refresh block needed; the
+  # model knows it just created this task).
   defp maybe_mutate_anchor(ctx, "create_task", _args, %{content: content, role: "tool"}) do
     case extract_task_num_from_success(content) do
       nil ->

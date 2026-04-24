@@ -34,9 +34,9 @@ defmodule Dmhai.Agent.AgentSettings do
 
   # Estimated usable context window (in tokens) of the assistant LLM.
   # Used by ContextEngine.should_compact? to derive the char-based
-  # compaction trigger. Conservative floor across current cloud models
-  # (gpt-oss 120b ~128k, nemotron ~128k, gemini 1M). Operators can tune
-  # via the `estimatedContextTokens` setting.
+  # compaction trigger. Conservative floor across cloud models (many
+  # sit at ~128 k, some larger). Operators can tune via the
+  # `estimatedContextTokens` setting.
   @estimated_context_tokens_default 64_000
 
   # Document extraction
@@ -52,9 +52,9 @@ defmodule Dmhai.Agent.AgentSettings do
   @tool_result_retention_turns_default 5
   @tool_result_retention_bytes_default 120_000
 
-  # Per-task archive sliding window (Phase 3). Caps `task_turn_archive`
-  # to the last N rows OR B bytes per task, whichever is tighter.
-  # Oldest rows beyond either cap are dropped at append time. No LLM
+  # Per-task archive sliding window. Caps `task_turn_archive` to the
+  # last N rows OR B bytes per task, whichever is tighter. Oldest
+  # rows beyond either cap are dropped at append time. No LLM
   # summarisation of archived content — sliding-window eviction only.
   # See architecture.md §Task state continuity across chains.
   @task_archive_row_cap_default 60
@@ -64,23 +64,19 @@ defmodule Dmhai.Agent.AgentSettings do
   # `Dmhai.Agent.LLM` when an account hits a rate-limit (HTTP 429 or
   # stream-inline RL error) or has its quota exhausted (Ollama's
   # weekly cap). Rate-limit defaults to 60 s — matches the typical
-  # upstream rolling-window RL; the prior 1 h default locked every
-  # key after a burst and blew up the whole pool. Quota default is
-  # 168 h (7 days) to match Ollama's weekly reset cadence. The 429
-  # handler also parses the `Retry-After` header and, when present,
-  # uses it in preference to this default (see
-  # `parse_retry_after_ms/1`).
+  # upstream rolling-window RL and keeps a burst from locking the
+  # whole account pool. Quota default is 168 h (7 days) to match
+  # Ollama's weekly reset cadence. The 429 handler also parses the
+  # `Retry-After` header and, when present, uses it in preference to
+  # this default (see `parse_retry_after_ms/1`).
   @rate_limit_throttle_secs_default 60
   @quota_exhausted_throttle_hours_default 168
 
   # Output-token ceiling (num_predict) passed to every assistant-mode
-  # LLM.stream call. Ollama's default cap is low enough that a ~15-line
-  # bash script tool_call gets truncated mid-string (observed 2026-04-24:
-  # 8× run_script loop, all scripts cut at identical byte offset, each
-  # missing the closing `fi` → syntax error → retry → truncate again).
-  # `num_predict` is a ceiling, NOT a prepaid budget — unused headroom
-  # has no cost. 16 384 is far above any practical tool_call or reply
-  # size while still bounding a runaway model that never emits EOS.
+  # LLM.stream call. `num_predict` is a ceiling, NOT a prepaid budget
+  # — unused headroom has no cost. Set far above any practical
+  # tool_call or reply size (long bash scripts easily run to ~1 000
+  # tokens) while still bounding a runaway model that never emits EOS.
   @llm_num_predict_assistant_default 16_384
 
   # Web / HTTP defaults
@@ -129,9 +125,6 @@ defmodule Dmhai.Agent.AgentSettings do
   def confidant_model,          do: model_for("confidantModel")
   def assistant_model,          do: model_for("assistantModel")
   def compactor_model,        do: model_for("compactorModel")
-  # worker_model retired 2026-04-23 — legacy master/worker split is gone.
-  # Do not re-introduce; use assistant_model/confidant_model or a
-  # role-specific accessor instead.
   def summarizer_model,       do: model_for("summarizerModel")
   def web_search_model,       do: model_for("webSearchModel")
   def image_describer_model,  do: model_for("imageDescriberModel")
@@ -192,9 +185,9 @@ defmodule Dmhai.Agent.AgentSettings do
     do: int_setting("toolResultRetentionBytes", @tool_result_retention_bytes_default)
 
   @doc """
-  Per-task archive row cap (Phase 3). Each `task_turn_archive` grouping
-  is trimmed to this many rows at append time; oldest beyond the cap
-  are dropped. Row = one persisted message (user OR assistant OR tool),
+  Per-task archive row cap. Each `task_turn_archive` grouping is
+  trimmed to this many rows at append time; oldest beyond the cap are
+  dropped. Row = one persisted message (user OR assistant OR tool),
   so ~30 user+assistant pairs fit in the default 60.
   """
   @spec task_archive_row_cap() :: pos_integer()
@@ -202,10 +195,10 @@ defmodule Dmhai.Agent.AgentSettings do
     do: int_setting("taskArchiveRowCap", @task_archive_row_cap_default)
 
   @doc """
-  Per-task archive byte budget (Phase 3). Measured over the `content`
-  column sum. Applied alongside `task_archive_row_cap` — oldest rows
-  are dropped until BOTH caps are satisfied. A single heavy message
-  (e.g. pasted 80 KB paragraph) shrinks the effective window further.
+  Per-task archive byte budget. Measured over the `content` column
+  sum. Applied alongside `task_archive_row_cap` — oldest rows are
+  dropped until BOTH caps are satisfied. A single heavy message (e.g.
+  pasted 80 KB paragraph) shrinks the effective window further.
   """
   @spec task_archive_byte_cap() :: pos_integer()
   def task_archive_byte_cap,

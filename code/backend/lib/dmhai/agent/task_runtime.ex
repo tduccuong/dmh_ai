@@ -7,11 +7,10 @@ defmodule Dmhai.Agent.TaskRuntime do
   @moduledoc """
   Periodic-pickup scheduler. That's it.
 
-  Under the conversational-session architecture (#101) task execution is
-  inline in the user's session turn — there is no Loop process, no poller,
-  no completion watchdog. The only thing that needs to live between turns
-  is a timer that tells the session to wake up when a periodic task's
-  `time_to_pickup` arrives.
+  Task execution is inline in the user's session turn — there is no
+  Loop process, no poller, no completion watchdog. The only thing
+  that needs to live between turns is a timer that tells the session
+  to wake up when a periodic task's `time_to_pickup` arrives.
 
   Responsibilities:
     - `schedule_pickup(task_id, when_ms)` — arm a timer. Called by
@@ -139,12 +138,12 @@ defmodule Dmhai.Agent.TaskRuntime do
 
       %{task_status: status, user_id: user_id, session_id: session_id, task_type: task_type}
           when status == "pending" ->
-        # Phase 3: don't stack periodic pickups. If another periodic in
-        # this session is already `ongoing` (prior cycle mid-chain,
-        # hasn't closed), skip THIS firing entirely. The missed cycle
-        # isn't made up for — the next natural timer re-fires after
+        # Don't stack periodic pickups. If another periodic in this
+        # session is already `ongoing` (prior cycle mid-chain, hasn't
+        # closed), skip THIS firing entirely. The missed cycle is NOT
+        # made up for — the next natural timer re-fires after
         # intvl_sec. Prevents overlapping periodic silent chains that
-        # can compound model confusion + amplify Police rejections.
+        # compound model confusion and amplify Police rejections.
         # See architecture.md §Scheduler — don't stack periodic pickups.
         if task_type == "periodic" and Tasks.session_has_ongoing_periodic?(session_id) do
           Logger.info("[TaskRuntime] pickup_due task=#{task_id} skipped — another periodic is already ongoing in session=#{session_id}")
@@ -195,13 +194,12 @@ defmodule Dmhai.Agent.TaskRuntime do
     # 1. PERIODIC ongoing tasks → pending. Their `ongoing` state is
     #    tied to a running cycle; if the BEAM died mid-cycle, the
     #    cycle is lost and the task must be re-armed to fire again.
-    #    One_off tasks' `ongoing` state is NOT touched — Phase 2
-    #    multi-chain tasks can legitimately stay `ongoing` across
-    #    restarts (awaiting user clarification between chains). If a
-    #    one_off's chain was killed mid-work, Phase 2 boot scan
-    #    detects the orphan via `has_unanswered_user_msg?` and
-    #    dispatches a resume chain; the `ongoing` status is
-    #    correct for the continuation.
+    #    One_off tasks' `ongoing` state is NOT touched — a multi-chain
+    #    one_off can legitimately stay `ongoing` across restarts
+    #    (awaiting user clarification between chains). If its chain
+    #    was killed mid-work, the boot scan detects the orphan via
+    #    `has_unanswered_user_msg?` and dispatches a resume chain;
+    #    the `ongoing` status is correct for the continuation.
     Tasks.fetch_orphaned_ongoing_periodic()
     |> Enum.each(fn task ->
       Logger.info("[TaskRuntime] reverting orphaned ongoing periodic task=#{task.task_id} → pending")

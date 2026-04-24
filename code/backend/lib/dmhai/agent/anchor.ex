@@ -118,8 +118,8 @@ defmodule Dmhai.Agent.Anchor do
         Enum.max_by(ongoing, fn t -> Map.get(t, :updated_at) || 0 end)
 
       # Rule 3: no ongoing → fall back to a single pending one_off
-      # task. Skip periodic (those wait for scheduler) and tasks with
-      # non-integer task_num (legacy rows pre-task_num column).
+      # task. Skip periodic (those wait for scheduler) and rows with
+      # a non-integer task_num.
       true ->
         pending_oneoff =
           active

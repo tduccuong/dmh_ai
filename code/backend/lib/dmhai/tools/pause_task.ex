@@ -13,7 +13,7 @@ defmodule Dmhai.Tools.PauseTask do
   task", "hold off on X"). Accepts `ongoing` and `pending` tasks — the
   two non-terminal, non-paused states.
 
-  Phase 3: takes `task_num: integer`.
+  Takes `task_num: integer`.
   """
 
   @behaviour Dmhai.Tools.Behaviour

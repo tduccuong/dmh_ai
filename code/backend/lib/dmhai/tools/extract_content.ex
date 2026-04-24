@@ -119,9 +119,9 @@ defmodule Dmhai.Tools.ExtractContent do
   defp find_prior_extraction(session_id, path) do
     Dmhai.Agent.Tasks.recent_done_for_session(session_id, @prior_scan_limit)
     |> Enum.find(fn t ->
-      # Primary source: structured attachments column. Fallback: legacy
-      # regex parse of task_spec (for pre-migration rows) so dedup keeps
-      # working during the transition window.
+      # Primary source: structured attachments column. Fall back to a
+      # regex parse of task_spec when the column is empty — keeps dedup
+      # working for any task row without a populated attachments list.
       cols =
         case Map.get(t, :attachments) do
           list when is_list(list) and list != [] -> list

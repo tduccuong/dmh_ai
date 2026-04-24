@@ -40,10 +40,10 @@ defmodule Dmhai.DB.Init do
     # questions immediately after a tool run without re-extracting,
     # while still capped so extraction marathons can't balloon context.
     add_column_if_missing("sessions", "tool_history", "TEXT DEFAULT NULL")
-    # Phase 3 anchor back-reference. Set at pickup_task time when a
-    # DIFFERENT task was the current anchor; read at complete/cancel/
-    # pause time to restore that prior anchor. See architecture.md
-    # §Anchor mutation via back_to_when_done back-stack.
+    # Anchor back-reference. Set at pickup_task time when a DIFFERENT
+    # task was the current anchor; read at complete / cancel / pause
+    # time to restore that prior anchor. See architecture.md §Anchor
+    # mutation via back_to_when_done back-stack.
     add_column_if_missing("tasks", "back_to_when_done_task_num", "INTEGER")
   end
 
@@ -189,7 +189,7 @@ defmodule Dmhai.DB.Init do
                                                -- (periodic next cycle; one_off future-dated)
       language TEXT NOT NULL DEFAULT 'en',
       attachments TEXT DEFAULT NULL,           -- JSON array of workspace/data paths (structured; not parsed from spec)
-      back_to_when_done_task_num INTEGER,      -- Phase 3: anchor back-reference.
+      back_to_when_done_task_num INTEGER,      -- Anchor back-reference.
                                                -- Set at pickup_task time when a DIFFERENT task was the
                                                -- current anchor; read at complete/cancel/pause time to
                                                -- restore that prior anchor. Nullable — free mode when nil.
@@ -254,9 +254,9 @@ defmodule Dmhai.DB.Init do
     query!(Repo,
       "CREATE INDEX IF NOT EXISTS idx_model_behavior_stats_model ON model_behavior_stats (model, count DESC)")
 
-    # Per-task raw message archive (Phase 3). Compaction writes turns here
-    # before summarising them away from session.messages, so fetch_task
-    # can replay a task's history verbatim even after the master session
+    # Per-task raw message archive. Compaction writes turns here before
+    # summarising them away from session.messages, so fetch_task can
+    # replay a task's history verbatim even after the master session
     # has been compacted. See architecture.md §Task state continuity
     # across chains.
     query!(Repo, """

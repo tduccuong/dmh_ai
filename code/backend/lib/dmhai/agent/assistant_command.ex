@@ -14,9 +14,9 @@ defmodule Dmhai.Agent.AssistantCommand do
   NOT see inline image bytes: the Assistant Loop processes pixels via
   `extract_content` when it runs the task.
 
-  Separation: this struct carries **only** the fields the Assistant path
-  needs. There is no `images`, no `has_video`, no `task_id` — those are
-  either Confidant-only or an artefact of the pre-#92 architecture.
+  Separation: this struct carries **only** the fields the Assistant
+  path needs. There is no `images`, no `has_video`, no `task_id` —
+  those belong to Confidant (inline images) or are unused here.
   """
 
   @enforce_keys [:type, :content, :session_id, :reply_pid]
@@ -44,8 +44,8 @@ defmodule Dmhai.Agent.AssistantCommand do
     attachment_names: [],
 
     # Attached files delivered inline as extracted text (e.g. a .txt the FE
-    # read client-side). Kept here in case a future pipeline variant wants to
-    # inject snippets into the context; Phase 2 does not use them.
+    # read client-side). Kept for future pipeline variants that would
+    # inject snippets into the context; the current pipeline does not.
     files: [],
 
     # Adapter-specific extras (e.g. %{telegram_message_id: 42})

@@ -1,17 +1,11 @@
 # DMH-AI Architecture
 
-> **⚠ In-flight rearchitecture (2026-04-21, #101):** Assistant mode is
-> collapsing into a **single conversational session loop**. The prior
-> two-stage pipeline (Classifier LLM → Assistant Loop LLM with
-> PLAN → EXEC → SIGNAL protocol) is being replaced by one LLM per session
-> that sees the conversation + a `[Task list]` context block and decides
-> turn-by-turn what to do — just like a modern chat agent. This removes
-> the plan/exec/signal protocol, the Police signal rules, the
-> `Dmhai.Agent.AssistantLoop` module, the `plan` / `step_signal` /
-> `task_signal` tools, and the fork-on-adjust scaffolding
-> (`predecessor_task_id` / `superseded_by_task_id` / `'superseded'` status).
+> **Design at a glance.** Assistant mode runs as a single conversational
+> session loop: one LLM per session sees the conversation + a
+> `[Task list]` context block and decides turn-by-turn what to do —
+> like a modern chat agent.
 >
-> **Key model in the target architecture:**
+> **Key model:**
 >   - Tasks are lightweight rows in `tasks` table: `task_type` (one_off |
 >     periodic), `intvl_sec`, `task_title`, `task_spec` (description),
 >     `task_status` (pending | ongoing | paused | done | cancelled),
@@ -29,22 +23,18 @@
 >   - No parallel tasks per session: one ordered stream. User wants
 >     independence → new chat session (multiple sessions per user run in
 >     parallel at the user-agent level).
->   - No fork-on-adjust: if the user redirects a running task, the
->     assistant naturally cancels the old task (`cancel_task`) and
->     creates a fresh one (`create_task` → `pickup_task`) in its next
->     turn.
+>   - If the user redirects a running task, the assistant cancels the old
+>     task (`cancel_task`) and creates a fresh one (`create_task`) on the
+>     next turn. No fork scaffolding.
 >
-> **What survives intact from prior phases:**
->   - `job` → `task` rename (Phase 1)
->   - Per-session workspace layout (`<session>/data/` + `<session>/workspace/`, #91)
+> **Shared foundations:**
+>   - Per-session workspace layout: `<session>/data/` + `<session>/workspace/`
 >   - Strict Confidant / Assistant path separation at HTTP handler entry
->     (#92a) — Confidant is unchanged; Assistant's internal pipeline is what
->     #101 simplifies
->   - Attachment-path injection via 📎 prefix on user messages (#92a)
->   - `session_progress` table + `/sessions/:id/progress` endpoint (#90) —
->     still the FE's activity-log source
->   - Event-driven lifecycle (#96): no poller; task completion is an
->     in-session LLM tool call, not a process-level signal
+>   - Attachment-path injection via 📎 prefix on user messages
+>   - `session_progress` table + `/sessions/:id/progress` endpoint — FE's
+>     activity-log source
+>   - Event-driven lifecycle: no poller; task completion is an in-session
+>     LLM tool call, not a process-level signal
 
 ## Overview
 
@@ -248,9 +238,9 @@ not share any helper that knows about the other path. Confidant is a
 one-shot streaming reply per request — it has no chain, no queue, and
 its busy-reply contract is out of scope for mid-chain injection.
 
-In Assistant mode (#101 target), the dispatched task runs the **session
-loop** (see §Assistant Mode) — a single conversational LLM turn with
-tool-call roundtrips. The session loop is short-lived per turn: it starts
+In Assistant mode, the dispatched task runs the **session loop** (see
+§Assistant Mode) — a single conversational LLM turn with tool-call
+roundtrips. The session loop is short-lived per turn: it starts
 when a user message or `{:task_due, task_id}` arrives, runs the model
 until it emits text, and exits. State lives in DB (`tasks`,
 `session_progress`, `sessions.messages`), not in the GenServer.
@@ -335,10 +325,10 @@ GET /sessions/:id/poll?msg_since=<ts>&prog_since=<id>
   message and double-push it.
 - New `progress` delta is merged into `currentSession.progress` by id
   (upsert — done-flips overwrite the prior pending row).
-- `stream_buffer` is rendered in the streaming placeholder (the same
-  DOM node that used to display the live-streamed token text). When
-  the final message appears in the `messages` delta, the placeholder is
-  replaced with the permanent message and the buffer goes to `null`.
+- `stream_buffer` is rendered in the streaming placeholder DOM node.
+  When the final message appears in the `messages` delta, the
+  placeholder is replaced with the permanent message and the buffer
+  goes to `null`.
 
 **Latency** (500 ms poll):
 - Tool spinner / tick: visible within 500 ms of tool start / finish.
@@ -475,10 +465,10 @@ immediate follow-ups without re-running the tool.
   (non-empty binary) and raises `ArgumentError` if it's missing. The id
   drives both `ToolHistory.load/1` and the `## Recently-extracted files`
   block — silently skipping them would disable Phase-3 features without
-  any visible symptom. Loud-failure contract prevents the regression we
-  hit when `UserAgent.load_session/2` forgot to populate the key. The
-  loader, and any direct test-side session_data construction, must
-  include `"id"`.
+  any visible symptom. The loader, and any direct test-side
+  session_data construction, must include `"id"` — the loud-failure
+  contract guarantees any wiring break fails immediately instead of
+  degrading silently.
 - Entries age out naturally past the N-turn window; pathological
   extraction marathons are bounded by the byte budget (oldest-first
   eviction).
@@ -487,14 +477,11 @@ immediate follow-ups without re-running the tool.
 
 **First-class `tasks.attachments` column** — JSON array of workspace/data
 paths. Source of truth for `fetch_task`, the task-list block
-`**Attachments:**` line, and `extract_content`'s dedup scan. Previously
-derived via regex from `task_spec` text, which broke when the model
-flattened newlines and left `📎` mid-line. `create_task` writes the
-validated `attachments` argument directly into the column — no merging
-into task_spec. Legacy rows (pre-migration) fall back to the regex
-parser so existing tasks keep working. `AttachmentPaths.clean_spec/1`
-scrubs any `📎 ` references the model embeds in `task_spec` so the
-stored spec is pure prose.
+`**Attachments:**` line, and `extract_content`'s dedup scan.
+`create_task` writes the validated `attachments` argument directly
+into the column — no merging into task_spec.
+`AttachmentPaths.clean_spec/1` scrubs any `📎 ` references the model
+embeds in `task_spec` so the stored spec is pure prose.
 
 **Per-session human-readable `tasks.task_num`** — monotonic integer from 1,
 shown as `(N)` in the task-list block and FE sidebar. Users reference
@@ -584,8 +571,8 @@ incoming:
   OR
   {:task_due, task_id}                ← scheduler; no user text
   OR
-  {:auto_resume_assistant, session_id} ← Phase 2 auto-resume
-                                         (unanswered user msg detected)
+  {:auto_resume_assistant, session_id} ← auto-resume after the chain-complete
+                                         hook detects an unanswered user msg
 
   ▼
 UserAgent.run_assistant(cmd, state, session_data)
@@ -625,8 +612,7 @@ Confidant — so that the final-answer text turn streams tokens into
 renders progressive text with the same "thinking…" → "streaming the
 answer…" status flip as Confidant. Tool-call turns emit no content
 tokens, so `stream_buffer` stays empty through them and `LLM.stream`
-just returns `{:ok, {:tool_calls, …}}` — identical to what `LLM.call`
-used to return.
+returns `{:ok, {:tool_calls, …}}`.
 
 The chain is strictly sequential: the model emits tool calls, tools
 run, results come back, the model emits the next turn (or text). Text
@@ -724,7 +710,7 @@ message injection for the full semantics.
 
 ## Task lifecycle
 
-### Identity (Phase 3, planned — 2026-04-24+)
+### Identity
 
 A task is addressed by its **per-session integer** `task_num` `(N)`.
 This is the only identifier the user sees, the model sees, and the
@@ -737,10 +723,9 @@ tools take as an argument.
   `cancel_task`, `fetch_task`) all take `task_num: integer` — never a
   cryptic id.
 - **`task_id`** — `string`, cryptic, DB primary key. **Internal only.**
-  Foreign keys on `session_progress.task_id`, `tool_history`, and the
-  new `task_turn_archive` still use this for global uniqueness and
-  audit stability across sessions. Never surfaced to the user or model
-  and never appears in prompts / chat.
+  Foreign keys on `session_progress.task_id`, `tool_history`, and
+  `task_turn_archive` use this for global uniqueness and audit
+  stability across sessions. Never surfaced to the user or model.
 - **Boundary resolution.** Every tool handler accepting `task_num`
   resolves `(session_id, task_num) → task_id` at the BE boundary
   (helper: `Tasks.resolve_num/2`) before any DB work. If the `task_num`
@@ -751,17 +736,10 @@ tools take as an argument.
   global uniqueness. These are operator-facing, not user- or
   model-facing.
 
-Rationale: the model was previously asked to map the user's `(N)`
-reference to the task list's cryptic `task_id` on every tool call.
-Observationally it did this correctly but it's an avoidable failure
-surface. Using `task_num` end-to-end removes the mapping step — Police's
-schema check rejects non-integers cleanly, and the BE resolver rejects
-non-existent numbers with a specific error.
-
 ### Status transitions
 
 ```
-task_status transitions (verb-based API, 2026-04-24):
+task_status transitions:
 
   (no state)──► pending   (create_task)
                    │
@@ -794,28 +772,19 @@ task_status transitions (verb-based API, 2026-04-24):
 
 Key properties:
 
-- **`create_task` inserts with `task_status='ongoing'`** (Phase 3 lever
-  2b, 2026-04-24+). The task is created AND started in one verb: the
-  model can run execution tools right after `create_task` with no
-  separate `pickup_task` call. `pickup_task` remains the verb for
-  RESUMING previously done / paused / cancelled (and idempotent
-  re-pickup of ongoing). Collapsing the two into one tool-call turn
-  saves ~8 k input tokens on every fresh-session opener (previously
-  `create_task → pending` then `pickup_task → ongoing` required two
-  LLM roundtrips, each re-shipping the full system prompt + tool
-  schemas). The tool's **returned map is self-describing** —
-  `{task_num, status: "ongoing", do_not: "call pickup_task — task is
-  already ongoing", ...}` — because prompt-only guidance alone did
-  not stop 14 B-class models from reflexively firing `pickup_task(N)`
-  as the next turn. Weak models anchor on the immediate tool result
-  far more than on the system prompt (which is far away in the
-  context window), so the instruction is repeated at the point of
-  decision. The hint is **prohibitive only** — an earlier positive
-  variant ("call run_script / web_search directly") over-prescribed
-  the path: the model took it as "next call MUST be run_script" and
-  skipped natural intermediate tools (`lookup_credential`,
-  `read_file`, `extract_content`), folding credential lookup INTO
-  the bash script as a shell command.
+- **`create_task` inserts with `task_status='ongoing'`.** The task is
+  created AND started in one verb: the model's next call can be an
+  execution tool directly. `pickup_task` is reserved for RESUMING a
+  task that is already in the list (done / paused / cancelled, or
+  idempotent re-pickup of ongoing). The tool's **returned map is
+  self-describing** — `{task_num, status: "ongoing", do_not: "call
+  pickup_task — task is already ongoing", ...}` — repeating the
+  instruction at the point of decision, because weak models anchor
+  on the immediate tool result more than on the distant system
+  prompt. The hint is **prohibitive only**; positive direction is
+  left unstated so the model picks its next tool naturally
+  (`lookup_credential`, `read_file`, `extract_content`, or
+  `run_script`, whichever fits).
 - **`Tasks.mark_done/2` is the single source of rescheduling for periodic
   tasks.** The assistant doesn't call a separate reschedule tool — it just
   updates status to "done", and the mark_done implementation branches on
@@ -844,10 +813,8 @@ Key properties:
   `session_progress` rows and the final assistant message still persist.
   FE picks them up via polling. The chain stops when `fetch_next_due`
   returns `nil` (queue empty, or only future-scheduled pickups remain).
-- **No "superseded" / fork.** User redirects mid-task → the assistant
+- **No fork-on-adjust.** User redirects mid-task → the assistant
   updates the task description or status naturally on its next turn.
-  No `predecessor_task_id`, no `superseded_by_task_id` — those scaffolding
-  columns are removed.
 
 ### Sidebar ordering
 
@@ -864,9 +831,9 @@ order (newest first), `recent` is `updated_at` DESC.
 
 Task-management tools (assistant calls these to shape its task list):
 
-Verb-based API (2026-04-24): each lifecycle transition is its own tool.
-The runtime owns the state machine — the model picks a verb, Police
-rejects invalid transitions with educational nudges.
+Each lifecycle transition is its own tool. The runtime owns the state
+machine — the model picks a verb, Police rejects invalid transitions
+with educational nudges.
 
 All lifecycle verbs take **`task_num: integer`** (per-session,
 user-visible `(N)` — see §Task lifecycle §Identity). Only `create_task`
@@ -874,14 +841,14 @@ returns a `task_num` rather than taking one.
 
 | Tool | Args | Effect |
 |------|------|--------|
-| `create_task` | `task_title`, `task_spec`, `task_type` (one_off\|periodic), `intvl_sec`, `language`, `attachments?` | Insert a task row (**status=pending**, time_to_pickup=now). Attachments (if any) are validated (must start with `workspace/` or `data/`) and `📎 <path>` lines are appended to the stored `task_spec`. **Returns `task_num` `(N)`** — the per-session integer the model will use for all subsequent verb calls. Creation does NOT start execution — the model must call `pickup_task(task_num: N)` next. |
-| `pickup_task` | `task_num` | Flip the target task → `ongoing`. Idempotent: already-ongoing returns ok without a write. Permissive: accepts `pending`, `paused`, `done`, `cancelled` and reopens them (the "resume / redo" path). Only failure is "no task (N) in this session." |
+| `create_task` | `task_title`, `task_spec`, `task_type` (one_off\|periodic), `intvl_sec`, `language`, `attachments?` | Insert a task row (**status=ongoing**, time_to_pickup=now) AND make it the current anchor. Attachments (if any) are validated (must start with `workspace/` or `data/`). **Returns `task_num` `(N)`** — the per-session integer the model will use for all subsequent verb calls. The model's next call can be an execution tool directly — no separate `pickup_task` needed. |
+| `pickup_task` | `task_num` | Flip the target task → `ongoing`. Reserved for RESUMING a task already in the list. Idempotent: already-ongoing returns ok without a write. Permissive: accepts `pending`, `paused`, `done`, `cancelled` and reopens them (the "resume / redo" path). Only failure is "no task (N) in this session." |
 | `complete_task` | `task_num`, `task_result`, `task_title?` | Close the task. One_off → `done`. Periodic → auto-reschedule branch: `status=pending`, `time_to_pickup=now+intvl_sec`, timer re-armed. Optional `task_title` refines the stored title at close (e.g. "Research X" → "Found 3 candidates"). Rejects terminal tasks (done / cancelled). |
 | `pause_task` | `task_num` | Flip the target task → `paused`. Only `ongoing` / `pending` are accepted. Terminal and already-paused tasks are rejected. |
 | `cancel_task` | `task_num`, `reason?` | Flip any non-terminal task → `cancelled`. `reason` is stored as `task_result` (defaults to "Cancelled by user"). |
 | `fetch_task` | `task_num` | Read-only, resumable view of a task. Returns: metadata (title, status, type, attachments, `task_result`), **archive** (verbatim pre-compaction turns stitched from `task_turn_archive`), **live** (current session.messages filtered by this task's tag), and **tool bodies** (tool_history entries tagged with this task, within retention). See §Task state continuity. Use when the Task-list block's summary isn't enough OR when the anchor named a task whose history isn't in the current LLM context. |
 
-## Active-task anchor (Phase 3, planned)
+## Active-task anchor
 
 The runtime — not the model — decides which task is the current focus
 of a chain. It communicates this decision to the model through a
@@ -902,16 +869,14 @@ message):
 - Call `fetch_task(task_num: N)` ONLY as a fallback: if you need a
   specific past decision or tool output that was compacted away
   (older turns no longer visible in your context).
+- Once the task is done, make sure to close it with
+  `complete_task(task_num: N, task_result: "<one-line outcome summary>")`.
 ```
 
-**Why non-leading wording matters.** An earlier draft said "If you
-don't see this task's details, call `fetch_task`" — that phrasing
-acted as encouragement: weaker models reflexively fetched on every
-chain because "if you don't see" is permissive. With recent activity
-already injected via `ToolHistory.inject/2`, fetching was redundant.
-The current wording anchors the default ("already present, act from
-it") and frames `fetch_task` as a compaction-recovery fallback, not a
-routine step.
+Wording is deliberately non-leading toward `fetch_task`: with recent
+activity already injected via `ToolHistory.inject/2`, fetching is
+typically redundant. The default anchors on "already present, act
+from it"; `fetch_task` is framed as a compaction-recovery fallback.
 
 Rules:
 
@@ -923,16 +888,15 @@ Rules:
   sources, in priority order:
   - Scheduler-triggered silent pickup (`{:task_due, task_id}`): anchor
     = that task.
-  - Chain-complete auto-resume (Phase 2 mid-chain splice path): anchor
-    = the task the chain-that-just-ended was working on.
+  - Chain-complete auto-resume (mid-chain splice path): anchor = the
+    task the chain-that-just-ended was working on.
   - User-initiated chain on a session with exactly one active
     (pending/ongoing) task: anchor = that task.
   - Otherwise (no active task OR ambiguous): anchor is OMITTED. Model
     operates in "free" mode — its next meaningful action will be
     `create_task` (or a pure chat reply).
-- **Anchor is MUTABLE during a chain** (2026-04-24 revision), driven
-  by verb tool calls — see §Anchor mutation and the `back_to_when_done`
-  back-stack below.
+- **Anchor is MUTABLE during a chain**, driven by verb tool calls —
+  see §Anchor mutation and the `back_to_when_done` back-stack below.
 - **Anchor mutation triggers a refreshed `## Active task` block at the
   next turn boundary**, so subsequent LLM calls within the same chain
   see the updated anchor value. Both the prompt-side block AND the
@@ -956,8 +920,7 @@ Transitions:
 
 - **`pickup_task(N)` succeeds.** Behavior:
   - If `N` was already ongoing (idempotent re-pickup): no back-ref
-    update — we don't want to overwrite the original back-ref on
-    repeated pickups.
+    update, so the original back-ref is preserved on repeated pickups.
   - If `N` is transitioning from a non-ongoing state (pending /
     paused / done / cancelled): read `ctx.anchor_task_num` (the
     anchor BEFORE this pickup). If it's a real task_num AND differs
@@ -1040,7 +1003,7 @@ is done) was considered and rejected: users expect periodics to fire
 on time, and the anchor is strong enough signal to scope the model
 without requiring it to orchestrate the handoff itself.
 
-## Per-message task tag (Phase 3, planned)
+## Per-message task tag
 
 Every **user** and **assistant** message persisted to
 `session.messages` during an anchored chain carries a `task_num`
@@ -1055,20 +1018,17 @@ their owning chain at save time.
   anchor block). If an anchor exists, the stored message carries its
   `task_num`. No anchor → untagged (pure chat).
 - **Assistant messages**: `session_chain_loop` persists with the
-  anchor's `task_num`. Both the final text turn AND the narration-
-  before-tool-call turns (Phase 2 fix).
+  anchor's `task_num` — both the final text turn AND any narration
+  turn that preceded a tool call.
 - **Tool history**: when `collect_tool_messages` snapshots a chain's
   tool messages at chain end, the chain's anchor `task_num` is
   recorded on the entry. **The input to `collect_tool_messages` MUST
   be `Enum.drop(messages, ctx.chain_start_idx)`** — not the full
-  `messages` list. `messages` at chain end contains the tool_history
-  re-injected by `ContextEngine.build_assistant_messages` from PRIOR
+  `messages` list. `messages` at chain end also contains tool_history
+  re-injected by `ContextEngine.build_assistant_messages` from earlier
   chains; slicing by `chain_start_idx` isolates this chain's own
-  tool_calls. Without the slice, successive chains stack prior
-  chains' tool_calls into their own saved entries — causing
-  duplicated re-injection in future context builds (entry 1 and the
-  bloated entry 2 both re-splice the same chain-1 tool_calls). See
-  the fix in `UserAgent.session_chain_loop`.
+  tool_calls so successive chains don't stack earlier chains'
+  tool_calls into their own saved entries.
 
 ### What the tag is used for
 
@@ -1096,7 +1056,7 @@ session summary (losing detail) or leak across tasks. Handler-side
 tagging (via the anchor at persist time) solves this without asking
 the model to annotate its own inputs.
 
-## Task state continuity across chains (Phase 3, planned)
+## Task state continuity across chains
 
 **Problem.** A task that spans many chains (e.g. nextcloud setup with
 30+ interleaved periodic pickups) eventually has its oldest activity
@@ -1188,13 +1148,12 @@ this response like a dense replay of its own work on this task —
 decisions, tool outputs, user refinements — regardless of how many
 unrelated chains interleaved in between.
 
-## Prompt teaching model for Phase 3 (planned)
+## Prompt teaching model
 
-The system prompt's `## Tasks` section must teach the model a clean
+The system prompt's `## Tasks` section teaches the model a clean
 hierarchy — terminology → identity → workflow → edge cases — in that
-order. The structure below is normative for the prompt rewrite that
-accompanies the Phase 3 implementation. Prompt copy will approximate
-but not necessarily match verbatim.
+order. The structure below is normative for the prompt copy;
+wording may approximate but structure must match.
 
 ### Level 1 — Terminology
 
@@ -1230,10 +1189,9 @@ but not necessarily match verbatim.
 - **Mid-chain user refinements** (multiple user messages since your
   last reply) are refinements of the SAME anchored task. Don't treat
   them as fresh asks. Let them redirect your next step.
-- **`complete_task` means DELIVERED.** If your reply asks the user
-  anything, do NOT call `complete_task` this chain — leave the task
-  `ongoing`. The anchor will be set back to this task on the next
-  chain once the user replies.
+- **Completion test.** Before ending your turn, ask: *"does the user
+  need to reply before the objective can be delivered?"* No → call
+  `complete_task`. Yes → leave it `ongoing`.
 
 ### Level 4 — Focus rule (when scanning own history)
 
@@ -1360,8 +1318,8 @@ their bare `📎 ` lines.
 - No DB mutation — `session.messages` is untouched. Marker lives purely
   in the ephemeral LLM message array for this turn.
 - Self-expiring — on the next turn, a different user message becomes
-  "last". The previously-marked message now renders bare in the LLM
-  input. No stale markers.
+  "last"; the earlier message renders bare in the LLM input. No
+  stale markers.
 - Deterministic signal for the model AND for the Police
   `check_fresh_attachments_read/2` gate: the set of "fresh attachments
   this turn" is exactly the `📎 ` paths in the last user message.
@@ -1386,22 +1344,22 @@ their bare `📎 ` lines.
 Prompt rule (in `system_prompt.ex :: assistant_base :: ## Attachments`):
 every `📎 [newly attached]`-prefixed line in the current turn's user
 message must be passed to `extract_content` as part of a fresh task
-cycle (`create_task` → `extract_content` → `update_task(done)`). Do
-not rely on prior-turn memory even when the path matches a file you
-read before — the user re-attached it for a reason.
+cycle (`create_task` → `extract_content` → `complete_task`). The path
+matching a file read before does not count — the user re-attached it
+for a reason.
 
 When a task involves a specific subset of the attachments listed on the
 user message, the model passes those `📎 workspace/...` paths in the
-`attachments` argument of `create_task` / `update_task`; never
-hand-embeds `📎 ` lines in `task_spec`. The BE normalises the stored
-spec from the validated `attachments` list.
+`attachments` argument of `create_task`; never hand-embeds `📎 ` lines
+in `task_spec`. The BE normalises the stored spec from the validated
+`attachments` list.
 
-**Follow-up discipline** — the primary path is prompt-enforced: for a
-follow-up question about a previously-attached file (bare `📎 `, no
-`[newly attached]` marker), the model answers conversationally from
-the prior task's `task_result` and its own earlier reply — **no
-`extract_content`, no `create_task`, no tool use at all**. Task wrapping
-is reserved for NEW work (new tool calls). The follow-up is just chat.
+**Follow-up discipline** — for a follow-up question about an already-
+attached file (bare `📎 `, no `[newly attached]` marker), the model
+answers conversationally from the prior task's `task_result` and its
+own earlier reply — **no `extract_content`, no `create_task`, no tool
+use at all**. Task wrapping is reserved for NEW work (new tool calls).
+The follow-up is just chat.
 
 **Runtime re-extract dedup** — belt-and-braces for when the model
 ignores the rule. `extract_content` at execute-time:
@@ -1453,11 +1411,9 @@ NOT summarise from the filename"), this closes the hallucination
 failure mode where a silent empty extraction was interpreted as
 license to fabricate content from the filename.
 
-Execution tools (unchanged from prior phases):
+Execution tools:
 `web_fetch`, `web_search`, `run_script`, `extract_content`, `read_file`,
 `write_file`, `calculator`, `spawn_task`, `get_date`.
-(`parse_document` was retired — `extract_content` absorbed its doc
-routing and added the OCR fallback for scanned PDFs.)
 
 Credential tools (per-user persistent credential store; see
 `Dmhai.Agent.Credentials`):
@@ -1567,8 +1523,7 @@ Three integration points:
    MUST carry its source DB-row `ts`. `ContextEngine.build_current_msg`
    and `ContextEngine.to_llm_msg` both preserve it; without that,
    `max_user_ts_in_messages/1` collapses the floor to 0 and the splice
-   re-appends the current user message as a duplicate — observed
-   2026-04-24 as "two identical `[USER]` blocks every turn".
+   re-appends the current user message as a duplicate.
 
 3. **Chain-complete hook (`handle_info({ref, _result}, …)`).** When
    the Task finishes, check `session.messages` for unanswered user
@@ -1580,19 +1535,17 @@ Three integration points:
 
 Consequences:
 
-- **User's messages are NEVER dropped.** 409 no longer exists.
+- **User's messages are NEVER dropped.** No 409 response.
 - **In-flight LLM / tool calls run to completion** — there is no
   hard-kill. The user's new message is seen on the NEXT LLM roundtrip,
   which is typically within 1–10 s. Token burn on the in-flight call
   is accepted as the cost of not having an interrupt path.
-- **Safety nets for runaway behaviour** remain the same: Police's
-  3-strike escalation, `max_assistant_turns_per_chain` cap. User-initiated
-  hard-stop is no longer supported; if a turn is genuinely stuck,
-  sending a new message ("stop what you're doing, cancel task X") is
-  the escape hatch — the model sees it on the next LLM call and is
-  expected to comply.
-- **`session_progress` zombie cleanup is obsolete.** It only existed
-  for the interrupt path; without interrupt, tools always run to
+- **Safety nets for runaway behaviour**: Police's 3-strike escalation,
+  `max_assistant_turns_per_chain` cap. No user-initiated hard-stop;
+  if a turn is genuinely stuck, sending a new message ("stop what
+  you're doing, cancel task X") is the escape hatch — the model sees
+  it on the next LLM call and is expected to comply.
+- **No `session_progress` zombie cleanup** — tools always run to
   completion and mark their own progress rows done.
 
 ### Boot scan for orphan recovery
@@ -1603,9 +1556,9 @@ role="user" (i.e. unanswered by the assistant). For each, it
 self-dispatches an `AssistantCommand` to resume work. This guarantees
 responsiveness across:
 
-- **GenServer crash + supervisor restart** — pending mid-chain
-  messages that were never processed because the old GenServer died
-  are picked up by the new one.
+- **GenServer crash + supervisor restart** — mid-chain messages that
+  were never processed because the GenServer went down are picked up
+  by the new instance.
 - **Idle-timeout shutdown + lazy respawn** — next `ensure_started` on
   a user whose last message was never answered picks up the work.
 
@@ -1644,12 +1597,12 @@ Dmhai.Agent.TaskRuntime.rehydrate/0 (called 500 ms after app start):
      cycle; if the BEAM died mid-cycle, the cycle is lost and the
      task must be re-armed to fire again. One_off tasks' ongoing
      state is NOT reverted — a one_off task can legitimately stay
-     `ongoing` across multiple chains (Phase 2 multi-chain: assistant
-     finished a chain asking for clarification, waiting for user). If
-     the chain was genuinely killed mid-work, the Phase 2 boot scan
-     detects unanswered user messages and auto-dispatches a fresh
-     resume chain; the task's `ongoing` status is correct for the
-     continuation. See §Mid-chain user message injection.
+     `ongoing` across multiple chains (the assistant finished a chain
+     asking for clarification, waiting for user). If the chain was
+     genuinely killed mid-work, the boot scan detects unanswered user
+     messages and auto-dispatches a fresh resume chain; the task's
+     `ongoing` status is correct for the continuation. See §Mid-chain
+     user message injection.
   2. Any pending periodic task with time_to_pickup IS NOT NULL →
      schedule_pickup (re-arm the timer).
   3. Any pending periodic task with time_to_pickup <= now → poke the
@@ -1675,28 +1628,28 @@ before it runs and returns a tool-result the model can read + correct on.
 Checks:
 
 1. **Task discipline** — every execution-class tool call must be
-   preceded in THIS chain by a `pickup_task` call. The verb-based API
-   (2026-04-24) makes `pickup_task` the single signal for "I am
-   actively working on a task right now" — creation alone
-   (`create_task`) leaves the task at `pending`, not `ongoing`, so the
-   gate can no longer be satisfied by a long-lived task left over from
-   an unrelated prior user ask.
+   preceded in THIS chain by either `create_task` (auto-picks up) or
+   `pickup_task`. Both are accepted signals for "I am actively
+   working on a task right now"; their presence in the in-chain
+   accumulator unlocks gated tools.
    - Gated tools: `run_script`, `web_fetch`, `web_search`,
-     `extract_content`, `read_file`, `write_file`, `spawn_task`.
+     `extract_content`, `read_file`, `write_file`, `spawn_task`,
+     `lookup_credential`, `save_credential`.
    - Bypass: task-management verbs themselves (`create_task`,
      `pickup_task`, `complete_task`, `pause_task`, `cancel_task`,
-     `fetch_task`), credential tools (`save_credential`,
-     `lookup_credential`), and read-only utilities (`datetime`,
-     `calculator`).
+     `fetch_task`) and trivial utilities (`datetime`, `calculator`).
+     Credentials are always fetched in service of a user objective,
+     so `lookup_credential` / `save_credential` sit under the task
+     wrapper like any other execution tool.
    - Bypass: silent chains (`ctx[:silent_turn_task_id]` set) — the
      scheduler already fired for a specific task and
      `run_assistant_silent` applies `mark_ongoing` at chain start, so
      the model doesn't need to re-pickup the same task. Rule #9
      governs cross-task misuse in that context instead.
-   - Rule: if `pickup_task` hasn't been called yet this chain, the call
-     is rejected with a nudge teaching the full lifecycle
-     (`create_task` (optional, for new objectives) → `pickup_task` →
-     execution tools → `complete_task`).
+   - Rule: if neither `create_task` nor `pickup_task` has been called
+     yet this chain, the call is rejected with a nudge teaching the
+     two valid entry paths (new objective → `create_task`; resuming
+     an existing row → `pickup_task`).
    - Order-in-batch is tolerated: if the model's batch is
      `[pickup_task, run_script]`, execute_tools processes them
      sequentially and `run_script`'s check sees the `pickup_task` call
@@ -1710,11 +1663,11 @@ Checks:
 2. **Tool-name validity** — the tool_call's `function.name` must match
    a tool registered in `Dmhai.Tools.Registry`. Guards against model
    output malformation where the model emits a garbled or hallucinated
-   name (we've seen devstral emit ~1000-char blobs — entire JSON
-   argument payloads concatenated with its own natural-language reply —
-   as the `name` field). Rejection message enumerates the valid tool
-   names so the model self-corrects on the next turn. Same silent-to-
-   user handling as task discipline (no progress row written).
+   name (e.g. ~1000-char blobs — entire JSON argument payloads
+   concatenated with natural-language reply — passed as the `name`
+   field). Rejection message enumerates the valid tool names so the
+   model self-corrects on the next turn. Same silent-to-user handling
+   as task discipline (no progress row written).
 
 3. **Text-turn sanity** — when the model ends a chain with a text
    response (i.e. no tool_calls), `Police.check_assistant_text/1`
@@ -1746,11 +1699,10 @@ Checks:
    chain's in-progress message list for `tool_call.function.name ==
    "extract_content"` entries and collecting the `path` arguments.
 
-5. **Path safety** — `check_tool_calls/3` still validates any `path`
+5. **Path safety** — `check_tool_calls/3` validates any `path`
    argument resolves inside `session_root` via `Dmhai.Util.Path.resolve/2`.
-   `run_script` still scans for `rm` / `rmdir` / `cp -r` that target paths
-   outside `workspace_dir`. (Retained from pre-#101; wiring invocation is
-   pending.)
+   `run_script` scans for `rm` / `rmdir` / `cp -r` that target paths
+   outside `workspace_dir`.
 
 6. **Duplicate-tool-call-in-chain** — `check_no_duplicate_tool_call/3`
    rejects a tool call whose `(name, significant_arg)` has already been
@@ -1792,13 +1744,12 @@ Checks:
    `create_task(task_type: "periodic", ...)` when the session already
    has an ACTIVE periodic task (any non-terminal state: `pending`,
    `ongoing`, or `paused`). Policy rationale: each periodic task fires
-   on its own 30-s (or other `intvl_sec`) timer, and if a model spawns
-   multiple periodics for a single user ask, silent turns compound —
-   we saw 4 periodic rows spawned from one "give me a joke every 30
-   sec" request with `nemotron-3-nano:30b-cloud`, producing 6+ pickups
-   per 30-s window instead of 1. Unlike rule #6 (keys on `task_title`),
-   this gate keys on `task_type` alone, so it catches the failure mode
-   regardless of whether the duplicate titles match.
+   on its own `intvl_sec` timer, and if a model spawns multiple
+   periodics for a single user ask, silent turns compound — multiple
+   pickups can land within one interval window instead of one. Unlike
+   rule #6 (keys on `task_title`), this gate keys on `task_type`
+   alone, so it catches the failure mode regardless of whether the
+   duplicate titles match.
 
    The nudge is USER-FACING: it tells the model exactly what to say
    back to the user, naming the existing task as `(N) <title>` and
@@ -1815,18 +1766,16 @@ Checks:
 ### Complementary prompt guidance (periodic task pickup)
 
 `run_assistant_silent`'s synthetic `[Task due: <id> — <title>]` message
-now explicitly forbids `create_task` during a pickup and spells out the
+explicitly forbids `create_task` during a pickup and spells out the
 workflow (run tools → `complete_task(task_id: <id>, task_result: ...)`
 → final text). It also tells the model its final text IS the task
 output (the joke, quote, status) with no meta-prefix like "Joke
 delivered:" or "Task complete" — matches the `## No bookkeeping in
-user-facing text` rule from the base prompt but re-states it in the
-task-pickup context where weaker models drift. A STAY IN LANE bullet
-reinforces the one-task-per-silent-turn scope (no create_task, no
-verb calls on other task_ids, no self-re-pickup loops) so rule #9
-below is the runtime safety net, not the first line of defense.
-Rule #8 is the runtime safety net for when this guidance doesn't
-stick.
+user-facing text` rule but re-states it in the task-pickup context
+where weaker models drift. A STAY IN LANE bullet reinforces the
+one-task-per-silent-turn scope (no create_task, no verb calls on
+other task_ids, no self-re-pickup loops). Rule #9 below is the
+runtime safety net for when this guidance doesn't stick.
 
 9. **Silent-turn scope lock** — `check_silent_turn_scope/3` reads
    `ctx[:silent_turn_task_id]` (set only by `run_assistant_silent` for
@@ -1846,27 +1795,16 @@ stick.
    want to cancel the current pickup; scope gate stays out of that
    path).
 
-   Motivating incident (2026-04-24, `ministral-3:14b-cloud`): a joke-
-   task pickup fired at 21:44:29. In a single silent turn, the model
-   ran `cancel_task` on the joke task, `create_task` for a new ASCII
-   periodic, and then multiple verb cycles on the new task —
-   effectively acting on a prior conversational-turn request that the
-   user had never confirmed. Rule #9 blocks both the cancellation of
-   the joke task (different task_id) and the create_task at their
-   first call. Tagged rejections `{:silent_turn_create_task, reason}`
-   and `{:silent_turn_other_task_verb, reason}` feed the existing
+   Tagged rejections `{:silent_turn_create_task, reason}` and
+   `{:silent_turn_other_task_verb, reason}` feed the existing
    `[[ISSUE:...]]` / `ctx.nudges` / 3-strike escalation plumbing.
 
-**Prompt-level counterpart to #7**: the Assistant prompt's new
+**Prompt-level counterpart to #7**: the Assistant prompt's
 `## Tool selection` section teaches the model WHICH tool matches WHICH
 question shape up-front — "if the user names a service with an HTTP
 API or CLI you can invoke (Ollama, GitHub, systemd, a local daemon),
 the answer is at the endpoint — use `run_script`, not `web_search`."
 Rule #7 is the runtime safety net for when that guidance doesn't stick.
-
-Removed:
-- Signal protocol rules (`step_signal` batching, `task_signal` ordering,
-  terminal-tool exclusivity) — protocol is gone, rules along with it.
 
 ### Hidden progress rows
 
@@ -1905,12 +1843,10 @@ whenever `Authorization` is present so the bucket scopes properly.
 
 ### Why per-user, not per-IP
 
-The original design was per-IP. That breaks for our target deployment
-(SME, up to ~50 users sharing an office NAT gateway → **single public
-IP**). Under per-IP keying, 50 legitimate users polling the chat API
-at 2 req/s collide in the same bucket and hit the general-tier cap in
-under a second — the 429 error users saw in chat was this exact race
-against the post-polling refactor.
+Per-IP keying breaks for the target deployment (SME, up to ~50 users
+sharing an office NAT gateway → **single public IP**). Under per-IP
+keying, 50 legitimate users polling the chat API at 2 req/s collide
+in the same bucket and hit the general-tier cap in under a second.
 
 Per-user keying isolates each user's bucket regardless of NAT. The
 pre-auth fallback (IP-keyed) retains flood protection for the login
@@ -1974,10 +1910,9 @@ All 50 users active simultaneously:
 
 - **Move off polling to a persistent channel (SSE / WebSocket)** when
   the user base exceeds the low-hundreds mark. Polling at 500 ms is
-  fine for 50-user SME deployments but scales at O(users) per second
-  indefinitely; a single long-lived SSE per user is O(1). This is a
-  larger architectural decision — see §Polling-based delivery for the
-  tradeoffs we weighed; revisit when we hit the scale that forces it.
+  fine for 50-user SME deployments but scales at O(users) per second;
+  a single long-lived SSE per user is O(1). See §Polling-based
+  delivery for the tradeoffs; revisit when scale forces it.
 - **Operator-facing tier overrides** in `AgentSettings`. Today the
   tier caps are module constants. If a specific deployment needs
   higher throughput (e.g. power users doing heavy scripting), a
@@ -2017,17 +1952,14 @@ compression.** Both `do_call_request/5` and `do_stream_request/6` in
 
 ### Why
 
-Observed in production (see `[LLM:finch] host=ollama.com` telemetry
-in system.log): Ollama Cloud's edge silently detaches backend state
-between two successive requests on the same keepalive socket. The
-second request sends its bytes, the server never emits a response,
-no FIN / RST / TLS alert is observed on the client socket, and Finch
-blocks forever in `recv` (previously with
-`receive_timeout: :infinity` — a 6-plus-minute mystery hang that
-eventually cleared when some unrelated timeout elsewhere broke the
-socket). The failure mode is specific to reused connections: first
-requests on a freshly-connected socket always succeeded, only
-subsequent reuses were at risk.
+Ollama Cloud's edge silently detaches backend state between two
+successive requests on the same keepalive socket. The second request
+sends its bytes, the server never emits a response, no FIN / RST /
+TLS alert is observed on the client socket, and Finch blocks
+indefinitely in `recv` — a multi-minute hang with no log signal. The
+failure mode is specific to reused connections: first requests on a
+freshly-connected socket always succeed, only subsequent reuses are
+at risk. The fix is to close the connection after each Ollama call.
 
 ### Tradeoffs
 
@@ -2048,12 +1980,12 @@ error out rather than blocking forever.
 `Mint.TransportError` / any error with `reason` in `[:timeout,
 :closed, :econnrefused, :econnreset, :nxdomain]` is mapped to
 `{:error, :server_error}` inside `do_call_request/5` and
-`do_stream_request/6`. This routes the failure into the existing
+`do_stream_request/6`. This routes the failure into the
 `do_cloud_call/6` / `do_cloud_stream/7` retry loop — 3 attempts on
 the same account with 2 s delay, then rotation to the next account.
-Without this, a raw `%Req.TransportError{reason: :timeout}` would
-propagate up to the session loop and be persisted verbatim as the
-user-facing assistant message (`"LLM error: %Req.TransportError{…}"`).
+Without the mapping, a raw `%Req.TransportError{reason: :timeout}`
+would propagate up to the session loop and be persisted verbatim as
+the user-facing assistant message.
 
 ### Other outbound HTTP is unaffected
 
@@ -2081,7 +2013,7 @@ One `data/` and one `workspace/` per session — no per-task subdir, no per-orig
 
 **`origin` and `pipeline` task columns:**
 
-Both are kept on the tasks row for bookkeeping but are effectively always `"assistant"` now — Confidant sessions don't create tasks. The filesystem layout no longer splits by origin; all tasks in a session share `<session_root>/workspace/`. Columns are retained for future polymorphic use.
+Both are kept on the tasks row for bookkeeping but are effectively always `"assistant"` — Confidant sessions don't create tasks. All tasks in a session share `<session_root>/workspace/`. Columns are retained for future polymorphic use.
 
 ### `Dmhai.Constants` Helpers
 
@@ -2156,9 +2088,9 @@ At attach time (user drops file):
         read. This keeps the architecture consistent: no attachment
         type is auto-injected into the LLM context, every read is a
         visible `extract_content` tool call.
-      Multipart fields: file, sessionId. (No taskId — the workspace is
-      per-session since Phase 2 #91, so no task-level namespacing is
-      needed.) Max workspace attachment size: 200 MB.
+      Multipart fields: file, sessionId. (The workspace is per-session,
+      so no task-level namespacing is needed.) Max workspace attachment
+      size: 200 MB.
 
 At send time:
   (3) POST /agent/chat                 ← fires with attachmentNames[] in body.
@@ -2178,107 +2110,6 @@ BE /agent/chat entry:
 
   (c) Session turn proceeds with stored history (now containing the paths).
 ```
-
-**Obsolete & removed (Phase 2)**:
-
-Endpoints / API:
-- `GET /reserve-task-id` endpoint — nothing needs a task_id at upload time.
-- `/upload-task-attachment` → renamed `/upload-session-attachment`.
-- `taskId` field in the upload multipart body.
-- `taskId` field in the `/agent/chat` body.
-
-UserAgent internals:
-- `Dmhai.Agent.Command` single struct → split into `AssistantCommand` and
-  `ConfidantCommand` (see §Request Lifecycle).
-- `UserAgent.run_command/2` — the shared dispatcher that inspected mode
-  internally. Mode branch now lives in the HTTP handler; UserAgent receives
-  two distinct dispatch message types.
-- `Command.task_id` struct field.
-- `build_attachment_section`, `wait_for_attachments`, `save_inline_images`
-  inside `handle_handoff_to_worker` — replaced by the single
-  `UserAgentMessages.inject_attachment_paths/3` step at `/agent/chat` entry.
-- `save_inline_images` fallback (the inline-base64-as-workspace-fallback path).
-- English-only `[Attached files — use extract_content on these paths as
-  needed]` header that inject_attachment_paths used to prepend — replaced
-  with the language-neutral `📎` prefix on each path line.
-
-Tool names:
-- `handoff_to_worker` → renamed `create_task` (no separate worker exists
-  post-#89; the Assistant itself drives the loop).
-
-Classifier inputs:
-- Inline `images[]` for the Assistant classifier — classifier is now a
-  text-only router. Attached paths live in the stored user message and the
-  Assistant Loop processes pixels via `extract_content`. Confidant mode
-  continues to use inline images (separate path, unchanged).
-
-Runtime (#96 — event-driven rewire):
-- The per-task `poller_loop/3` and all its helpers (`runner_dead?`,
-  `safe_shutdown_poller`, `synthesize_blocked` from the poller path).
-- `Tasks.advance_cursor/2` — unused after poller removal.
-- `tasks.last_reported_status_id` column — only the poller read/wrote it.
-- `task_poll_min_interval_sec`, `task_poll_samples_per_cycle`,
-  `task_progress_summary_*` settings (except `*_min_interval_sec` which
-  remains to rate-limit the on-demand summariser).
-- `:task_poll_override_ms` test-env config.
-- `poller_task` field in TaskRuntime's per-task state record.
-- `broadcast_progress/2` stub in TaskRuntime.
-- Poller-driven `maybe_announce_progress/1` — obsoleted with the summariser
-  changes in #90 and the poller removal in #96.
-
-Conversational session rearchitecture (#101 — landed):
-- `Dmhai.Agent.AssistantLoop` module + `AssistantLoopSupervisor` — the Loop
-  is now inline turn-by-turn in `UserAgent.run_assistant`.
-- Plan/exec/signal protocol: `Dmhai.Tools.Plan`, `Dmhai.Tools.TaskSignal`,
-  `Dmhai.Tools.StepSignal` — deleted.
-- `Dmhai.Agent.Prompts` plan-phase / execution-phase prompt builders —
-  deleted. Session loop uses one unified system prompt.
-- Police signal-protocol rules: batching checks, terminal-tool ordering,
-  `step_signal` vs `task_signal` discipline — gone. Path safety retained.
-- `tasks.predecessor_task_id`, `tasks.superseded_by_task_id` columns and
-  the `'superseded'` status value — fork-on-adjust scaffolding; removed.
-- `tasks.current_worker_id`, `last_summarized_status_id`,
-  `last_summarized_at`, `last_run_started_at`, `last_run_completed_at`,
-  `pipeline`, `origin` columns — derivable from `session_progress` or
-  redundant in the one-session model.
-- `next_run_at` → renamed `time_to_pickup` (more accurate; covers the
-  one-off case too).
-- `'one_off'` stays as the task_type value (consistency with existing code).
-- `pause_task`, `resume_task`, `set_periodic_for_task`, `read_task_status`
-  tools — collapsed into `update_task(task_id, status|task_spec|intvl_sec)`
-  and direct assistant replies.
-- `TaskRuntime`'s runner tracking — now just the periodic-pickup scheduler.
-
-Pre-turn language detection (#102b):
-- `UserAgent.detect_content_language/1` + `parse_language_code/1` —
-  vestigial from the old classifier/loop split. The conversational
-  assistant model handles language detection inline at zero additional
-  cost. Deleted.
-- `AgentSettings.language_detector_model/0` + the `languageDetectorModel`
-  admin setting — no consumer after detection removal. Deleted.
-- `SystemPrompt` `language` parameter + `language_hint/1` helper — the
-  system prompt no longer receives or injects a language directive.
-- `ContextEngine.build_assistant_messages` `:language` opt — removed.
-
-Phase-3 cleanup (#94 — in progress):
-- Task-list block restructured to hierarchical Markdown with `base_level`
-  parameterisation (see §Context assembly).
-- `create_task` / `update_task` gain explicit `attachments` argument;
-  `fetch_task` tool added. The model no longer hand-embeds `📎` lines
-  in `task_spec`; the BE normalises the stored spec from the validated
-  `attachments` list.
-- `Dmhai.Agent.MasterBuffer` module + `master_buffer` DB table — legacy
-  notification bus; unused after #90/#101. Removed.
-- `UserAgent.cancel_session_workers/2` → renamed `cancel_session_tasks/2`
-  (no workers exist any more).
-- `UserAgentMessages.archive_by_task_id/3` — obsolete after #101's
-  single-session-no-parallel-cycles model. Removed.
-- Obsolete i18n keys removed: `worker_exited_no_signal`, `worker_orphaned`,
-  `worker_refused_signal`, `max_iter_reached`, `loop_crashed`,
-  `loop_max_restarts_blocked`, `unknown_terminal_status`,
-  `plan_submission_failed`, `step_blocked_exhausted`,
-  `exec_errors_after_warning`, `policy_violation`, `blocked_label`,
-  `status_blocked`, `notify_blocked`, `task_spec_fallback`.
 
 When the session loop decides to read an attachment it calls
 `extract_content(path: "workspace/<name>")`:
@@ -2316,9 +2147,7 @@ Rules:
 
 `run_script` follows the text convention: on success it returns the raw
 stdout string; on non-zero exit or timeout it returns `{:error, "<reason>"}`
-(handled separately, not through `format_tool_result`). The previous
-`%{output, workdir}` map wrapping is removed — `workdir` is already in
-the session ctx and isn't useful to the model.
+(handled separately, not through `format_tool_result`).
 
 ---
 
@@ -2433,9 +2262,9 @@ Models ending in `:cloud` / `-cloud` auto-route to cloud pool. Cloud keys manage
 | `toolResultRetentionBytes` | 120_000 | Byte ceiling for retained tool messages (oldest-first eviction on overflow) |
 | `taskArchiveRowCap` | 60 | Per-task archive sliding-window row cap (~30 user+assistant pairs). Oldest dropped on append. |
 | `taskArchiveByteCap` | 120_000 | Per-task archive byte budget summed over `content`. Oldest dropped until under cap. |
-| `rateLimitThrottleSecs` | 60 | Default throttle for an LLM account that hit 429 with no `Retry-After`. Was 3600 s before — caused burst stress-tests to lock the whole account pool for an hour. |
+| `rateLimitThrottleSecs` | 60 | Default throttle for an LLM account that hit 429 with no `Retry-After`. Kept low so a burst doesn't lock the whole account pool. |
 | `quotaExhaustedThrottleHours` | 168 | Throttle for an LLM account that reports weekly quota exhausted (Ollama cloud's weekly reset). |
-| `llmNumPredictAssistant` | 16_384 | Output-token ceiling (`num_predict`) on assistant-mode `LLM.stream` calls. A cap, not a reservation — unused headroom has no cost. Prevents the truncation loop observed 2026-04-24 (15-line bash scripts cut mid-string → `syntax error` → model retries same malformed call). |
+| `llmNumPredictAssistant` | 16_384 | Output-token ceiling (`num_predict`) on assistant-mode `LLM.stream` calls. A cap, not a reservation — unused headroom has no cost. Set high enough that long tool_call scripts don't get truncated mid-string. |
 | `execErrorStreakNudge` | 3 | Consecutive exec-tool failures before a nudge is appended to the model's context |
 
 ---
@@ -2474,7 +2303,7 @@ sessions
   id TEXT PK          ← timestamp-based (Date.now().toString())
   user_id TEXT
   name TEXT
-  model TEXT          ← legacy (admin settings drive actual model choice)
+  model TEXT          ← unused; admin settings drive actual model choice
   messages TEXT       ← JSON array of {role, content, thinking?, ts, images?, kind?, task_id?}
   context TEXT        ← JSON {"summary": ..., "summary_up_to_index": N}
   mode TEXT           ← 'confidant' | 'assistant'
@@ -2517,20 +2346,18 @@ session_progress         ← per-activity progress rows (UI + audit log)
   session_id / user_id / task_id
   kind TEXT           ← 'tool' | 'thinking' | 'summary'
   status TEXT         ← 'pending' | 'done' (tool rows only; flipped when the
-                         tool call returns — including on tool error to
-                         keep the FE's upsert-by-id dedup working; pre-
-                         Phase-2 `delete` path retired)
+                         tool call returns, including on tool error, so the
+                         FE's upsert-by-id dedup works in both paths)
   label TEXT          ← truncated to 4k chars; the FE-renderable activity line
   ts INTEGER
 
-task_turn_archive       ← per-task raw message archive (Phase 3, planned).
-                          Hooked into ContextEngine.compact! and
-                          ToolHistory eviction. Preserves verbatim
-                          turns for tasks that span many chains, so
-                          fetch_task(task_num) can replay decisions
-                          exactly even after master session summaries
-                          compact the session.messages view.
-                          See §Task state continuity across chains.
+task_turn_archive       ← per-task raw message archive. Hooked into
+                          ContextEngine.compact! and ToolHistory
+                          eviction. Preserves verbatim turns for tasks
+                          that span many chains, so fetch_task(task_num)
+                          can replay decisions exactly even after master
+                          session summaries compact the session.messages
+                          view. See §Task state continuity across chains.
   id INTEGER PK AUTOINCREMENT
   task_id TEXT        ← FK to tasks.task_id (NOT task_num — this table
                          outlives per-session number allocation and uses
@@ -2544,17 +2371,7 @@ task_turn_archive       ← per-task raw message archive (Phase 3, planned).
   archived_at INT    ← unix ms; when compaction wrote this row
   INDEX (task_id, original_ts)
 
-master_buffer         ← notification bus (polled by frontend)
-  id INTEGER PK AUTOINCREMENT
-  session_id / user_id
-  content TEXT        ← progress text (non-empty) | empty string (sentinel)
-  summary TEXT        ← short notification text ("✓ Daily report", "🔴 X — blocked")
-  consumed INTEGER    ← always 1; legacy column
-  worker_id TEXT      ← legacy, unused post-refactor
-  created_at
-
 session_token_stats   — per-session master rx/tx token counters
-worker_token_stats    — per-worker rx/tx token counters (PK session+worker)
 image_descriptions    — (session_id, file_id, name, description, created_at)
 video_descriptions    — same shape
 user_fact_counts      — profile extractor keyword tracker
@@ -2562,7 +2379,7 @@ settings              — admin settings KV store
 blocked_domains       — scanner/abuse domain blocklist
 ```
 
-The DB schema is consolidated — no legacy `ALTER TABLE` migration chain. Wipe `~/.dmhai/` to re-init from scratch after schema changes. The `master_buffer.worker_id` column is left dormant (unused since the master/worker split was collapsed).
+The DB schema is consolidated — no `ALTER TABLE` migration chain. Wipe `~/.dmhai/` to re-init from scratch after schema changes.
 
 ---
 
@@ -2618,9 +2435,8 @@ one non-terminal task; `15 000 ms` when idle. Backoff is cooperative —
 the same call is triggered opportunistically when `session_progress`
 deltas arrive (tasks may have transitioned).
 
-No push channel — the BE does not notify the FE of task changes. This
-matches #90's FE-driven progress polling; we keep FE the pull side
-everywhere.
+No push channel — the BE does not notify the FE of task changes. The
+FE is the pull side everywhere.
 
 ---
 
@@ -2662,7 +2478,7 @@ Coverage:
 
 | Area | File |
 |------|------|
-| Session turn loop (tool-call roundtrips, text termination, max-rounds cap) | `itgr_session_loop.exs` (#101; replaces `itgr_worker_loop.exs`) |
+| Session turn loop (tool-call roundtrips, text termination, max-rounds cap) | `itgr_session_loop.exs` |
 | Task runtime (Tasks CRUD, periodic scheduler, mark_done auto-reschedule) | `itgr_task_runtime.exs` |
 | Context compaction (session-level) | `itgr_compaction.exs` |
 | Confidant pipeline | `itgr_confidant_flow.exs` |

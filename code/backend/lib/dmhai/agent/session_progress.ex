@@ -86,7 +86,7 @@ defmodule Dmhai.Agent.SessionProgress do
     do: append(ctx, "tool", label, status: "pending")
 
   @doc """
-  Flip a tool row (previously appended with status='pending') to status='done'.
+  Flip a tool row (appended with status='pending') to status='done'.
   The row's original `ts` is preserved — it represents chronological position
   in the chat timeline. The flip is an in-place mutation, not a new row.
   """

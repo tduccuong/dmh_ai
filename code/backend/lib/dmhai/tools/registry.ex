@@ -9,15 +9,13 @@ defmodule Dmhai.Tools.Registry do
   """
 
   @tools [
-    # Task-management verbs. Verb-based API (2026-04-24): the old
-    # multi-purpose `update_task` was retired in favour of one verb
-    # per lifecycle transition. The model picks a verb; the runtime
-    # owns the state machine.
-    Dmhai.Tools.CreateTask,     # —        → pending
-    Dmhai.Tools.PickupTask,     # any ≠ ongoing → ongoing
+    # Task-management verbs: one verb per lifecycle transition. The
+    # model picks a verb; the runtime owns the state machine.
+    Dmhai.Tools.CreateTask,     # —               → ongoing
+    Dmhai.Tools.PickupTask,     # any ≠ ongoing   → ongoing
     Dmhai.Tools.CompleteTask,   # ongoing/pending → done (one_off) or reschedule (periodic)
     Dmhai.Tools.PauseTask,      # ongoing/pending → paused
-    Dmhai.Tools.CancelTask,     # non-terminal → cancelled
+    Dmhai.Tools.CancelTask,     # non-terminal    → cancelled
     Dmhai.Tools.FetchTask,      # read-only
     # Execution tools.
     Dmhai.Tools.WebSearch,

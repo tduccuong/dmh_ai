@@ -11,10 +11,9 @@ defmodule Dmhai.Tools.PickupTask do
   write. Permissive: accepts `pending`, `paused`, `done`, `cancelled` and
   reopens them. The only failure is "no task (N) in this session."
 
-  Phase 3: takes `task_num: integer` (the per-session `(N)` the user and
-  model see). BE resolves to the internal cryptic `task_id` via
-  `Tasks.resolve_num/2` before any DB mutation. See architecture.md
-  §Task lifecycle §Identity.
+  Takes `task_num: integer` (the per-session `(N)` the user and model
+  see). BE resolves to the internal `task_id` via `Tasks.resolve_num/2`
+  before any DB mutation. See architecture.md §Task lifecycle §Identity.
   """
 
   @behaviour Dmhai.Tools.Behaviour

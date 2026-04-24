@@ -18,8 +18,8 @@ defmodule Dmhai.Tools.CompleteTask do
   concrete outcome-focused summary ("Found 3 candidates with quote
   comparison").
 
-  Phase 3: takes `task_num: integer`. BE resolves via
-  `Tasks.resolve_num/2`. See architecture.md §Task lifecycle §Identity.
+  Takes `task_num: integer`. BE resolves via `Tasks.resolve_num/2`.
+  See architecture.md §Task lifecycle §Identity.
   """
 
   @behaviour Dmhai.Tools.Behaviour

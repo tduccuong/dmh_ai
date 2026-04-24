@@ -9,17 +9,10 @@ defmodule Dmhai.Tools.CreateTask do
   start work on it:
 
       create_task → <execution tools> → complete_task
-                   ↑
-                   auto-picks up: status jumps straight to `ongoing`,
-                   and the runtime anchor flips to the new task_num.
-                   No separate `pickup_task` call needed for brand-new
-                   tasks. `pickup_task` remains the verb for RESUMING
-                   a task that was previously done / paused / cancelled.
 
-  The collapse — previously `create_task` (→ pending) + `pickup_task`
-  (→ ongoing) as two LLM roundtrips — was the single biggest cost per
-  fresh chain (~8 k input tokens of framework re-shipped). Folding
-  them saves one full LLM call on every new-user-ask opener.
+  The task is inserted at status `ongoing` and becomes the current
+  anchor; the model's next call can be an execution tool directly.
+  `pickup_task` is reserved for resuming a task already in the list.
 
   Returns a map with `task_num` (the per-session `(N)` the model uses
   for subsequent verbs).
@@ -72,37 +65,27 @@ defmodule Dmhai.Tools.CreateTask do
           task_title:  cleaned_title,
           task_spec:   cleaned_spec,
           attachments: attachments,
-          # Phase 3 lever 2b: auto-pickup on create. The task starts
-          # at `ongoing` — the model can run execution tools
-          # immediately without a separate `pickup_task` call.
-          # `pickup_task` is now exclusively for RESUMING previously
-          # done/paused/cancelled tasks. See architecture.md §Task
-          # lifecycle and `maybe_mutate_anchor/4` in `user_agent.ex`
-          # for the matching anchor-advance behaviour.
+          # Auto-pickup on create: the task starts at `ongoing` so the
+          # model can run execution tools immediately. See
+          # `maybe_mutate_anchor/4` in `user_agent.ex` for the matching
+          # anchor advance.
           task_status: "ongoing",
           language:   normalise_lang(args["language"])
         )
 
-      # Phase 3: look up the per-session `task_num` that Tasks.insert just
-      # allocated and return THAT to the model — `task_num` is the only
-      # identifier surfaced to model/user. `task_id` is still included
-      # for tool-chain introspection but prompt+UI only show `(N)`.
+      # The model/user/UI only see `task_num`; `task_id` is the
+      # BE-internal FK. See architecture.md §Task lifecycle §Identity.
       task = Tasks.get(task_id)
       task_num = task && task.task_num
 
       Logger.info("[CreateTask] task=(#{inspect(task_num)})[#{task_id}] type=#{task_type} intvl=#{intvl_sec} attachments=#{length(attachments)}")
 
-      # Phase 3 lever 2b: return a SELF-DESCRIBING result. Weak models
-      # anchor far more on the immediate tool result than on the system
-      # prompt (which is far away in the context). `status: "ongoing"`
-      # + `do_not` is deliberately PROHIBITIVE ONLY — earlier versions
-      # also carried a positive hint ("call run_script / web_search
-      # directly") which over-prescribed the path: 14 B-class models
-      # took it as "next call MUST be run_script" and skipped natural
-      # intermediate tools (lookup_credential, read_file, extract_content),
-      # folding credential lookup INTO the bash script as if it were a
-      # shell command. Leaving the positive direction unstated lets the
-      # model pick its next tool the natural way.
+      # The returned map is self-describing. Weak models anchor on the
+      # immediate tool result more than on the distant system prompt,
+      # so `status: "ongoing"` + a prohibitive `do_not` repeats the
+      # anti-pickup instruction at the point of decision. Positive
+      # direction is left unstated so the model picks the natural
+      # next tool (lookup_credential, read_file, run_script, ...).
       {:ok,
        %{
          task_num: task_num,
