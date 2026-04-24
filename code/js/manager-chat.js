@@ -951,7 +951,12 @@ UIManager.renderAttachments = function() {
 UIManager.updateSendBtn = function() {
     var hasText = document.getElementById('message-input').value.trim() !== '';
     var hasAttachment = this.attachedFiles.length > 0;
-    document.getElementById('send-btn').disabled = this.isStreaming || this._pendingVideo > 0 || this._pendingDesc > 0 || (!hasText && !hasAttachment);
+    // Phase 2: send is NOT disabled while `isStreaming` is true — users
+    // can always send mid-chain. The BE splices the new message into
+    // the current chain on the next LLM roundtrip. `_pendingVideo` /
+    // `_pendingDesc` still gate sending because those are the FE
+    // waiting on upload / description, not an assistant chain.
+    document.getElementById('send-btn').disabled = this._pendingVideo > 0 || this._pendingDesc > 0 || (!hasText && !hasAttachment);
 };
 
 // No-op retained for call-site compatibility (visibility/beforeunload hooks).

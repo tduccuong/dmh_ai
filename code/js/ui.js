@@ -362,7 +362,11 @@ function buildMsgHeaderEl(msg, session) {
         el.appendChild(document.createTextNode(prefix + displayName + ':'));
         return el;
     }
-    // Assistant: [time] <icon> RoleName:
+    // Assistant: [time] <icon> RoleName[ — on task (N)]:
+    // Phase 3: when a message carries a `task_num` tag, suffix the
+    // header with `— on task (N)` so the user (and the model, when
+    // scanning its own history) sees at a glance which task a given
+    // reply belongs to. i18n key `onTask` for the "on task" label.
     if (prefix) el.appendChild(document.createTextNode(prefix));
     var mode = (session && session.mode) || 'confidant';
     var iconEl = document.createElement('span');
@@ -370,7 +374,15 @@ function buildMsgHeaderEl(msg, session) {
     iconEl.innerHTML = (typeof MODE_ICONS !== 'undefined' && MODE_ICONS[mode]) || '';
     el.appendChild(iconEl);
     var modeLabel = mode === 'assistant' ? 'Assistant' : 'Confidant';
-    el.appendChild(document.createTextNode('\u00a0' + modeLabel + ':'));
+    el.appendChild(document.createTextNode('\u00a0' + modeLabel));
+    if (typeof msg.task_num === 'number' && msg.task_num > 0) {
+        var onTaskLabel = (typeof t === 'function') ? t('onTask') : 'on task';
+        var tagEl = document.createElement('span');
+        tagEl.className = 'msg-header-task-tag';
+        tagEl.textContent = ' \u2014 ' + onTaskLabel + ' (' + msg.task_num + ')';
+        el.appendChild(tagEl);
+    }
+    el.appendChild(document.createTextNode(':'));
     return el;
 }
 

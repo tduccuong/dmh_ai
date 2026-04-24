@@ -66,10 +66,10 @@ defmodule Itgr.TaskRuntime do
   #
   # Before the fix, a silent-turn pickup for a periodic task started with
   # the task in `pending` state (that's how the prior pickup's mark_done
-  # left it). The turn relied on the model calling `update_task(status:
-  # "done")` to advance it. When the model skipped that (nemotron-3-nano
-  # routinely did), `auto_close_ongoing_tasks` at end of the text round
-  # filtered for `status=="ongoing"` and found nothing → no mark_done →
+  # left it). The turn relied on the model calling `complete_task(...)`
+  # to advance it. When the model skipped that (nemotron-3-nano routinely
+  # did), `auto_close_ongoing_tasks` at end of the text round filtered
+  # for `status=="ongoing"` and found nothing → no mark_done →
   # `time_to_pickup` stayed stale → `maybe_trigger_next_due` re-fired
   # immediately → tight loop of silent turns burning tokens.
   #

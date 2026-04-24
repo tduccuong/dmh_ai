@@ -51,6 +51,17 @@ const SessionStore = {
         if (!res.ok) return { tasks: [] };
         return res.json();
     },
+    // Cancel a single task — fires from the sidebar's stop button on an
+    // ongoing row. BE flips the task to `cancelled` and cancels any
+    // armed periodic pickup timer. The session-level interrupt path
+    // was removed in Phase 2; users redirect the assistant by sending a
+    // new chat message instead.
+    cancelTask: async function(taskId) {
+        const res = await apiFetch('/tasks/' + encodeURIComponent(taskId) + '/cancel', {
+            method: 'POST'
+        });
+        return res.ok;
+    },
     updateSession: async function(session) {
         await apiFetch(this.BASE + '/' + session.id, {
             method: 'PUT',

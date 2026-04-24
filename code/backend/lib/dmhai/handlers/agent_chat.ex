@@ -86,6 +86,17 @@ defmodule Dmhai.Handlers.AgentChat do
     content = String.trim(d["content"] || "")
     files   = parse_files(d["files"])
 
+    # FE-supplied idempotency key. Persisted alongside the message so a
+    # lost POST response + FE retry (or a BE crash + FE poll-based
+    # recovery) resolves to the same canonical row instead of creating
+    # a duplicate. See architecture.md §Mid-chain user message
+    # injection. Optional — legacy clients and non-FE POSTs may omit it.
+    client_msg_id =
+      case d["client_msg_id"] do
+        s when is_binary(s) and byte_size(s) > 0 and byte_size(s) <= 128 -> s
+        _ -> nil
+      end
+
     attachment_names =
       d["attachmentNames"]
       |> parse_string_list()
@@ -120,8 +131,21 @@ defmodule Dmhai.Handlers.AgentChat do
           if content == "", do: paths, else: content <> "\n\n" <> paths
         end
 
-      case Dmhai.Agent.UserAgentMessages.append(session_id, user.id,
-              %{role: "user", content: stored_content}) do
+      message = %{role: "user", content: stored_content}
+      message = if client_msg_id, do: Map.put(message, :client_msg_id, client_msg_id), else: message
+
+      # Phase 3: tag the incoming user message with the current anchor's
+      # task_num (if any). Persists alongside role/content/ts so the
+      # per-task archive can partition correctly when compaction fires.
+      # No anchor → no tag (pure-chat / pre-task-creation messages). See
+      # architecture.md §Per-message task tag.
+      message =
+        case Dmhai.Agent.Anchor.task_num_for(session_id) do
+          n when is_integer(n) -> Map.put(message, :task_num, n)
+          _                     -> message
+        end
+
+      case Dmhai.Agent.UserAgentMessages.append(session_id, user.id, message) do
         {:ok, user_ts} ->
           fire_and_forget(conn, user_ts, fn ->
             Http.dispatch_assistant(user.id, session_id, content, self(),
@@ -175,10 +199,24 @@ defmodule Dmhai.Handlers.AgentChat do
   # Task.Supervisor-supervised process; its output flows to DB tables
   # (session.messages, session_progress, sessions.stream_buffer) and the
   # FE polls `/sessions/:id/poll` for updates. No chunked response here.
+  #
+  # For Assistant mode, busy is NOT an error: the user message has
+  # already been persisted to `session.messages` before we get here,
+  # so it's queued by definition. The UserAgent's chain-complete hook
+  # (and the mid-chain splice inside `session_chain_loop`) picks it up.
+  # See architecture.md §Mid-chain user message injection.
+  #
+  # For Confidant mode, there is no chain to fold into — the pipeline is
+  # a one-shot streaming reply. Busy stays a 409 so the FE surfaces
+  # "please wait" to the user (matches pre-Phase-2 behaviour for
+  # Confidant specifically).
   defp fire_and_forget(conn, user_ts, dispatch_fun) do
     case dispatch_fun.() do
       :ok ->
         json(conn, 202, %{user_ts: user_ts})
+
+      {:error, :queued} ->
+        json(conn, 202, %{user_ts: user_ts, queued: true})
 
       {:error, :busy} ->
         json(conn, 409, %{error: "Agent is busy, please wait", user_ts: user_ts})
@@ -241,22 +279,6 @@ defmodule Dmhai.Handlers.AgentChat do
     end)
   end
   defp parse_files(_), do: []
-
-  @doc """
-  POST /agent/interrupt — user-initiated stop of the current turn.
-
-  Asks the user's UserAgent to kill the in-flight task (brutally,
-  cancelling any pending LLM / fetch calls), marks any ongoing task
-  rows for the affected session as cancelled with task_result
-  "Interrupted by user", and clears stream_buffer so the FE sees a
-  clean final state on the next poll.
-
-  Safe no-op when the user has no active turn. Always returns 202.
-  """
-  def post_interrupt(conn, user) do
-    Dmhai.Agent.UserAgent.interrupt(user.id)
-    json(conn, 202, %{ok: true})
-  end
 
   defp json(conn, status, data) do
     conn

@@ -99,7 +99,7 @@ defmodule Itgr.ContextToolIntegration do
   test "present with filename + task_num when tool_history has an extract_content entry" do
     sid = uid(); uid_ = uid()
 
-    # One retained turn: model called extract_content + update_task for the PDF.
+    # One retained turn: model called extract_content + complete_task for the PDF.
     path = "workspace/HopDongCTV_CuongTruong_Adigitrans.pdf"
     task_id = "tsk_" <> uid()
 
@@ -118,8 +118,8 @@ defmodule Itgr.ContextToolIntegration do
           %{"role" => "assistant", "content" => "", "tool_calls" => [
             %{"id" => "c2",
               "function" => %{
-                "name" => "update_task",
-                "arguments" => %{"task_id" => task_id, "status" => "done"}
+                "name" => "complete_task",
+                "arguments" => %{"task_id" => task_id, "task_result" => "done"}
               }}
           ]},
           %{"role" => "tool", "content" => "{\"ok\":true}", "tool_call_id" => "c2"}

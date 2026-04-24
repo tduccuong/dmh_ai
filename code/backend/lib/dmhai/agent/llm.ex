@@ -51,9 +51,10 @@ defmodule Dmhai.Agent.LLM do
     if stub = Application.get_env(:dmhai, :__llm_stream_stub__) do
       stub.(model_str, messages, reply_pid, opts)
     else
-      tools     = Keyword.get(opts, :tools, [])
-      on_tokens = Keyword.get(opts, :on_tokens, nil)
-      trace     = Keyword.get(opts, :trace)
+      tools       = Keyword.get(opts, :tools, [])
+      llm_options = Keyword.get(opts, :options, %{})
+      on_tokens   = Keyword.get(opts, :on_tokens, nil)
+      trace       = Keyword.get(opts, :trace)
       Logger.info("[LLM] stream #{model_str} msgs=#{length(messages)} tools=#{length(tools)}")
       Dmhai.SysLog.log("[LLM] stream model=#{model_str} msgs=#{length(messages)} tools=#{length(tools)}\n  #{log_messages(messages)}")
 
@@ -62,18 +63,18 @@ defmodule Dmhai.Agent.LLM do
           settings = load_settings()
           {active, throttled} = partition_accounts(settings["accounts"] || [])
           sanitized = sanitize_ollama_messages(messages, model_name)
-          body = build_body(model_name, sanitized, tools, true)
+          body = build_body(model_name, sanitized, tools, true, llm_options)
           do_cloud_stream(Enum.shuffle(active) ++ Enum.shuffle(throttled), model_name, body, reply_pid, model_str, on_tokens)
 
         ["ollama", _pool, model_name] ->
           {url, headers, _} = resolve(model_str)
           sanitized = sanitize_ollama_messages(messages, model_name)
-          body = build_body(model_name, sanitized, tools, true)
+          body = build_body(model_name, sanitized, tools, true, llm_options)
           do_stream_request(url, headers, body, reply_pid, model_str, on_tokens)
 
         _ ->
           {url, headers, model_name} = resolve(model_str)
-          body = build_body(model_name, messages, tools, true)
+          body = build_body(model_name, messages, tools, true, llm_options)
           do_stream_request(url, headers, body, reply_pid, model_str, on_tokens)
       end
 
@@ -163,7 +164,7 @@ defmodule Dmhai.Agent.LLM do
 
   # ─── Body / response ───────────────────────────────────────────────────────
 
-  defp build_body(model, messages, tools, stream, options \\ %{}) do
+  defp build_body(model, messages, tools, stream, options) do
     base = %{model: model, messages: messages, stream: stream}
 
     base =
@@ -374,13 +375,21 @@ defmodule Dmhai.Agent.LLM do
 
     case do_stream_request(@ollama_cloud_url, headers, body, reply_pid, model_str, on_tokens) do
       {:error, :quota_exhausted} ->
-        Logger.warning("[LLM] account #{account["name"]} weekly quota exhausted, throttling 7d")
-        mark_account_throttled(account, :timer.hours(24 * 7))
+        hours = AgentSettings.quota_exhausted_throttle_hours()
+        Logger.warning("[LLM] account #{account["name"]} weekly quota exhausted, throttling #{hours}h")
+        mark_account_throttled(account, :timer.hours(hours))
+        do_cloud_stream(rest, model_name, body, reply_pid, model_str, on_tokens)
+
+      {:error, {:rate_limited, ms}} ->
+        # Retry-After header honoured — throttle exactly as requested.
+        Logger.warning("[LLM] account #{account["name"]} rate-limited (Retry-After=#{div(ms, 1000)}s)")
+        mark_account_throttled(account, ms)
         do_cloud_stream(rest, model_name, body, reply_pid, model_str, on_tokens)
 
       {:error, :rate_limited} ->
-        Logger.warning("[LLM] account #{account["name"]} rate-limited, throttling 1h")
-        mark_account_throttled(account, :timer.hours(1))
+        secs = AgentSettings.rate_limit_throttle_secs()
+        Logger.warning("[LLM] account #{account["name"]} rate-limited (no Retry-After), throttling #{secs}s")
+        mark_account_throttled(account, :timer.seconds(secs))
         do_cloud_stream(rest, model_name, body, reply_pid, model_str, on_tokens)
 
       {:error, :server_error} when retries > 0 ->
@@ -527,18 +536,34 @@ defmodule Dmhai.Agent.LLM do
 
     cond do
       stream_err != nil ->
-        # Inline error in NDJSON — distinguish quota exhausted vs temporary rate-limit
-        if String.contains?(to_string(stream_err), "weekly usage limit") do
-          {:error, :quota_exhausted}
-        else
-          {:error, :rate_limited}
+        # Inline error in NDJSON — classify conservatively. ONLY treat as
+        # `:rate_limited` when the text genuinely signals rate-limiting.
+        # Previously any non-"weekly usage limit" inline error was
+        # classified as rate-limit — that caused request-format errors
+        # (e.g. "Expected last role User or Tool … got assistant") to
+        # throttle the account, and rotation hit the same format error
+        # on every subsequent key, locking the whole pool within a few
+        # requests. Unknown errors now propagate as a plain string —
+        # rotation's `other -> other` fall-through passes them up
+        # WITHOUT throttling the account.
+        err_text = to_string(stream_err)
+        cond do
+          String.contains?(err_text, "weekly usage limit") ->
+            {:error, :quota_exhausted}
+
+          looks_like_rate_limit?(err_text) ->
+            {:error, :rate_limited}
+
+          true ->
+            {:error, "stream error: #{err_text}"}
         end
 
       match?({:ok, %{status: s}} when s not in [200], result) ->
-        {:ok, %{status: status}} = result
+        {:ok, resp} = result
+        status = resp.status
         Logger.error("[LLM] stream HTTP #{status} #{model_str}")
         cond do
-          status == 429 -> {:error, :rate_limited}
+          status == 429 -> rate_limited_error(resp)
           status >= 500 -> {:error, :server_error}
           true          -> {:error, "HTTP #{status}"}
         end
@@ -574,13 +599,20 @@ defmodule Dmhai.Agent.LLM do
 
     case do_call_request(@ollama_cloud_url, headers, body, model_str, on_tokens) do
       {:error, :quota_exhausted} ->
-        Logger.warning("[LLM] account #{account["name"]} weekly quota exhausted, throttling 7d")
-        mark_account_throttled(account, :timer.hours(24 * 7))
+        hours = AgentSettings.quota_exhausted_throttle_hours()
+        Logger.warning("[LLM] account #{account["name"]} weekly quota exhausted, throttling #{hours}h")
+        mark_account_throttled(account, :timer.hours(hours))
+        do_cloud_call(rest, model_name, body, model_str, on_tokens)
+
+      {:error, {:rate_limited, ms}} ->
+        Logger.warning("[LLM] account #{account["name"]} rate-limited (Retry-After=#{div(ms, 1000)}s)")
+        mark_account_throttled(account, ms)
         do_cloud_call(rest, model_name, body, model_str, on_tokens)
 
       {:error, :rate_limited} ->
-        Logger.warning("[LLM] account #{account["name"]} rate-limited, throttling 1h")
-        mark_account_throttled(account, :timer.hours(1))
+        secs = AgentSettings.rate_limit_throttle_secs()
+        Logger.warning("[LLM] account #{account["name"]} rate-limited (no Retry-After), throttling #{secs}s")
+        mark_account_throttled(account, :timer.seconds(secs))
         do_cloud_call(rest, model_name, body, model_str, on_tokens)
 
       {:error, :server_error} when retries > 0 ->
@@ -652,13 +684,13 @@ defmodule Dmhai.Agent.LLM do
         Logger.info("[LLM:http req=#{req_id}] call DONE parse_ms=#{t2 - t1} total_ms=#{t2 - t0}")
         result
 
-      {:ok, %{status: 429, body: resp_body}} ->
+      {:ok, %{status: 429, body: resp_body} = resp} ->
         err_msg = get_in(resp_body, ["error"]) || ""
         Logger.warning("[LLM:http req=#{req_id}] call 429 elapsed_ms=#{elapsed1} model=#{model_str}: #{inspect(resp_body)}")
         if String.contains?(to_string(err_msg), "weekly usage limit") do
           {:error, :quota_exhausted}
         else
-          {:error, :rate_limited}
+          rate_limited_error(resp)
         end
 
       {:ok, %{status: status, body: resp_body}} when status >= 500 ->
@@ -690,6 +722,57 @@ defmodule Dmhai.Agent.LLM do
        when reason in [:timeout, :closed, :econnrefused, :econnreset, :nxdomain],
        do: {:error, :server_error}
   defp classify_transport_error(other), do: {:error, other}
+
+  # Extract a rate-limit error tuple, preferring a server-supplied
+  # `Retry-After` header when present so we can throttle exactly as
+  # long as the provider asked us to — not a blanket constant. Falls
+  # back to `:rate_limited` atom (caller uses the configurable
+  # default from `AgentSettings.rate_limit_throttle_secs/0`).
+  defp rate_limited_error(%_{headers: headers}) do
+    case parse_retry_after_ms(headers) do
+      nil -> {:error, :rate_limited}
+      ms  -> {:error, {:rate_limited, ms}}
+    end
+  end
+  defp rate_limited_error(_), do: {:error, :rate_limited}
+
+  # Parse `Retry-After` from Req's `headers` map (string keys →
+  # list-of-string values). Supports the integer-seconds form only
+  # (e.g. `"30"`, `"120"`). HTTP-date form (`"Wed, 21 Oct 2015
+  # 07:28:00 GMT"`) and malformed values return nil — caller falls
+  # back to the configured default.
+  defp parse_retry_after_ms(%{} = headers) do
+    # Req normalises header names to lowercase.
+    case Map.get(headers, "retry-after") do
+      [value | _] when is_binary(value) ->
+        case Integer.parse(String.trim(value)) do
+          {secs, ""} when secs > 0 and secs <= 3600 -> secs * 1000
+          _                                         -> nil
+        end
+
+      _ -> nil
+    end
+  end
+  defp parse_retry_after_ms(_), do: nil
+
+  # Conservative rate-limit marker check. Upstreams vary: Ollama cloud
+  # says "rate limit" / "too many requests"; OpenAI says "rate limit
+  # reached" / "Too Many Requests"; Anthropic says "rate_limit_error"
+  # or "quota". Match on lowercased substring so a surprising casing
+  # doesn't slip past. Anything that matches NONE of these markers is
+  # treated as an unknown error and propagates up WITHOUT throttling
+  # the account — rotating keys doesn't fix a malformed request.
+  @rate_limit_markers [
+    "rate limit", "rate_limit", "rate-limit",
+    "too many requests",
+    "quota", "throttle", "slow down", "try again in"
+  ]
+
+  defp looks_like_rate_limit?(text) when is_binary(text) do
+    lower = String.downcase(text)
+    Enum.any?(@rate_limit_markers, &String.contains?(lower, &1))
+  end
+  defp looks_like_rate_limit?(_), do: false
 
   # Split accounts into {active, throttled} based on throttledUntil epoch-ms field.
   # Throttled accounts go to the back of the queue as last-resort fallback.

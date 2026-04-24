@@ -36,11 +36,12 @@ defmodule Dmhai.Agent.Police do
   @write_path_tools ["write_file"]
   @shell_tools ["run_script", "spawn_task"]
 
-  # Execution-class tools: must be preceded by an active create_task in
-  # the session. Anything not in this list is unconditionally allowed —
-  # including create_task / update_task / fetch_task themselves (how the
-  # model complies), credential tools (read-only wrt task state), and
-  # trivial utilities (datetime, calculator).
+  # Execution-class tools: must be preceded by a `pickup_task` in the
+  # current turn. Anything not in this list is unconditionally allowed
+  # — including the task-management verbs themselves (create_task /
+  # pickup_task / complete_task / pause_task / cancel_task / fetch_task —
+  # how the model complies), credential tools (read-only wrt task
+  # state), and trivial utilities (datetime, calculator).
   @gated_tools [
     "run_script",
     "web_fetch",
@@ -205,21 +206,33 @@ defmodule Dmhai.Agent.Police do
   end
 
   @doc """
-  Per-tool-call gate enforced at execution time (inside `execute_tools`).
-  Rejects an execution-class tool call when the session has no active
-  (pending/ongoing) task row — i.e. when the model has forgotten the
-  "every substantive action needs create_task first" rule from
-  `system_prompt.ex`. The rejection comes back to the model as a
-  tool-result error string, which the model reads in its next round and
-  self-corrects by calling create_task.
+  Per-tool-call gate: every user-initiated chain must `pickup_task` an
+  explicit task_id before it runs any gated execution tool. Forces the
+  verb-lifecycle `create_task → pickup_task → exec tools → complete_task`
+  and enforces "each new user ask = its OWN task" (prior rule was
+  session-scoped and got shielded by long-lived periodic tasks in the
+  same session).
 
-  Tools outside `@gated_tools` (create_task/update_task/fetch_task,
-  credential tools, datetime, calculator) bypass this gate.
+  Rule skips in these cases:
 
-  `ctx` must carry `:session_id` — non-session callers bypass.
+    * Tool isn't in `@gated_tools` (task-management verbs, credential
+      tools, calculator — never blocked).
+    * `ctx` carries no `:session_id` (non-session callers bypass).
+    * `ctx` carries `:silent_turn_task_id` — silent chain. The scheduler
+      already fired for a specific task; `mark_ongoing` is applied in
+      `run_assistant_silent`. Model doesn't need to re-pickup the same
+      task. Police rule #9 (silent-turn-scope) governs cross-task
+      misuse instead.
+    * `prior_messages` (the in-chain accumulator) already contains a
+      `pickup_task` tool-call. Model has explicitly picked up a task
+      this chain — gated tools can run.
+
+  Otherwise reject with a nudge teaching the lifecycle.
   """
-  @spec check_task_discipline(String.t(), map()) :: :ok | {:rejected, {atom(), String.t()}}
-  def check_task_discipline(name, ctx) when is_binary(name) do
+  @spec check_task_discipline(String.t(), map(), [map()]) ::
+          :ok | {:rejected, {atom(), String.t()}}
+  def check_task_discipline(name, ctx, prior_messages)
+      when is_binary(name) and is_map(ctx) and is_list(prior_messages) do
     cond do
       name not in @gated_tools ->
         :ok
@@ -227,30 +240,58 @@ defmodule Dmhai.Agent.Police do
       not Map.has_key?(ctx, :session_id) ->
         :ok
 
-      has_active_task?(ctx[:session_id]) ->
+      Map.has_key?(ctx, :silent_turn_task_id) ->
+        :ok
+
+      has_pickup_task_in_chain?(prior_messages) ->
         :ok
 
       true ->
         reason =
-          "Error: you must call create_task first before using `#{name}`. " <>
-          "Every substantive action in Assistant mode needs its own task row. " <>
-          "Call create_task(task_title, task_spec, task_type: \"one_off\", language: ...) " <>
-          "first — the new task row is created with status=ongoing automatically — " <>
-          "then retry `#{name}`. When finished, call " <>
-          "update_task(task_id, status: \"done\", task_result: \"<summary>\")."
+          "Error: you haven't started a task in THIS chain, so `#{name}` " <>
+            "is rejected. Every user ask needs an active task. Two paths:\n" <>
+            "  (a) NEW objective → `create_task(...)`. This both registers " <>
+            "AND starts the task (auto-pickup) — your next call can be " <>
+            "`#{name}` directly. No separate `pickup_task` needed.\n" <>
+            "  (b) RESUMING an existing task from the Task list (done / " <>
+            "paused / cancelled, or ongoing but context was lost) → " <>
+            "`pickup_task(task_num: N)`.\n" <>
+            "Then retry `#{name}`. When finished, `complete_task(task_num: " <>
+            "N, task_result: ...)`."
 
         Logger.warning("[Police] REJECTED task_discipline: tool=#{name} session=#{inspect(ctx[:session_id])}")
         Dmhai.SysLog.log("[POLICE] REJECTED task_discipline: tool=#{name} session=#{inspect(ctx[:session_id])}")
         {:rejected, {:task_discipline, reason}}
     end
   end
+  # Old 2-arity arity kept for any residual caller; forwards with empty prior_messages.
+  def check_task_discipline(name, ctx) when is_binary(name) and is_map(ctx),
+    do: check_task_discipline(name, ctx, [])
 
-  defp has_active_task?(session_id) when is_binary(session_id) do
-    session_id
-    |> Dmhai.Agent.Tasks.active_for_session()
-    |> Enum.any?(fn t -> t.task_status in ["pending", "ongoing"] end)
+  # True if any assistant message in the in-chain accumulator carries a
+  # `pickup_task` OR `create_task` tool_call. `create_task` now auto-
+  # picks up (Phase 3 lever 2b: tasks start at `ongoing` and the
+  # runtime advances `ctx.anchor_task_num` to match), so a chain that
+  # called `create_task` has already "picked up" its new task —
+  # requiring a separate `pickup_task` after it would be redundant.
+  # `pickup_task` remains valid for RESUMING previously-closed tasks;
+  # both satisfy the discipline gate.
+  defp has_pickup_task_in_chain?(messages) do
+    Enum.any?(messages, fn msg ->
+      role  = msg[:role] || msg["role"]
+      calls = msg[:tool_calls] || msg["tool_calls"] || []
+
+      if role == "assistant" and is_list(calls) do
+        Enum.any?(calls, fn c ->
+          fn_map = c["function"] || c[:function] || %{}
+          name   = fn_map["name"] || fn_map[:name]
+          name in ["pickup_task", "create_task"]
+        end)
+      else
+        false
+      end
+    end)
   end
-  defp has_active_task?(_), do: true
 
   # ── path safety internals ──────────────────────────────────────────────
 
@@ -395,7 +436,7 @@ defmodule Dmhai.Agent.Police do
   (we've seen ~1000-char blobs, including entire natural-language
   responses glued together with LRM separators, as the name field).
 
-  The rejection message enumerates the valid tool names so the next-round
+  The rejection message enumerates the valid tool names so the next-turn
   corrective tool_result gives the model the concrete vocabulary to
   recover with. Same silent-to-user handling as task_discipline —
   the progress row is never written for an unknown-tool rejection.
@@ -424,11 +465,11 @@ defmodule Dmhai.Agent.Police do
     do: {:rejected, {:unknown_tool_name, "Error: tool_call `function.name` must be a string."}}
 
   @doc """
-  Guard on the TEXT round's final content. Catches the failure mode where
+  Guard on the TEXT turn's final content. Catches the failure mode where
   a model (devstral-small-2:24b, in particular) emits what it MEANT to be
   a tool_call as the assistant message's content field — e.g. the entire
-  content is just the string `"update_task"` or `"create_task(...)"` — so
-  the turn ends without actually calling the tool and the task stays
+  content is just the string `"complete_task"` or `"create_task(...)"` —
+  so the chain ends without actually calling the tool and the task stays
   stuck in `ongoing`.
 
   Conservative detector: fires only when the trimmed text is EXACTLY a
@@ -437,8 +478,8 @@ defmodule Dmhai.Agent.Police do
   "Yes", or any multi-word text that happens to contain a tool name
   somewhere.
 
-  On rejection the session loop injects a corrective user-role message
-  and recurses one more round; the bad text is never persisted.
+  On rejection the chain loop injects a corrective user-role message
+  and recurses one more turn; the bad text is never persisted.
   """
   @spec check_assistant_text(String.t()) :: :ok | {:rejected, {atom(), String.t()}}
   def check_assistant_text(text) when is_binary(text) do
@@ -484,9 +525,10 @@ defmodule Dmhai.Agent.Police do
             "`[tool: ...]`. These are text decorations — the tool was " <>
             "NOT actually called, and the user would see this junk in " <>
             "their chat. Retry with two clean outputs: " <>
-            "(1) if you meant to update a task (status/title/result), " <>
-            "emit a REAL `tool_call` to `update_task` with the right " <>
-            "arguments — do NOT paraphrase it in text; " <>
+            "(1) if you meant to close / cancel / pause a task, emit a " <>
+            "REAL `tool_call` to `complete_task` / `cancel_task` / " <>
+            "`pause_task` with the right arguments — do NOT paraphrase " <>
+            "it in text; " <>
             "(2) the user-facing reply must be plain prose in the " <>
             "user's language, with NO `[...]` tool annotations, NO " <>
             "task_id references, NO tool-name mentions."
@@ -549,15 +591,15 @@ defmodule Dmhai.Agent.Police do
 
   @doc """
   Per-tool-call gate: reject when the same `(tool_name, significant_arg)`
-  combination has already been invoked earlier in THIS turn. Prevents
+  combination has already been invoked earlier in THIS chain. Prevents
   the "model creates two identical tasks in a row for one follow-up" /
   "model re-extracts the same PDF twice" misbehaviour we see on weaker
   models like gemini-3-flash.
 
-  `prior_messages` is the in-turn message accumulator — a list containing
+  `prior_messages` is the in-chain message accumulator — a list containing
   every assistant-role message with `tool_calls` emitted earlier in this
-  turn (either in a prior round, OR earlier in the CURRENT batch of
-  tool_calls from one LLM response). Cross-turn repeats are NOT flagged
+  chain (either in a prior turn, OR earlier in the CURRENT batch of
+  tool_calls from one LLM response). Cross-chain repeats are NOT flagged
   here — those are addressed by the `Recently-extracted files` prompt
   block and the `[newly attached]` marker logic.
 
@@ -581,21 +623,21 @@ defmodule Dmhai.Agent.Police do
         if already_called?(name, key, prior_messages) do
           reason =
             "Error: you already called `#{name}` with the same significant argument " <>
-              "(#{describe_key(name)}=#{inspect(key)}) earlier in THIS turn. " <>
+              "(#{describe_key(name)}=#{inspect(key)}) earlier in THIS chain. " <>
               "Duplicate calls aren't useful — the earlier call's result is " <>
               "already in your context as a `role: \"tool\"` message. Either " <>
               "answer the user from the earlier result, or call a DIFFERENT " <>
               "tool to move the task forward. Do not repeat yourself."
 
           Logger.warning(
-            "[Police] REJECTED duplicate_tool_call_in_turn: tool=#{name} key=#{inspect(key)}"
+            "[Police] REJECTED duplicate_tool_call_in_chain: tool=#{name} key=#{inspect(key)}"
           )
 
           Dmhai.SysLog.log(
-            "[POLICE] REJECTED duplicate_tool_call_in_turn: tool=#{name} key=#{inspect(key)}"
+            "[POLICE] REJECTED duplicate_tool_call_in_chain: tool=#{name} key=#{inspect(key)}"
           )
 
-          {:rejected, {:duplicate_tool_call_in_turn, reason}}
+          {:rejected, {:duplicate_tool_call_in_chain, reason}}
         else
           :ok
         end
@@ -613,6 +655,23 @@ defmodule Dmhai.Agent.Police do
 
       _ ->
         nil
+    end
+  end
+
+  # Verb-based task API: pickup/complete/pause/cancel_task all key on
+  # `task_num` (Phase 3) — two calls to the same verb on the same
+  # task_num within a chain is always wrong (either a redundant retry
+  # of a successful call or the model looping on itself; either way
+  # the second is waste). `pickup_task` is the one edge-case: it IS
+  # intentionally idempotent when already-ongoing. But calling it
+  # twice in a single chain is still a duplicate by the "same name +
+  # same key" rule — the tool would just no-op the second time.
+  # Catching it at Police level lets us surface the redundancy to the
+  # model as a nudge instead of silently succeeding and wasting a turn.
+  defp significant_key(v, args) when v in ~w(pickup_task complete_task pause_task cancel_task) do
+    case coerce_num(args["task_num"]) do
+      n when is_integer(n) -> n
+      _                     -> nil
     end
   end
 
@@ -637,9 +696,22 @@ defmodule Dmhai.Agent.Police do
   defp significant_key(_, _), do: nil
 
   defp describe_key("create_task"),     do: "task_title"
+  defp describe_key(v) when v in ~w(pickup_task complete_task pause_task cancel_task),
+    do: "task_num"
   defp describe_key("extract_content"), do: "path"
   defp describe_key("web_search"),      do: "query"
   defp describe_key(_),                 do: "arg"
+
+  # Integer-or-stringified-integer → integer | nil. Used by
+  # `significant_key/2` for verb dedup and by silent-turn scope.
+  defp coerce_num(n) when is_integer(n), do: n
+  defp coerce_num(n) when is_binary(n) do
+    case Integer.parse(n) do
+      {i, ""} -> i
+      _        -> nil
+    end
+  end
+  defp coerce_num(_), do: nil
 
   # Walk the prior messages, extract every assistant-role tool_call's
   # (name, significant_key), return true if any match the current pair.
@@ -662,6 +734,143 @@ defmodule Dmhai.Agent.Police do
       end
     end)
   end
+
+  # Verb-based API (2026-04-24): the task-management verbs whose
+  # `task_id` argument MUST target the silent turn's pickup task. Other
+  # tools — execution (`run_script`, `web_fetch`, …), read-only
+  # (`fetch_task`), and `create_task` (which doesn't accept a task_id)
+  # — are NOT in this list and take separate rules below.
+  @silent_turn_scoped_verbs ~w(pickup_task complete_task pause_task cancel_task)
+
+  @doc """
+  Per-tool-call gate enforcing silent-turn scope: a scheduler-triggered
+  pickup is for ONE specific task only. The model must not use the
+  trigger to do other work. Reject:
+
+    * `create_task` — new task creation requires a user message, not a
+      silent-turn opportunity.
+    * `pickup_task` / `complete_task` / `pause_task` / `cancel_task`
+      targeting a `task_id` that is NOT the one the silent turn fired
+      for — progressing / cancelling / modifying any OTHER task during
+      a silent turn hijacks the pickup's scope.
+
+  `fetch_task` is allowed (read-only inspection) and every execution
+  tool (`run_script`, `web_fetch`, etc.) is allowed — the model needs
+  those to produce the task's output.
+
+  `ctx[:silent_turn_task_id]` is set only in `run_assistant_silent`
+  (scheduler-triggered silent turns). User-initiated turns never set
+  it, so this gate is a no-op there.
+
+  Motivating incident: in a silent pickup for a joke task, the model
+  called `cancel_task` on the joke, `create_task` for a new ASCII-
+  drawing periodic, and ran multiple verb cycles on the new task —
+  all in one turn — because the user had asked about ASCII in a
+  prior turn (but never confirmed the switch). With the verb API,
+  each of those off-scope calls becomes a crisp verb against a
+  different `task_id` → this gate rejects each one with a specific
+  nudge pointing back to the pickup's task_id.
+  """
+  @spec check_silent_turn_scope(String.t(), map(), map()) ::
+          :ok | {:rejected, {atom(), String.t()}}
+  def check_silent_turn_scope(name, args, ctx)
+      when is_binary(name) and is_map(args) and is_map(ctx) do
+    # Phase 3: scope check compares task_num against the silent-turn
+    # anchor's task_num (Map.get(ctx, :anchor_task_num)). The anchor is
+    # MUTABLE — after the model calls complete/cancel/pause on the
+    # silent-pickup task, the anchor flips to its back-reference (or
+    # nil if exhausted). When anchor is nil in a silent turn, NO
+    # further tool calls are allowed — chain must end with text. See
+    # architecture.md §Anchor mutation via back_to_when_done back-stack.
+    pickup_tid = Map.get(ctx, :silent_turn_task_id)
+    pickup_num = Map.get(ctx, :anchor_task_num)
+
+    case pickup_tid do
+      nil ->
+        :ok
+
+      _ when is_nil(pickup_num) ->
+        # Silent turn, pickup task closed, back-stack exhausted → free
+        # mode. The chain's scope is gone; any further tool call is
+        # out of scope. Model must emit final user-facing text.
+        reason =
+          "Error: you are inside a SILENT pickup turn, the task you " <>
+            "picked up has been closed (complete / cancel / pause), " <>
+            "and its back-reference chain has exhausted — no other " <>
+            "active task to return to. **The chain's work is done.** " <>
+            "Emit your final user-facing text now and end the turn. " <>
+            "Do NOT start fresh tool calls: even if some other task " <>
+            "in the session is still `ongoing`, progressing it isn't " <>
+            "your job in THIS silent turn. If the user wants that " <>
+            "work, they'll ask on their next message."
+
+        Logger.warning("[Police] REJECTED silent_turn_pickup_closed: tool=#{name}")
+        Dmhai.SysLog.log("[POLICE] REJECTED silent_turn_pickup_closed: tool=#{name}")
+
+        {:rejected, {:silent_turn_pickup_closed, reason}}
+
+      _ ->
+        cond do
+          name == "create_task" ->
+            reason =
+              "Error: you are inside a SILENT pickup turn for task " <>
+                "(#{inspect(pickup_num)}) — the scheduler fired this turn to " <>
+                "progress that one task and nothing else. `create_task` is " <>
+                "forbidden here: creating a new task in a scheduler-triggered " <>
+                "turn would hijack the pickup's scope. If a user asked for a " <>
+                "new task in an earlier conversational turn, they will re-ask " <>
+                "on their next message — wait for that. Right now, produce the " <>
+                "pickup's output via execution tools, then call " <>
+                "`complete_task(task_num: #{inspect(pickup_num)}, " <>
+                "task_result: \"…\")` and emit your final text."
+
+            Logger.warning(
+              "[Police] REJECTED silent_turn_create_task: pickup_num=#{inspect(pickup_num)}"
+            )
+
+            Dmhai.SysLog.log(
+              "[POLICE] REJECTED silent_turn_create_task: pickup_num=#{inspect(pickup_num)}"
+            )
+
+            {:rejected, {:silent_turn_create_task, reason}}
+
+          name in @silent_turn_scoped_verbs ->
+            called_num = coerce_num(args["task_num"])
+
+            if is_integer(called_num) and is_integer(pickup_num) and called_num != pickup_num do
+              reason =
+                "Error: you are inside a SILENT pickup turn for task " <>
+                  "(#{pickup_num}), but this `#{name}` call targets a " <>
+                  "DIFFERENT task (#{called_num}). A silent turn may " <>
+                  "progress ONLY the task that triggered it. Modifying " <>
+                  "another task mid-pickup (cancelling it to free a slot, " <>
+                  "bulk-closing other rows, pausing a sibling) is out of " <>
+                  "scope and requires the user to initiate in a normal " <>
+                  "conversational turn. Retry with `#{name}(task_num: " <>
+                  "#{pickup_num}, ...)` — targeting the task this pickup " <>
+                  "actually fired for — or drop the call entirely."
+
+              Logger.warning(
+                "[Police] REJECTED silent_turn_other_task_verb: " <>
+                  "pickup_num=#{pickup_num} called_num=#{called_num} verb=#{name}"
+              )
+
+              Dmhai.SysLog.log(
+                "[POLICE] REJECTED silent_turn_other_task_verb: " <>
+                  "pickup_num=#{pickup_num} called_num=#{called_num} verb=#{name}"
+              )
+
+              {:rejected, {:silent_turn_other_task_verb, reason}}
+            else
+              :ok
+            end
+
+          true ->
+            :ok
+        end
+    end
+  end
+  def check_silent_turn_scope(_, _, _), do: :ok
 
   @doc """
   Per-tool-call gate enforcing the "one periodic task per chat session"
@@ -720,7 +929,7 @@ defmodule Dmhai.Agent.Police do
     title = existing.task_title || "(untitled)"
 
     "Error: this chat session already has an active periodic task — " <>
-      "task (#{num}) `#{existing.task_id}` — #{title}. " <>
+      "task (#{num}) — #{title}. " <>
       "DMH-AI supports at most ONE periodic task per chat session, " <>
       "so this `create_task(task_type: \"periodic\", ...)` is rejected.\n\n" <>
       "What to do next:\n" <>
@@ -735,14 +944,16 @@ defmodule Dmhai.Agent.Police do
       "`create_task(task_type: \"one_off\", ...)` instead — not " <>
       "periodic.\n" <>
       "  (c) If you were trying to PROGRESS the existing periodic task " <>
-      "(this happens during a `[Task due: ...]` pickup), use " <>
-      "`update_task(task_id: \"#{existing.task_id}\", ...)` — do NOT " <>
-      "call `create_task`. A second periodic row is always a bug."
+      "(this happens during a `[Task due: ...]` pickup), use the " <>
+      "verb API against the existing (N): `pickup_task(task_num: #{num})` " <>
+      "→ produce output via execution tools → " <>
+      "`complete_task(task_num: #{num}, task_result: \"…\")`. " <>
+      "Do NOT call `create_task`. A second periodic row is always a bug."
   end
 
   @doc """
   Per-tool-call gate: reject a `web_search` call when the immediately-
-  preceding tool call in this turn was ALSO `web_search`.
+  preceding tool call in this chain was ALSO `web_search`.
 
   Rationale: one `web_search` already fans out 2-3 parallel search
   queries in the BE (see `Dmhai.Web.Search.generate_queries`), so a
@@ -755,9 +966,9 @@ defmodule Dmhai.Agent.Police do
   allowed when each step has a legitimate role. The gate only fires on
   TWO web_searches with nothing between them.
 
-  `prior_messages` — the in-turn message accumulator (same shape as
+  `prior_messages` — the in-chain message accumulator (same shape as
   `check_no_duplicate_tool_call/3`). Intra-batch duplicates AND
-  inter-round repeats are both covered because `execute_tools/3`
+  inter-turn repeats are both covered because `execute_tools/3`
   appends a synthetic assistant message per tool_call as it iterates.
   """
   @spec check_no_consecutive_web_search(String.t(), map(), [map()]) ::
@@ -800,9 +1011,10 @@ defmodule Dmhai.Agent.Police do
   # message that carries a non-empty `tool_calls` list, return the name
   # of its LAST tool_call. The "last call in the last batch" is the
   # correct signal for consecutivity — task-bookkeeping calls
-  # (create_task / update_task) emitted between web_searches are still
-  # tool calls and break the sequence by design (if the model is
-  # transitioning tasks, it's probably a different search intent).
+  # (create_task / pickup_task / complete_task / pause_task /
+  # cancel_task) emitted between web_searches are still tool calls
+  # and break the sequence by design (if the model is transitioning
+  # tasks, it's probably a different search intent).
   defp last_tool_call_name(messages) do
     messages
     |> Enum.reverse()

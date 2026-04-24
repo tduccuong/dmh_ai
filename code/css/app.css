@@ -28,6 +28,7 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
 .mode-item-sub { font-size: 11px; color: #888; margin-left: auto; }
 .msg-header { display: flex; align-items: center; gap: 5px; }
 .msg-header-icon { display: flex; align-items: center; flex-shrink: 0; }
+.msg-header-task-tag { color: #ffb030; font-weight: 700; text-shadow: 0 0 6px rgba(255, 176, 48, 0.35); }
 .model-dropdown-menu { display: none; position: absolute; top: calc(100% + 4px); left: 0; right: 0; background: #1c1628; border: 1px solid #382850; border-radius: 8px; z-index: 300; box-shadow: 0 8px 24px rgba(0,0,0,0.6); overflow: hidden; max-height: 60vh; overflow-y: auto; }
 .model-dropdown-menu.open { display: block; }
 .model-dropdown-section { padding: 6px 0 2px; }
@@ -75,8 +76,7 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
 .message-input { flex: 1; padding: 12px 16px; border-radius: 8px; border: 1px solid #141018; background: #141018; color: #eee; font-size: 17px; font-family: inherit; resize: none; max-height: 100px; overflow-y: auto; }
 .send-btn { padding: 12px 24px; background: #c87830; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; display: flex; align-items: center; gap: 6px; }
 .send-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-@media (max-width: 600px) { .send-label { display: none; } .stop-label { display: none; } }
-.stop-label:not(:empty) { margin-left: 5px; }
+@media (max-width: 600px) { .send-label { display: none; } }
 #scroll-bottom-btn { opacity: 0.95; box-shadow: 0 2px 8px rgba(0,0,0,0.5); }
 #scroll-bottom-btn:hover { background: rgba(110,70,170,0.65) !important; opacity: 1; }
 .status-bar { padding: 6px 20px 4px; color: #b098b8; font-size: 13px; display: none; align-items: flex-start; gap: 8px; }
@@ -86,8 +86,6 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
 .status-content { display: flex; flex-direction: column; min-width: 0; flex: 1; padding-top: 1px; }
 #status-detail { display: flex; flex-direction: column; margin-top: 2px; }
 .status-detail-line { font-size: 14px; color: #7a6a8a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: calc(100vw - 70px); padding-left: 14px; line-height: 1.3; }
-.stop-gen-btn { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); padding: 5px 10px; background: #7a2020; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600; z-index: 1; }
-.stop-gen-btn:hover { background: #b03030; }
 .voice-bar { padding: 8px 20px; background: #2a1020; color: #f08080; font-size: 13px; display: none; align-items: center; gap: 10px; cursor: pointer; user-select: none; }
 .voice-bar.visible { display: flex; }
 .voice-dot { width: 10px; height: 10px; background: #e05050; border-radius: 50%; flex-shrink: 0; animation: voice-pulse 1s ease-in-out infinite; }
@@ -572,20 +570,77 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
 .task-row.task-status-paused {
     opacity: 0.6;
 }
+/* Phase 3: active-task anchor marker. A thicker, brighter left border
+   + subtle background tint distinguishes "the task the assistant is
+   currently focused on" from merely "any non-terminal task". Applies
+   on top of the status-ongoing treatment — an ongoing anchor task
+   gets BOTH the ongoing gradient AND the anchor border. */
+.task-row.task-row-anchor {
+    border-left-width: 4px;
+    border-left-color: #d890ff;
+    background: linear-gradient(to right, rgba(180, 120, 220, 0.14), transparent);
+}
+.task-row.task-row-anchor.task-status-paused { opacity: 1; }
 .task-bucket-recent .task-row {
     opacity: 0.7;
     font-size: 11.5px;
 }
 .task-bucket-recent .task-row:hover { opacity: 1; }
 
-.task-type-icon {
+/* Status icon on the left of every task row — the SINGLE source of
+   status communication in the sidebar. No right-side status text.
+   Brightest-possible colors per state so the bucket is scannable at a
+   glance: pause (held) / glowing dot (running) / red ban (aborted) /
+   clock (waiting) / green tick (complete). */
+.task-status-icon {
     flex-shrink: 0;
-    width: 12px;
-    color: #b0a3cc;
-    font-size: 11px;
+    width: 14px;
+    font-size: 14px;
     text-align: center;
+    line-height: 1;
+    font-weight: bold;
 }
-.task-row.task-type-periodic .task-type-icon { color: #6a9cc8; }
+.task-status-icon-ongoing {
+    color: #ffb030;   /* brightest amber — "hot / running" */
+    animation: task-ongoing-pulse 1.2s ease-in-out infinite;
+    text-shadow: 0 0 6px rgba(255, 176, 48, 0.7);
+}
+@keyframes task-ongoing-pulse {
+    0%, 100% { opacity: 1;    transform: scale(1);    }
+    50%      { opacity: 0.55; transform: scale(0.88); }
+}
+.task-status-icon-pending   { color: #40c8ff; }  /* brightest cyan — clock, "waiting" */
+.task-status-icon-paused    { color: #ffd840; }  /* brightest yellow — pause, "held" */
+.task-status-icon-done      { color: #40e080; }  /* brightest green — tick, "complete" */
+.task-status-icon-cancelled { color: #ff5050; }  /* brightest red — ban, "aborted" */
+
+/* Red stop button on ongoing rows, so the user can terminate a task
+   without typing "stop task N". Replaces the right-side status-word
+   text. Sized to match the row's visual weight; brighter on hover so
+   the intent-to-click is obvious. */
+.task-stop-btn {
+    flex-shrink: 0;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: #e04848;
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+    transition: background 100ms, color 100ms, transform 100ms;
+}
+.task-stop-btn:hover {
+    background: rgba(224, 72, 72, 0.18);
+    color: #ff6060;
+    transform: scale(1.05);
+}
+.task-stop-btn:disabled {
+    opacity: 0.4;
+    cursor: wait;
+}
 .task-num {
     flex-shrink: 0;
     font-size: 11px;
@@ -598,12 +653,6 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-}
-.task-meta {
-    flex-shrink: 0;
-    font-size: 10.5px;
-    color: #a394bc;
-    font-family: ui-monospace, Menlo, Consolas, monospace;
 }
 
 .task-empty {

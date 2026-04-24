@@ -16,9 +16,10 @@
 >     periodic), `intvl_sec`, `task_title`, `task_spec` (description),
 >     `task_status` (pending | ongoing | paused | done | cancelled),
 >     `task_result`, `time_to_pickup`, `language`.
->   - The assistant uses `create_task` / `update_task` tools to manage the
->     list, and the full tool catalogue (`web_fetch`, `run_script`, etc.) to
->     execute work.
+>   - The assistant uses a verb-based task API (`create_task`,
+>     `pickup_task`, `complete_task`, `pause_task`, `cancel_task`,
+>     `fetch_task`) to manage the list, and the full tool catalogue
+>     (`web_fetch`, `run_script`, etc.) to execute work.
 >   - `Tasks.mark_done/2` auto-reschedules periodics: `task_type="periodic"`
 >     → `status="pending"`, `time_to_pickup=now+intvl_sec`.
 >   - Scheduling is best-effort: a tiny `TaskRuntime` arms timers for
@@ -29,8 +30,9 @@
 >     independence → new chat session (multiple sessions per user run in
 >     parallel at the user-agent level).
 >   - No fork-on-adjust: if the user redirects a running task, the
->     assistant naturally updates the task description or status via
->     `update_task` in its next turn.
+>     assistant naturally cancels the old task (`cancel_task`) and
+>     creates a fresh one (`create_task` → `pickup_task`) in its next
+>     turn.
 >
 > **What survives intact from prior phases:**
 >   - `job` → `task` rename (Phase 1)
@@ -218,32 +220,33 @@ platform-specific metadata (Telegram chat_id, etc.).
 
 ```
 UserAgent state:
-  current_task:    nil | {ref, reply_pid}  ← one inline dispatched command
+  current_task:    nil | {ref, task_pid, reply_pid, session_id}
   platform_state:  %{telegram: %{...}, ...}
 ```
 
 It accepts two **distinct** dispatch messages — one per mode — and routes
 each to its own pipeline function. There is **no shared dispatcher** that
-inspects the command to decide which pipeline to call.
+inspects the command to decide which pipeline to call. There is no
+interrupt dispatch; see §Mid-chain user message injection below for how
+user corrections land while a chain is in flight.
 
 ```
 handle_call({:dispatch_assistant, %AssistantCommand{} = cmd}, …)
-  → Task.Supervisor.async_nolink(TaskSupervisor, fn ->
-      run_assistant(cmd, state, session_data)
-    end)
+  → if current_task: queue (see §Mid-chain); reply :ok
+    else Task.Supervisor.async_nolink(TaskSupervisor, fn ->
+           run_assistant(cmd, state, session_data)
+         end)
 
 handle_call({:dispatch_confidant, %ConfidantCommand{} = cmd}, …)
   → Task.Supervisor.async_nolink(TaskSupervisor, fn ->
       run_confidant(cmd, state, session_data)
     end)
-
-handle_call({:dispatch, :interrupt}, …)
-  → cancel_current_task(state)        ← the only message that serves both
 ```
 
 `run_assistant/3` and `run_confidant/3` do not call into each other and do
-not share any helper that knows about the other path. Interrupt is the sole
-cross-path message because cancellation is mode-agnostic.
+not share any helper that knows about the other path. Confidant is a
+one-shot streaming reply per request — it has no chain, no queue, and
+its busy-reply contract is out of scope for mid-chain injection.
 
 In Assistant mode (#101 target), the dispatched task runs the **session
 loop** (see §Assistant Mode) — a single conversational LLM turn with
@@ -272,7 +275,7 @@ Concretely for a user turn:
 3. Pipeline runs. Every `session_progress` row gets `ts = System.os_time(:ms)`
    at INSERT. Final-text tokens are written to `sessions.stream_buffer`
    as they arrive from the LLM (throttled; see below). When the final
-   text round completes, the accumulated text is appended to
+   text turn (chain end) completes, the accumulated text is appended to
    `session.messages` with its own BE `ts` and `stream_buffer` is cleared.
 
 The FE holds a local mirror of `session.messages` for display. It
@@ -305,7 +308,7 @@ GET /sessions/:id/poll?msg_since=<ts>&prog_since=<id>
 - `progress` delta: `session_progress` rows (kind=tool pending/done, or
   kind=thinking, or kind=summary) since the last tick. Cheap — indexed
   on `(session_id, id)`.
-- `stream_buffer`: partial text of the in-flight final-answer round.
+- `stream_buffer`: partial text of the in-flight final-answer turn.
   Updated on the BE in-place as tokens arrive from the LLM, capped to a
   hard update cadence (default 250 ms between writes — see
   `@stream_buffer_flush_ms`). `null` when no generation is active.
@@ -486,10 +489,10 @@ immediate follow-ups without re-running the tool.
 paths. Source of truth for `fetch_task`, the task-list block
 `**Attachments:**` line, and `extract_content`'s dedup scan. Previously
 derived via regex from `task_spec` text, which broke when the model
-flattened newlines and left `📎` mid-line. `create_task` / `update_task`
-write the validated `attachments` argument directly into the column —
-no merging into task_spec. Legacy rows (pre-migration) fall back to the
-regex parser so existing tasks keep working. `AttachmentPaths.clean_spec/1`
+flattened newlines and left `📎` mid-line. `create_task` writes the
+validated `attachments` argument directly into the column — no merging
+into task_spec. Legacy rows (pre-migration) fall back to the regex
+parser so existing tasks keep working. `AttachmentPaths.clean_spec/1`
 scrubs any `📎 ` references the model embeds in `task_spec` so the
 stored spec is pure prose.
 
@@ -518,7 +521,7 @@ Generates a schema-driven nudge example from the tool's own property
 descriptions (no hardcoded values — `<string>` / `<integer>` /
 `[...]` placeholders plus verbatim `description` lines). Tagged
 rejections (`{issue_atom, reason}`) flow through `execute_tools/2`
-into the message marker `[[ISSUE:<atom>]]`, which `session_turn_loop`
+into the message marker `[[ISSUE:<atom>]]`, which `session_chain_loop`
 strips from the model-visible message AND counts in `ctx.nudges`.
 Once any issue's counter hits `@model_behavior_nudge_limit = 3`,
 `maybe_abort_on_model_behavior_issue/2` terminates the turn,
@@ -558,13 +561,31 @@ no plan/exec/signal protocol.
 
 ---
 
-## Session loop
+## Chain loop
+
+**Terminology** (used consistently throughout the codebase):
+
+- **turn** — one LLM roundtrip: one `LLM.stream` call + the tool
+  execution it triggers. A turn either produces `tool_calls` (and
+  recurses into the next turn) or produces user-facing text (ending
+  the chain).
+- **chain** — a sequence of turns that begins when a user message (or
+  scheduler-triggered `{:task_due}`) lands and ends when the assistant
+  emits user-facing text. A simple ask resolves in one chain; a
+  complex multi-step objective can span many chains with user
+  refinements between them.
+- **task** — a persistent objective row, created with `create_task`,
+  spans many chains. Lifecycle is verb-driven
+  (`pickup_task → exec tools → complete_task`).
 
 ```
 incoming:
-  {:user_msg, %AssistantCommand{content, attachment_names, files}}
+  {:dispatch_assistant, %AssistantCommand{...}}
   OR
-  {:task_due, task_id}        ← fired by scheduler; no user text
+  {:task_due, task_id}                ← scheduler; no user text
+  OR
+  {:auto_resume_assistant, session_id} ← Phase 2 auto-resume
+                                         (unanswered user msg detected)
 
   ▼
 UserAgent.run_assistant(cmd, state, session_data)
@@ -572,37 +593,49 @@ UserAgent.run_assistant(cmd, state, session_data)
   ├── build context (§Context assembly)
   │     system prompt + history + [Active tasks] block + current input
   │
-  └── conversational turn loop:
+  └── session_chain_loop(messages, model, ctx, turn=0):
+        │  (at top of each turn:) splice_mid_chain_user_msgs/2 —
+        │     fold any user messages persisted to session.messages
+        │     after the chain started into `messages`.
+        │
         LLM.stream(model, messages, collector, tools, ...) →
           ┌─ {:tool_calls, calls} ─┐
           │   collector cleared (defensive), execute each call,
-          │   append tool result, loop
+          │   append tool result, recurse into turn+1
           └─ {:text, text} ─┘
                collector accumulated the text into sessions.stream_buffer
                progressively during generation → FE polling rendered it
                in real time → now persist the final message to
-               session.messages + clear stream_buffer → DONE
+               session.messages + clear stream_buffer → CHAIN DONE
 
-  Safety cap: max_assistant_tool_rounds per turn (default 50) — if hit,
-  abort with a "let's continue next turn" message.
+  Return value: {:chain_done, watermark_ts} where watermark_ts is the
+    max user-ts in the chain's final `messages` list (the highest user
+    message ts the chain's LLM calls actually saw). The GenServer's
+    chain-complete hook uses it against DB state to detect "a user
+    message landed AFTER the chain finished consuming input" and
+    trigger an auto-resume.
+
+  Safety cap: max_assistant_turns_per_chain (default 50) — if hit,
+  abort with a "let's continue next time" message.
 ```
 
-Uses `LLM.stream` (not `LLM.call`) on every round — same pattern as
-Confidant — so that the final-answer text round streams tokens into
+Uses `LLM.stream` (not `LLM.call`) on every turn — same pattern as
+Confidant — so that the final-answer text turn streams tokens into
 `sessions.stream_buffer` as they're generated. The FE polling loop
 renders progressive text with the same "thinking…" → "streaming the
-answer…" status flip as Confidant. Tool-call rounds emit no content
+answer…" status flip as Confidant. Tool-call turns emit no content
 tokens, so `stream_buffer` stays empty through them and `LLM.stream`
 just returns `{:ok, {:tool_calls, …}}` — identical to what `LLM.call`
 used to return.
 
-The turn is strictly sequential: the model emits a tool-call round,
-tool(s) run, results come back, the model emits the next round (or text).
-Text output ends the turn — no "must end with signal" rule.
+The chain is strictly sequential: the model emits tool calls, tools
+run, results come back, the model emits the next turn (or text). Text
+output ends the chain — no "must end with signal" rule.
 
-If a second user message arrives while a turn is in flight, it queues in
-the session's mailbox and is handled on the next turn (the message
-surfaces in the updated `session.messages` context).
+If a new user message arrives while a chain is in flight, it is spliced
+into the working `messages` list at the START of the next turn in the
+same chain — the next LLM call sees it as context. See §Mid-chain user
+message injection for the full semantics.
 
 ---
 
@@ -691,40 +724,98 @@ surfaces in the updated `session.messages` context).
 
 ## Task lifecycle
 
-```
-task_status transitions:
+### Identity (Phase 3, planned — 2026-04-24+)
 
-  (no state)─► ongoing  ──► done       (Tasks.mark_done)
+A task is addressed by its **per-session integer** `task_num` `(N)`.
+This is the only identifier the user sees, the model sees, and the
+tools take as an argument.
+
+- **`task_num`** — `integer`, per-session monotonic from 1, generated at
+  `create_task` time. Rendered as `(N)` in prompts, chat UI, logs
+  shown to humans. Users refer to tasks as "task 1" / "task (2)".
+  Tool schemas (`pickup_task`, `complete_task`, `pause_task`,
+  `cancel_task`, `fetch_task`) all take `task_num: integer` — never a
+  cryptic id.
+- **`task_id`** — `string`, cryptic, DB primary key. **Internal only.**
+  Foreign keys on `session_progress.task_id`, `tool_history`, and the
+  new `task_turn_archive` still use this for global uniqueness and
+  audit stability across sessions. Never surfaced to the user or model
+  and never appears in prompts / chat.
+- **Boundary resolution.** Every tool handler accepting `task_num`
+  resolves `(session_id, task_num) → task_id` at the BE boundary
+  (helper: `Tasks.resolve_num/2`) before any DB work. If the `task_num`
+  doesn't exist for the session, the tool returns a crisp "no task (N)
+  in this session" error — impossible to collide across sessions,
+  impossible to hallucinate a plausible-looking string id.
+- **Operator logs (SysLog, `[POLICE]`, telemetry) KEEP `task_id`** for
+  global uniqueness. These are operator-facing, not user- or
+  model-facing.
+
+Rationale: the model was previously asked to map the user's `(N)`
+reference to the task list's cryptic `task_id` on every tool call.
+Observationally it did this correctly but it's an avoidable failure
+surface. Using `task_num` end-to-end removes the mapping step — Police's
+schema check rejects non-integers cleanly, and the BE resolver rejects
+non-existent numbers with a specific error.
+
+### Status transitions
+
+```
+task_status transitions (verb-based API, 2026-04-24):
+
+  (no state)──► pending   (create_task)
+                   │
+                   │  pickup_task
+                   ▼
+                ongoing   ──► done       (complete_task — one_off)
                    │          │
-                   │          └─ if task_type == "periodic":
-                   │               Tasks.mark_done auto-
-                   │               reschedules:
-                   │                 status=pending,
-                   │                 time_to_pickup=now+intvl_sec
-                   │                 TaskRuntime.schedule_pickup
+                   │          └─ complete_task on a periodic row
+                   │             auto-reschedules via Tasks.mark_done:
+                   │               status=pending,
+                   │               time_to_pickup=now+intvl_sec,
+                   │               TaskRuntime.schedule_pickup
                    │
-                   ├──► paused    (update_task(status: "paused"))
+                   ├──► paused    (pause_task)
                    │
-                   ├──► cancelled (update_task(status: "cancelled"))
+                   ├──► cancelled (cancel_task)
                    │
                    └──► (stays ongoing; the assistant may go idle
                          waiting for next user turn)
 
-  pending ◄── (periodic auto-reschedule OR
-               update_task(status: "pending") to redo a done task)
+  pending ◄── (periodic auto-reschedule OR pickup_task on a done
+               task, which reopens it to ongoing for rework)
       │
       └── when scheduled pickup fires (time_to_pickup reached),
-          UserAgent injects a {:task_due} turn; the next session
-          turn transitions the task to ongoing again.
+          UserAgent injects a {:task_due} silent turn which calls
+          Tasks.mark_ongoing at pickup start; model then produces
+          the task's output via execution tools and closes with
+          complete_task (auto-reschedules for periodics).
 ```
 
 Key properties:
 
-- **`create_task` inserts with `task_status='ongoing'`, not `pending`.** The
-  model created the task because it is about to execute it in this same
-  turn — there is no pending phase for freshly-created tasks. `pending` is
-  reserved for periodic tasks awaiting their next cycle and for done tasks
-  explicitly resurrected via `update_task(status: "pending")`.
+- **`create_task` inserts with `task_status='ongoing'`** (Phase 3 lever
+  2b, 2026-04-24+). The task is created AND started in one verb: the
+  model can run execution tools right after `create_task` with no
+  separate `pickup_task` call. `pickup_task` remains the verb for
+  RESUMING previously done / paused / cancelled (and idempotent
+  re-pickup of ongoing). Collapsing the two into one tool-call turn
+  saves ~8 k input tokens on every fresh-session opener (previously
+  `create_task → pending` then `pickup_task → ongoing` required two
+  LLM roundtrips, each re-shipping the full system prompt + tool
+  schemas). The tool's **returned map is self-describing** —
+  `{task_num, status: "ongoing", do_not: "call pickup_task — task is
+  already ongoing", ...}` — because prompt-only guidance alone did
+  not stop 14 B-class models from reflexively firing `pickup_task(N)`
+  as the next turn. Weak models anchor on the immediate tool result
+  far more than on the system prompt (which is far away in the
+  context window), so the instruction is repeated at the point of
+  decision. The hint is **prohibitive only** — an earlier positive
+  variant ("call run_script / web_search directly") over-prescribed
+  the path: the model took it as "next call MUST be run_script" and
+  skipped natural intermediate tools (`lookup_credential`,
+  `read_file`, `extract_content`), folding credential lookup INTO
+  the bash script as a shell command.
 - **`Tasks.mark_done/2` is the single source of rescheduling for periodic
   tasks.** The assistant doesn't call a separate reschedule tool — it just
   updates status to "done", and the mark_done implementation branches on
@@ -734,14 +825,14 @@ Key properties:
   current turn completes. On the next turn the assistant sees a pending
   periodic in its task list with pickup in the past and acts on it.
 - **Runtime auto-close of forgotten-done tasks.** If the session-turn
-  loop finishes a text round while any task owned by this session is
+  loop finishes a text turn (chain end) while any task owned by this session is
   still in `ongoing` status, `auto_close_ongoing_tasks/2` sweeps those
   tasks and calls `Tasks.mark_done/2` with the first 500 characters of
   the assistant's final text as `task_result`. Catches the failure mode
   where the model did the work but forgot to explicitly call
-  `update_task(status: "done")` before emitting its answer — a
-  compliance gap that otherwise leaves rows stuck in the sidebar
-  indefinitely. Periodic tasks re-schedule themselves via
+  `complete_task` before emitting its answer — a compliance gap that
+  otherwise leaves rows stuck in the sidebar indefinitely. Periodic
+  tasks re-schedule themselves via
   `Tasks.mark_done/2`'s built-in branch, so the auto-close path works
   for them too (ongoing → pending + bumped pickup).
 - **Auto-chain after each turn.** When a turn completes (user-initiated
@@ -773,11 +864,402 @@ order (newest first), `recent` is `updated_at` DESC.
 
 Task-management tools (assistant calls these to shape its task list):
 
+Verb-based API (2026-04-24): each lifecycle transition is its own tool.
+The runtime owns the state machine — the model picks a verb, Police
+rejects invalid transitions with educational nudges.
+
+All lifecycle verbs take **`task_num: integer`** (per-session,
+user-visible `(N)` — see §Task lifecycle §Identity). Only `create_task`
+returns a `task_num` rather than taking one.
+
 | Tool | Args | Effect |
 |------|------|--------|
-| `create_task` | `task_title`, `task_spec`, `task_type` (one_off\|periodic), `intvl_sec`, `language`, `attachments?` | Insert a task row (**status=ongoing**, time_to_pickup=now). The model is calling this because it's about to start executing the task in this same turn — so the row starts in `ongoing`, not `pending`. If `attachments` is non-empty, each path is validated (must start with `workspace/` or `data/`) and `📎 <path>` lines are appended to the stored `task_spec` — so the DB row has canonical form. Returns `task_id`. |
-| `update_task` | `task_id`, `status?`, `task_spec?`, `intvl_sec?`, `attachments?` | Mutate fields. `status="done"` triggers the auto-reschedule branch for periodic tasks. `attachments`, if passed, REPLACES the existing list (not additive) — same validation + normalisation as `create_task`. Omit to leave attachments untouched. |
-| `fetch_task` | `task_id` | Read-only fetch for when the assistant needs task details beyond what the Task-list block shows (e.g. the full description of a done task, the previous cycle's result, the activity log). Returns the full task row plus the latest ≤20 `session_progress` entries for that task. |
+| `create_task` | `task_title`, `task_spec`, `task_type` (one_off\|periodic), `intvl_sec`, `language`, `attachments?` | Insert a task row (**status=pending**, time_to_pickup=now). Attachments (if any) are validated (must start with `workspace/` or `data/`) and `📎 <path>` lines are appended to the stored `task_spec`. **Returns `task_num` `(N)`** — the per-session integer the model will use for all subsequent verb calls. Creation does NOT start execution — the model must call `pickup_task(task_num: N)` next. |
+| `pickup_task` | `task_num` | Flip the target task → `ongoing`. Idempotent: already-ongoing returns ok without a write. Permissive: accepts `pending`, `paused`, `done`, `cancelled` and reopens them (the "resume / redo" path). Only failure is "no task (N) in this session." |
+| `complete_task` | `task_num`, `task_result`, `task_title?` | Close the task. One_off → `done`. Periodic → auto-reschedule branch: `status=pending`, `time_to_pickup=now+intvl_sec`, timer re-armed. Optional `task_title` refines the stored title at close (e.g. "Research X" → "Found 3 candidates"). Rejects terminal tasks (done / cancelled). |
+| `pause_task` | `task_num` | Flip the target task → `paused`. Only `ongoing` / `pending` are accepted. Terminal and already-paused tasks are rejected. |
+| `cancel_task` | `task_num`, `reason?` | Flip any non-terminal task → `cancelled`. `reason` is stored as `task_result` (defaults to "Cancelled by user"). |
+| `fetch_task` | `task_num` | Read-only, resumable view of a task. Returns: metadata (title, status, type, attachments, `task_result`), **archive** (verbatim pre-compaction turns stitched from `task_turn_archive`), **live** (current session.messages filtered by this task's tag), and **tool bodies** (tool_history entries tagged with this task, within retention). See §Task state continuity. Use when the Task-list block's summary isn't enough OR when the anchor named a task whose history isn't in the current LLM context. |
+
+## Active-task anchor (Phase 3, planned)
+
+The runtime — not the model — decides which task is the current focus
+of a chain. It communicates this decision to the model through a
+single, unambiguous prompt block we call the **anchor**, injected by
+`ContextEngine.build_assistant_messages/2`.
+
+Exact shape of the anchor block (rendered as a synthetic user message
+at the end of the context, immediately before the real current user
+message):
+
+```
+## Active task
+
+- Current task: (N)
+- Your recent activity on this task (prior tool calls, results,
+  narration) is already present in the conversation above. Answer /
+  act from it directly.
+- Call `fetch_task(task_num: N)` ONLY as a fallback: if you need a
+  specific past decision or tool output that was compacted away
+  (older turns no longer visible in your context).
+```
+
+**Why non-leading wording matters.** An earlier draft said "If you
+don't see this task's details, call `fetch_task`" — that phrasing
+acted as encouragement: weaker models reflexively fetched on every
+chain because "if you don't see" is permissive. With recent activity
+already injected via `ToolHistory.inject/2`, fetching was redundant.
+The current wording anchors the default ("already present, act from
+it") and frames `fetch_task` as a compaction-recovery fallback, not a
+routine step.
+
+Rules:
+
+- **Exactly one current task at any moment.** No "come back to X after
+  Y" hint in the prompt — that's runtime's job to arrange automatically
+  via the back-reference chain described below. The model's cognitive
+  scope is the single named task.
+- **Runtime sets the initial anchor at chain start.** Possible
+  sources, in priority order:
+  - Scheduler-triggered silent pickup (`{:task_due, task_id}`): anchor
+    = that task.
+  - Chain-complete auto-resume (Phase 2 mid-chain splice path): anchor
+    = the task the chain-that-just-ended was working on.
+  - User-initiated chain on a session with exactly one active
+    (pending/ongoing) task: anchor = that task.
+  - Otherwise (no active task OR ambiguous): anchor is OMITTED. Model
+    operates in "free" mode — its next meaningful action will be
+    `create_task` (or a pure chat reply).
+- **Anchor is MUTABLE during a chain** (2026-04-24 revision), driven
+  by verb tool calls — see §Anchor mutation and the `back_to_when_done`
+  back-stack below.
+- **Anchor mutation triggers a refreshed `## Active task` block at the
+  next turn boundary**, so subsequent LLM calls within the same chain
+  see the updated anchor value. Both the prompt-side block AND the
+  runtime-side `ctx.anchor_task_num` (used for per-message tagging
+  and Police scope) stay in sync.
+- **Anchor is not persisted as such** — it's a derived, recomputed
+  value. But its back-reference stack IS persisted on each task
+  (see `back_to_when_done_task_num` column in §Database Schema) so
+  the "where to go back to after I'm done" graph survives restarts.
+
+### Anchor mutation via `back_to_when_done` back-stack
+
+Each task row carries a nullable **`back_to_when_done_task_num`**
+(per-session integer, FK-style to `tasks.task_num`). Set at
+`pickup_task` time; read at `complete_task` / `cancel_task` /
+`pause_task` time. Models a back-stack "while I work on T, remember
+that Y was the anchor before me — when I'm done, the anchor returns
+to Y."
+
+Transitions:
+
+- **`pickup_task(N)` succeeds.** Behavior:
+  - If `N` was already ongoing (idempotent re-pickup): no back-ref
+    update — we don't want to overwrite the original back-ref on
+    repeated pickups.
+  - If `N` is transitioning from a non-ongoing state (pending /
+    paused / done / cancelled): read `ctx.anchor_task_num` (the
+    anchor BEFORE this pickup). If it's a real task_num AND differs
+    from `N`, persist it as `tasks[N].back_to_when_done_task_num`.
+  - Set `ctx.anchor_task_num = N`. Refresh the prompt's
+    `## Active task` block at the top of the next turn iteration.
+- **`complete_task(N)` / `cancel_task(N)` / `pause_task(N)` succeeds
+  AND `N == ctx.anchor_task_num`** (the verb targets the current
+  anchor, not some other task):
+  - Read `tasks[N].back_to_when_done_task_num` → call it `prev`.
+  - Set `ctx.anchor_task_num = prev` (may be `nil`).
+  - Refresh the prompt's `## Active task` block at the top of the
+    next turn iteration — if `prev` is `nil`, the refreshed block
+    says "Current task: none" (free mode).
+- **`complete_task(N)` etc. succeeds BUT `N != ctx.anchor_task_num`**
+  (e.g. the model closes some OTHER task than the current anchor):
+  no anchor change. Leave the back-stack alone.
+
+Worked example — user's nextcloud scenario:
+
+```
+User creates task 1 (nextcloud setup)  → ctx.anchor = 1, tasks[1].back = nil
+User creates task 2 (joke/30s periodic):
+  pickup_task(2)                       → tasks[2].back = 1 (stored), anchor = 2
+
+[silent joke pickup chain]:
+  complete_task(2)                     → anchor = tasks[2].back = 1
+  [periodic auto-reschedules for next cycle]
+
+Next silent joke pickup chain:
+  pickup_task(2)                       → tasks[2].back already = 1; no overwrite
+  complete_task(2)                     → anchor = 1
+
+User eventually says "cancel the jokes":
+  cancel_task(2)                       → anchor = tasks[2].back = 1
+
+User completes nextcloud setup (much later):
+  complete_task(1)                     → anchor = tasks[1].back = nil → free mode
+```
+
+Consequence: when the pickup task of a silent chain is closed, the
+chain's runtime anchor naturally returns to whatever was ambient
+before. The model's subsequent messages tag + the Police scope flip
+together. No orphan tags; no phantom "Task (2): [Docker work]"
+mislabels.
+
+### Scheduler — don't stack periodic pickups
+
+When `TaskRuntime` fires a periodic timer, before dispatching
+`{:task_due, task_id}` to the UserAgent it checks: **is any other
+periodic task in this session already in `ongoing` state?** If yes,
+skip this firing (the prior cycle hasn't finished). The missed cycle
+isn't made up for; the next natural timer cycle handles it. Prevents
+overlapping periodic silent chains in the same session.
+
+One_off tasks in `ongoing` state do NOT block periodic pickup — the
+periodic interrupts, does its work, and returns to the one_off via
+the back-stack.
+
+### Periodic + long-running coordination (Approach A)
+
+When a periodic task is due while a long-running one_off task is
+`ongoing`, the runtime:
+
+1. Picks up the periodic as a silent turn (current behaviour).
+2. Sets the anchor to the periodic's `task_num`.
+3. The long-running task's status stays `ongoing` (no implicit
+   pause). It's just not the anchor for this chain.
+4. When the periodic's chain completes (`complete_task` → auto-
+   reschedule), the NEXT chain's context build re-resolves the anchor
+   via the priority rules above — typically returning to the long-
+   running task on the next user interaction.
+
+No `pause_task` / `pickup_task` dance needed between model-facing
+transitions; coordination is runtime-owned and invisible to the model
+beyond the anchor block flipping.
+
+Approach B (strict sequential — periodic blocks until long-running
+is done) was considered and rejected: users expect periodics to fire
+on time, and the anchor is strong enough signal to scope the model
+without requiring it to orchestrate the handoff itself.
+
+## Per-message task tag (Phase 3, planned)
+
+Every **user** and **assistant** message persisted to
+`session.messages` during an anchored chain carries a `task_num`
+field alongside `role`, `content`, `ts`. Tool-result messages (kept in
+`tool_history`, not `session.messages`) are tagged by the anchor of
+their owning chain at save time.
+
+### How the tag is set
+
+- **User messages**: `/agent/chat` handler resolves the current anchor
+  at persistence time (same logic `ContextEngine` uses to build the
+  anchor block). If an anchor exists, the stored message carries its
+  `task_num`. No anchor → untagged (pure chat).
+- **Assistant messages**: `session_chain_loop` persists with the
+  anchor's `task_num`. Both the final text turn AND the narration-
+  before-tool-call turns (Phase 2 fix).
+- **Tool history**: when `collect_tool_messages` snapshots a chain's
+  tool messages at chain end, the chain's anchor `task_num` is
+  recorded on the entry. **The input to `collect_tool_messages` MUST
+  be `Enum.drop(messages, ctx.chain_start_idx)`** — not the full
+  `messages` list. `messages` at chain end contains the tool_history
+  re-injected by `ContextEngine.build_assistant_messages` from PRIOR
+  chains; slicing by `chain_start_idx` isolates this chain's own
+  tool_calls. Without the slice, successive chains stack prior
+  chains' tool_calls into their own saved entries — causing
+  duplicated re-injection in future context builds (entry 1 and the
+  bloated entry 2 both re-splice the same chain-1 tool_calls). See
+  the fix in `UserAgent.session_chain_loop`.
+
+### What the tag is used for
+
+1. **Model self-focus.** Prompt rule: *"When scanning your own prior
+   messages in context, ignore any whose `(N)` tag differs from the
+   current anchor. Those are from a different task the runtime
+   interleaved; not yours to reason about on this chain."* Assistant
+   messages render with the tag visible to the model as
+   `"[task (N)] ..."` at context-build time.
+2. **FE user focus.** Chat UI renders the message prefix as
+   `"[12:39] <icon> Assistant — on task (N):"` (i18n key `onTask`).
+   User sees at a glance which task an assistant reply belongs to.
+3. **Archive partitioning (see §Task state continuity).** Compaction
+   groups `to_summarize` messages by `task_num` and snapshots each
+   group to `task_turn_archive` before summarising.
+4. **`fetch_task` filtering.** Live messages + tool_history entries
+   for a task are retrieved by matching `task_num`.
+
+### Why tag users AND assistants
+
+Tagging only assistant messages would break archive/fetch partitioning
+— user refinements and decisions are critical context for resuming a
+task, and without a tag they'd either get summarised into the master
+session summary (losing detail) or leak across tasks. Handler-side
+tagging (via the anchor at persist time) solves this without asking
+the model to annotate its own inputs.
+
+## Task state continuity across chains (Phase 3, planned)
+
+**Problem.** A task that spans many chains (e.g. nextcloud setup with
+30+ interleaved periodic pickups) eventually has its oldest activity
+aged out of the LLM's working context: `session.messages` crosses
+`ContextEngine.should_compact?`, the compactor LLM summarises the
+oldest range into `session.context.summary`, and `tool_history` entries
+roll out of their retention window. When the model later calls
+`pickup_task` on the long-running task, its view of *what it already
+did* has been lossy-compressed.
+
+**Solution.** A per-task, append-only raw archive: `task_turn_archive`.
+
+### Hook — `ContextEngine.compact!`
+
+Before invoking the compactor LLM on the `to_summarize` slice:
+
+1. Group `to_summarize` by each message's `task_num` field.
+2. For each non-nil group, resolve `(session_id, task_num) → task_id`
+   and append each message verbatim to `task_turn_archive` keyed by
+   that `task_id`.
+3. Proceed with the summarisation as before.
+
+Untagged messages (pure chat) don't land in any archive; they're only
+represented via the master session summary. Acceptable — they weren't
+task work.
+
+### Hook — `tool_history` eviction
+
+`tool_history` maintains a bounded retention window (last N chains).
+When the retention window drops a chain, look up the chain's anchor
+`task_num`; if present, snapshot the chain's `tool_call` / `tool_result`
+messages to `task_turn_archive` under that `task_id`. Drop untagged
+chains' tool messages as today.
+
+### Schema — `task_turn_archive`
+
+```sql
+CREATE TABLE task_turn_archive (
+  id           INTEGER PRIMARY KEY,
+  task_id      TEXT NOT NULL,           -- cryptic BE id (FK)
+  session_id   TEXT NOT NULL,
+  original_ts  INTEGER NOT NULL,        -- the message's own ts when originally written
+  role         TEXT NOT NULL,           -- user / assistant / tool
+  content      TEXT,                    -- nullable for tool_calls-only messages
+  tool_calls   TEXT,                    -- JSON, present on role=assistant when tool_calls were emitted
+  tool_call_id TEXT,                    -- present on role=tool
+  archived_at  INTEGER NOT NULL
+);
+CREATE INDEX idx_task_turn_archive_task_ts ON task_turn_archive(task_id, original_ts);
+```
+
+Append-only. Eviction is sliding-window drop — no LLM summarisation.
+
+**Per-task sliding cap.** At every `append_raw/3`, a post-insert
+`prune/1` trims the task's archive to the tighter of:
+
+- `taskArchiveRowCap` (default 60 rows — approx 30 user+assistant pairs)
+- `taskArchiveByteCap` (default 120 000 bytes, summed over `content`)
+
+Rows are walked newest → oldest; we keep rows while under BOTH caps;
+everything older than the last kept row is dropped (`DELETE … WHERE
+id < min_keep_id`). A single heavy row (pasted 80 KB paragraph,
+massive JSON dump) shrinks the effective window further by triggering
+the byte cap first. Drop is terminal — no resurrect, no second-tier
+storage. Users with tasks whose relevant history predates the
+sliding window will see `fetch_task` return only the live + recent
+archive slice; older decisions compact into the master session
+summary via the usual `ContextEngine.compact!` path.
+
+### `fetch_task(task_num)` — the stitched view
+
+Response sections, in assembly order:
+
+1. **Metadata**: `task_num`, title, type, status, result, attachments,
+   `intvl_sec`, `time_to_pickup`.
+2. **Archive**: rows from `task_turn_archive` for this `task_id`,
+   ordered by `original_ts` ASC. Capped for safety at the most-recent
+   K entries if the archive has grown large; older entries are
+   represented by their most-recent predecessor only (no summarisation
+   v1).
+3. **Live conversation**: entries from `session.messages` whose
+   `task_num` matches AND `ts` is after the archive's latest
+   `original_ts`. Ensures no duplicate between archive and live.
+4. **Live tool bodies**: `tool_history` entries tagged with this
+   `task_num`, within the current retention window.
+
+Presented to the model chronologically end-to-end. The model reads
+this response like a dense replay of its own work on this task —
+decisions, tool outputs, user refinements — regardless of how many
+unrelated chains interleaved in between.
+
+## Prompt teaching model for Phase 3 (planned)
+
+The system prompt's `## Tasks` section must teach the model a clean
+hierarchy — terminology → identity → workflow → edge cases — in that
+order. The structure below is normative for the prompt rewrite that
+accompanies the Phase 3 implementation. Prompt copy will approximate
+but not necessarily match verbatim.
+
+### Level 1 — Terminology
+
+- **task**: a persistent objective row. Spans many chains. Has a
+  per-session number `(N)` — that's how you and the user refer to it.
+- **chain**: your path from seeing a user (or `[Task due]`) trigger
+  through to emitting your final user-facing text. Many turns per
+  chain.
+- **turn**: one of your LLM roundtrips inside a chain — an
+  `LLM.stream` call + any tool execution it triggers.
+- **anchor**: a runtime-injected block at the end of your context
+  naming the ONE task this chain is for. Trust it.
+
+### Level 2 — Identity
+
+- Tasks are addressed by **`task_num` — the per-session integer**
+  `(1)`, `(2)`, `(3)`. The user says "task 1" / "task (2)"; you use
+  `1`, `2` in your tool args.
+- **Never invent or guess a `task_num`.** The only valid values are
+  those listed in the Task list block or returned to you by
+  `create_task`.
+- You will NOT see any cryptic string id in your context. That's
+  deliberate — it's a BE-internal detail.
+
+### Level 3 — Workflow
+
+- **Read the anchor FIRST.** It says `Current task: (N)`. Everything
+  you do this chain is for that task — including tools called,
+  narration emitted, and `complete_task` call.
+- **If you don't have the task's details in your context**, call
+  `fetch_task(task_num: N)`. Returns metadata + archive of older turns
+  + live activity + tool bodies. Read it and proceed.
+- **Mid-chain user refinements** (multiple user messages since your
+  last reply) are refinements of the SAME anchored task. Don't treat
+  them as fresh asks. Let them redirect your next step.
+- **`complete_task` means DELIVERED.** If your reply asks the user
+  anything, do NOT call `complete_task` this chain — leave the task
+  `ongoing`. The anchor will be set back to this task on the next
+  chain once the user replies.
+
+### Level 4 — Focus rule (when scanning own history)
+
+Assistant messages in your context carry a `(N)` tag. When reading
+your own prior messages:
+
+- **If the tag matches the anchor** → it's your prior work on this
+  task; read it.
+- **If the tag differs** → the runtime interleaved a different task
+  there (e.g. a periodic pickup). Do NOT reason about that content
+  on this chain; it's not yours to advance.
+
+### Level 5 — Edge cases
+
+- **No anchor in context** → free mode. You're on a fresh session
+  with no active task, or the user is chatting without a tracked
+  objective. Your next meaningful action is usually `create_task` (or
+  just answer directly if it's small).
+- **Anchor is a task you don't recognise** → `fetch_task(task_num: N)`
+  first, then act.
+- **Anchor flipped to a periodic while you were mid-thought on a
+  different task** — doesn't happen within a chain (anchors only
+  change AT chain boundaries). If you perceive a mismatch, call
+  `fetch_task` and trust the anchor.
+
+---
 
 ### "Redo a done task" vs "new related ask"
 
@@ -797,14 +1279,16 @@ discipline`. Example:
 **Exception: explicit redo of the immediately preceding task.** Only
 when the user says *"actually try Y instead"* / *"re-run that"* /
 *"do it again but deeper"* — about the task that just finished — does
-the assistant reuse that same `task_id`:
+the assistant reuse that same `task_num`:
 
-- Task still pending / ongoing / paused → `update_task(task_id,
-  task_spec: "<new description>")` to rewrite and continue.
-- Task already done → `update_task(task_id, status: "pending")` to
-  reopen; mark done again when finished. For a periodic task, "done →
-  pending" resumes the schedule (the DB row's `time_to_pickup` stays at
-  its last value).
+- Task still pending / ongoing / paused → `pickup_task(task_num: N)` to
+  continue, then `complete_task(task_num: N, task_result: …, task_title: …)`
+  when done (the optional `task_title` is where the refined scope gets
+  persisted).
+- Task already done → `pickup_task(task_num: N)` to reopen it to
+  `ongoing`; execute; `complete_task(task_num: N, ...)` when finished.
+  For a periodic task, reopening from `done` keeps the existing
+  `time_to_pickup` — the schedule resumes from its last value.
 
 Follow-ups that only *look* related to a done task are NOT redos — they
 get their own `create_task`.
@@ -848,8 +1332,8 @@ text, anything else that passed the sniff — follows the same path:
    That tool call becomes a `session_progress` row in the chat
    timeline; the read is never invisible.
 5. Per the Task-list discipline, the model wraps the extract call in
-   a `create_task` → `update_task(done)` cycle when the read is part
-   of a substantive action.
+   a `create_task` → `pickup_task` → `extract_content` → `complete_task`
+   cycle when the read is part of a substantive action.
 
 The routing inside `extract_content` (image / video / pdf / pandoc-doc /
 plain-text branches) is an implementation detail — the model's mental
@@ -885,19 +1369,19 @@ their bare `📎 ` lines.
   marker verbatim into tool-call arguments they're building (e.g. they
   paste `task_spec: "📎 [newly attached] workspace/foo.pdf"` into a
   `create_task` call, echoing what they saw in their input). The
-  `create_task` and `update_task` handlers strip the ` [newly attached]`
-  literal from any `📎 ` line in `task_spec` before writing to the
-  DB. The marker is invalid as persisted data — only the context-
-  builder may emit it, only for the current turn's last user message.
+  `create_task` handler strips the ` [newly attached]` literal from any
+  `📎 ` line in `task_spec` before writing to the DB. The marker is
+  invalid as persisted data — only the context-builder may emit it,
+  only for the current turn's last user message.
 - **Post-normalise empty-spec guard** — `AttachmentPaths.normalise_spec/2`
   strips all `📎 ` lines from the input because the `attachments`
   argument is authoritative. A failure mode: the model packs the
   attachment path into `task_spec` as a `📎 ` line AND leaves
   `attachments` empty — normalisation then produces `""` and a garbage
-  task row is persisted. `create_task` and `update_task` re-check the
-  normalised spec for non-emptiness and reject with a nudge ("paths
-  belong in `attachments`, not `task_spec`") so the model retries with
-  the correct argument split instead of silently writing an empty spec.
+  task row is persisted. `create_task` re-checks the normalised spec
+  for non-emptiness and rejects with a nudge ("paths belong in
+  `attachments`, not `task_spec`") so the model retries with the
+  correct argument split instead of silently writing an empty spec.
 
 Prompt rule (in `system_prompt.ex :: assistant_base :: ## Attachments`):
 every `📎 [newly attached]`-prefixed line in the current turn's user
@@ -1039,50 +1523,100 @@ is running:
 
 - `{:dispatch_assistant, %AssistantCommand{}}` — next user message
 - `{:task_due, task_id}` — scheduler poke
-- `:interrupt` — cancel the current turn
 
-All queue; all are processed in arrival order at the start of the next
-turn. The model sees them as they are — the `[Active tasks]` block
-reflects whatever state the DB has when context is built.
+Both queue; both are processed at chain boundaries. The model sees them
+as they are — the `[Active tasks]` block reflects whatever state the DB
+has when context is built.
 
 Because there is only one ongoing turn at a time per session, parallelism
 within a session is nil by design. A user who wants two truly independent
 threads of work creates a second chat session; each session has its own
 GenServer and its own task list.
 
-### Interrupt cleanup — what happens when the user hits Stop
+### Mid-chain user message injection
 
-`cancel_current_task/1` runs four cleanups in order:
+There is no Stop button and no `/agent/interrupt` endpoint. The user can
+send a new message at any time, including while the assistant is
+mid-chain; the message is persisted and folded into the assistant's
+context as soon as possible — typically on the very next LLM roundtrip
+within the current chain.
 
-1. **Kill the Task process** via `Process.exit(task_pid, :kill)`. This
-   cascades through the BEAM exit chain: `Task.async` children spawned
-   inside the tool (e.g. `Web.Search.call_search_engine`'s parallel
-   searxng queries) are LINKED, so they die with the parent; Finch /
-   Req sockets close as the caller-process DOWN is detected, sending
-   FIN/RST to searxng / Jina / model endpoints. Outbound HTTP work
-   stops within milliseconds; no processes leak.
-2. **Clear `sessions.stream_buffer`** so the next FE poll sees
-   `is_working=false` with a genuinely empty buffer.
-3. **Delete zombie pending `session_progress` rows**
-   (`SessionProgress.delete_pending_for_session/1`). The killed task
-   had written a `status='pending'` row in `execute_tools` before the
-   tool ran, but can't run its own `mark_tool_done` / `delete` cleanup
-   after the kill. Without this step, `fetch_for_session/2` keeps
-   re-returning the zombie row on every poll (its SQL explicitly
-   includes pending rows regardless of cursor, so FE can pick up
-   live `sub_label` updates on in-flight tools), the CSS
-   `progress-spin` keeps animating, and the FE's `_rotateSubLabels`
-   interval keeps cycling through the dead tool's URLs forever.
-4. **Cancel ongoing tasks** for this session (`Tasks.mark_cancelled` +
-   `task_result="Interrupted by user"`). They surface in the
-   `### done` section of the next turn's task list so the user can
-   ask to resume (`update_task(status: "pending")` reopens).
+The design is **stateless DB-driven queuing**. The DB is the source of
+truth; there is no in-memory mailbox tracking pending messages.
 
-FE counterpart: the stop-btn click handler also filters
-`currentSession.progress` locally (dropping `status='pending'` rows)
-and calls `renderChat()` before the BE's cleanup has propagated. This
-makes the stop feel instant even though `/agent/interrupt` is
-fire-and-forget.
+Three integration points:
+
+1. **HTTP handler (`agent_chat.ex`).** Persists the user message to
+   `session.messages` with a BE timestamp BEFORE dispatch (unchanged
+   from before), then calls `dispatch_assistant`. The dispatch always
+   returns 202 — busy is no longer a failure mode the FE sees. The
+   message is queued the moment it hits the DB.
+
+2. **Mid-chain splice (`session_chain_loop`).** Each turn iteration of the
+   loop, BEFORE calling the LLM, queries `session.messages` for
+   user-role entries whose `ts` is greater than the last user-role
+   entry already present in the in-memory messages accumulator. Any
+   found are appended as plain `{role: "user", content: ...}` entries;
+   the next LLM call sees them in context. This splice point is safe:
+   tool-call and tool-result pairs have already been appended together
+   in the prior recursion, so a new user message here doesn't break
+   OpenAI's tool-sequencing rules. Between the spawn of the current
+   LLM request and its completion, user messages can still arrive —
+   they're picked up at the START of the next iteration.
+   **Contract**: every user-role entry in the working messages list
+   MUST carry its source DB-row `ts`. `ContextEngine.build_current_msg`
+   and `ContextEngine.to_llm_msg` both preserve it; without that,
+   `max_user_ts_in_messages/1` collapses the floor to 0 and the splice
+   re-appends the current user message as a duplicate — observed
+   2026-04-24 as "two identical `[USER]` blocks every turn".
+
+3. **Chain-complete hook (`handle_info({ref, _result}, …)`).** When
+   the Task finishes, check `session.messages` for unanswered user
+   messages (i.e. the last message in the array is role="user" with
+   `ts` greater than the last role="assistant" message). If any,
+   self-synthesise an `AssistantCommand` for this session and
+   dispatch a fresh turn. Otherwise fall through to
+   `maybe_trigger_next_due` for periodic-task chaining.
+
+Consequences:
+
+- **User's messages are NEVER dropped.** 409 no longer exists.
+- **In-flight LLM / tool calls run to completion** — there is no
+  hard-kill. The user's new message is seen on the NEXT LLM roundtrip,
+  which is typically within 1–10 s. Token burn on the in-flight call
+  is accepted as the cost of not having an interrupt path.
+- **Safety nets for runaway behaviour** remain the same: Police's
+  3-strike escalation, `max_assistant_turns_per_chain` cap. User-initiated
+  hard-stop is no longer supported; if a turn is genuinely stuck,
+  sending a new message ("stop what you're doing, cancel task X") is
+  the escape hatch — the model sees it on the next LLM call and is
+  expected to comply.
+- **`session_progress` zombie cleanup is obsolete.** It only existed
+  for the interrupt path; without interrupt, tools always run to
+  completion and mark their own progress rows done.
+
+### Boot scan for orphan recovery
+
+On `UserAgent.init/1`, after the GenServer starts, it queries its
+user's Assistant-mode sessions for any session whose last message is
+role="user" (i.e. unanswered by the assistant). For each, it
+self-dispatches an `AssistantCommand` to resume work. This guarantees
+responsiveness across:
+
+- **GenServer crash + supervisor restart** — pending mid-chain
+  messages that were never processed because the old GenServer died
+  are picked up by the new one.
+- **Idle-timeout shutdown + lazy respawn** — next `ensure_started` on
+  a user whose last message was never answered picks up the work.
+
+The scan runs once at startup; it is NOT a poller. Subsequent
+interactions rely on the chain-complete hook + mid-chain splice. The
+DB-query cost is small (one indexed lookup per user's Assistant
+sessions) and happens only at cold-start.
+
+The user experience guarantee is: **after sending a message, the user
+should never have to "nudge" to get a reply.** At worst, they wait a
+bit longer while the system self-heals.
 
 ---
 
@@ -1105,9 +1639,17 @@ see #95 for the scheduled-push variant.
 
 ```
 Dmhai.Agent.TaskRuntime.rehydrate/0 (called 500 ms after app start):
-  1. Any task with status="ongoing" → revert to "pending"
-     (the session turn that owned it didn't complete; the assistant will
-      resume via task list on next user message or scheduled pickup).
+  1. Any PERIODIC task with status="ongoing" → revert to "pending".
+     Periodic tasks' ongoing state is inherently tied to a running
+     cycle; if the BEAM died mid-cycle, the cycle is lost and the
+     task must be re-armed to fire again. One_off tasks' ongoing
+     state is NOT reverted — a one_off task can legitimately stay
+     `ongoing` across multiple chains (Phase 2 multi-chain: assistant
+     finished a chain asking for clarification, waiting for user). If
+     the chain was genuinely killed mid-work, the Phase 2 boot scan
+     detects unanswered user messages and auto-dispatches a fresh
+     resume chain; the task's `ongoing` status is correct for the
+     continuation. See §Mid-chain user message injection.
   2. Any pending periodic task with time_to_pickup IS NOT NULL →
      schedule_pickup (re-arm the timer).
   3. Any pending periodic task with time_to_pickup <= now → poke the
@@ -1117,8 +1659,9 @@ Dmhai.Agent.TaskRuntime.rehydrate/0 (called 500 ms after app start):
 Disabled in `:test` env via `:dmhai, :enable_task_rehydrate, false`.
 
 Crash survival is trivial under this model: `tasks` + `session_progress`
-+ `sessions.messages` are the truth. The assistant reads them on its
-next turn and continues. No ctx-snapshot persistence is needed.
++ `sessions.messages` + `task_turn_archive` are the truth. The assistant
+reads them on its next turn and continues. No ctx-snapshot persistence
+is needed.
 
 ---
 
@@ -1132,26 +1675,36 @@ before it runs and returns a tool-result the model can read + correct on.
 Checks:
 
 1. **Task discipline** — every execution-class tool call must be
-   preceded (in the session, not just this turn) by an active
-   `create_task`.
+   preceded in THIS chain by a `pickup_task` call. The verb-based API
+   (2026-04-24) makes `pickup_task` the single signal for "I am
+   actively working on a task right now" — creation alone
+   (`create_task`) leaves the task at `pending`, not `ongoing`, so the
+   gate can no longer be satisfied by a long-lived task left over from
+   an unrelated prior user ask.
    - Gated tools: `run_script`, `web_fetch`, `web_search`,
      `extract_content`, `read_file`, `write_file`, `spawn_task`.
-   - Bypass: task-management tools themselves (`create_task`,
-     `update_task`, `fetch_task`), credential tools (`save_credential`,
+   - Bypass: task-management verbs themselves (`create_task`,
+     `pickup_task`, `complete_task`, `pause_task`, `cancel_task`,
+     `fetch_task`), credential tools (`save_credential`,
      `lookup_credential`), and read-only utilities (`datetime`,
      `calculator`).
-   - Rule: if no task in the session is currently in `pending` or
-     `ongoing` status, the call is rejected with
-     `"Error: you must call create_task first before using <tool>. …"`
-     Model self-corrects in the next round by calling create_task.
+   - Bypass: silent chains (`ctx[:silent_turn_task_id]` set) — the
+     scheduler already fired for a specific task and
+     `run_assistant_silent` applies `mark_ongoing` at chain start, so
+     the model doesn't need to re-pickup the same task. Rule #9
+     governs cross-task misuse in that context instead.
+   - Rule: if `pickup_task` hasn't been called yet this chain, the call
+     is rejected with a nudge teaching the full lifecycle
+     (`create_task` (optional, for new objectives) → `pickup_task` →
+     execution tools → `complete_task`).
    - Order-in-batch is tolerated: if the model's batch is
-     `[create_task, run_script]`, execute_tools processes them
-     sequentially, create_task runs first and flips the task to
-     `ongoing`, so the subsequent `run_script` check passes.
+     `[pickup_task, run_script]`, execute_tools processes them
+     sequentially and `run_script`'s check sees the `pickup_task` call
+     already in the in-chain accumulator.
    - **Not user-visible**: the rejection row is written with
      `hidden = 1` (see §Hidden progress rows below) so it stays in the
      DB for audit/debug but never renders in the chat. The tool-result
-     error still reaches the LLM on the next round; that's what drives
+     error still reaches the LLM on the next turn; that's what drives
      self-correction.
 
 2. **Tool-name validity** — the tool_call's `function.name` must match
@@ -1160,37 +1713,37 @@ Checks:
    name (we've seen devstral emit ~1000-char blobs — entire JSON
    argument payloads concatenated with its own natural-language reply —
    as the `name` field). Rejection message enumerates the valid tool
-   names so the model self-corrects on the next round. Same silent-to-
+   names so the model self-corrects on the next turn. Same silent-to-
    user handling as task discipline (no progress row written).
 
-3. **Text-round sanity** — when the model ends a turn with a text
+3. **Text-turn sanity** — when the model ends a chain with a text
    response (i.e. no tool_calls), `Police.check_assistant_text/1`
    inspects that text. If the trimmed content is EXACTLY a registered
-   tool name (e.g. `"update_task"`) or has the shape `tool_name(...)`
+   tool name (e.g. `"complete_task"`) or has the shape `tool_name(...)`
    where `tool_name` is a registered tool, it's treated as the model
    emitting what it MEANT to be a tool_call but put in the content
    field instead — a devstral-class failure mode we've observed in
    production. Instead of persisting that text as the final assistant
-   reply, the session loop appends a corrective user-role message
+   reply, the chain loop appends a corrective user-role message
    (*"Your response was '<tool_name>' which looks like a tool name
    emitted as text — tool actions must live in the `tool_calls` array,
-   not message content. Retry."*) and recurses one more round.
+   not message content. Retry."*) and recurses one more turn.
    Silent to the user — the broken text is never persisted; only the
    corrected response lands in `session.messages`. Conservative by
    design: it fires only on EXACT tool-name match or clear call-shape,
    never on legitimate short replies like "Done." or "Yes".
 
-4. **Fresh-attachment read enforcement** — after a turn's final text
-   round completes, `Police.check_fresh_attachments_read/2` verifies
-   that every `📎 ` path in the current turn's user message was passed
-   to `extract_content` during this turn. If any weren't, the final
-   text is rejected and a corrective nudge appended, listing the
-   missed paths, so the model re-runs the round and actually reads
-   them. Catches the compliance failure where the model acknowledges
-   an attachment in prose (*"I see the PDF you attached…"*) without
+4. **Fresh-attachment read enforcement** — after a chain's final text
+   turn completes, `Police.check_fresh_attachments_read/2` verifies
+   that every `📎 ` path in the current chain's latest user message
+   was passed to `extract_content` during this chain. If any weren't,
+   the final text is rejected and a corrective nudge appended, listing
+   the missed paths, so the model re-runs and actually reads them.
+   Catches the compliance failure where the model acknowledges an
+   attachment in prose (*"I see the PDF you attached…"*) without
    actually calling `extract_content`. Requires tracking which paths
-   the model extracted in the current turn — done by scanning the
-   turn's in-progress message list for `tool_call.function.name ==
+   the model extracted in the current chain — done by scanning the
+   chain's in-progress message list for `tool_call.function.name ==
    "extract_content"` entries and collecting the `path` arguments.
 
 5. **Path safety** — `check_tool_calls/3` still validates any `path`
@@ -1199,30 +1752,30 @@ Checks:
    outside `workspace_dir`. (Retained from pre-#101; wiring invocation is
    pending.)
 
-6. **Duplicate-tool-call-in-turn** — `check_no_duplicate_tool_call/3`
+6. **Duplicate-tool-call-in-chain** — `check_no_duplicate_tool_call/3`
    rejects a tool call whose `(name, significant_arg)` has already been
-   invoked earlier in THIS turn. Significance key per tool:
+   invoked earlier in THIS chain. Significance key per tool:
    `create_task` → `task_title` (case-insensitive, trimmed);
    `extract_content` → `path` (case-sensitive, Linux FS);
    `web_search` → `query` (case-insensitive, trimmed). Tools outside
-   that list bypass. Scans both the in-turn message accumulator (prior
-   rounds) AND earlier calls in the SAME batch (one LLM response with
+   that list bypass. Scans both the in-chain message accumulator (prior
+   turns) AND earlier calls in the SAME batch (one LLM response with
    multiple tool_calls) — `execute_tools/3` threads a rolling pseudo-
    message list through `Enum.map_reduce/3` so a second call in the
-   same batch sees the first. Cross-turn repeats are NOT flagged here —
+   same batch sees the first. Cross-chain repeats are NOT flagged here —
    those are addressed by the `## Recently-extracted files` prompt
    block and the `[newly attached]` marker logic. Tagged rejection
-   `{:duplicate_tool_call_in_turn, reason}` → `[[ISSUE:...]]` marker →
+   `{:duplicate_tool_call_in_chain, reason}` → `[[ISSUE:...]]` marker →
    `ctx.nudges` counter bump → 3-strike escalation. Catches the
    "create_task twice with same title for one follow-up question"
    misbehaviour we see on weaker models like gemini-3-flash.
 
 7. **Consecutive-web_search** — `check_no_consecutive_web_search/3`
    rejects a `web_search` call when the IMMEDIATELY-PRIOR tool call in
-   this turn was also `web_search`. Rationale: one `web_search` already
+   this chain was also `web_search`. Rationale: one `web_search` already
    fans out 2-3 parallel queries in the BE (see
    `Dmhai.Web.Search.generate_queries`), so back-to-back web_searches
-   are wasted effort. Intra-batch AND inter-round covered via the same
+   are wasted effort. Intra-batch AND inter-turn covered via the same
    pseudo-message threading as rule #6. Alternating patterns are
    allowed (`web_search` → `run_script` → `web_search`) — the gate only
    blocks literal consecutivity. The nudge is TEACHING: it tells the
@@ -1254,7 +1807,8 @@ Checks:
    schedule, the model must propose cancelling the existing one first
    and WAIT for confirmation — no silent replacement. If the model was
    trying to progress an existing periodic mid-`[Task due:]` pickup,
-   the nudge redirects it to `update_task` with the provided task_id.
+   the nudge redirects it to the verb API against the existing id
+   (`pickup_task` → execution tools → `complete_task`).
    `Tasks.session_active_periodic/1` supplies the `(task_num, title,
    task_id)` tuple the nudge embeds.
 
@@ -1262,13 +1816,46 @@ Checks:
 
 `run_assistant_silent`'s synthetic `[Task due: <id> — <title>]` message
 now explicitly forbids `create_task` during a pickup and spells out the
-three-step workflow (run tools → `update_task(task_id: <id>, status:
-"done", task_result: ...)` → final text). It also tells the model its
-final text IS the task output (the joke, quote, status) with no
-meta-prefix like "Joke delivered:" or "Task complete" — matches the
-`## No bookkeeping in user-facing text` rule from the base prompt but
-re-states it in the task-pickup context where weaker models drift.
-Rule #8 is the runtime safety net for when this guidance doesn't stick.
+workflow (run tools → `complete_task(task_id: <id>, task_result: ...)`
+→ final text). It also tells the model its final text IS the task
+output (the joke, quote, status) with no meta-prefix like "Joke
+delivered:" or "Task complete" — matches the `## No bookkeeping in
+user-facing text` rule from the base prompt but re-states it in the
+task-pickup context where weaker models drift. A STAY IN LANE bullet
+reinforces the one-task-per-silent-turn scope (no create_task, no
+verb calls on other task_ids, no self-re-pickup loops) so rule #9
+below is the runtime safety net, not the first line of defense.
+Rule #8 is the runtime safety net for when this guidance doesn't
+stick.
+
+9. **Silent-turn scope lock** — `check_silent_turn_scope/3` reads
+   `ctx[:silent_turn_task_id]` (set only by `run_assistant_silent` for
+   scheduler-triggered pickups; never set for user-initiated turns).
+   When present, rejects:
+   * `create_task` regardless of `task_type`. A new task must come from
+     a real user message, not from the scheduler happening to trigger a
+     pickup.
+   * `pickup_task` / `complete_task` / `pause_task` / `cancel_task`
+     targeting a `task_id` that differs from the pickup's — a silent
+     turn can only progress the task it was fired for. `fetch_task`
+     (read-only) is always allowed.
+   Allowed: execution tools (`run_script`, `web_fetch`, etc., the model's
+   means of producing output), `fetch_task`, and the four scoped verbs
+   when they target the pickup task_id itself (including
+   `cancel_task` on the pickup task — the model legitimately may
+   want to cancel the current pickup; scope gate stays out of that
+   path).
+
+   Motivating incident (2026-04-24, `ministral-3:14b-cloud`): a joke-
+   task pickup fired at 21:44:29. In a single silent turn, the model
+   ran `cancel_task` on the joke task, `create_task` for a new ASCII
+   periodic, and then multiple verb cycles on the new task —
+   effectively acting on a prior conversational-turn request that the
+   user had never confirmed. Rule #9 blocks both the cancellation of
+   the joke task (different task_id) and the create_task at their
+   first call. Tagged rejections `{:silent_turn_create_task, reason}`
+   and `{:silent_turn_other_task_verb, reason}` feed the existing
+   `[[ISSUE:...]]` / `ctx.nudges` / 3-strike escalation plumbing.
 
 **Prompt-level counterpart to #7**: the Assistant prompt's new
 `## Tool selection` section teaches the model WHICH tool matches WHICH
@@ -1290,17 +1877,16 @@ FE-facing reader `SessionProgress.fetch_for_session/2` — so the user's
 chat timeline never surfaces them. `SessionProgress.append/4` exposes
 the `:hidden` option (default `false`). Current uses:
 
-- **Police rejections**: the "you must call create_task first" row is
+- **Police rejections**: the "you must call pickup_task first" row is
   hidden. The model still gets the error in its tool-result and
   self-corrects; the user sees only the corrected retry, not the
   blocked attempt.
-- **`update_task(status: "done")` calls**: the final-cleanup progress
-  row is hidden. The assistant's actual final message IS the completion
-  event from the user's perspective; a trailing "UpdateTask('done')"
-  row before the answer is noise. Other `update_task` variants
-  (status="pending" for redo, status="paused", `task_spec` rewrites,
-  `intvl_sec` changes) stay visible — those are meaningful state
-  changes, not cleanup.
+- **`complete_task` calls**: the final-cleanup progress row is hidden.
+  The assistant's actual final message IS the completion event from
+  the user's perspective; a trailing "CompleteTask(…)" row before the
+  answer is noise. The other verbs (`pickup_task`, `pause_task`,
+  `cancel_task`) stay visible — those are meaningful state changes
+  the user benefits from seeing in the chat timeline.
 
 The mechanism is generic: any future "internal plumbing that shouldn't
 clutter the chat" can pass `hidden: true` at append time.
@@ -1837,7 +2423,7 @@ Models ending in `:cloud` / `-cloud` auto-route to cloud pool. Cloud keys manage
 
 | Key | Default | Purpose |
 |-----|---------|---------|
-| `maxAssistantToolRounds` | 50 | Per-turn cap on tool-call roundtrips; abort turn if exceeded |
+| `maxAssistantTurnsPerChain` | 50 | Per-chain cap on the number of turns (LLM roundtrips); abort chain if exceeded |
 | `maxToolResultChars` | 8000 | Truncation threshold for tool results fed back into context |
 | `spawnTaskTimeoutSecs` | 30 | Bash command timeout inside spawn_task |
 | `masterCompactTurnThreshold` | 50 | Session compaction trigger by message count |
@@ -1845,6 +2431,11 @@ Models ending in `:cloud` / `-cloud` auto-route to cloud pool. Cloud keys manage
 | `estimatedContextTokens` | 64_000 | Usable context-window size driving the char-budget trigger |
 | `toolResultRetentionTurns` | 5 | Number of recent turns whose tool_call/tool_result messages stay in context |
 | `toolResultRetentionBytes` | 120_000 | Byte ceiling for retained tool messages (oldest-first eviction on overflow) |
+| `taskArchiveRowCap` | 60 | Per-task archive sliding-window row cap (~30 user+assistant pairs). Oldest dropped on append. |
+| `taskArchiveByteCap` | 120_000 | Per-task archive byte budget summed over `content`. Oldest dropped until under cap. |
+| `rateLimitThrottleSecs` | 60 | Default throttle for an LLM account that hit 429 with no `Retry-After`. Was 3600 s before — caused burst stress-tests to lock the whole account pool for an hour. |
+| `quotaExhaustedThrottleHours` | 168 | Throttle for an LLM account that reports weekly quota exhausted (Ollama cloud's weekly reset). |
+| `llmNumPredictAssistant` | 16_384 | Output-token ceiling (`num_predict`) on assistant-mode `LLM.stream` calls. A cap, not a reservation — unused headroom has no cost. Prevents the truncation loop observed 2026-04-24 (15-line bash scripts cut mid-string → `syntax error` → model retries same malformed call). |
 | `execErrorStreakNudge` | 3 | Consecutive exec-tool failures before a nudge is appended to the model's context |
 
 ---
@@ -1897,15 +2488,22 @@ auth_tokens
   token PK, user_id, created_at
 
 tasks                  ← system of record for all tasks in the session
-  task_id TEXT PK
+  task_id TEXT PK     ← cryptic; BE-internal FK for session_progress,
+                         task_turn_archive, tool_history. Never user/
+                         model-facing (see §Task lifecycle §Identity).
+  task_num INT        ← per-session monotonic integer (1, 2, 3, …); the
+                         ONLY identifier the model/user/UI sees ("(N)").
   user_id / session_id
   task_type TEXT       ← 'one_off' | 'periodic'
   intvl_sec INT       ← 0 for one_off
   task_title TEXT      ← short label shown in the task-list block + FE sidebar
   task_spec TEXT       ← description; verbatim user message (with 📎-prefixed
-                         attachment paths appended, if any). Updated in place
-                         when the assistant calls update_task(task_spec: ...).
+                         attachment paths appended, if any).
   task_status TEXT     ← 'pending' | 'ongoing' | 'paused' | 'done' | 'cancelled'
+  back_to_when_done_task_num INT ← nullable back-reference. Set at pickup_task
+                                    time when another task was anchor; read at
+                                    complete/cancel/pause time to restore that
+                                    prior anchor. See §Active-task anchor.
   task_result TEXT     ← last compiled result (final Markdown answer for one_off;
                          last cycle's result for periodic). Reused in the
                          [Active tasks] block context if the task re-runs.
@@ -1919,9 +2517,32 @@ session_progress         ← per-activity progress rows (UI + audit log)
   session_id / user_id / task_id
   kind TEXT           ← 'tool' | 'thinking' | 'summary'
   status TEXT         ← 'pending' | 'done' (tool rows only; flipped when the
-                         tool call returns)
+                         tool call returns — including on tool error to
+                         keep the FE's upsert-by-id dedup working; pre-
+                         Phase-2 `delete` path retired)
   label TEXT          ← truncated to 4k chars; the FE-renderable activity line
   ts INTEGER
+
+task_turn_archive       ← per-task raw message archive (Phase 3, planned).
+                          Hooked into ContextEngine.compact! and
+                          ToolHistory eviction. Preserves verbatim
+                          turns for tasks that span many chains, so
+                          fetch_task(task_num) can replay decisions
+                          exactly even after master session summaries
+                          compact the session.messages view.
+                          See §Task state continuity across chains.
+  id INTEGER PK AUTOINCREMENT
+  task_id TEXT        ← FK to tasks.task_id (NOT task_num — this table
+                         outlives per-session number allocation and uses
+                         the stable cryptic id)
+  session_id TEXT     ← for operator queries / cross-session joins
+  original_ts INT    ← the message's own ts when originally written
+  role TEXT           ← 'user' | 'assistant' | 'tool'
+  content TEXT        ← NULL allowed (tool_calls-only assistant msgs)
+  tool_calls TEXT     ← JSON; present on role='assistant' w/ tool_calls
+  tool_call_id TEXT   ← present on role='tool'
+  archived_at INT    ← unix ms; when compaction wrote this row
+  INDEX (task_id, original_ts)
 
 master_buffer         ← notification bus (polled by frontend)
   id INTEGER PK AUTOINCREMENT

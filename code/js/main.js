@@ -16,7 +16,6 @@ function applyLanguage() {
     document.getElementById('new-session-btn').textContent = t('newSession');
     document.getElementById('message-input').placeholder = t(window.innerWidth <= 768 ? 'typePlaceholderShort' : 'typePlaceholder');
     document.getElementById('send-label').textContent = t('send');
-    document.getElementById('stop-label').textContent = t('stopGen');
     document.getElementById('attach-btn').title = t('attachFile');
     document.getElementById('error-message').textContent = t('cannotConnect');
     document.querySelector('#error-banner button').textContent = t('retry');
@@ -153,49 +152,10 @@ const UIManager = {
         document.addEventListener('click', function() { langDropdown.classList.remove('open'); });
         applyLanguage();
 
-        document.getElementById('stop-gen-btn').addEventListener('click', function() {
-            // Tell the BE to actually kill the in-flight turn — this
-            // aborts LLM / web_fetch HTTP calls, clears stream_buffer,
-            // deletes zombie pending session_progress rows, and marks any
-            // ongoing tasks for this session as cancelled with
-            // task_result="Interrupted by user". Fire-and-forget: we
-            // don't wait for the response before tearing down the UI.
-            apiFetch('/agent/interrupt', { method: 'POST' }).catch(function() {});
-
-            if (self._streamController) { self._streamController.abort(); self._streamController = null; }
-            if (self._thinkBodyEl) {
-                self._thinkBodyEl.textContent = digestThinking(self._thinkingContent || '', true);
-                self._thinkBodyEl = null;
-                self._thinkingContent = null;
-            }
-            self.saveStreamingProgress();
-            self.isStreaming = false;
-            self._releaseWakeLock();
-            self.updateSendBtn();
-            self.setStatus('');
-            document.getElementById('stop-gen-btn').style.display = 'none';
-            document.getElementById('scroll-bottom-btn').style.display = 'none';
-
-            // Self-heal: drop any `status='pending'` progress rows from
-            // the local session cache and re-render immediately. The BE
-            // is already deleting these server-side in cancel_current_task,
-            // but the POST is fire-and-forget — we don't wait for it.
-            // Without this local clear, the next idle poll would still see
-            // the rows in the FE cache, keep the spinner animating, and
-            // the sub_labels rotator would keep cycling through a dead
-            // tool's URLs until the BE delete propagates. Doing it here
-            // makes the stop feel instant.
-            if (self.currentSession && Array.isArray(self.currentSession.progress)) {
-                self.currentSession.progress = self.currentSession.progress.filter(function(p) {
-                    return p && p.status !== 'pending';
-                });
-                self.renderChat();
-            }
-
-            if (self.currentSession && (self.currentSession.messages.length - 2) % 8 === 0) {
-                self.autoNameSession(self.currentSession);
-            }
-        });
+        // Phase 2 (2026-04-24): session-level Stop button removed. The user
+        // redirects the assistant by sending a new chat message — it's
+        // spliced into the current chain on the next LLM roundtrip. See
+        // architecture.md §Mid-chain user message injection.
         document.getElementById('scroll-bottom-btn').addEventListener('click', function() {
             var c = document.getElementById('chat-container');
             c.scrollTop = c.scrollHeight;
@@ -244,7 +204,10 @@ const UIManager = {
         document.getElementById('sidebar-settings-btn').addEventListener('click', function() { SettingsModal.open(); });
         document.getElementById('send-btn').addEventListener('click', function() { self.sendMessage(); });
         document.getElementById('message-input').addEventListener('keydown', function(e) {
-            if (e.key === 'Enter' && e.ctrlKey) { e.preventDefault(); if (!self.isStreaming && !self._pendingVideo && !self._pendingDesc) self.sendMessage(); }
+            // Phase 2: mid-chain sends are allowed (no `isStreaming` check).
+            // Uploads / description-generation still gate because those
+            // are FE-local prep, not an assistant chain.
+            if (e.key === 'Enter' && e.ctrlKey) { e.preventDefault(); if (!self._pendingVideo && !self._pendingDesc) self.sendMessage(); }
         });
         document.getElementById('message-input').addEventListener('input', function() {
             this.style.height = 'auto';

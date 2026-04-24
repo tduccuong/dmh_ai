@@ -160,8 +160,54 @@ defmodule Dmhai.Agent.ContextEngine do
 
     task_list_block = build_task_list_block(active_tasks, recent_done, base_level: 2)
 
-    [system_msg] ++ prefix ++ history_llm ++ relevant_msgs ++ task_list_block ++ extracted_files_block ++ last_msgs
+    # Phase 3: active-task anchor — a single `## Active task` block naming
+    # the `(N)` this chain is for. Runtime decides; model follows. Nil
+    # when no anchor can be derived (free mode). See architecture.md
+    # §Active-task anchor. The anchor is injected between the task list
+    # and the last user message so it's the final framing the model reads
+    # before the user's latest input.
+    anchor_block =
+      session_id
+      |> Dmhai.Agent.Anchor.resolve(silent_turn_task_id: Keyword.get(opts, :silent_turn_task_id))
+      |> render_anchor_block()
+
+    [system_msg] ++ prefix ++ history_llm ++ relevant_msgs ++ task_list_block ++ extracted_files_block ++ anchor_block ++ last_msgs
   end
+
+  # Phase 3 anchor rendering. Produces a user/assistant pair so the
+  # OpenAI-sequencing contract (alternating roles at conversation
+  # boundaries) stays clean. Empty list when no anchor — the model
+  # operates in free mode.
+  defp render_anchor_block(nil), do: []
+  defp render_anchor_block(%{task_num: n}) when is_integer(n) do
+    # Anchor wording is deliberately NON-LEADING toward `fetch_task`.
+    # The model's context already carries recent activity for this task
+    # (via the normal session.messages + ToolHistory.inject pipeline),
+    # so fetching is typically redundant — we saw weaker models
+    # reflexively fetch on every chain when the earlier wording said
+    # "if you don't see details, call fetch_task". Fetch is now framed
+    # as a fallback for the specific case where a decision / tool
+    # output was compacted away and the model needs to reload it.
+    body =
+      "## Active task\n\n" <>
+        "- Current task: (#{n})\n" <>
+        "- Your recent activity on this task (prior tool calls, " <>
+        "results, narration) is already present in the conversation " <>
+        "above. Answer / act from it directly.\n" <>
+        "- Call `fetch_task(task_num: #{n})` ONLY as a fallback: if " <>
+        "you need a specific past decision or tool output that was " <>
+        "compacted away (older turns no longer visible in your " <>
+        "context).\n" <>
+        "- Once the task is done, make sure to close it with " <>
+        "`complete_task(task_num: #{n}, task_result: " <>
+        "\"<one-line outcome summary>\")`."
+
+    [
+      %{role: "user",      content: body},
+      %{role: "assistant", content: "Understood."}
+    ]
+  end
+  defp render_anchor_block(_), do: []
 
   # Inject the `[newly attached]` transient marker on `📎 ` lines of the
   # last user message in the LLM input array. No effect on persisted
@@ -254,22 +300,19 @@ defmodule Dmhai.Agent.ContextEngine do
   defp render_done_section(tasks, sub) do
     lines =
       Enum.map_join(tasks, "\n", fn t ->
-        "- `#{t.task_id}` — #{num_label(t)}#{t.task_title}"
+        "- #{num_label(t)}#{t.task_title}"
       end)
     "#{sub} done\n\n" <> lines
   end
 
-  # Both active and done tasks render the same `task_id` format: a backticked
-  # id immediately following the title marker. Active tasks use a Markdown
-  # heading (`#### \`id\` — (N) title`); done tasks use a bullet.
-  # The heading-level `task_id` keeps the identifier adjacent to the title
-  # so the model can always reference it verbatim when calling update_task
-  # / fetch_task — never needs to invent one.
-  # The `(N)` prefix is the per-session human-readable task number — the
-  # user can refer to "task 1" / "task (2)" / "the 3rd task" and the model
-  # maps it to the corresponding task_id by matching this number.
+  # Phase 3: tasks render by their per-session `(N)` label only —
+  # `task_id` is BE-internal and never exposed to model or user.
+  # Active tasks use a Markdown heading (`#### (N) title`); done
+  # tasks use a bullet. The model references tasks exclusively via
+  # `task_num: N` in verb tool calls; the resolver at the BE tool
+  # boundary maps (session_id, N) → internal task_id.
   defp render_task_block(task, heading) do
-    title_line = "#{heading} `#{task.task_id}` — #{num_label(task)}#{task.task_title}"
+    title_line = "#{heading} #{num_label(task)}#{task.task_title}"
 
     fields =
       [
@@ -298,7 +341,8 @@ defmodule Dmhai.Agent.ContextEngine do
   # pair, injected between the task-list block and the current user
   # message. Walks tool_history, pulls every `extract_content` tool_call's
   # `path` argument, cross-references it to the originating task_num via
-  # task_id (from the same retained turn's update_task — or falling back
+  # task_id (from the same retained turn's task-verb call — pickup_task,
+  # complete_task, pause_task, cancel_task, or fetch_task — falling back
   # to any task whose attachments column contains the path). Truthful by
   # construction: only files whose raw content is actually still in the
   # retained window appear. Returns `[]` when nothing is extracted.
@@ -345,8 +389,9 @@ defmodule Dmhai.Agent.ContextEngine do
       |> Map.new()
 
     # Walk tool_history (each entry = one turn's worth of tool_call/tool_result
-    # messages) and collect every extract_content path. Same entry's update_task
-    # call (if any) tells us which task_id owns this extraction.
+    # messages) and collect every extract_content path. Same entry's
+    # pickup_task / complete_task / fetch_task call (if any) tells us
+    # which task_id owns this extraction.
     tool_history
     |> Enum.flat_map(fn entry -> extract_paths_from_entry(entry, tid_to_num) end)
     |> Enum.uniq_by(& &1.path)
@@ -356,9 +401,10 @@ defmodule Dmhai.Agent.ContextEngine do
     msgs = Map.get(entry, "messages") || Map.get(entry, :messages) || []
 
     # Find the task_id the model worked against this turn — inferred from
-    # any task_id it passed (update_task / fetch_task) or created
-    # (create_task return, but we don't have that here — fall back to
-    # scanning args for a task_id key).
+    # any task_id it passed to a task verb (pickup_task / complete_task /
+    # pause_task / cancel_task / fetch_task) or created (create_task
+    # return, but we don't have that here — fall back to scanning args
+    # for a task_id key).
     task_id =
       msgs
       |> Enum.flat_map(fn m -> tool_call_args(m) end)
@@ -378,7 +424,10 @@ defmodule Dmhai.Agent.ContextEngine do
 
   # Returns list of argument maps for `extract_content` tool_calls in a
   # single message (assistant with tool_calls). We also include args
-  # for update_task / fetch_task so we can pick up task_id references.
+  # for any task verb (pickup/complete/pause/cancel/fetch) so we can
+  # pick up task_id references.
+  @task_verbs_with_task_id ~w(pickup_task complete_task pause_task cancel_task fetch_task)
+
   defp tool_call_args(msg) do
     calls = msg["tool_calls"] || msg[:tool_calls] || []
     role  = msg["role"] || msg[:role]
@@ -390,11 +439,14 @@ defmodule Dmhai.Agent.ContextEngine do
         args   = fn_map["arguments"] || %{}
         args   = if is_binary(args), do: Jason.decode!(args), else: args
 
-        case name do
-          "extract_content" -> [Map.put(args, "__tool__", name)]
-          "update_task"     -> [Map.put(args, "__tool__", name)]
-          "fetch_task"      -> [Map.put(args, "__tool__", name)]
-          _                 -> []
+        cond do
+          name == "extract_content"          -> [Map.put(args, "__tool__", name)]
+          name in @task_verbs_with_task_id   -> [Map.put(args, "__tool__", name)]
+          # Legacy retained turns from before the verb API may still
+          # carry `update_task` calls; keep recognising them so their
+          # task_id links through to the task-num mapping.
+          name == "update_task"              -> [Map.put(args, "__tool__", name)]
+          true                               -> []
         end
       end)
     else
@@ -495,6 +547,15 @@ defmodule Dmhai.Agent.ContextEngine do
     else
       to_summarize = Enum.slice(msgs, (cutoff + 1)..(keep_from - 1))
 
+      # Phase 3: BEFORE running the compactor LLM, snapshot any
+      # task-tagged messages in `to_summarize` to `task_turn_archive`
+      # grouped by `task_num`. Preserves verbatim per-task history
+      # even as the master session summary compresses the range away
+      # from the LLM's working context. Untagged messages (pure chat)
+      # are represented only by the summary. See architecture.md
+      # §Task state continuity across chains.
+      archive_to_summarize_per_task(session_id, to_summarize)
+
       # Build the compaction input matching the original frontend ContextManager.compact:
       # - If a previous summary exists, inject it as a [Previous summary] / Understood. exchange
       # - Append all messages to summarize
@@ -545,6 +606,31 @@ defmodule Dmhai.Agent.ContextEngine do
 
       :ok
     end
+  end
+
+  # Phase 3 archive hook — called by `compact!/3` before summarisation.
+  # Partitions `to_summarize` by `task_num` tag and persists verbatim
+  # snapshots to `task_turn_archive` per task. Untagged messages are
+  # dropped here (they'll live on only in the master session summary).
+  defp archive_to_summarize_per_task(session_id, to_summarize) do
+    to_summarize
+    |> Enum.group_by(fn m -> m["task_num"] end)
+    |> Enum.each(fn
+      {nil, _msgs} -> :ok
+      {task_num, msgs} when is_integer(task_num) ->
+        case Dmhai.Agent.Tasks.resolve_num(session_id, task_num) do
+          {:ok, task_id} ->
+            Dmhai.Agent.TaskTurnArchive.append_raw(task_id, session_id, msgs)
+            Logger.info("[ContextEngine] archived #{length(msgs)} msg(s) for task=(#{task_num}) session=#{session_id}")
+
+          {:error, :not_found} ->
+            Logger.warning("[ContextEngine] compaction-time archive: task_num=#{task_num} no longer exists in session=#{session_id}; dropping its messages")
+        end
+
+      {_non_int, _msgs} ->
+        # Malformed tag (e.g. string). Drop.
+        :ok
+    end)
   end
 
   # ─── Private ──────────────────────────────────────────────────────────────
@@ -628,6 +714,19 @@ defmodule Dmhai.Agent.ContextEngine do
       end
 
     llm_msg = %{role: "user", content: content}
+
+    # Preserve `ts` from the source DB row. Downstream, UserAgent's
+    # `max_user_ts_in_messages/1` scans the LLM input for the highest
+    # user-role `ts` to compute the mid-chain-splice floor. Without ts
+    # here, floor collapses to 0 and `splice_mid_chain_user_msgs` then
+    # re-appends the current user message (ts > 0) as a duplicate —
+    # the model saw two identical `[USER]` blocks every turn.
+    llm_msg =
+      case msg[:ts] || msg["ts"] do
+        ts when is_integer(ts) -> Map.put(llm_msg, :ts, ts)
+        _                       -> llm_msg
+      end
+
     if images != [], do: Map.put(llm_msg, :images, images), else: llm_msg
   end
 

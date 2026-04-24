@@ -61,6 +61,69 @@ defmodule Dmhai.I18n do
       "es" => "He alcanzado el límite de llamadas a herramientas por turno (%{max}). Avísame si quieres que continúe.",
       "fr" => "J'ai atteint la limite d'appels d'outils par tour (%{max}). Dites-moi si vous voulez que je continue.",
       "ja" => "1ターンあたりのツール呼び出し上限 (%{max}) に達しました。続行する場合はお知らせください。"
+    },
+    # System-error variants. `%{reason}` is the humanised cause
+    # (from UserAgent.humanize_system_error/1). `%{task_num}` is the
+    # per-session `(N)` that the runtime auto-paused; omitted from
+    # the "no active task" variant because there's nothing to resume.
+    "system_error_paused" => %{
+      "en" => "Sorry — %{reason}. I've paused task (%{task_num}) so no work is lost. Let me know once it's resolved and I'll resume.",
+      "de" => "Entschuldigung — %{reason}. Ich habe Aufgabe (%{task_num}) pausiert, damit keine Arbeit verloren geht. Sag Bescheid, wenn das Problem behoben ist, dann nehme ich sie wieder auf.",
+      "vi" => "Xin lỗi — %{reason}. Tôi đã tạm dừng task (%{task_num}) để không mất tiến độ. Hãy cho tôi biết khi sự cố đã được giải quyết để tôi tiếp tục.",
+      "es" => "Perdón — %{reason}. He pausado la tarea (%{task_num}) para no perder el avance. Avísame cuando esté resuelto y la reanudaré.",
+      "fr" => "Désolé — %{reason}. J'ai mis en pause la tâche (%{task_num}) pour ne rien perdre. Dites-moi quand c'est résolu et je reprendrai.",
+      "ja" => "申し訳ありません — %{reason}。作業が失われないようタスク (%{task_num}) を一時停止しました。解決したらお知らせください、再開します。"
+    },
+    "system_error_no_active_task" => %{
+      "en" => "Sorry — %{reason}. Please let me know once it's resolved and I'll try again.",
+      "de" => "Entschuldigung — %{reason}. Bitte sag Bescheid, wenn das Problem behoben ist, dann versuche ich es erneut.",
+      "vi" => "Xin lỗi — %{reason}. Hãy cho tôi biết khi sự cố đã được giải quyết để tôi thử lại.",
+      "es" => "Perdón — %{reason}. Avísame cuando esté resuelto y lo intentaré de nuevo.",
+      "fr" => "Désolé — %{reason}. Dites-moi quand c'est résolu et je réessaierai.",
+      "ja" => "申し訳ありません — %{reason}。解決したらお知らせください、再試行します。"
+    },
+    # Humanised cause strings — short phrase inserted as %{reason}
+    # above. Keep them lower-case sentence fragments (the outer
+    # template starts with "Sorry — ").
+    "system_error_cause_keys_exhausted" => %{
+      "en" => "all our AI-service API keys have been exhausted",
+      "de" => "alle API-Schlüssel für den KI-Dienst sind aufgebraucht",
+      "vi" => "tất cả các API key cho dịch vụ AI đã hết",
+      "es" => "todas nuestras claves de API del servicio de IA se han agotado",
+      "fr" => "toutes nos clés API du service IA sont épuisées",
+      "ja" => "AI サービスの API キーがすべて使い切られました"
+    },
+    "system_error_cause_rate_limited" => %{
+      "en" => "the AI service is rate-limiting our requests right now",
+      "de" => "der KI-Dienst begrenzt gerade unsere Anfragen (Rate-Limit)",
+      "vi" => "dịch vụ AI đang giới hạn tốc độ yêu cầu của chúng tôi",
+      "es" => "el servicio de IA está limitando nuestras solicitudes en este momento",
+      "fr" => "le service IA limite actuellement nos requêtes",
+      "ja" => "AI サービスが現在リクエストのレート制限中です"
+    },
+    "system_error_cause_server_error" => %{
+      "en" => "the AI service returned a server error",
+      "de" => "der KI-Dienst hat einen Serverfehler zurückgegeben",
+      "vi" => "dịch vụ AI trả về lỗi máy chủ",
+      "es" => "el servicio de IA devolvió un error del servidor",
+      "fr" => "le service IA a renvoyé une erreur serveur",
+      "ja" => "AI サービスがサーバーエラーを返しました"
+    },
+    "system_error_cause_timeout" => %{
+      "en" => "the AI service timed out while responding",
+      "de" => "die Anfrage an den KI-Dienst ist beim Antworten abgelaufen",
+      "vi" => "dịch vụ AI phản hồi quá chậm (timeout)",
+      "es" => "el servicio de IA agotó el tiempo de espera al responder",
+      "fr" => "le service IA a dépassé le délai d'attente de la réponse",
+      "ja" => "AI サービスの応答がタイムアウトしました"
+    },
+    "system_error_cause_generic" => %{
+      "en" => "we hit a transient issue talking to the AI service",
+      "de" => "es gab ein vorübergehendes Problem bei der Kommunikation mit dem KI-Dienst",
+      "vi" => "gặp sự cố tạm thời khi kết nối với dịch vụ AI",
+      "es" => "tuvimos un problema transitorio al comunicarnos con el servicio de IA",
+      "fr" => "nous avons rencontré un problème temporaire avec le service IA",
+      "ja" => "AI サービスとの通信で一時的な問題が発生しました"
     }
   }
 

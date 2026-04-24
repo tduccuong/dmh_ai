@@ -206,7 +206,7 @@ defmodule Itgr.SessionContextContract do
     test "rejects duplicate create_task with identical title" do
       prior = [assistant_tool_msg("create_task", %{"task_title" => "research X"})]
 
-      assert {:rejected, {:duplicate_tool_call_in_turn, reason}} =
+      assert {:rejected, {:duplicate_tool_call_in_chain, reason}} =
                Police.check_no_duplicate_tool_call(
                  "create_task", %{"task_title" => "research X"}, prior)
 
@@ -217,7 +217,7 @@ defmodule Itgr.SessionContextContract do
     test "rejects duplicate create_task with case / whitespace variation" do
       prior = [assistant_tool_msg("create_task", %{"task_title" => "  Research X  "})]
 
-      assert {:rejected, {:duplicate_tool_call_in_turn, _}} =
+      assert {:rejected, {:duplicate_tool_call_in_chain, _}} =
                Police.check_no_duplicate_tool_call(
                  "create_task", %{"task_title" => "research x"}, prior)
     end
@@ -234,7 +234,7 @@ defmodule Itgr.SessionContextContract do
       path = "workspace/doc.pdf"
       prior = [assistant_tool_msg("extract_content", %{"path" => path})]
 
-      assert {:rejected, {:duplicate_tool_call_in_turn, _}} =
+      assert {:rejected, {:duplicate_tool_call_in_chain, _}} =
                Police.check_no_duplicate_tool_call(
                  "extract_content", %{"path" => path}, prior)
     end
@@ -251,7 +251,7 @@ defmodule Itgr.SessionContextContract do
     test "rejects duplicate web_search with identical query (case-insensitive)" do
       prior = [assistant_tool_msg("web_search", %{"query" => "Elixir GenServer timing"})]
 
-      assert {:rejected, {:duplicate_tool_call_in_turn, _}} =
+      assert {:rejected, {:duplicate_tool_call_in_chain, _}} =
                Police.check_no_duplicate_tool_call(
                  "web_search", %{"query" => "elixir genserver timing"}, prior)
     end
@@ -295,7 +295,7 @@ defmodule Itgr.SessionContextContract do
           }}
       ]}]
 
-      assert {:rejected, {:duplicate_tool_call_in_turn, _}} =
+      assert {:rejected, {:duplicate_tool_call_in_chain, _}} =
                Police.check_no_duplicate_tool_call(
                  "extract_content", %{"path" => "workspace/x.pdf"}, prior)
     end
@@ -455,9 +455,11 @@ defmodule Itgr.SessionContextContract do
                           task_title: "jokes", task_spec: "x",
                           task_type: "periodic", intvl_sec: 30)
 
+      # pickup_task doesn't create tasks, so the duplicate-periodic gate
+      # should not fire on it. Pre-verb-API this test used update_task.
       assert :ok = Police.check_no_duplicate_periodic_task_in_session(
-                     "update_task",
-                     %{"task_type" => "periodic"},
+                     "pickup_task",
+                     %{"task_id" => "something"},
                      %{session_id: sid})
     end
 
@@ -475,9 +477,9 @@ defmodule Itgr.SessionContextContract do
 
     test "rejects second periodic when session already has a pending periodic" do
       sid = uid(); uid_ = uid(); seed_plain_session(sid, uid_)
-      tid = Tasks.insert(user_id: uid_, session_id: sid,
-                         task_title: "joke every 30s", task_spec: "x",
-                         task_type: "periodic", intvl_sec: 30)
+      _tid = Tasks.insert(user_id: uid_, session_id: sid,
+                          task_title: "joke every 30s", task_spec: "x",
+                          task_type: "periodic", intvl_sec: 30)
 
       assert {:rejected, {:duplicate_periodic_task_in_session, reason}} =
                Police.check_no_duplicate_periodic_task_in_session(
@@ -490,10 +492,11 @@ defmodule Itgr.SessionContextContract do
       assert reason =~ "already has an active periodic"
       assert reason =~ "DMH-AI supports at most ONE periodic"
       assert reason =~ "DMH-AI only supports 1 periodic task per chat session"
-      # Must name the existing task's id so the model can reference it.
-      assert reason =~ tid
       # Must mention the (N) number format so the user sees a stable ref.
+      # Phase 3: task_id is BE-internal and no longer surfaced in nudges.
       assert reason =~ ~r/task \(\d+\)|task \(\?\)/
+      # Must NOT leak the cryptic task_id — only (N) is user-/model-facing.
+      refute reason =~ "`XgxD8UnSDBbp`" # sanity: no backticked-crypto-id patterns
     end
 
     test "rejects even when existing periodic is ongoing (mid-turn)" do
@@ -521,6 +524,153 @@ defmodule Itgr.SessionContextContract do
                      "create_task",
                      %{"task_type" => "periodic", "task_title" => "replacement"},
                      %{session_id: sid})
+    end
+  end
+
+  # ─── Silent-turn scope Police gate (rule #9) ─────────────────────────────
+
+  describe "Police.check_silent_turn_scope/3" do
+    test ":ok when ctx has no :silent_turn_task_id (user-initiated turn bypasses)" do
+      assert :ok = Police.check_silent_turn_scope(
+                     "create_task",
+                     %{"task_type" => "periodic", "task_title" => "x"},
+                     %{session_id: "s1"})
+    end
+
+    # Phase 3: silent-turn scope keys on `anchor_task_num` (integer).
+    # ctx carries both `:silent_turn_task_id` (retained — still used as
+    # presence marker) AND `:anchor_task_num` (the integer the scope
+    # gate compares against args["task_num"]).
+    defp silent_ctx do
+      %{session_id: "s1", silent_turn_task_id: "tsk_pickup", anchor_task_num: 5}
+    end
+
+    test "silent turn: rejects create_task" do
+      ctx = silent_ctx()
+
+      assert {:rejected, {:silent_turn_create_task, reason}} =
+               Police.check_silent_turn_scope(
+                 "create_task",
+                 %{"task_type" => "periodic", "task_title" => "hijack attempt"},
+                 ctx)
+
+      # Nudge names the pickup task (by (N)) and points at complete_task.
+      assert reason =~ "5"
+      assert reason =~ "SILENT" or reason =~ "scope" or reason =~ "pickup"
+      assert reason =~ "complete_task"
+    end
+
+    test "silent turn: rejects create_task regardless of task_type (one_off or periodic)" do
+      ctx = silent_ctx()
+
+      assert {:rejected, {:silent_turn_create_task, _}} =
+               Police.check_silent_turn_scope(
+                 "create_task",
+                 %{"task_type" => "one_off", "task_title" => "one-off hijack"},
+                 ctx)
+    end
+
+    test "silent turn: allows complete_task on the SAME task_num (the pickup target)" do
+      ctx = silent_ctx()
+
+      assert :ok = Police.check_silent_turn_scope(
+                     "complete_task",
+                     %{"task_num" => 5, "task_result" => "delivered"},
+                     ctx)
+    end
+
+    test "silent turn: allows cancel_task on the SAME task_num" do
+      # Edge case — the model legitimately wants to cancel the pickup
+      # task itself (e.g. user requested stop in a prior turn and the
+      # scheduler fired before the cancel propagated). Scope rule only
+      # forbids OTHER task_nums; this path stays open.
+      ctx = silent_ctx()
+
+      assert :ok = Police.check_silent_turn_scope(
+                     "cancel_task",
+                     %{"task_num" => 5, "reason" => "user requested stop"},
+                     ctx)
+    end
+
+    test "silent turn: allows pickup_task on the SAME task_num (idempotent re-pickup)" do
+      ctx = silent_ctx()
+
+      assert :ok = Police.check_silent_turn_scope(
+                     "pickup_task",
+                     %{"task_num" => 5},
+                     ctx)
+    end
+
+    test "silent turn: rejects complete_task on a DIFFERENT task_num" do
+      ctx = silent_ctx()
+
+      assert {:rejected, {:silent_turn_other_task_verb, reason}} =
+               Police.check_silent_turn_scope(
+                 "complete_task",
+                 %{"task_num" => 7, "task_result" => "freeing slot"},
+                 ctx)
+
+      # Nudge names both (N)s and points back to the pickup target.
+      assert reason =~ "5"
+      assert reason =~ "7"
+    end
+
+    test "silent turn: rejects cancel_task on a DIFFERENT task_num" do
+      ctx = silent_ctx()
+
+      assert {:rejected, {:silent_turn_other_task_verb, _}} =
+               Police.check_silent_turn_scope(
+                 "cancel_task",
+                 %{"task_num" => 7},
+                 ctx)
+    end
+
+    test "silent turn: rejects pickup_task on a DIFFERENT task_num" do
+      ctx = silent_ctx()
+
+      assert {:rejected, {:silent_turn_other_task_verb, _}} =
+               Police.check_silent_turn_scope(
+                 "pickup_task",
+                 %{"task_num" => 7},
+                 ctx)
+    end
+
+    test "silent turn: rejects pause_task on a DIFFERENT task_num" do
+      ctx = silent_ctx()
+
+      assert {:rejected, {:silent_turn_other_task_verb, _}} =
+               Police.check_silent_turn_scope(
+                 "pause_task",
+                 %{"task_num" => 7},
+                 ctx)
+    end
+
+    test "silent turn: allows execution tools (run_script, web_fetch, etc.)" do
+      ctx = silent_ctx()
+
+      # These are exactly how the model produces the pickup's output —
+      # never blocked by the scope gate.
+      for tool <- ["run_script", "web_fetch", "web_search", "extract_content",
+                   "read_file", "write_file", "calculator",
+                   "save_credential", "lookup_credential", "spawn_task",
+                   "fetch_task"] do
+        assert :ok = Police.check_silent_turn_scope(tool, %{"any" => "args"}, ctx),
+               "execution tool `#{tool}` must be allowed in silent turns"
+      end
+    end
+
+    test "silent turn: complete_task with missing/non-integer task_num is :ok (schema check handles it)" do
+      # If the model emits a verb without task_num or with a non-integer
+      # value, Police.check_tool_call_schema catches it with a
+      # schema-driven nudge. The scope gate should not double-reject —
+      # it only fires when task_num is a proper integer AND different
+      # from the pickup's anchor_task_num.
+      ctx = silent_ctx()
+
+      assert :ok = Police.check_silent_turn_scope(
+                     "complete_task", %{"task_result" => "x"}, ctx)
+      assert :ok = Police.check_silent_turn_scope(
+                     "complete_task", %{"task_num" => ""}, ctx)
     end
   end
 end

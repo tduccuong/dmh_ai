@@ -94,10 +94,10 @@ defmodule Itgr.ModelBehaviorStats do
     model = "ollama::cloud::gpt-oss:120b-cloud-test-#{T.uid()}"
 
     :ok = ModelBehaviorStats.record(role, model, "tool_call_schema", "create_task")
-    :ok = ModelBehaviorStats.record(role, model, "tool_call_schema", "update_task")
+    :ok = ModelBehaviorStats.record(role, model, "tool_call_schema", "complete_task")
 
     assert fetch_row(role, model, "tool_call_schema", "create_task").count == 1
-    assert fetch_row(role, model, "tool_call_schema", "update_task").count == 1
+    assert fetch_row(role, model, "tool_call_schema", "complete_task").count == 1
   end
 
   test "different issue_type creates a separate counter row (same model + tool)" do

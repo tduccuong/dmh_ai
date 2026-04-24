@@ -97,6 +97,34 @@ defmodule Dmhai.Handlers.Data do
     end
   end
 
+  @doc """
+  POST /tasks/:task_id/cancel — user clicks the stop button on a task
+  row in the sidebar. Verifies ownership via the task → session → user
+  chain, then `Tasks.mark_cancelled/2` which flips the task to
+  `cancelled` (for periodics: also cancels the armed pickup timer via
+  `TaskRuntime.cancel_pickup`). An in-flight silent turn for this task
+  is NOT interrupted — the model may finish its current pickup and
+  produce one last output; no future pickups fire. Idempotent: a
+  second click on an already-cancelled task is a no-op that still
+  returns 200.
+  """
+  def cancel_task(conn, user, task_id) do
+    # Ownership check: task must belong to a session owned by this user.
+    owns = query!(Repo, """
+    SELECT t.task_id
+    FROM tasks t
+    JOIN sessions s ON s.id = t.session_id
+    WHERE t.task_id = ? AND s.user_id = ?
+    """, [task_id, user.id])
+
+    if owns.rows == [] do
+      json(conn, 404, %{error: "Not found"})
+    else
+      Dmhai.Agent.Tasks.mark_cancelled(task_id, "Stopped by user")
+      json(conn, 200, %{ok: true})
+    end
+  end
+
   # GET /sessions/:id/tasks
   # Returns all tasks for the session, newest first. The FE's task-list
   # sidebar polls this at ~3s cadence while tasks are active.

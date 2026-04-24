@@ -7,7 +7,8 @@ defmodule Dmhai.Agent.Tasks do
   @moduledoc """
   DB helpers for the `tasks` table — per-session record of assistant tasks
   (one_off or periodic). Rows are created by the assistant via
-  `create_task` and mutated via `update_task` as the session loop runs.
+  `create_task` and mutated via the verb API (`pickup_task`,
+  `complete_task`, `pause_task`, `cancel_task`) as the session loop runs.
 
   `Tasks.mark_done/2` is the **single rescheduling path** for periodic
   tasks: on done it auto-reschedules (status=pending, time_to_pickup
@@ -21,7 +22,7 @@ defmodule Dmhai.Agent.Tasks do
   @select_cols """
   task_id, user_id, session_id, task_num, task_type, intvl_sec, task_title,
   task_spec, task_status, task_result, time_to_pickup,
-  language, attachments, created_at, updated_at
+  language, attachments, back_to_when_done_task_num, created_at, updated_at
   """
 
   @doc """
@@ -99,6 +100,40 @@ defmodule Dmhai.Agent.Tasks do
     case r.rows do
       [row] -> row_to_map(row)
       _     -> nil
+    end
+  end
+
+  @doc """
+  Look up a task by `(session_id, task_num)` — the user- and model-facing
+  `(N)` pair. Returns the task map or `nil`. Used at the tool-handler
+  boundary to translate the integer `task_num` verbs take in their
+  schema into the cryptic `task_id` the rest of the BE uses internally.
+  See architecture.md §Task lifecycle §Identity.
+  """
+  @spec lookup_by_num(String.t(), integer()) :: map() | nil
+  def lookup_by_num(session_id, task_num) when is_binary(session_id) and is_integer(task_num) do
+    r = query!(Repo,
+      "SELECT #{@select_cols} FROM tasks WHERE session_id=? AND task_num=?",
+      [session_id, task_num])
+
+    case r.rows do
+      [row] -> row_to_map(row)
+      _     -> nil
+    end
+  end
+  def lookup_by_num(_, _), do: nil
+
+  @doc """
+  Resolve `(session_id, task_num)` to its internal `task_id`. Returns
+  `{:ok, task_id}` or `{:error, :not_found}`. Preferred over
+  `lookup_by_num/2` at tool-handler entries that only need the id to
+  pass to other Tasks/* functions.
+  """
+  @spec resolve_num(String.t(), integer()) :: {:ok, String.t()} | {:error, :not_found}
+  def resolve_num(session_id, task_num) do
+    case lookup_by_num(session_id, task_num) do
+      nil               -> {:error, :not_found}
+      %{task_id: tid}   -> {:ok, tid}
     end
   end
 
@@ -340,6 +375,22 @@ defmodule Dmhai.Agent.Tasks do
     Enum.map(r.rows, &row_to_map/1)
   end
 
+  @doc """
+  Subset of `fetch_orphaned_ongoing/0` scoped to periodic tasks only.
+  Used by `TaskRuntime.rehydrate/0` — periodic ongoing tasks MUST be
+  reverted at boot because their cycle's `complete_task` didn't fire,
+  but one_off ongoing tasks can legitimately persist across restarts
+  (Phase 2 multi-chain: assistant finished a chain asking the user a
+  clarifying question, waiting for reply). See architecture.md §Boot
+  rehydration.
+  """
+  def fetch_orphaned_ongoing_periodic do
+    r = query!(Repo,
+      "SELECT #{@select_cols} FROM tasks WHERE task_status='ongoing' AND task_type='periodic'",
+      [])
+    Enum.map(r.rows, &row_to_map/1)
+  end
+
   def list_for_session(session_id) do
     r = query!(Repo, "SELECT #{@select_cols} FROM tasks WHERE session_id=? ORDER BY created_at DESC", [session_id])
     Enum.map(r.rows, &row_to_map/1)
@@ -359,7 +410,7 @@ defmodule Dmhai.Agent.Tasks do
   Recent terminal tasks for a session (done or cancelled), newest first.
   Used to render the flat `### done` sub-section of the task-list block —
   the assistant sees them by id+title only and can call `fetch_task` for
-  details (or `update_task(status: "pending")` to redo).
+  details (or `pickup_task(task_id)` to reopen a done task for rework).
   """
   def recent_done_for_session(session_id, limit \\ 20) do
     r = query!(Repo, """
@@ -377,6 +428,48 @@ defmodule Dmhai.Agent.Tasks do
     :ok
   end
 
+  @doc """
+  Set the anchor back-reference on a task — "when I (this task)
+  complete/cancel/pause, the chain's runtime anchor returns to
+  `back_num`." Called at `pickup_task` time when the incoming pickup's
+  task differs from the previous anchor.
+
+  Idempotent: passing the same value leaves the row unchanged (just
+  bumps `updated_at`). Passing `nil` clears any existing back-ref
+  (useful at `complete_task` time to avoid stale references on
+  subsequent re-pickups).
+  """
+  @spec set_back_ref(String.t(), integer() | nil) :: :ok
+  def set_back_ref(task_id, back_num) when is_binary(task_id) do
+    now = System.os_time(:millisecond)
+    query!(Repo, """
+    UPDATE tasks SET back_to_when_done_task_num=?, updated_at=?
+    WHERE task_id=?
+    """, [back_num, now, task_id])
+    :ok
+  end
+
+  @doc """
+  Return true if ANY periodic task in this session is currently in
+  `ongoing` status. Used by `TaskRuntime` to gate periodic pickup
+  firings: if a periodic is already running (prior cycle hasn't
+  closed), skip the new timer — prevents overlapping periodic silent
+  chains in the same session. See architecture.md §Scheduler — don't
+  stack periodic pickups.
+  """
+  @spec session_has_ongoing_periodic?(String.t()) :: boolean()
+  def session_has_ongoing_periodic?(session_id) do
+    r = query!(Repo, """
+    SELECT COUNT(*) FROM tasks
+    WHERE session_id=? AND task_type='periodic' AND task_status='ongoing'
+    """, [session_id])
+
+    case r.rows do
+      [[n]] when is_integer(n) -> n > 0
+      _ -> false
+    end
+  end
+
   @doc "Lookup user email by user_id. Falls back to user_id string on miss."
   def lookup_user_email(user_id) do
     case query!(Repo, "SELECT email FROM users WHERE id=?", [user_id]) do
@@ -389,7 +482,8 @@ defmodule Dmhai.Agent.Tasks do
 
   defp row_to_map([
     task_id, user_id, session_id, task_num, task_type, intvl_sec, task_title, task_spec,
-    task_status, task_result, time_to_pickup, language, attachments_json, created_at, updated_at
+    task_status, task_result, time_to_pickup, language, attachments_json,
+    back_to_when_done_task_num, created_at, updated_at
   ]) do
     %{
       task_id: task_id,
@@ -405,6 +499,7 @@ defmodule Dmhai.Agent.Tasks do
       time_to_pickup: time_to_pickup,
       language: language || "en",
       attachments: decode_attachments(attachments_json),
+      back_to_when_done_task_num: back_to_when_done_task_num,
       created_at: created_at,
       updated_at: updated_at
     }

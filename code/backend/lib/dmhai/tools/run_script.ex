@@ -39,7 +39,40 @@ defmodule Dmhai.Tools.RunScript do
         print(m["name"])
     ```
 
-    Sandbox: Alpine Linux. Tools: curl, wget, python3 (requests, httpx pre-installed), jq, git, nodejs, npm. Install extras with apk. Output capped at 50 KB; default timeout 30s (max 120s).
+    ## The sandbox — **Alpine Linux**
+
+    Your script runs inside an Alpine Linux container with **root** privileges. You can install anything you need. Output capped at 50 KB; default timeout 30 s (max 120 s).
+
+    **Pre-installed:** `curl`, `wget`, `python3` (with `requests`, `httpx`), `jq`, `git`, `nodejs`, `npm`, standard BusyBox (`sh`, `awk`, `sed`, `grep`, `tar`, `gzip`, …).
+
+    **Package manager: `apk`.** The sandbox uses Alpine's `apk` — NOT `apt-get`, NOT `yum`, NOT `dnf`. Those commands do not exist here; a script that calls them WILL fail with `command not found`. Install missing tools like this:
+
+        apk add --no-cache <pkg1> <pkg2> …
+
+    Common recipes inside the sandbox:
+
+    - SSH with password to a remote host: `apk add --no-cache openssh-client sshpass`
+    - Interactive SSH expect scripts: `apk add --no-cache expect`
+    - Headless Chrome for scraping: `apk add --no-cache chromium`
+    - Python extras beyond `requests`/`httpx`: `pip install <pkg>` (no virtualenv needed — you're root)
+
+    ## Sandbox vs. remote target — KEEP THESE SEPARATE
+
+    When your script opens an SSH session to a remote machine, **two distinct environments are in play**:
+
+    1. **The sandbox (Alpine)** — where the commands BEFORE `ssh` / INSIDE `run_script` itself execute. Install prereqs here with `apk`.
+    2. **The remote target** — where commands INSIDE the quoted `ssh "<cmd>"` block execute. Its distro determines ITS package manager (Ubuntu → `apt`, Fedora → `dnf`, Alpine → `apk`, …). Use the remote's package manager INSIDE the quoted block.
+
+    Correct pattern:
+
+        apk add --no-cache openssh-client sshpass          # sandbox-side prereq
+        sshpass -p "$PW" ssh -o StrictHostKeyChecking=no user@host '
+            sudo apt-get install -y docker.io              # remote-side — Ubuntu target
+        '
+
+    ## Recovery rule — when a script fails
+
+    If a tool result contains `<cmd>: command not found` on a LOCAL (sandbox-side) command, your next action is to install `<cmd>` via `apk add --no-cache <pkg>` and retry. **Do NOT pivot to a completely different approach, and do NOT fall back to explaining the task to the user manually** — the user asked you to DO it, and you're root in the sandbox; install what you need. Only stop and explain if the failure is on the remote side (host unreachable, auth denied, etc.) and you genuinely can't proceed without more input.
     """
   end
 

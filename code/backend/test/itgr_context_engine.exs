@@ -142,10 +142,10 @@ defmodule Itgr.ContextEngine do
   test "assistant: active_tasks injects hierarchical ## Task list block" do
     sd = session(messages: [user_msg("check status")])
     tasks = [
-      %{task_id: "abc", task_title: "do physics", task_status: "ongoing",
+      %{task_id: "abc", task_num: 1, task_title: "do physics", task_status: "ongoing",
         task_type: "one_off", task_spec: "research quantum computing",
         time_to_pickup: nil},
-      %{task_id: "def", task_title: "book flight", task_status: "pending",
+      %{task_id: "def", task_num: 2, task_title: "book flight", task_status: "pending",
         task_type: "one_off", task_spec: "book round-trip LAX↔Tokyo",
         time_to_pickup: nil}
     ]
@@ -154,10 +154,13 @@ defmodule Itgr.ContextEngine do
     task_msg = find_msg(msgs, "user", &String.starts_with?(&1, "## Task list"))
     assert task_msg != nil
     assert String.contains?(task_msg.content, "### one_off")
-    # task_id is rendered alongside the title so the model never needs to invent one.
-    assert String.contains?(task_msg.content, "#### `abc` — do physics")
-    assert String.contains?(task_msg.content, "#### `def` — book flight")
+    # Phase 3: tasks render as `#### (N) title` — task_id is BE-internal.
+    assert String.contains?(task_msg.content, "#### (1) do physics")
+    assert String.contains?(task_msg.content, "#### (2) book flight")
     assert String.contains?(task_msg.content, "**Description:** research quantum computing")
+    # task_id must NOT appear in the rendered block.
+    refute String.contains?(task_msg.content, "abc")
+    refute String.contains?(task_msg.content, "def")
   end
 
   test "assistant: empty active_tasks → no task list block" do
@@ -166,20 +169,21 @@ defmodule Itgr.ContextEngine do
     refute find_msg(msgs, "user", &String.starts_with?(&1, "## Task list"))
   end
 
-  test "assistant: done section renders flat id: title entries" do
+  test "assistant: done section renders flat (N) title entries" do
     sd = session(messages: [user_msg("hi")])
     done = [
-      %{task_id: "xyz", task_title: "Research physics", task_status: "done",
+      %{task_id: "xyz", task_num: 3, task_title: "Research physics", task_status: "done",
         task_type: "one_off", task_spec: "...", time_to_pickup: nil}
     ]
     msgs = ContextEngine.build_assistant_messages(sd, recent_done: done)
     task_msg = find_msg(msgs, "user", &String.starts_with?(&1, "## Task list"))
     assert task_msg != nil
     assert String.contains?(task_msg.content, "### done")
-    # Same id-prefix format as active tasks, but flat bullets under `### done`.
-    assert String.contains?(task_msg.content, "- `xyz` — Research physics")
+    # Phase 3: flat bullets under `### done`, no task_id.
+    assert String.contains?(task_msg.content, "- (3) Research physics")
     # Done tasks do NOT get their own #### heading
     refute String.contains?(task_msg.content, "#### Research physics")
+    refute String.contains?(task_msg.content, "xyz")
   end
 
   test "task-list block: attachments extracted from 📎 lines, emoji stripped" do
@@ -224,13 +228,14 @@ defmodule Itgr.ContextEngine do
   end
 
   test "task-list block: base_level pushes all headings deeper consistently" do
-    active = [%{task_id: "a1", task_title: "Z",
+    active = [%{task_id: "a1", task_num: 1, task_title: "Z",
                 task_status: "pending", task_type: "one_off",
                 task_spec: "s", time_to_pickup: nil}]
     [msg, _] = ContextEngine.build_task_list_block(active, [], base_level: 4)
     assert String.starts_with?(msg.content, "#### Task list")
     assert String.contains?(msg.content, "##### one_off")
-    assert String.contains?(msg.content, "###### `a1` — Z")
+    assert String.contains?(msg.content, "###### (1) Z")
+    refute String.contains?(msg.content, "a1")
   end
 
   test "task-list block: base_level raising past Markdown h6 errors out" do

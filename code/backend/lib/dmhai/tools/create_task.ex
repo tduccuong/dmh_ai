@@ -5,13 +5,24 @@
 
 defmodule Dmhai.Tools.CreateTask do
   @moduledoc """
-  Create a task in the current session's task list. The assistant calls
-  this when the user asks for something that's worth tracking (ongoing
-  work, periodic monitoring, anything bigger than a one-line reply).
+  Register a task in the current session's task list AND immediately
+  start work on it:
 
-  Returns a map with `task_id` so subsequent turns can reference it. The
-  task row starts at `status='pending'` with `time_to_pickup=now` for
-  both types — the assistant's current turn can pick it up immediately.
+      create_task → <execution tools> → complete_task
+                   ↑
+                   auto-picks up: status jumps straight to `ongoing`,
+                   and the runtime anchor flips to the new task_num.
+                   No separate `pickup_task` call needed for brand-new
+                   tasks. `pickup_task` remains the verb for RESUMING
+                   a task that was previously done / paused / cancelled.
+
+  The collapse — previously `create_task` (→ pending) + `pickup_task`
+  (→ ongoing) as two LLM roundtrips — was the single biggest cost per
+  fresh chain (~8 k input tokens of framework re-shipped). Folding
+  them saves one full LLM call on every new-user-ask opener.
+
+  Returns a map with `task_num` (the per-session `(N)` the model uses
+  for subsequent verbs).
   """
 
   @behaviour Dmhai.Tools.Behaviour
@@ -25,11 +36,16 @@ defmodule Dmhai.Tools.CreateTask do
   @impl true
   def description,
     do:
-      "Create a task in the current session's task list. Use for work worth " <>
-        "tracking: research, file operations, multi-step activities, AND any " <>
-        "periodic task (monitor CPU every N sec, daily reports). For periodic " <>
-        "tasks, set task_type='periodic' and intvl_sec>0. Returns {task_id} so " <>
-        "you can reference it in update_task later."
+      "Register a new task AND immediately start work on it. The task is " <>
+        "created with status='ongoing' and becomes the current anchor — " <>
+        "your very next call can be an execution tool (run_script, " <>
+        "web_search, ...). **Do NOT call pickup_task after create_task** — " <>
+        "that would be redundant (the task is already ongoing). Use for " <>
+        "work worth tracking: research, file ops, multi-step activities, " <>
+        "AND any periodic task (monitor CPU every N sec, daily reports). " <>
+        "For periodic tasks, set task_type='periodic' and intvl_sec>0. " <>
+        "Returns {task_num}. When done, call complete_task(task_num, " <>
+        "task_result)."
 
   @impl true
   def execute(args, ctx) do
@@ -56,16 +72,45 @@ defmodule Dmhai.Tools.CreateTask do
           task_title:  cleaned_title,
           task_spec:   cleaned_spec,
           attachments: attachments,
-          # Start as 'ongoing' — the model just created this because it's
-          # about to execute it in this same turn. 'pending' is reserved for
-          # periodic tasks awaiting their next cycle and for tasks resurrected
-          # via update_task(status: "pending").
+          # Phase 3 lever 2b: auto-pickup on create. The task starts
+          # at `ongoing` — the model can run execution tools
+          # immediately without a separate `pickup_task` call.
+          # `pickup_task` is now exclusively for RESUMING previously
+          # done/paused/cancelled tasks. See architecture.md §Task
+          # lifecycle and `maybe_mutate_anchor/4` in `user_agent.ex`
+          # for the matching anchor-advance behaviour.
           task_status: "ongoing",
           language:   normalise_lang(args["language"])
         )
 
-      Logger.info("[CreateTask] task=#{task_id} type=#{task_type} intvl=#{intvl_sec} attachments=#{length(attachments)}")
-      {:ok, %{task_id: task_id, task_title: args["task_title"], task_type: task_type}}
+      # Phase 3: look up the per-session `task_num` that Tasks.insert just
+      # allocated and return THAT to the model — `task_num` is the only
+      # identifier surfaced to model/user. `task_id` is still included
+      # for tool-chain introspection but prompt+UI only show `(N)`.
+      task = Tasks.get(task_id)
+      task_num = task && task.task_num
+
+      Logger.info("[CreateTask] task=(#{inspect(task_num)})[#{task_id}] type=#{task_type} intvl=#{intvl_sec} attachments=#{length(attachments)}")
+
+      # Phase 3 lever 2b: return a SELF-DESCRIBING result. Weak models
+      # anchor far more on the immediate tool result than on the system
+      # prompt (which is far away in the context). `status: "ongoing"`
+      # + `do_not` is deliberately PROHIBITIVE ONLY — earlier versions
+      # also carried a positive hint ("call run_script / web_search
+      # directly") which over-prescribed the path: 14 B-class models
+      # took it as "next call MUST be run_script" and skipped natural
+      # intermediate tools (lookup_credential, read_file, extract_content),
+      # folding credential lookup INTO the bash script as if it were a
+      # shell command. Leaving the positive direction unstated lets the
+      # model pick its next tool the natural way.
+      {:ok,
+       %{
+         task_num: task_num,
+         task_title: args["task_title"],
+         task_type: task_type,
+         status: "ongoing",
+         do_not: "call pickup_task — task is already ongoing"
+       }}
     end
   end
 

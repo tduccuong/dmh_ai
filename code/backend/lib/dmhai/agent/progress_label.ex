@@ -40,7 +40,11 @@ defmodule Dmhai.Agent.ProgressLabel do
     "list_dir"          => "path",
     "extract_content"   => "path",
     "create_task"       => "task_title",
-    "fetch_task"        => "task_id",
+    "pickup_task"       => "task_num",
+    "complete_task"     => "task_num",
+    "pause_task"        => "task_num",
+    "cancel_task"       => "task_num",
+    "fetch_task"        => "task_num",
     "spawn_task"        => "task_id",
     "calculator"        => "expression",
     "save_credential"   => "target",
@@ -65,27 +69,16 @@ defmodule Dmhai.Agent.ProgressLabel do
 
   # ── private ───────────────────────────────────────────────────────────
 
-  defp preview_for("update_task", args) do
-    # Special case: update_task is usually a status flip, sometimes a rewrite.
-    # Show "<task_id>: <status>" when status present, else the title/spec slice.
-    tid = args["task_id"] || ""
-    cond do
-      is_binary(args["status"]) and args["status"] != "" ->
-        "#{tid}: #{args["status"]}" |> truncate_words()
-      is_binary(args["task_spec"]) and args["task_spec"] != "" ->
-        "#{tid}: #{args["task_spec"]}" |> truncate_words()
-      true ->
-        tid
-    end
-  end
-
   defp preview_for(name, args) do
     key = Map.get(@primary_arg, name)
 
     val =
       cond do
-        is_binary(key) and is_binary(args[key]) -> args[key]
-        true -> first_string_value(args)
+        # Verb tools take `task_num` (integer). Render as "(N)" for
+        # readability in the activity row (e.g. `PickupTask → (3)`).
+        is_binary(key) and is_integer(args[key]) -> "(#{args[key]})"
+        is_binary(key) and is_binary(args[key])  -> args[key]
+        true                                      -> first_string_value(args)
       end
 
     truncate_words(val || "")

@@ -41,19 +41,27 @@ defmodule Dmhai.Agent.ToolHistory do
   require Logger
 
   @doc """
-  Record a turn's tool messages against its final-assistant ts, then
-  trim to the configured turn + byte caps.
+  Record a chain's tool messages against its final-assistant ts, then
+  trim to the configured turn + byte caps. Entries that roll out of
+  retention via `cap_by_turns` / `cap_by_bytes` are archived to
+  `task_turn_archive` if the chain was tagged with a `task_num` (Phase 3
+  — see architecture.md §Task state continuity across chains).
 
-  `tool_messages` is the subset of the turn's in-memory message list
+  `tool_messages` is the subset of the chain's in-memory message list
   that has role="assistant" with tool_calls, or role="tool" with a
   tool_call_id. User / final assistant-text messages are NOT included
   (they're already in `sessions.messages`).
 
-  No-op when the list is empty (a pure text turn with no tool calls).
+  `task_num` (optional, Phase 3) tags this chain's tool messages so
+  `fetch_task` can find them. `nil` → untagged; the entry rolls out
+  normally without archival when retention trims.
+
+  No-op when the list is empty (a pure text chain with no tool calls).
   """
-  @spec save_turn(String.t(), String.t(), integer(), [map()]) :: :ok
-  def save_turn(_session_id, _user_id, _assistant_ts, []), do: :ok
-  def save_turn(session_id, user_id, assistant_ts, tool_messages)
+  @spec save_turn(String.t(), String.t(), integer(), [map()], integer() | nil) :: :ok
+  def save_turn(session_id, user_id, assistant_ts, tool_messages, task_num \\ nil)
+  def save_turn(_session_id, _user_id, _assistant_ts, [], _task_num), do: :ok
+  def save_turn(session_id, user_id, assistant_ts, tool_messages, task_num)
       when is_list(tool_messages) do
     try do
       existing = load(session_id)
@@ -61,13 +69,15 @@ defmodule Dmhai.Agent.ToolHistory do
       entry = %{
         "assistant_ts" => assistant_ts,
         "ts"           => System.os_time(:millisecond),
+        "task_num"     => task_num,                              # Phase 3 tag
         "messages"     => Enum.map(tool_messages, &stringify_keys/1)
       }
 
-      trimmed =
-        (existing ++ [entry])
-        |> cap_by_turns()
-        |> cap_by_bytes()
+      appended = existing ++ [entry]
+      {trimmed, evicted} = cap_and_split(appended)
+
+      # Phase 3: archive evicted entries that carry a task_num.
+      archive_evicted(evicted, session_id)
 
       query!(Repo,
              "UPDATE sessions SET tool_history=? WHERE id=? AND user_id=?",
@@ -78,6 +88,55 @@ defmodule Dmhai.Agent.ToolHistory do
         Logger.warning("[ToolHistory] save_turn failed: #{Exception.message(e)}")
         :ok
     end
+  end
+
+  # Apply both caps and return the retained list AND the list of
+  # entries that were dropped (so we can archive them by task_num).
+  defp cap_and_split(list) do
+    after_turn_cap = cap_by_turns(list)
+    dropped_by_turn = Enum.drop(list, length(after_turn_cap))
+
+    after_byte_cap = cap_by_bytes(after_turn_cap)
+    dropped_by_byte = Enum.take(after_turn_cap, length(after_turn_cap) - length(after_byte_cap))
+
+    {after_byte_cap, dropped_by_turn ++ dropped_by_byte}
+  end
+
+  defp archive_evicted([], _session_id), do: :ok
+  defp archive_evicted(entries, session_id) do
+    Enum.each(entries, fn entry ->
+      case Map.get(entry, "task_num") do
+        n when is_integer(n) ->
+          case Dmhai.Agent.Tasks.resolve_num(session_id, n) do
+            {:ok, task_id} ->
+              msgs = Map.get(entry, "messages") || []
+              Dmhai.Agent.TaskTurnArchive.append_raw(task_id, session_id, msgs)
+
+            {:error, :not_found} ->
+              Logger.warning("[ToolHistory] evicted entry's task_num=#{n} no longer exists in session=#{session_id}; dropping without archival")
+          end
+
+        _ ->
+          # Untagged chain (free-mode tool use without a task) — no
+          # archival, just drop.
+          :ok
+      end
+    end)
+  end
+
+  @doc """
+  Return the subset of the session's retained tool_history whose
+  `task_num` field matches — i.e. chains that operated on this task
+  and are still in retention. Used by `fetch_task` to surface prior
+  tool outputs for a task without dragging in unrelated chains'
+  outputs. See architecture.md §Task state continuity across chains.
+  """
+  @spec load_for_task_num(String.t(), integer()) :: [map()]
+  def load_for_task_num(session_id, task_num)
+      when is_binary(session_id) and is_integer(task_num) do
+    session_id
+    |> load()
+    |> Enum.filter(fn entry -> Map.get(entry, "task_num") == task_num end)
   end
 
   @doc """

@@ -103,11 +103,19 @@
         badge.textContent = activeCount > 0 ? String(activeCount) : '';
         badge.style.display = activeCount > 0 ? '' : 'none';
 
+        // Phase 3: derive the anchor task_num locally, mirroring
+        // Dmhai.Agent.Anchor.resolve priority rules (Rule 2: exactly
+        // one ongoing → that task; Rule 3: no ongoing + exactly one
+        // pending one_off → that task; otherwise no anchor). The BE
+        // owns the authoritative anchor; this FE copy drives sidebar
+        // emphasis only.
+        var anchorTaskNum = deriveAnchorTaskNum(buckets);
+
         container.innerHTML = '';
 
-        renderBucket(container, 'ongoing', buckets.ongoing);
-        renderBucket(container, 'pending', buckets.pending);
-        renderBucket(container, 'paused',  buckets.paused);
+        renderBucket(container, 'ongoing', buckets.ongoing, anchorTaskNum);
+        renderBucket(container, 'pending', buckets.pending, anchorTaskNum);
+        renderBucket(container, 'paused',  buckets.paused,  anchorTaskNum);
         renderRecentBucket(container, buckets.recent);
 
         if (activeCount === 0 && buckets.recent.length === 0) {
@@ -117,6 +125,25 @@
             container.appendChild(empty);
         }
     };
+
+    function deriveAnchorTaskNum(buckets) {
+        if (buckets.ongoing.length === 1) return buckets.ongoing[0].task_num || null;
+        if (buckets.ongoing.length > 1) {
+            // Multiple ongoing — pick most-recently-updated (matches
+            // Dmhai.Agent.Anchor's Rule 2 fallback for the race case).
+            var newest = buckets.ongoing.reduce(function(acc, t) {
+                var ts = t.updated_at || 0;
+                return ts > (acc.updated_at || 0) ? t : acc;
+            }, buckets.ongoing[0]);
+            return newest.task_num || null;
+        }
+        // No ongoing — Rule 3: single pending one_off becomes anchor.
+        var pendingOneoff = buckets.pending.filter(function(t) {
+            return t.task_type === 'one_off' && typeof t.task_num === 'number';
+        });
+        if (pendingOneoff.length === 1) return pendingOneoff[0].task_num;
+        return null;
+    }
 
     function partitionTasks(tasks) {
         var ongoing = [], pending = [], paused = [], recent = [];
@@ -147,13 +174,13 @@
         return { ongoing: ongoing, pending: pending, paused: paused, recent: recent };
     }
 
-    function renderBucket(container, label, tasks) {
+    function renderBucket(container, label, tasks, anchorTaskNum) {
         if (tasks.length === 0) return;
         var header = document.createElement('div');
         header.className = 'task-bucket-header task-bucket-' + label;
         header.textContent = label;
         container.appendChild(header);
-        tasks.forEach(function(t) { container.appendChild(renderTaskRow(t)); });
+        tasks.forEach(function(t) { container.appendChild(renderTaskRow(t, anchorTaskNum)); });
     }
 
     function renderRecentBucket(container, tasks) {
@@ -168,15 +195,43 @@
         container.appendChild(details);
     }
 
-    function renderTaskRow(t) {
+    // Status-specific icon glyphs + human labels. Colors are applied via
+    // the `.task-status-icon.task-status-icon-<status>` CSS classes. Kept
+    // here so the same mapping is used for both the sidebar icon AND the
+    // stop-button's title tooltip.
+    var STATUS_ICON = {
+        ongoing:   '\u25C9',   // ◉ filled circle — "in flight"
+        pending:   '\u25F7',   // ◷ quarter-clock — "waiting"
+        paused:    '\u23F8',   // ⏸ pause
+        done:      '\u2713',   // ✓ check
+        cancelled: '\u2298'    // ⊘ circle-slash
+    };
+
+    function renderTaskRow(t, anchorTaskNum) {
         var row = document.createElement('div');
-        row.className = 'task-row task-status-' + t.task_status + ' task-type-' + t.task_type;
+        var classes = ['task-row', 'task-status-' + t.task_status, 'task-type-' + t.task_type];
+        // Phase 3 anchor emphasis: the task this chain is focused on
+        // gets a distinct visual marker so the user can scan the
+        // sidebar and immediately see what the assistant is working
+        // on right now. Different from the ongoing-status treatment
+        // (which emphasises ALL ongoing tasks) — the anchor is the
+        // single "currently active" focus.
+        if (typeof anchorTaskNum === 'number' && anchorTaskNum === t.task_num) {
+            classes.push('task-row-anchor');
+        }
+        row.className = classes.join(' ');
         row.dataset.taskId = t.task_id;
 
-        var icon = document.createElement('span');
-        icon.className = 'task-type-icon';
-        icon.textContent = t.task_type === 'periodic' ? '\u21BB' : '\u25B8';
-        row.appendChild(icon);
+        // LEFT: status icon. Bright-colored per status so the bucket is
+        // scannable at a glance. Replaces the previous single type-icon
+        // (periodic ↻ / one_off ▸); task type is now implicit from the
+        // pending-periodic countdown on the right, plus the grouping
+        // bucket headers.
+        var statusIcon = document.createElement('span');
+        statusIcon.className = 'task-status-icon task-status-icon-' + t.task_status;
+        statusIcon.textContent = STATUS_ICON[t.task_status] || '\u00B7';
+        statusIcon.title = t.task_status;
+        row.appendChild(statusIcon);
 
         // Per-session "(N)" number — gives the user a short handle they
         // can reference in a message ("tell me more about task 1").
@@ -191,30 +246,42 @@
         title.textContent = t.task_title || '(untitled)';
         row.appendChild(title);
 
-        var meta = document.createElement('span');
-        meta.className = 'task-meta';
-        if (t.task_status === 'pending' && t.task_type === 'periodic' && t.time_to_pickup) {
-            meta.textContent = relativeTimeStr(t.time_to_pickup);
-        } else {
-            meta.textContent = t.task_status;
+        // RIGHT: action button only, no status text. The status of a
+        // task IS communicated by the bright-coloured icon on the left
+        // (pause/dot/ban/clock/tick). Anything else on the right is
+        // just noise and gets removed.
+        //   - ongoing → red stop button (per-task cancel action).
+        //   - everything else → nothing on the right.
+        if (t.task_status === 'ongoing') {
+            var stopBtn = document.createElement('button');
+            stopBtn.className = 'task-stop-btn';
+            stopBtn.textContent = '\u23F9';   // ⏹ stop square
+            stopBtn.title = 'Stop this task';
+            stopBtn.addEventListener('click', function(e) {
+                // Don't let the click bubble up to the row, which has its
+                // own click-to-scroll handler.
+                e.stopPropagation();
+                stopBtn.disabled = true;
+                if (typeof SessionStore !== 'undefined' && SessionStore.cancelTask) {
+                    SessionStore.cancelTask(t.task_id).then(function(ok) {
+                        if (!ok) stopBtn.disabled = false;
+                        // Refresh the task list immediately so the user
+                        // sees the cancelled state without waiting for
+                        // the next 3-s poll.
+                        if (UIManager.refreshSessionTasks) {
+                            UIManager.refreshSessionTasks().then(function() {
+                                UIManager.renderTaskList && UIManager.renderTaskList();
+                            });
+                        }
+                    });
+                }
+            });
+            row.appendChild(stopBtn);
         }
-        row.appendChild(meta);
 
         row.addEventListener('click', function() { scrollToTask(t.task_id); });
 
         return row;
-    }
-
-    function relativeTimeStr(ms) {
-        var delta = ms - Date.now();
-        var abs = Math.abs(delta);
-        var past = delta < 0;
-        var out;
-        if (abs < 60 * 1000)             out = 'now';
-        else if (abs < 60 * 60 * 1000)   out = Math.round(abs / 60000) + 'm';
-        else if (abs < 24 * 3600 * 1000) out = Math.round(abs / 3600000) + 'h';
-        else                             out = Math.round(abs / (24 * 3600000)) + 'd';
-        return past ? out + ' ago' : 'in ' + out;
     }
 
     // Scroll the chat to the most recent session_progress row for this task.

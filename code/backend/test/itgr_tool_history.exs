@@ -48,8 +48,8 @@ defmodule Itgr.ToolHistory do
         tool_calls: [%{
           "id" => "call_" <> T.uid(),
           "function" => %{
-            "name" => "update_task",
-            "arguments" => %{"task_id" => task_id, "status" => "done"}
+            "name" => "complete_task",
+            "arguments" => %{"task_id" => task_id, "task_result" => "done"}
           }
         }]
       },

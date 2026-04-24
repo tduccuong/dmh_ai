@@ -31,6 +31,7 @@ defmodule Dmhai.Tools.WebSearch do
     - Statistics, laws, regulations, prices, or figures that change over time.
     - A person's recent news, current job, or latest work.
     - Anything you're unsure about or that could be outdated.
+    - **Anything whose answer lives AFTER your training cutoff.** Your training data has a cutoff date; the system date is in your system prompt's `Today's date:` line. If the user's time reference is beyond your cutoff ("latest X", "today's X", "this week/month/year's X", "current status of <person/company>", "how is X doing now"), answering from memory produces confidently wrong output — the user can't tell, which is worse than a search lag. Search.
 
   Calling `web_search` for any other reason will be REJECTED.
   """

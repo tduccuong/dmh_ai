@@ -201,6 +201,17 @@ defmodule Dmhai.Router do
     end
   end
 
+  # POST /tasks/:task_id/cancel — sidebar cancel for a single task. The
+  # session-level interrupt path was removed in Phase 2 (the user now
+  # sends a new chat message to redirect the assistant mid-chain); this
+  # endpoint still exists for explicit per-task cancellation from the
+  # sidebar.
+  post "/tasks/:task_id/cancel" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      Data.cancel_task(conn, user, task_id)
+    end
+  end
+
   # Poll endpoint — unified delta fetch for messages, progress rows,
   # streaming-buffer text, and the `is_working` flag. FE hits this at
   # 500 ms when the agent is active, 5 s when idle.
@@ -287,12 +298,6 @@ defmodule Dmhai.Router do
   post "/agent/chat" do
     with {:ok, conn, user} <- check_auth(conn) do
       AgentChat.post_chat(conn, user)
-    end
-  end
-
-  post "/agent/interrupt" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      AgentChat.post_interrupt(conn, user)
     end
   end
 

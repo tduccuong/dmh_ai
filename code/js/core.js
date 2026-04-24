@@ -46,7 +46,7 @@ const I18n = {
     })(),
     _strings: {
         en: {
-            retry: 'Retry', clear: 'Clear', send: 'Send', cancel: 'Cancel', ok: 'OK', stopGen: 'Stop',
+            retry: 'Retry', clear: 'Clear', send: 'Send', cancel: 'Cancel', ok: 'OK', stopGen: 'Stop', onTask: 'on task',
             update: 'Update', rename: 'Rename', delete_: 'Delete', download: '⬇ Download',
             newSession: '+ New Session', newChat: 'New chat',
             typePlaceholder: 'Type a message and click Send or press Ctrl-Enter...', typePlaceholderShort: 'Type a message...', attachFile: 'Attach file',
@@ -100,7 +100,7 @@ const I18n = {
             thinkingOutLoud: 'Thinking…',
         },
         vi: {
-            retry: 'Thử lại', clear: 'Xóa', send: 'Gửi', cancel: 'Hủy', ok: 'OK', stopGen: 'Dừng',
+            retry: 'Thử lại', clear: 'Xóa', send: 'Gửi', cancel: 'Hủy', ok: 'OK', stopGen: 'Dừng', onTask: 'trên task',
             update: 'Cập nhật', rename: 'Đổi tên', delete_: 'Xóa', download: '⬇ Tải về',
             newSession: '+ Phiên mới', newChat: 'Cuộc trò chuyện mới',
             typePlaceholder: 'Nhập tin nhắn và nhấn Gửi hoặc Ctrl-Enter...', typePlaceholderShort: 'Nhập tin nhắn...', attachFile: 'Đính kèm tệp',
@@ -154,7 +154,7 @@ const I18n = {
             thinkingOutLoud: 'Suy nghĩ…',
         },
         de: {
-            retry: 'Wiederholen', clear: 'Löschen', send: 'Senden', cancel: 'Abbrechen', ok: 'OK', stopGen: 'Stopp',
+            retry: 'Wiederholen', clear: 'Löschen', send: 'Senden', cancel: 'Abbrechen', ok: 'OK', stopGen: 'Stopp', onTask: 'bei Aufgabe',
             update: 'Aktualisieren', rename: 'Umbenennen', delete_: 'Löschen', download: '⬇ Herunterladen',
             newSession: '+ Neue Sitzung', newChat: 'Neuer Chat',
             typePlaceholder: 'Nachricht eingeben und auf Senden klicken oder Strg-Enter drücken...', typePlaceholderShort: 'Nachricht eingeben...', attachFile: 'Datei anhängen',
@@ -208,7 +208,7 @@ const I18n = {
             thinkingOutLoud: 'Denken…',
         },
         es: {
-            retry: 'Reintentar', clear: 'Limpiar', send: 'Enviar', cancel: 'Cancelar', ok: 'OK', stopGen: 'Detener',
+            retry: 'Reintentar', clear: 'Limpiar', send: 'Enviar', cancel: 'Cancelar', ok: 'OK', stopGen: 'Detener', onTask: 'en la tarea',
             update: 'Actualizar', rename: 'Renombrar', delete_: 'Eliminar', download: '⬇ Descargar',
             newSession: '+ Nueva sesión', newChat: 'Nueva conversación',
             typePlaceholder: 'Escribe un mensaje y haz clic en Enviar o presiona Ctrl-Enter...', typePlaceholderShort: 'Escribe un mensaje...', attachFile: 'Adjuntar archivo',
@@ -262,7 +262,7 @@ const I18n = {
             thinkingOutLoud: 'Pensando…',
         },
         fr: {
-            retry: 'Réessayer', clear: 'Effacer', send: 'Envoyer', cancel: 'Annuler', ok: 'OK', stopGen: 'Arrêter',
+            retry: 'Réessayer', clear: 'Effacer', send: 'Envoyer', cancel: 'Annuler', ok: 'OK', stopGen: 'Arrêter', onTask: 'sur la tâche',
             update: 'Mettre à jour', rename: 'Renommer', delete_: 'Supprimer', download: '⬇ Télécharger',
             newSession: '+ Nouvelle session', newChat: 'Nouvelle conversation',
             typePlaceholder: 'Tapez un message et cliquez sur Envoyer ou appuyez sur Ctrl-Entrée...', typePlaceholderShort: 'Tapez un message...', attachFile: 'Joindre un fichier',

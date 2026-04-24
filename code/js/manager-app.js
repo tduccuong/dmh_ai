@@ -367,18 +367,35 @@ UIManager.startProgressPolling = function() {
             if (res.ok) {
                 var data = await res.json();
 
-                // Dedup by (ts, role) — pollTurnToCompletion and this idle
-                // loop each track msg_since independently; at turn handoff
-                // both may fetch the same just-persisted row. Without dedup
-                // the same assistant reply would render twice.
+                // Dedup preference: `client_msg_id` match (for mid-chain
+                // optimistic user msgs sent via `_sendMidChainMessage`),
+                // else `(ts, role)` fallback. Same logic as
+                // pollTurnToCompletion — see there for rationale. On
+                // match, PATCH the existing entry's ts with the BE value
+                // rather than pushing a duplicate.
                 (data.messages || []).forEach(function(m) {
-                    var alreadyHave = (self.currentSession.messages || []).some(function(x) {
-                        return typeof x.ts === 'number' && x.ts === m.ts && x.role === m.role;
-                    });
-                    if (!alreadyHave) {
+                    var existing = null;
+                    if (m && typeof m.client_msg_id === 'string' && m.client_msg_id) {
+                        existing = (self.currentSession.messages || []).find(function(x) {
+                            return x && x.client_msg_id === m.client_msg_id;
+                        }) || null;
+                    }
+                    if (!existing) {
+                        existing = (self.currentSession.messages || []).find(function(x) {
+                            return typeof x.ts === 'number' && x.ts === m.ts && x.role === m.role;
+                        }) || null;
+                    }
+
+                    if (existing) {
+                        if (typeof m.ts === 'number' && existing.ts !== m.ts) {
+                            existing.ts = m.ts;
+                            changed = true;
+                        }
+                    } else {
                         self.currentSession.messages.push(m);
                         changed = true;
                     }
+
                     if (typeof m.ts === 'number' && m.ts > msgSince) msgSince = m.ts;
                 });
 
@@ -466,8 +483,29 @@ UIManager.clearSession = async function() {
     VideoDescriptionStore.deleteForSession(oldSessionId);
     this.attachedFiles = [];
     this.renderAttachments();
+    // Reset the scroll-policy counter so the new empty session pins
+    // properly on first render (same rationale as createNewSession).
+    this._lastRenderedMsgCount = 0;
     await this.renderSessions();
     this.renderChat();
+    // Arm the idle progress-poller for the new session id — without
+    // this, any later background delivery into this session (periodic
+    // task fires, mid-chain BE message) silently never reaches the FE.
+    this.startProgressPolling();
+    // Task-sidebar housekeeping — mirror createNewSession. Previously
+    // the sidebar kept showing the old session's task rows because
+    // nothing re-rendered it. For assistant mode, startTaskListPolling
+    // calls renderTaskList immediately so the rows clear right away
+    // (currentSession.tasks is undefined → renders empty / "No tasks
+    // yet"); for confidant mode we tear down any running poll + hide
+    // the section.
+    if (currentMode === 'assistant') {
+        if (this.showAssistantHint) this.showAssistantHint();
+        if (this.startTaskListPolling) this.startTaskListPolling();
+    } else {
+        if (this._taskPoll) { clearInterval(this._taskPoll); this._taskPoll = null; }
+        if (this.renderTaskList) this.renderTaskList();
+    }
 };
 
 UIManager.updateEndpoint = async function(url) {

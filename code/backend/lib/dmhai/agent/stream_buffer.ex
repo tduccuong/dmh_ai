@@ -87,6 +87,29 @@ defmodule Dmhai.Agent.StreamBuffer do
     %{buf | last_flush_ms: now}
   end
 
+  @doc """
+  Read the current `stream_buffer` text from DB. Returns an empty string
+  when the column is NULL (no active stream). Used by the tool-calls
+  branch of `session_chain_loop` to capture narration the model streamed
+  before emitting tool_calls, so it can be persisted as a real assistant
+  message instead of being wiped by `clear/2`.
+  """
+  @spec read(String.t(), String.t()) :: String.t()
+  def read(session_id, user_id) do
+    try do
+      case query!(Repo,
+             "SELECT stream_buffer FROM sessions WHERE id=? AND user_id=?",
+             [session_id, user_id]) do
+        %{rows: [[text]]} when is_binary(text) -> text
+        _ -> ""
+      end
+    rescue
+      e ->
+        Logger.error("[StreamBuffer] read failed: #{Exception.message(e)}")
+        ""
+    end
+  end
+
   @doc "Clear the stream_buffer column. Called after the final message has been appended to session.messages."
   @spec clear(String.t(), String.t()) :: :ok
   def clear(session_id, user_id) do
@@ -106,7 +129,7 @@ defmodule Dmhai.Agent.StreamBuffer do
 
   defp do_write(session_id, user_id, text, ts) do
     # Sanitize before every flush so the FE never polls a partial
-    # pseudo-tool-call annotation (e.g. `[used: update_task({...`).
+    # pseudo-tool-call annotation (e.g. `[used: complete_task({...`).
     # Truncates at the first tag opener. The in-memory accumulator
     # keeps the raw text intact — Police still sees the full bad
     # output at stream-end to reject / nudge on.

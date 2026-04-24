@@ -137,10 +137,22 @@ defmodule Dmhai.Agent.TaskRuntime do
         Logger.info("[TaskRuntime] pickup_due for missing task=#{task_id}")
         {:noreply, state}
 
-      %{task_status: status, user_id: user_id, session_id: session_id}
+      %{task_status: status, user_id: user_id, session_id: session_id, task_type: task_type}
           when status == "pending" ->
-        deliver_pickup(user_id, session_id, task_id)
-        {:noreply, state}
+        # Phase 3: don't stack periodic pickups. If another periodic in
+        # this session is already `ongoing` (prior cycle mid-chain,
+        # hasn't closed), skip THIS firing entirely. The missed cycle
+        # isn't made up for — the next natural timer re-fires after
+        # intvl_sec. Prevents overlapping periodic silent chains that
+        # can compound model confusion + amplify Police rejections.
+        # See architecture.md §Scheduler — don't stack periodic pickups.
+        if task_type == "periodic" and Tasks.session_has_ongoing_periodic?(session_id) do
+          Logger.info("[TaskRuntime] pickup_due task=#{task_id} skipped — another periodic is already ongoing in session=#{session_id}")
+          {:noreply, state}
+        else
+          deliver_pickup(user_id, session_id, task_id)
+          {:noreply, state}
+        end
 
       %{task_status: status} ->
         Logger.info("[TaskRuntime] pickup_due task=#{task_id} status=#{status} — not pending, skip")
@@ -180,11 +192,19 @@ defmodule Dmhai.Agent.TaskRuntime do
   end
 
   defp do_rehydrate(state) do
-    # 1. Any task that was ongoing when the BEAM died → pending. The
-    #    session will see it in the task list on the next turn.
-    Tasks.fetch_orphaned_ongoing()
+    # 1. PERIODIC ongoing tasks → pending. Their `ongoing` state is
+    #    tied to a running cycle; if the BEAM died mid-cycle, the
+    #    cycle is lost and the task must be re-armed to fire again.
+    #    One_off tasks' `ongoing` state is NOT touched — Phase 2
+    #    multi-chain tasks can legitimately stay `ongoing` across
+    #    restarts (awaiting user clarification between chains). If a
+    #    one_off's chain was killed mid-work, Phase 2 boot scan
+    #    detects the orphan via `has_unanswered_user_msg?` and
+    #    dispatches a resume chain; the `ongoing` status is
+    #    correct for the continuation.
+    Tasks.fetch_orphaned_ongoing_periodic()
     |> Enum.each(fn task ->
-      Logger.info("[TaskRuntime] reverting orphaned ongoing task=#{task.task_id} → pending")
+      Logger.info("[TaskRuntime] reverting orphaned ongoing periodic task=#{task.task_id} → pending")
       Tasks.mark_pending(task.task_id)
     end)
 

@@ -6,7 +6,7 @@
 defmodule Dmhai.Agent.AttachmentPaths do
   @moduledoc """
   Validation + canonicalisation for the `attachments` argument on
-  `create_task` / `update_task` and equivalent operations.
+  `create_task` and equivalent operations.
 
   Contract
   --------
@@ -82,7 +82,7 @@ defmodule Dmhai.Agent.AttachmentPaths do
   paths live in the structured `tasks.attachments` column now, so the
   spec should be pure prose.
 
-  Called by `create_task` and `update_task` before writing to the DB.
+  Called by `create_task` before writing to the DB.
   """
   @spec clean_spec(String.t()) :: String.t()
   def clean_spec(spec) when is_binary(spec) do

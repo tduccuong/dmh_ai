@@ -30,7 +30,7 @@ defmodule Dmhai.Agent.AgentSettings do
   @max_tool_result_chars_default 8_000
   @master_compact_turn_threshold_default 50
   @master_compact_fraction_default 0.45
-  @max_assistant_tool_rounds_default 50
+  @max_assistant_turns_per_chain_default 50
 
   # Estimated usable context window (in tokens) of the assistant LLM.
   # Used by ContextEngine.should_compact? to derive the char-based
@@ -51,6 +51,37 @@ defmodule Dmhai.Agent.AgentSettings do
   # heavy OCRs can't balloon context.
   @tool_result_retention_turns_default 5
   @tool_result_retention_bytes_default 120_000
+
+  # Per-task archive sliding window (Phase 3). Caps `task_turn_archive`
+  # to the last N rows OR B bytes per task, whichever is tighter.
+  # Oldest rows beyond either cap are dropped at append time. No LLM
+  # summarisation of archived content — sliding-window eviction only.
+  # See architecture.md §Task state continuity across chains.
+  @task_archive_row_cap_default 60
+  @task_archive_byte_cap_default 120_000
+
+  # LLM-account rotation throttle durations. Applied by
+  # `Dmhai.Agent.LLM` when an account hits a rate-limit (HTTP 429 or
+  # stream-inline RL error) or has its quota exhausted (Ollama's
+  # weekly cap). Rate-limit defaults to 60 s — matches the typical
+  # upstream rolling-window RL; the prior 1 h default locked every
+  # key after a burst and blew up the whole pool. Quota default is
+  # 168 h (7 days) to match Ollama's weekly reset cadence. The 429
+  # handler also parses the `Retry-After` header and, when present,
+  # uses it in preference to this default (see
+  # `parse_retry_after_ms/1`).
+  @rate_limit_throttle_secs_default 60
+  @quota_exhausted_throttle_hours_default 168
+
+  # Output-token ceiling (num_predict) passed to every assistant-mode
+  # LLM.stream call. Ollama's default cap is low enough that a ~15-line
+  # bash script tool_call gets truncated mid-string (observed 2026-04-24:
+  # 8× run_script loop, all scripts cut at identical byte offset, each
+  # missing the closing `fi` → syntax error → retry → truncate again).
+  # `num_predict` is a ceiling, NOT a prepaid budget — unused headroom
+  # has no cost. 16 384 is far above any practical tool_call or reply
+  # size while still bounding a runaway model that never emits EOS.
+  @llm_num_predict_assistant_default 16_384
 
   # Web / HTTP defaults
   @http_user_agent_default "Mozilla/5.0 (compatible; DMH-AI/1.0)"
@@ -123,9 +154,15 @@ defmodule Dmhai.Agent.AgentSettings do
   @spec master_compact_fraction() :: float()
   def master_compact_fraction, do: float_setting("masterCompactFraction", @master_compact_fraction_default)
 
-  @doc "Per-turn safety cap on tool-call roundtrips before the turn aborts with a carry-on message."
-  @spec max_assistant_tool_rounds() :: pos_integer()
-  def max_assistant_tool_rounds, do: int_setting("maxAssistantToolRounds", @max_assistant_tool_rounds_default)
+  @doc """
+  Per-chain safety cap on the number of turns (LLM roundtrips) before the
+  chain aborts with a carry-on message. Terminology: one **turn** is one
+  LLM call + its tool execution; one **chain** is the sequence of turns
+  until the assistant emits user-facing text. See architecture.md
+  §Assistant Mode.
+  """
+  @spec max_assistant_turns_per_chain() :: pos_integer()
+  def max_assistant_turns_per_chain, do: int_setting("maxAssistantTurnsPerChain", @max_assistant_turns_per_chain_default)
 
   @doc "Minimum post-trim char count for an `extract_content` result to count as 'meaningful' (not blank/scanned)."
   @spec min_extracted_text_chars() :: pos_integer()
@@ -153,6 +190,56 @@ defmodule Dmhai.Agent.AgentSettings do
   @spec tool_result_retention_bytes() :: pos_integer()
   def tool_result_retention_bytes,
     do: int_setting("toolResultRetentionBytes", @tool_result_retention_bytes_default)
+
+  @doc """
+  Per-task archive row cap (Phase 3). Each `task_turn_archive` grouping
+  is trimmed to this many rows at append time; oldest beyond the cap
+  are dropped. Row = one persisted message (user OR assistant OR tool),
+  so ~30 user+assistant pairs fit in the default 60.
+  """
+  @spec task_archive_row_cap() :: pos_integer()
+  def task_archive_row_cap,
+    do: int_setting("taskArchiveRowCap", @task_archive_row_cap_default)
+
+  @doc """
+  Per-task archive byte budget (Phase 3). Measured over the `content`
+  column sum. Applied alongside `task_archive_row_cap` — oldest rows
+  are dropped until BOTH caps are satisfied. A single heavy message
+  (e.g. pasted 80 KB paragraph) shrinks the effective window further.
+  """
+  @spec task_archive_byte_cap() :: pos_integer()
+  def task_archive_byte_cap,
+    do: int_setting("taskArchiveByteCap", @task_archive_byte_cap_default)
+
+  @doc """
+  Rate-limit throttle duration (seconds). Applied to an LLM account
+  when it returns 429 / rate-limited AND the response carried no
+  `Retry-After` header to honor. Default 60 s — a typical upstream
+  rate-limit rolling window.
+  """
+  @spec rate_limit_throttle_secs() :: pos_integer()
+  def rate_limit_throttle_secs,
+    do: int_setting("rateLimitThrottleSecs", @rate_limit_throttle_secs_default)
+
+  @doc """
+  Quota-exhausted throttle duration (hours). Applied when an LLM
+  account signals its quota is spent (Ollama's "weekly usage limit"
+  message). Default 168 h (7 days) to match Ollama cloud's weekly
+  reset.
+  """
+  @spec quota_exhausted_throttle_hours() :: pos_integer()
+  def quota_exhausted_throttle_hours,
+    do: int_setting("quotaExhaustedThrottleHours", @quota_exhausted_throttle_hours_default)
+
+  @doc """
+  Output-token ceiling (`num_predict`) applied to every assistant-mode
+  LLM.stream call. A ceiling, not a reservation: unused headroom has
+  no cost. Raise if long tool_calls (scripts, files) are getting cut
+  mid-string; lower to harden against runaway generation.
+  """
+  @spec llm_num_predict_assistant() :: pos_integer()
+  def llm_num_predict_assistant,
+    do: int_setting("llmNumPredictAssistant", @llm_num_predict_assistant_default)
 
   @doc "HTTP User-Agent string for outbound web requests."
   @spec http_user_agent() :: String.t()

@@ -21,7 +21,17 @@ function digestThinking(raw, final) {
 
 UIManager.sendMessage = async function() {
     const self = this;
-    if (this.isStreaming) return;
+
+    // Phase 2 mid-chain send: if a chain is already streaming, take the
+    // fast path — POST the message, let the BE queue it (the already-
+    // running `pollTurnToCompletion` will pick up both the user message
+    // and the assistant reply on its next 500 ms tick). Do NOT spawn a
+    // second poll, do NOT create a second streaming placeholder.
+    if (this.isStreaming) {
+        await this._sendMidChainMessage();
+        return;
+    }
+
     this.isStreaming = true;   // set early to prevent double-send during awaits
     this.updateSendBtn();
     function modeRole(session) {
@@ -156,8 +166,6 @@ UIManager.sendMessage = async function() {
     const pipelineController = new AbortController();
     self._streamController = pipelineController;
     document.getElementById('send-btn').disabled = true;
-    document.getElementById('stop-label').textContent = t('stopGen');
-    document.getElementById('stop-gen-btn').style.display = '';
 
     // Initial status bar shows "thinking" — the model hasn't produced any
     // visible output yet. `_updateStreamPlaceholder` flips the status to
@@ -184,7 +192,6 @@ UIManager.sendMessage = async function() {
         self._releaseWakeLock();
         self.updateSendBtn();
         self.setStatus('');
-        document.getElementById('stop-gen-btn').style.display = 'none';
 
         if (self.currentSession && self.currentSession.id === sessionAtSend.id) {
             self.currentSession = sessionAtSend;
@@ -221,7 +228,6 @@ UIManager.sendMessage = async function() {
         self._releaseWakeLock();
         self.updateSendBtn();
         self.setStatus('');
-        document.getElementById('stop-gen-btn').style.display = 'none';
     }
 
     // Collect filenames of attachments that were uploaded to <session>/workspace/
@@ -298,6 +304,115 @@ UIManager.sendMessage = async function() {
     });
 };
 
+// Phase 2 fast-path send used when a chain is already streaming. Posts
+// the new user message + any attachments that have finished uploading,
+// lets the BE persist them, and relies on the running
+// `pollTurnToCompletion` loop to surface both the user message and the
+// eventual assistant reply. No new streaming placeholder is created.
+//
+// Idempotency: each optimistic message is tagged with a client-generated
+// `client_msg_id` sent in the POST body. BE persists the id alongside
+// the message; the poll payload echoes it back. `pollTurnToCompletion`'s
+// dedup prefers `client_msg_id` match so a lost POST response (or BE
+// crash + recovery) still reconciles optimistic ↔ persisted without
+// duplicating the render. See architecture.md §Mid-chain user message
+// injection.
+UIManager._sendMidChainMessage = async function() {
+    const self = this;
+    const input = document.getElementById('message-input');
+    const content = input.value.trim();
+
+    const sessionAtSend = self.currentSession;
+    if (!sessionAtSend) return;
+
+    // Snapshot attachments — this.attachedFiles will be cleared below.
+    var attachedAtSend = (self.attachedFiles || []).slice();
+    if (!content && attachedAtSend.length === 0) return;
+
+    // Clear input immediately for responsive typing behaviour.
+    input.value = '';
+    input.style.height = 'auto';
+
+    // Build the attachment-pill fields for the optimistic message (same
+    // shape as `sendMessage`'s optimistic). For Assistant-mode sessions
+    // the BE also inlines `📎 workspace/<name>` lines into the persisted
+    // content at `/agent/chat` entry — those appear in the canonical
+    // message but are rendered via pill fields here, so visible content
+    // stays clean.
+    var imagesForStorage = [];
+    var videosForStorage = [];
+    var filesForStorage  = [];
+    var attachmentNamesForAssistant = [];
+
+    attachedAtSend.forEach(function(f) {
+        if (f.type === 'image') {
+            imagesForStorage.push({ thumbnail: f.thumbnailBase64, mime: f.mime, fileId: f.id, name: f.name });
+        } else if (f.type === 'video') {
+            videosForStorage.push({ name: f.name, fileId: f.id });
+        } else if (f.type === 'text') {
+            filesForStorage.push({ name: f.name, fileId: f.id, snippet: f.snippet });
+        }
+        if (sessionAtSend.mode === 'assistant' && f.attachmentName) {
+            attachmentNamesForAssistant.push(f.attachmentName);
+        }
+    });
+
+    // Clear FE-side attachment state + re-render attachment tray so the
+    // user sees the pills clear immediately (matches normal send UX).
+    self.attachedFiles = [];
+    self.renderAttachments();
+
+    var clientMsgId = (typeof crypto !== 'undefined' && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : ('msg-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10));
+
+    // Optimistic local append so the user sees their message right away.
+    // The canonical `ts` comes back in the POST response; the running
+    // poll will overwrite with the BE's version on its next tick via
+    // `client_msg_id` match. Until then we carry a placeholder ts of
+    // Date.now() purely for visual ordering — NOT persisted anywhere.
+    const optimistic = {
+        role: 'user',
+        content: content,
+        ts: Date.now(),
+        client_msg_id: clientMsgId
+    };
+    if (imagesForStorage.length > 0) optimistic.images = imagesForStorage;
+    if (videosForStorage.length > 0) optimistic.videos = videosForStorage;
+    if (filesForStorage.length > 0)  optimistic.files  = filesForStorage;
+
+    sessionAtSend.messages = sessionAtSend.messages || [];
+    sessionAtSend.messages.push(optimistic);
+    self.renderChat();
+
+    try {
+        const res = await apiFetch('/agent/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                sessionId:       sessionAtSend.id,
+                content:         content,
+                mode:            sessionAtSend.mode || 'assistant',
+                attachmentNames: attachmentNamesForAssistant,
+                client_msg_id:   clientMsgId
+            })
+        });
+
+        if (res.ok) {
+            const body = await res.json();
+            if (body && typeof body.user_ts === 'number') {
+                optimistic.ts = body.user_ts;
+            }
+        } else if (typeof console !== 'undefined') {
+            console.warn('[sendMidChainMessage] POST /agent/chat returned', res.status);
+        }
+    } catch (e) {
+        if (typeof console !== 'undefined') console.error('[sendMidChainMessage] POST failed', e);
+    }
+
+    self.updateSendBtn();
+};
+
 // Poll /sessions/:id/poll at ACTIVE cadence until the turn is done, then
 // return control to the caller. Each tick merges the messages / progress /
 // stream_buffer deltas into sessionAtSend and re-renders.
@@ -340,15 +455,34 @@ UIManager.pollTurnToCompletion = function(sessionAtSend, onComplete, onError, ab
             }
             var data = await res.json();
 
-            // Merge new messages. Dedup guarded by ts — pollTurnToCompletion
-            // and startProgressPolling each carry their own msg_since baseline;
-            // at turn handoff both may fetch the same just-persisted message.
-            // Without this guard the same assistant reply renders twice.
+            // Merge new messages. Dedup preference:
+            //   (1) `client_msg_id` match — set by `_sendMidChainMessage` on
+            //       the optimistic entry AND echoed back by BE. Robust to
+            //       lost POST responses / crash recovery where the client-
+            //       side placeholder ts doesn't match the BE ts.
+            //   (2) `(ts, role)` fallback — legacy entries without a nonce.
+            // On `client_msg_id` match we PATCH the optimistic entry's ts
+            // to the BE value (idempotent upgrade) rather than pushing a
+            // duplicate.
             (data.messages || []).forEach(function(m) {
-                var alreadyHave = (sessionAtSend.messages || []).some(function(x) {
-                    return typeof x.ts === 'number' && x.ts === m.ts && x.role === m.role;
-                });
-                if (!alreadyHave) sessionAtSend.messages.push(m);
+                var existing = null;
+                if (m && typeof m.client_msg_id === 'string' && m.client_msg_id) {
+                    existing = (sessionAtSend.messages || []).find(function(x) {
+                        return x && x.client_msg_id === m.client_msg_id;
+                    }) || null;
+                }
+                if (!existing) {
+                    existing = (sessionAtSend.messages || []).find(function(x) {
+                        return typeof x.ts === 'number' && x.ts === m.ts && x.role === m.role;
+                    }) || null;
+                }
+
+                if (existing) {
+                    if (typeof m.ts === 'number') existing.ts = m.ts;
+                } else {
+                    sessionAtSend.messages.push(m);
+                }
+
                 if (typeof m.ts === 'number' && m.ts > msgSince) msgSince = m.ts;
                 if (m.role === 'assistant') sawAssistantMessage = true;
             });

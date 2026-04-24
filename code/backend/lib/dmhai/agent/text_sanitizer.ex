@@ -8,12 +8,12 @@ defmodule Dmhai.Agent.TextSanitizer do
   Scrubs pseudo-tool-call annotations some models tack onto their text
   output — things like:
 
-      [used: update_task({"status":"done",...})]
+      [used: complete_task({"task_id":"...","task_result":"..."})]
       [via: web_search]
       [called: extract_content]
       [tool: create_task]
       — via web_fetch(url)
-      (used update_task)
+      (used complete_task)
 
   The prompt forbids these (§No task bookkeeping in user-facing text)
   and Police rejects them at stream-end. This module is the belt-and-
