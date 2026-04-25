@@ -212,20 +212,41 @@ defmodule Dmhai.Handlers.Data do
         new_msgs = Enum.filter(all_msgs, fn m -> (m["ts"] || 0) > msg_since end)
         progress = Dmhai.Agent.SessionProgress.fetch_for_session(session_id, prog_since)
 
-        # `is_working` drives the FE poll cadence: true → 500 ms, false
-        # → 5 s idle. Three conditions feed it:
+        # `is_working` drives the FE's poll cadence (true → 500 ms,
+        # false → 5 s idle) AND the status-bar phrase ("Assistant is
+        # thinking..." / "Assistant is streaming the answer..."). Five
+        # conditions feed it:
         #   (1) stream_buffer non-null — assistant mid-turn emitting text.
-        #   (2) fetch_next_due hit — a task is due NOW (past pickup).
-        #   (3) periodic task armed for the FUTURE — a pickup is coming
-        #       within the next ~30 s (whichever interval the user chose).
-        # Without (3), a 30-s periodic task would give the FE a 28-s lull
-        # of idle polling between firings, letting fresh assistant
-        # messages wait up to 5 s before rendering (5-s idle cadence).
-        # With (3), the FE stays on 500 ms while the periodic is in
-        # rotation and sees each joke land almost immediately.
-        has_due_task      = Dmhai.Agent.Tasks.fetch_next_due(session_id) != nil
+        #   (2) Last session.messages entry is role="user" — the user's
+        #       message hasn't been answered yet, so a chain is (or is
+        #       about to be) in flight. Covers: the 500 ms window between
+        #       POST /agent/chat and the BE starting the chain, AND page
+        #       reload mid-chain where the FE loses its isStreaming flag
+        #       but the BE is still working.
+        #   (3) Pending session_progress rows exist — a tool_call is
+        #       currently running (progress rows are inserted at
+        #       tool-start with status='pending', flipped to 'done' when
+        #       the tool returns). Covers multi-turn tool chains where
+        #       stream_buffer stays empty across tool-only rounds.
+        #   (4) fetch_next_due hit — a task is due NOW (past pickup).
+        #   (5) Periodic task armed for the FUTURE — a pickup is coming.
+        # Without (5), a long-interval periodic task would give the FE
+        # a quiet window between firings, letting fresh assistant
+        # messages wait up to 5 s before rendering. With (5) the FE
+        # stays on 500 ms while periodic rotation is active.
+        has_due_task       = Dmhai.Agent.Tasks.fetch_next_due(session_id) != nil
         has_armed_periodic = Dmhai.Agent.Tasks.has_pending_periodic_for_session(session_id)
-        is_working = is_binary(stream_buffer) or has_due_task or has_armed_periodic
+        has_unanswered_user_msg? = case List.last(all_msgs) do
+          %{"role" => "user"} -> true
+          _                    -> false
+        end
+        has_pending_progress? = Dmhai.Agent.SessionProgress.has_pending?(session_id)
+        is_working =
+          is_binary(stream_buffer)
+          or has_due_task
+          or has_armed_periodic
+          or has_unanswered_user_msg?
+          or has_pending_progress?
 
         json(conn, 200, %{
           messages:      new_msgs,

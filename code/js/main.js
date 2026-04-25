@@ -190,14 +190,23 @@ const UIManager = {
         });
 
         if (window.visualViewport) {
+            var lastVvH = window.visualViewport.height;
             window.visualViewport.addEventListener('resize', function() {
-                document.documentElement.style.height = window.visualViewport.height + 'px';
-                // Only scroll to bottom while actively streaming — not after completion,
-                // where stop-button/status-bar layout changes would override the scroll fix.
-                if (self.isStreaming) {
-                    var chat = document.getElementById('chat-container');
+                var newH = window.visualViewport.height;
+                document.documentElement.style.height = newH + 'px';
+                // Only auto-pin to bottom on a SHRINK (soft keyboard
+                // appears) AND when the user was already at the bottom.
+                // Earlier this fired on every viewport change while
+                // streaming, including expansions and minor layout
+                // shifts, which yanked readers off whatever they were
+                // looking at as the answer streamed in.
+                var chat = document.getElementById('chat-container');
+                var wasAtBottom = chat &&
+                    (chat.scrollHeight - chat.scrollTop - chat.clientHeight) < 40;
+                if (newH < lastVvH - 50 && wasAtBottom && chat) {
                     chat.scrollTop = chat.scrollHeight;
                 }
+                lastVvH = newH;
             });
         }
         document.getElementById('new-session-btn').addEventListener('click', function() { self.createNewSession(); });

@@ -134,24 +134,15 @@ UIManager.renderChat = function() {
     const container = document.getElementById('chat-container');
     if (!container) return;  // DOM torn down / not ready — nothing to render into.
 
-    // Snapshot scroll intent BEFORE mutating the DOM. Two independent
-    // signals decide whether we scroll to bottom after the rebuild:
-    //   (a) wasAtBottom: user was pinned to the bottom pre-render → keep
-    //       them pinned post-render (natural chat auto-follow).
-    //   (b) newMessageArrived: `session.messages` grew since the previous
-    //       renderChat. Forces a scroll-to-bottom regardless of the
-    //       pre-render geometry, because a new assistant reply —
-    //       especially a periodic-task delivery that lands while the user
-    //       isn't actively in a turn — is always something we want them
-    //       to see immediately. Without this, pre-render geometry checks
-    //       can misfire (e.g., scrollTop drifted when the streaming body
-    //       was detached) and land the fresh message below the viewport.
-    // Pattern shared with main.js:191,203.
-    const wasAtBottom = isAtBottom(container);
+    // Capture scrollTop BEFORE rebuilding so we can restore it after,
+    // unchanged. Scroll position is the user's domain — sendMessage
+    // sets it once on send (user message at top of viewport via
+    // `msgScrollPos`), and the user adjusts manually after that.
+    // renderChat should NEVER auto-scroll: doing so yanked readers
+    // mid-stream.
+    const savedScrollTop = container.scrollTop;
     const msgCount = (this.currentSession && Array.isArray(this.currentSession.messages))
         ? this.currentSession.messages.length : 0;
-    const prevCount = this._lastRenderedMsgCount || 0;
-    const newMessageArrived = msgCount > prevCount;
     this._lastRenderedMsgCount = msgCount;
 
     // Detach the streaming placeholder (created at turn start in
@@ -365,21 +356,19 @@ UIManager.renderChat = function() {
         if (streamEntry) {
             var streamDiv = document.createElement('div');
             streamDiv.className = 'message assistant';
-            if (streamEntry.content) {
-                // Content already flowing — full message row (header + body).
-                var streamHdr = buildMsgHeaderEl({ role: 'assistant', ts: Date.now() }, streamEntry.session);
-                streamDiv.appendChild(streamHdr);
-            } else {
-                // Turn in flight, nothing streamed yet (tool phase) —
-                // hide the row so progress rows don't appear sandwiched
-                // between the user message and an empty assistant card.
-                // `_updateStreamPlaceholder` will un-hide and prepend the
-                // header on first content. Matches the sendMessage setup.
-                streamDiv.style.display = 'none';
-            }
+            var streamHdr = buildMsgHeaderEl({ role: 'assistant', ts: Date.now() }, streamEntry.session);
+            streamDiv.appendChild(streamHdr);
             var streamBody = document.createElement('div');
             streamBody.className = 'msg-body';
             streamBody.id = 'streaming-body';
+            // While the body is empty (tool phase, no content yet),
+            // reserve viewport-tall min-height so the user-message
+            // direct-scroll in `sendMessage` always has room to put
+            // the user msg at the top. As content streams in,
+            // min-height becomes irrelevant; cleared at chain end.
+            if (!streamEntry.content) {
+                streamBody.style.minHeight = container.clientHeight + 'px';
+            }
             streamBody.innerHTML = streamEntry.searchWarning + renderWithMath(streamEntry.content);
             addCopyButtons(streamBody); wrapTables(streamBody);
             streamDiv.appendChild(streamBody);
@@ -387,11 +376,10 @@ UIManager.renderChat = function() {
         }
     }
 
-    // Scroll policy:
-    //   - new message arrived → always scroll to bottom (show it).
-    //   - otherwise, only re-pin if the user was already at the bottom.
-    //     If they scrolled up to re-read history, their position stays.
-    if (newMessageArrived || wasAtBottom) container.scrollTop = container.scrollHeight;
+    // Restore the pre-rebuild scroll position. The DOM was rebuilt
+    // with mostly the same content (one message added at end at most),
+    // so reapplying the same scrollTop keeps the user's view stable.
+    container.scrollTop = savedScrollTop;
 };
 
 // Scale a video down to VIDEO_WORKSPACE_MAX_PX resolution at VIDEO_WORKSPACE_BITRATE

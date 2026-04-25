@@ -29,12 +29,11 @@ defmodule Dmhai.Tools.CancelTask do
   @impl true
   def description,
     do:
-      "Cancel a task permanently — flip status to 'cancelled', cancel any " <>
-        "armed periodic pickup timer. Use ONLY when the user explicitly " <>
-        "asks to stop/cancel a task. Don't auto-cancel to work around other " <>
-        "issues; if the user asked for something new, use create_task for " <>
-        "the new work and leave the existing task alone (or ask the user " <>
-        "if they want it cancelled)."
+      "Cancel a task permanently — flip status to 'cancelled' and " <>
+        "cancel any armed periodic timer. Use ONLY on explicit user " <>
+        "request. Never auto-cancel to work around your own issues. " <>
+        "If the user asked for something new, create_task for the " <>
+        "new work and leave the existing task alone."
 
   @impl true
   def execute(args, ctx) do
@@ -76,10 +75,7 @@ defmodule Dmhai.Tools.CancelTask do
           },
           reason: %{
             type: "string",
-            description:
-              "OPTIONAL short reason shown in the task row's result column " <>
-                "(e.g. \"user stopped\"). Defaults to a generic \"cancelled\" " <>
-                "marker if omitted."
+            description: "OPTIONAL short reason shown in the task row's result column. Defaults to a generic \"cancelled\" marker."
           }
         },
         required: ["task_num"]

@@ -140,20 +140,31 @@ UIManager.sendMessage = async function() {
     // prepends the header. Matches natural reading order.
     const assistantDiv = document.createElement('div');
     assistantDiv.className = 'message assistant';
-    assistantDiv.style.display = 'none';
+    // Build the placeholder fully visible — header + body — from the
+    // start. The body carries `min-height: viewport` so the chat is
+    // guaranteed to be at least one viewport tall, giving the
+    // direct-scroll below room to put the user message at the top.
+    // As real content streams in, min-height becomes irrelevant; it's
+    // cleared explicitly at chain end.
+    var assistantHdr = buildMsgHeaderEl({ role: 'assistant', ts: Date.now() }, sessionAtSend);
+    assistantDiv.appendChild(assistantHdr);
     const bodyDiv = document.createElement('div');
     bodyDiv.className = 'msg-body';
     bodyDiv.id = 'streaming-body';
+    bodyDiv.style.minHeight = container.clientHeight + 'px';
     assistantDiv.appendChild(bodyDiv);
     container.appendChild(assistantDiv);
 
-    // Scroll the just-sent user message to the top of the viewport.
-    // Native `scrollIntoView` degrades gracefully when there isn't enough
-    // content below (it just scrolls as far as possible), so we no longer
-    // need the `minHeight = clientHeight` padding hack on the streaming
-    // body — the browser handles "not enough scroll room" correctly.
-    // Equivalent behavior on desktop + iOS Safari + Android Chrome.
-    if (userMsgEl) userMsgEl.scrollIntoView({ block: 'start', behavior: 'auto' });
+    // Direct scroll: place user message's top at the chat's viewport
+    // top. Deterministic and unaffected by `scrollIntoView`'s
+    // browser-specific "scroll as far as possible" fallback. The
+    // body's min-height above guarantees there's room.
+    if (userMsgEl) {
+        var msgScrollPos = userMsgEl.getBoundingClientRect().top
+                         - container.getBoundingClientRect().top
+                         + container.scrollTop;
+        container.scrollTop = msgScrollPos;
+    }
 
     // Do NOT PUT session.messages here. The BE persists the user message
     // itself (with a BE-stamped ts) inside /agent/chat before dispatching
@@ -215,6 +226,7 @@ UIManager.sendMessage = async function() {
     function onError(err) {
         var errBody = document.getElementById('streaming-body') || self._activeBodyDiv;
         if (errBody) {
+            errBody.style.minHeight = '';
             var errMsg = hasVideo
                 ? '⚠ ' + modeRole(sessionAtSend) + " doesn't support video input. Please switch to another one."
                 : '⚠ ' + (err && err.message ? err.message : 'No response received — please try again.');
@@ -577,36 +589,16 @@ UIManager._updateStreamPlaceholder = function(sessionAtSend, streamBuffer) {
     if (!entry) return;
     if (!streamBuffer) return;
 
-    // First non-empty stream_buffer means the LLM just produced its first
-    // word of final answer. Three things happen on this flip:
-    //   (1) Status indicator: "thinking" → "answering".
-    //   (2) Reveal the hidden `.message.assistant` placeholder that was
-    //       created up-front in sendMessage. Up to this point the user
-    //       sees only their own message + any tool-call progress rows —
-    //       no empty assistant row sandwiched between them.
-    //   (3) Prepend the assistant header above the body, so the reveal
-    //       shows a complete message row, not an orphaned body div.
-    // After the flip we don't switch back even if later polls return
-    // null (the final message is about to land in the messages delta
-    // anyway).
+    // First non-empty stream_buffer means the LLM just produced its
+    // first word of the final answer. Flip the status indicator from
+    // "thinking" to "answering". The assistant placeholder (header +
+    // body) is already visible from sendMessage; nothing to reveal.
     if (!entry.hasContentFlag) {
         entry.hasContentFlag = true;
         var mode = (sessionAtSend && sessionAtSend.mode) || 'confidant';
         var icon = (typeof MODE_ICONS !== 'undefined' && MODE_ICONS[mode]) || '';
         var label = mode === 'assistant' ? 'Assistant' : 'Confidant';
         this.setStatusHtml(icon + label + t('answering'));
-
-        var firstBody = document.getElementById('streaming-body');
-        if (firstBody) {
-            var assistantDiv = firstBody.closest('.message.assistant');
-            if (assistantDiv) {
-                assistantDiv.style.display = '';
-                if (!assistantDiv.querySelector('.msg-header')) {
-                    var hdr = buildMsgHeaderEl({ role: 'assistant', ts: Date.now() }, sessionAtSend);
-                    assistantDiv.insertBefore(hdr, firstBody);
-                }
-            }
-        }
     }
 
     entry.content = streamBuffer;
@@ -619,21 +611,17 @@ UIManager._updateStreamPlaceholder = function(sessionAtSend, streamBuffer) {
             var activeBody = document.getElementById('streaming-body');
             if (!activeBody) return;
 
-            // Snapshot auto-follow intent BEFORE the write, so we can
-            // re-pin to the bottom only if the user was already there.
-            // Same contract as renderChat: scrolled-up users are never
-            // yanked while the stream flows.
-            var chatContainer = document.getElementById('chat-container');
-            var wasAtBottom = chatContainer &&
-                (chatContainer.scrollHeight - chatContainer.scrollTop - chatContainer.clientHeight) < 40;
-
+            // No streaming auto-follow. `sendMessage` already scrolled
+            // the just-sent user message to the top of the viewport via
+            // `scrollIntoView({block:'start'})`; the assistant's text
+            // grows below it. As content overflows the viewport the
+            // browser shows a scrollbar but does NOT auto-scroll —
+            // user reads from the top and scrolls down at their own
+            // pace. A prior auto-follow here re-pinned to the bottom
+            // every tick, yanking the answer up out of view.
             activeBody.innerHTML = renderWithMath(streamBuffer);
             addCopyButtons(activeBody);
             wrapTables(activeBody);
-
-            if (wasAtBottom && chatContainer) {
-                chatContainer.scrollTop = chatContainer.scrollHeight;
-            }
         });
     }
 };

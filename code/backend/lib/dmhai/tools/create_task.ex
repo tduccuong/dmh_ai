@@ -29,16 +29,14 @@ defmodule Dmhai.Tools.CreateTask do
   @impl true
   def description,
     do:
-      "Register a new task AND immediately start work on it. The task is " <>
-        "created with status='ongoing' and becomes the current anchor — " <>
-        "your very next call can be an execution tool (run_script, " <>
-        "web_search, ...). **Do NOT call pickup_task after create_task** — " <>
-        "that would be redundant (the task is already ongoing). Use for " <>
-        "work worth tracking: research, file ops, multi-step activities, " <>
-        "AND any periodic task (monitor CPU every N sec, daily reports). " <>
-        "For periodic tasks, set task_type='periodic' and intvl_sec>0. " <>
-        "Returns {task_num}. When done, call complete_task(task_num, " <>
-        "task_result)."
+      "Register a new task AND immediately start work on it. The task " <>
+        "is created with status='ongoing' and becomes the current " <>
+        "anchor — your next call can be an execution tool directly. " <>
+        "**Do NOT call pickup_task after create_task** (redundant). " <>
+        "Use for any objective worth tracking (research, file ops, " <>
+        "multi-step work). For periodic tasks: task_type='periodic' " <>
+        "and intvl_sec>0. Returns {task_num}. Close with " <>
+        "complete_task(task_num, task_result) when delivered."
 
   @impl true
   def execute(args, ctx) do
@@ -148,9 +146,7 @@ defmodule Dmhai.Tools.CreateTask do
           },
           task_spec: %{
             type: "string",
-            description:
-              "The task description — verbatim user message (including any " <>
-                "📎-prefixed attachment paths). Do not rephrase or summarise."
+            description: "The user's verbatim request. Do not rephrase or summarise."
           },
           task_type: %{
             type: "string",
@@ -159,23 +155,21 @@ defmodule Dmhai.Tools.CreateTask do
           },
           intvl_sec: %{
             type: "integer",
-            description:
-              "For periodic tasks: interval in seconds between cycles " <>
-                "(e.g. 3600 = hourly). Must be > 0 for periodic. Ignored for one_off."
+            description: "Interval in seconds between cycles for periodic tasks. Must be > 0 for periodic; ignored for one_off."
           },
           language: %{
             type: "string",
-            description: "ISO 639-1 code of the user's language (e.g. 'en', 'vi', 'es', 'fr', 'ja')."
+            description: "ISO 639-1 code of the user's language."
           },
           attachments: %{
             type: "array",
             items: %{type: "string"},
             description:
               "File paths this task should operate on. Each must start with " <>
-                "'workspace/' or 'data/'. Look at the user message for lines " <>
-                "starting with '📎 ' — those are the uploaded paths; route each " <>
-                "to the task that needs it. The system canonicalises task_spec " <>
-                "by appending `📎 <path>` lines — DO NOT embed them in task_spec yourself."
+                "'workspace/' or 'data/'. Extract them from the `📎 ` lines in " <>
+                "the user's message. Do NOT embed `📎 ` lines in task_spec — " <>
+                "pass them here; the runtime canonicalises task_spec from this " <>
+                "list."
           }
         },
         required: ["task_title", "task_spec", "task_type", "language"]

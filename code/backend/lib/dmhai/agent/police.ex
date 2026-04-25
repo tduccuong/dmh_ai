@@ -247,6 +247,14 @@ defmodule Dmhai.Agent.Police do
       Map.has_key?(ctx, :silent_turn_task_id) ->
         :ok
 
+      # Anchor is already set for this chain — the runtime resolved an
+      # active task at chain start (prior chain left one ongoing, or
+      # the user is mid-exchange on a multi-chain task where the model
+      # asked a clarifying question last chain). The task wrapper is
+      # satisfied; no in-chain `create_task` / `pickup_task` is needed.
+      is_integer(Map.get(ctx, :anchor_task_num)) ->
+        :ok
+
       has_pickup_task_in_chain?(prior_messages) ->
         :ok
 

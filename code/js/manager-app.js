@@ -361,6 +361,7 @@ UIManager.startProgressPolling = function() {
         var url = '/sessions/' + encodeURIComponent(sid) +
                   '/poll?msg_since=' + msgSince + '&prog_since=' + progSince;
         var isWorking = false;
+        var streamBuffer = null;
         var changed = false;
         try {
             var res = await apiFetch(url);
@@ -428,6 +429,7 @@ UIManager.startProgressPolling = function() {
                 });
 
                 isWorking = !!data.is_working;
+                streamBuffer = data.stream_buffer;
             }
         } catch (e) {}
 
@@ -442,6 +444,20 @@ UIManager.startProgressPolling = function() {
                 if (typeof console !== 'undefined') console.error('[startProgressPolling] renderChat threw', e);
             }
         }
+
+        // Status-bar self-heal. `pollTurnToCompletion` owns the status
+        // during a user-initiated turn (it set isStreaming=true and
+        // this tick skipped above). Here we only run when the FE has
+        // no active streaming state — page reload mid-chain, silent
+        // periodic pickup, or any BE-driven work the FE didn't
+        // initiate. Sync the phrase to BE truth:
+        //   - is_working && stream_buffer → "streaming the answer..."
+        //   - is_working && !stream_buffer → "thinking..."
+        //   - !is_working                  → clear
+        // `_autoStatusActive` flag marks status-bar ownership so this
+        // path doesn't stomp on attachment/voice/iOS status writes.
+        self._syncAutoStatus(isWorking, streamBuffer);
+
         var nextMs = isWorking ? 500 : 5000;
         self._progressPoll = setTimeout(tick, nextMs);
     }
@@ -474,7 +490,21 @@ UIManager.clearSession = async function() {
     var currentMode = this._currentMode || 'confidant';
     apiFetch('/sessions/' + oldSessionId + '/cancel-workers', { method: 'POST' }).catch(function() {});
     await SessionStore.deleteSession(oldSessionId);
-    var newSession = await SessionStore.createSession(t('newChat'), currentMode);
+    // Invariant: at most ONE empty "New chat" per mode. Reuse is
+    // scoped to the SAME mode — never cross modes (reusing a stashed
+    // confidant "New chat" when the user cleared an assistant
+    // session would silently flip their mode focus and hide their
+    // other sessions from the sidebar, since the sidebar filters
+    // per-mode).
+    const sessions = await SessionStore.getSessions();
+    var newSession = sessions.find(function(s) {
+        return s.id !== oldSessionId
+            && (!s.messages || s.messages.length === 0)
+            && (s.mode || 'confidant') === currentMode;
+    });
+    if (!newSession) {
+        newSession = await SessionStore.createSession(t('newChat'), currentMode);
+    }
     await SessionStore.setCurrentSessionId(newSession.id);
     this.currentSession = newSession;
     this._imageDescriptions = {};
@@ -607,6 +637,31 @@ UIManager.autoNameSession = async function(session) {
     } finally {
         this._namingInProgress.delete(session.id);
         if (this._namingController === controller) this._namingController = null;
+    }
+};
+
+// Keep the input-area status bar ("Assistant is thinking..." /
+// "...streaming the answer...") coherent with BE's `is_working` flag
+// whenever the FE isn't already running `pollTurnToCompletion` (which
+// manages the phrase itself during user-initiated turns). Called from
+// `startProgressPolling`'s tick; idempotent.
+//
+// `_autoStatusActive` tracks ownership: only clear the status bar if
+// we were the ones who set it, so attachment / voice / iOS-hint
+// callers that set their own status aren't clobbered.
+UIManager._syncAutoStatus = function(isWorking, streamBuffer) {
+    if (!this.currentSession) return;
+    var mode  = (this.currentSession.mode) || 'confidant';
+    var icon  = (typeof MODE_ICONS !== 'undefined' && MODE_ICONS[mode]) || '';
+    var label = mode === 'assistant' ? 'Assistant' : 'Confidant';
+
+    if (isWorking) {
+        var phraseKey = streamBuffer ? 'answering' : 'thinking';
+        this.setStatusHtml(icon + label + t(phraseKey));
+        this._autoStatusActive = true;
+    } else if (this._autoStatusActive) {
+        this.setStatus('');
+        this._autoStatusActive = false;
     }
 };
 

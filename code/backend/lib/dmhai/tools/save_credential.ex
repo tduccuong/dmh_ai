@@ -14,7 +14,7 @@ defmodule Dmhai.Tools.SaveCredential do
   @impl true
   def description do
     """
-    Persist a credential (ssh key, user+password, API key, token) the user just provided, scoped to (user, target). On the next turn or future session you can fetch it back with lookup_credential. Target is your choice of stable label, e.g. "pi@192.168.178.22", "github-api", "aws-prod". Payload is a JSON object whose shape depends on cred_type.
+    Persist a credential (ssh key, user+password, API key, token) the user just provided, scoped to (user, target). Fetch back later with lookup_credential. Target is a stable, specific label (host+user, service name, API name). Payload is a JSON object whose shape depends on cred_type.
     """
   end
 
@@ -28,20 +28,20 @@ defmodule Dmhai.Tools.SaveCredential do
         properties: %{
           target: %{
             type: "string",
-            description: "Free-form stable label identifying who/what this credential unlocks. e.g. \"pi@192.168.178.22\", \"github-api\", \"openai\"."
+            description: "Stable, specific label for who/what this credential unlocks. Reuse the same label across saves + lookups."
           },
           cred_type: %{
             type: "string",
             enum: ["ssh_key", "user_pass", "api_key", "token", "other"],
-            description: "Kind of credential. ssh_key: private key text. user_pass: username+password. api_key / token: single secret string. other: anything else."
+            description: "ssh_key → private key text; user_pass → username+password; api_key / token → single secret string; other → anything else."
           },
           payload: %{
             type: "object",
-            description: "JSON object holding the secret(s). Typical shapes: ssh_key → {\"username\": \"pi\", \"private_key\": \"-----BEGIN …\"}. user_pass → {\"username\": \"cuong\", \"password\": \"…\"}. api_key / token → {\"value\": \"sk-…\"}."
+            description: "JSON object holding the secret(s). Shape by cred_type: ssh_key → {username, private_key}; user_pass → {username, password}; api_key / token → {value}."
           },
           notes: %{
             type: "string",
-            description: "Optional one-line note on when/why to use this credential. e.g. \"home raspberry pi, sudo enabled\"."
+            description: "Optional one-line note on when / why to use this credential."
           }
         },
         required: ["target", "cred_type", "payload"]

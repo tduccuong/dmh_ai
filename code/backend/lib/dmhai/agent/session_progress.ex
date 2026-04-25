@@ -225,6 +225,19 @@ defmodule Dmhai.Agent.SessionProgress do
     Enum.map(r.rows, &row_to_map/1)
   end
 
+  @doc """
+  Whether any progress row for this session is still `status='pending'`.
+  Used by the `/poll` `is_working` flag so the FE knows a tool_call is
+  in flight even when stream_buffer is empty (tool-only turns).
+  """
+  @spec has_pending?(String.t()) :: boolean()
+  def has_pending?(session_id) do
+    r = query!(Repo,
+               "SELECT 1 FROM session_progress WHERE session_id=? AND status='pending' LIMIT 1",
+               [session_id])
+    r.rows != []
+  end
+
   # Cap stored label so a single runaway tool output can't blow up the DB.
   defp truncate(nil), do: nil
   defp truncate(content) when is_binary(content) do

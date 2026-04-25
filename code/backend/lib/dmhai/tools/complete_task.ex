@@ -33,13 +33,12 @@ defmodule Dmhai.Tools.CompleteTask do
   @impl true
   def description,
     do:
-      "Close a task with its final result. For one_off tasks this marks " <>
-        "them 'done' terminally. For periodic tasks this reschedules the " <>
-        "next pickup (status → 'pending', time_to_pickup advances by " <>
-        "intvl_sec). Required: task_result — a short one-line summary the " <>
-        "user will see in the task list. Optional: task_title — refine the " <>
-        "title to capture the outcome (recommended on final close of a " <>
-        "one_off task; optional on each periodic pickup)."
+      "Close a task with its final result. one_off → marked 'done' " <>
+        "terminally; periodic → reschedules the next pickup " <>
+        "(status='pending', time_to_pickup += intvl_sec). " <>
+        "Required: task_result (one-line summary for the sidebar). " <>
+        "Optional: task_title (refine to capture the outcome; " <>
+        "recommended on one_off close)."
 
   @impl true
   def execute(args, ctx) do
@@ -79,22 +78,15 @@ defmodule Dmhai.Tools.CompleteTask do
         properties: %{
           task_num: %{
             type: "integer",
-            description: "The per-session task number `(N)` to close. Must be a non-terminal task in this session."
+            description: "The per-session task number `(N)` to close. Must be non-terminal."
           },
           task_result: %{
             type: "string",
-            description:
-              "One-line summary of the outcome — what was produced or learned. " <>
-                "Shown in the task sidebar; the user scans it to recall what the " <>
-                "task delivered weeks later. Write it in the user's language."
+            description: "One-line summary of the outcome in the user's language. Shown in the sidebar so the user can recall what the task delivered."
           },
           task_title: %{
             type: "string",
-            description:
-              "OPTIONAL title refinement. Recommended when finalizing a one_off " <>
-                "task whose creation-time title was vague (e.g. initial " <>
-                "\"Research X\" → closing \"Compared 3 flights to Tokyo by " <>
-                "price\"). Short sentence (≲ 60 chars) in the user's language."
+            description: "OPTIONAL title refinement (≲ 60 chars, user's language). Use on one_off close when the creation-time title was vague — replace it with an outcome-focused sentence."
           }
         },
         required: ["task_num", "task_result"]

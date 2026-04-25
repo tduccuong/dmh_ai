@@ -6,73 +6,42 @@
 defmodule Dmhai.Tools.RunScript do
   @behaviour Dmhai.Tools.Behaviour
 
+  alias Dmhai.Agent.Sandbox
+
   @default_timeout 30
   @max_timeout 120
   @max_output 50_000
-
-  # Dedicated sandbox container for shell execution — separate from the DMH-AI
-  # container so user commands don't run inside the app process.
-  @sandbox_container "dmh_ai-assistant-sandbox"
 
   @impl true
   def name, do: "run_script"
 
   @impl true
   def description do
+    pre_installed = Sandbox.installed_tools() |> Enum.join(", ")
+
     """
-    Write and run a script in ONE go to achieve your goal. Do NOT call this tool multiple times for sequential steps. Some examples:
+    Write and run a shell script (bash / python / node / …) in ONE call. Do NOT split sequential steps across multiple `run_script` calls — compose them into a single script with pipes, variables, and conditionals.
 
-    Bash script:
-    ```
-    #!/bin/bash
-    curl -s https://foo.com | grep "pattern" > results.txt
-    curl -s https://bar.com -XPOST -d @results.txt
-    ```
+    ## Sandbox — Alpine Linux, root, `apk`
 
-    Python script:
-    ```
-    #!/usr/bin/env python3
-    import urllib.request, json
-    with urllib.request.urlopen("http://localhost:11434/api/tags") as r:
-        data = json.load(r)
-    for m in data["models"]:
-        print(m["name"])
-    ```
+    Runs inside an Alpine container with root privileges. Output capped at 50 KB; default timeout 30 s (max 120 s). Pre-installed top-level packages: #{pre_installed}. Plus BusyBox basics (`sh`, `awk`, `sed`, `grep`, `find`, `tar`, `gzip`, …).
 
-    ## The sandbox — **Alpine Linux**
+    The package manager is `apk` — NOT `apt` / `yum` / `dnf`. Install anything missing with `apk add --no-cache <pkg>`; Python extras via `pip install <pkg>`.
 
-    Your script runs inside an Alpine Linux container with **root** privileges. You can install anything you need. Output capped at 50 KB; default timeout 30 s (max 120 s).
+    ## Plan dependencies before writing
 
-    **Pre-installed:** `curl`, `wget`, `python3` (with `requests`, `httpx`), `jq`, `git`, `nodejs`, `npm`, standard BusyBox (`sh`, `awk`, `sed`, `grep`, `tar`, `gzip`, …).
+    List every external command your script will invoke. For each, check whether it's in the pre-installed set above. Any command NOT pre-installed must be installed with `apk add --no-cache <pkg>` as an earlier line of the SAME script, before the line that uses it. The recovery rule below is a safety net, not a plan — relying on it always costs an extra turn.
 
-    **Package manager: `apk`.** The sandbox uses Alpine's `apk` — NOT `apt-get`, NOT `yum`, NOT `dnf`. Those commands do not exist here; a script that calls them WILL fail with `command not found`. Install missing tools like this:
+    ## Sandbox vs. remote target
 
-        apk add --no-cache <pkg1> <pkg2> …
+    When your script opens an SSH session to a remote host, two distinct environments are in play:
 
-    Common recipes inside the sandbox:
+    1. **Sandbox (Alpine)** — commands BEFORE `ssh` and the `run_script` script body itself. Install prereqs here with `apk`.
+    2. **Remote target** — commands INSIDE the quoted `ssh "<cmd>"` block. Use the REMOTE distro's package manager there (Ubuntu → `apt`, Fedora → `dnf`, …), not Alpine's.
 
-    - SSH with password to a remote host: `apk add --no-cache openssh-client sshpass`
-    - Interactive SSH expect scripts: `apk add --no-cache expect`
-    - Headless Chrome for scraping: `apk add --no-cache chromium`
-    - Python extras beyond `requests`/`httpx`: `pip install <pkg>` (no virtualenv needed — you're root)
+    ## Recovery rule
 
-    ## Sandbox vs. remote target — KEEP THESE SEPARATE
-
-    When your script opens an SSH session to a remote machine, **two distinct environments are in play**:
-
-    1. **The sandbox (Alpine)** — where the commands BEFORE `ssh` / INSIDE `run_script` itself execute. Install prereqs here with `apk`.
-    2. **The remote target** — where commands INSIDE the quoted `ssh "<cmd>"` block execute. Its distro determines ITS package manager (Ubuntu → `apt`, Fedora → `dnf`, Alpine → `apk`, …). Use the remote's package manager INSIDE the quoted block.
-
-    Correct pattern:
-
-        apk add --no-cache openssh-client sshpass          # sandbox-side prereq
-        sshpass -p "$PW" ssh -o StrictHostKeyChecking=no user@host '
-            sudo apt-get install -y docker.io              # remote-side — Ubuntu target
-        '
-
-    ## Recovery rule — when a script fails
-
-    If a tool result contains `<cmd>: command not found` on a LOCAL (sandbox-side) command, your next action is to install `<cmd>` via `apk add --no-cache <pkg>` and retry. **Do NOT pivot to a completely different approach, and do NOT fall back to explaining the task to the user manually** — the user asked you to DO it, and you're root in the sandbox; install what you need. Only stop and explain if the failure is on the remote side (host unreachable, auth denied, etc.) and you genuinely can't proceed without more input.
+    If the tool result contains `<cmd>: command not found` on a LOCAL (sandbox-side) command, your next action is `apk add --no-cache <pkg>` and retry. Do NOT pivot to a different approach or fall back to explaining the task manually — you're root, install what you need. Only stop for remote-side failures you genuinely can't unblock (host unreachable, auth denied).
     """
   end
 
@@ -86,11 +55,11 @@ defmodule Dmhai.Tools.RunScript do
         properties: %{
           script: %{
             type: "string",
-            description: "The shell script to run as a single string. Write the full script inline — pipe commands, use conditionals, assign variables. Example: \"curl -s http://localhost:11434/api/tags | jq '.models | length'\""
+            description: "The full shell script as a single string. Compose all steps inline — pipes, variables, conditionals."
           },
           timeout: %{
             type: "integer",
-            description: "Timeout in seconds (default #{@default_timeout}, max #{@max_timeout})"
+            description: "Timeout in seconds (default #{@default_timeout}, max #{@max_timeout})."
           }
         },
         required: ["script"]
@@ -113,7 +82,7 @@ defmodule Dmhai.Tools.RunScript do
         launcher = "printf '%s' '#{b64}' | base64 -d > /tmp/_dmh_run && chmod +x /tmp/_dmh_run && /tmp/_dmh_run"
         System.cmd(
           "docker",
-          ["exec", "-w", workdir, @sandbox_container, "sh", "-c", launcher],
+          ["exec", "-w", workdir, Sandbox.container_name(), "sh", "-c", launcher],
           stderr_to_stdout: true
         )
       end)

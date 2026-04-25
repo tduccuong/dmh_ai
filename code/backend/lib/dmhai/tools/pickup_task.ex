@@ -27,14 +27,12 @@ defmodule Dmhai.Tools.PickupTask do
   @impl true
   def description,
     do:
-      "RESUME an existing task from the Task list — flip it to " <>
-        "status='ongoing'. **Do NOT call this right after create_task** — " <>
-        "that's redundant, create_task already auto-picks up the new row. " <>
-        "Use `pickup_task` for: (1) the user explicitly asks to resume / " <>
-        "redo a previously done / paused / cancelled task (\"resume task " <>
-        "2\", \"continue X\"); (2) you need to restore an ongoing task " <>
-        "that was interrupted; (3) idempotent re-pickup when you want to " <>
-        "emphasise which task you're on. Returns {task_num, ok: true}."
+      "RESUME an existing task in the Task list — flip it to " <>
+        "status='ongoing'. **Do NOT call after create_task** " <>
+        "(redundant; create_task auto-picks up). Use when the user " <>
+        "asks to resume / redo a done / paused / cancelled task, or " <>
+        "to re-focus on an ongoing task whose context was lost. " <>
+        "Returns {task_num, ok: true}."
 
   @impl true
   def execute(args, ctx) do
@@ -77,10 +75,7 @@ defmodule Dmhai.Tools.PickupTask do
         properties: %{
           task_num: %{
             type: "integer",
-            description:
-              "The per-session task number `(N)` to pick up. Must be one " <>
-                "that appears in the current session's Task list, or one " <>
-                "that `create_task` returned earlier this chain."
+            description: "The per-session task number `(N)` to pick up. Must be listed in the Task list block."
           }
         },
         required: ["task_num"]

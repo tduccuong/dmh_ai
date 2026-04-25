@@ -16,24 +16,18 @@ defmodule Dmhai.Tools.WebSearch do
   # different framing ("Say YES/NO"), same underlying criteria; the two can
   # be DRYed later if they drift.
   @tool_description """
-  `web_search` performs the search AND returns the content of the top results in this exact shape — a numbered list where each item is:
+  Performs the search AND returns the content of the top results as a numbered list:
 
       N. <title>
       <url>
       [fetched]
       <content>
 
-  The `[fetched]` tag means the content is here in its entirety — it is all we have for that URL. Do NOT call `web_fetch` on any URL that appears in your recent `web_search` result; there is nothing more to retrieve. Compile your answer directly from this content, and include the source URL alongside each claim so the user can click through and read for themselves.
+  `[fetched]` means the content is here in full. Do NOT call `web_fetch` on any URL already in your recent `web_search` result — nothing more to retrieve. Compile your answer from the returned content and cite source URLs alongside each claim.
 
-  **When to call `web_search`:**
-    - Breaking news, sports scores, stock/crypto prices, weather, live events, headlines.
-    - Current technical information, GitHub repos, library/framework versions, or StackOverflow-style answers that could have changed.
-    - Statistics, laws, regulations, prices, or figures that change over time.
-    - A person's recent news, current job, or latest work.
-    - Anything you're unsure about or that could be outdated.
-    - **Anything whose answer lives AFTER your training cutoff.** Your training data has a cutoff date; the system date is in your system prompt's `Today's date:` line. If the user's time reference is beyond your cutoff ("latest X", "today's X", "this week/month/year's X", "current status of <person/company>", "how is X doing now"), answering from memory produces confidently wrong output — the user can't tell, which is worse than a search lag. Search.
+  **Call `web_search` for**: current / changing information — news, prices, weather, live data, statistics, regulations, a person's recent work, library versions, anything that could have changed since your training cutoff. If the ask is time-sensitive or names something whose state could be newer than your training data, search rather than answer from memory.
 
-  Calling `web_search` for any other reason will be REJECTED.
+  Any other use will be REJECTED.
   """
 
   @impl true
