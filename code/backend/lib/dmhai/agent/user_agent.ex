@@ -1015,21 +1015,34 @@ defmodule Dmhai.Agent.UserAgent do
           Dmhai.SysLog.log("[ASSISTANT] turn=#{turn} tool_calls=[#{call_names}]")
 
           # Capture any narration the model streamed before emitting
-          # tool_calls ("Let me search for that first…"). Previously we
-          # cleared `stream_buffer` unconditionally and discarded the
-          # text, which caused the "half-rendered reasoning, rest renders
-          # after tool finishes" visual glitch: FE saw partial text in
-          # stream_buffer, then the clear wiped it, then the NEXT turn's
-          # fresh narration filled the buffer and the FE perceived it as
-          # a continuation. Persisting the narration as a real assistant
-          # message (with sanitisation matching the final-text path)
-          # makes it a permanent part of the chat timeline and removes
-          # the flash. Sanitise, log, persist if non-empty, then clear.
+          # tool_calls ("Let me search for that first…"). Persisting it
+          # fixes the "half-rendered reasoning, rest renders after tool
+          # finishes" visual glitch: without persistence, FE saw partial
+          # text in stream_buffer, then the clear wiped it, then the
+          # NEXT turn's fresh narration filled the buffer and the FE
+          # perceived it as a continuation. Persisting makes the
+          # narration a permanent part of the chat timeline.
+          #
+          # EXCEPTION: when this turn's tool_calls include a CLOSE verb
+          # (complete_task / cancel_task / pause_task), skip
+          # persistence. Models tend to write the user-facing
+          # conclusion right before closing — then re-write the same
+          # conclusion as final text on the next turn, producing two
+          # near-identical assistant bubbles. Suppressing here drops
+          # the duplicate; the close-verb's progress row plus the next
+          # turn's final text together convey the same information.
+          # Mid-chain narrations before non-closing tools (run_script,
+          # web_fetch, extract_content, etc.) still persist normally so
+          # the "tries X, fails, explains, tries Y" flow is preserved.
           raw_narration  = StreamBuffer.read(ctx.session_id, ctx.user_id)
           clean_narration = Dmhai.Agent.TextSanitizer.strip_task_bookkeeping(raw_narration)
           StreamBuffer.clear(ctx.session_id, ctx.user_id)
 
-          if String.trim(clean_narration) != "" do
+          closes_chain? = Enum.any?(calls, fn c ->
+            (get_in(c, ["function", "name"]) || "") in ~w(complete_task cancel_task pause_task)
+          end)
+
+          if String.trim(clean_narration) != "" and not closes_chain? do
             Dmhai.SysLog.log("[ASSISTANT] turn=#{turn} narration(#{String.length(clean_narration)} chars) persisted")
 
             narration_msg = %{role: "assistant", content: clean_narration}

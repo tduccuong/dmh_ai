@@ -83,7 +83,7 @@ defmodule Dmhai.Tools.CreateTask do
       # so `status: "ongoing"` + a prohibitive `do_not` repeats the
       # anti-pickup instruction at the point of decision. Positive
       # direction is left unstated so the model picks the natural
-      # next tool (lookup_credential, read_file, run_script, ...).
+      # next tool (lookup_creds, read_file, run_script, ...).
       {:ok,
        %{
          task_num: task_num,

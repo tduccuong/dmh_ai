@@ -39,7 +39,7 @@ defmodule Dmhai.Agent.Police do
   # pickup_task / complete_task / pause_task / cancel_task / fetch_task —
   # how the model complies) and trivial utilities (datetime, calculator).
   #
-  # Credential tools (`lookup_credential` / `save_credential`) ARE
+  # Creds tools (`lookup_creds` / `save_creds` / `delete_creds`) ARE
   # gated: credentials are always fetched in service of a user-facing
   # objective, so they sit under the task wrapper like any other
   # execution tool. Without the gate, a mid-chain "stop the task"
@@ -52,8 +52,9 @@ defmodule Dmhai.Agent.Police do
     "read_file",
     "write_file",
     "spawn_task",
-    "lookup_credential",
-    "save_credential"
+    "lookup_creds",
+    "save_creds",
+    "delete_creds"
   ]
 
   @abs_path_regex ~r{(?:^|\s|[=<>|;`'"(])(/[^\s"'`;&|<>()\$\\]+)}

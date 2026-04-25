@@ -45,6 +45,24 @@ defmodule Dmhai.DB.Init do
     # time to restore that prior anchor. See architecture.md §Anchor
     # mutation via back_to_when_done back-stack.
     add_column_if_missing("tasks", "back_to_when_done_task_num", "INTEGER")
+    # Creds primitives — Phase 1 schema bump. `cred_type` → `kind`
+    # (free-form label, no enum) and a new optional `expires_at`
+    # (unix ms) so OAuth2-style time-bounded creds can co-exist with
+    # static ones in the same table. SQLite RENAME COLUMN is 3.25+.
+    rename_column_if_present("user_credentials", "cred_type", "kind")
+    add_column_if_missing("user_credentials", "expires_at", "INTEGER")
+  end
+
+  # SQLite 3.25+ supports `ALTER TABLE … RENAME COLUMN`. The rename
+  # is a no-op when the source column doesn't exist (fresh DB created
+  # via the new schema, or migration already applied).
+  defp rename_column_if_present(table, old, new) do
+    try do
+      query!(Repo, "ALTER TABLE #{table} RENAME COLUMN #{old} TO #{new}")
+      Logger.info("[DB.Init] renamed #{table}.#{old} → #{new}")
+    rescue
+      _ -> :ok
+    end
   end
 
   defp add_column_if_missing(table, column, type_and_default) do
@@ -225,10 +243,11 @@ defmodule Dmhai.DB.Init do
     CREATE TABLE IF NOT EXISTS user_credentials (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id TEXT NOT NULL,
-      target TEXT NOT NULL,                  -- free-form label: "pi@192.168.178.22", "github-api", etc.
-      cred_type TEXT NOT NULL,               -- 'ssh_key' | 'user_pass' | 'api_key' | 'token' | 'other'
-      payload TEXT NOT NULL,                 -- plaintext JSON blob: {user, password} | {private_key} | {token} | ...
+      target TEXT NOT NULL,                  -- free-form label: host+user, service name, API name
+      kind TEXT NOT NULL,                    -- free-form: 'ssh_key' | 'user_pass' | 'api_key' | 'oauth2' | …
+      payload TEXT NOT NULL,                 -- plaintext JSON, shape determined by `kind`
       notes TEXT,                            -- free-form notes from the assistant (why/when/how to use)
+      expires_at INTEGER,                    -- optional unix ms expiry (OAuth2 access tokens etc.); NULL = non-expiring
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
       UNIQUE(user_id, target)

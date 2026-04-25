@@ -47,8 +47,9 @@ defmodule Dmhai.Agent.ProgressLabel do
     "fetch_task"        => "task_num",
     "spawn_task"        => "task_id",
     "calculator"        => "expression",
-    "save_credential"   => "target",
-    "lookup_credential" => "target"
+    "save_creds"        => "target",
+    "lookup_creds"      => "target",
+    "delete_creds"      => "target"
   }
 
   @doc """

@@ -652,7 +652,7 @@ defmodule Itgr.SessionContextContract do
       # never blocked by the scope gate.
       for tool <- ["run_script", "web_fetch", "web_search", "extract_content",
                    "read_file", "write_file", "calculator",
-                   "save_credential", "lookup_credential", "spawn_task",
+                   "save_creds", "lookup_creds", "delete_creds", "spawn_task",
                    "fetch_task"] do
         assert :ok = Police.check_silent_turn_scope(tool, %{"any" => "args"}, ctx),
                "execution tool `#{tool}` must be allowed in silent turns"

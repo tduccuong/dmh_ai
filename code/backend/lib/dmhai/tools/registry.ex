@@ -26,8 +26,12 @@ defmodule Dmhai.Tools.Registry do
     Dmhai.Tools.Calculator,
     Dmhai.Tools.ExtractContent,
     Dmhai.Tools.SpawnTask,
-    Dmhai.Tools.SaveCredential,
-    Dmhai.Tools.LookupCredential
+    # Creds primitives — single-row backing store for any credential
+    # kind (passwords, SSH keys, API keys, OAuth2 tokens). Higher-
+    # level provider-specific helpers persist via these.
+    Dmhai.Tools.SaveCreds,
+    Dmhai.Tools.LookupCreds,
+    Dmhai.Tools.DeleteCreds
   ]
 
   @doc "Returns all tool definitions in OpenAI function-calling format."

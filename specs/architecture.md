@@ -783,7 +783,7 @@ Key properties:
   on the immediate tool result more than on the distant system
   prompt. The hint is **prohibitive only**; positive direction is
   left unstated so the model picks its next tool naturally
-  (`lookup_credential`, `read_file`, `extract_content`, or
+  (`lookup_creds`, `read_file`, `extract_content`, or
   `run_script`, whichever fits).
 - **`Tasks.mark_done/2` is the single source of rescheduling for periodic
   tasks.** The assistant doesn't call a separate reschedule tool — it just
@@ -1415,20 +1415,57 @@ Execution tools:
 `web_fetch`, `web_search`, `run_script`, `extract_content`, `read_file`,
 `write_file`, `calculator`, `spawn_task`, `get_date`.
 
-Credential tools (per-user persistent credential store; see
-`Dmhai.Agent.Credentials`):
+Creds tools (per-user persistent credential store; see
+`Dmhai.Agent.Credentials`). Three primitives form the unified base
+for any credential kind — passwords, SSH keys, API keys, OAuth2
+access + refresh tokens, anything future provider-specific helpers
+choose to persist.
 
 | Tool | Args | Effect |
 |------|------|--------|
-| `save_credential` | `target`, `cred_type` (ssh_key\|user_pass\|api_key\|token\|other), `payload` (object), `notes?` | Upsert scoped to (user_id, target). Payload is a free-form JSON object — e.g. `{username, private_key}` for ssh_key, `{username, password}` for user_pass, `{value}` for api_key / token. |
-| `lookup_credential` | `target?` | With `target`: return the full record (payload included). Without: return the list of saved targets (metadata only, no secrets) so the assistant can pick one. |
+| `save_creds` | `target`, `kind` (free-form string), `payload` (object), `notes?`, `expires_at?` (unix ms) | Upsert scoped to (user_id, target). `kind` is a model-chosen label describing the shape of `payload` (`"ssh_key"`, `"user_pass"`, `"api_key"`, `"oauth2"`, …). `expires_at` is optional; populate when the credential has a known expiry (OAuth2 access tokens). |
+| `lookup_creds` | `target?` | With `target`: returns `{found, kind, payload, expires_at, is_expired, notes}`. `is_expired` is computed at lookup time as `expires_at && expires_at < now`. Without `target`: returns the list of saved targets (metadata only, no secrets) so the assistant can pick one. |
+| `delete_creds` | `target` | Remove the credential at `(user_id, target)`. No-op if not present. |
 
-Storage is plaintext in the `user_credentials` SQLite table — documented
-shortcut matching how the rest of the app treats sensitive fields; revisit
-when the DB is moved off local disk. The assistant is prompted (see
-`system_prompt.ex :: assistant_base`) to look up before asking, ask
-specifically when absent, and save immediately on receipt so future tasks
-against the same target don't re-prompt.
+`kind` is intentionally free-form. Static credentials (`"ssh_key"`,
+`"user_pass"`, `"api_key"`) typically omit `expires_at`; OAuth2-style
+credentials (`"oauth2"`, `"oauth2_<provider>"`) populate it from the
+provider's token response. The assistant decides on a stable `kind`
+label per credential class.
+
+`target` labels must be stable and specific (host + user, service
+name, API name) so reuse across chains works — never generic
+(`"ssh"`, `"password"`).
+
+Storage is plaintext in the `user_credentials` SQLite table —
+documented shortcut matching how the rest of the app treats sensitive
+fields; revisit when the DB is moved off local disk. The assistant is
+prompted (see `system_prompt.ex :: assistant_base :: ## Credentials`)
+to check its own conversation context first, then `lookup_creds`,
+then ask the user; on receipt, `save_creds` immediately so future
+chains against the same target don't re-prompt.
+
+**Schema** — `user_credentials`:
+```
+id           INTEGER PRIMARY KEY
+user_id      TEXT
+target       TEXT       — model-chosen stable label
+kind         TEXT       — model-chosen string describing payload shape
+payload      TEXT       — JSON-encoded
+notes        TEXT       — optional
+expires_at   INTEGER    — optional unix ms; NULL for non-expiring creds
+created_at   INTEGER
+updated_at   INTEGER
+UNIQUE(user_id, target)
+```
+
+**Higher-level provider tools** (Phase 2 onwards): per-provider
+helpers (e.g. a Gmail OAuth2 tool) drive the multi-step flow
+(browser redirect → code exchange → refresh-token rotation) and
+persist results via `save_creds` with `expires_at` from the provider
+response. Generic OAuth2 abstractions are not built — each provider's
+quirks (scopes, redirect URLs, token formats) make a generic tool
+brittle, so per-provider helpers are added on demand.
 
 **Removed tools** (no longer exist): `plan`, `step_signal`, `task_signal`,
 `handoff_to_worker`, `pause_task`, `resume_task`, `set_periodic_for_task`,
@@ -1634,13 +1671,13 @@ Checks:
    accumulator unlocks gated tools.
    - Gated tools: `run_script`, `web_fetch`, `web_search`,
      `extract_content`, `read_file`, `write_file`, `spawn_task`,
-     `lookup_credential`, `save_credential`.
+     `lookup_creds`, `save_creds`, `delete_creds`.
    - Bypass: task-management verbs themselves (`create_task`,
      `pickup_task`, `complete_task`, `pause_task`, `cancel_task`,
      `fetch_task`) and trivial utilities (`datetime`, `calculator`).
      Credentials are always fetched in service of a user objective,
-     so `lookup_credential` / `save_credential` sit under the task
-     wrapper like any other execution tool.
+     so `lookup_creds` / `save_creds` / `delete_creds` sit under the
+     task wrapper like any other execution tool.
    - Bypass: silent chains (`ctx[:silent_turn_task_id]` set) — the
      scheduler already fired for a specific task and
      `run_assistant_silent` applies `mark_ongoing` at chain start, so
@@ -2135,8 +2172,8 @@ Rules:
   `read_file`, `extract_content`, `datetime`) return raw
   strings. The model sees exactly the text a human would see.
 - **Map / list in → pretty JSON out.** Metadata-oriented tools (`create_task`,
-  `update_task`, `fetch_task`, `web_search`, `web_fetch`, `save_credential`,
-  `lookup_credential`) return structured data. `format_tool_result` runs a
+  `update_task`, `fetch_task`, `web_search`, `web_fetch`, `save_creds`,
+  `lookup_creds`, `delete_creds`) return structured data. `format_tool_result` runs a
   recursive normalisation first — atoms → strings (`"ok"`, not `:ok`),
   tuples → lists, nested maps/lists flattened to JSON-native — then
   `Jason.encode!/2` with `pretty: true`.
