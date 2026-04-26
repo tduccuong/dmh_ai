@@ -108,6 +108,7 @@ defmodule Dmhai.Agent.ContextEngine do
     active_tasks = Keyword.get(opts, :active_tasks, [])
     recent_done  = Keyword.get(opts, :recent_done, [])
     files        = Keyword.get(opts, :files, [])
+    user_id      = Keyword.get(opts, :user_id)
 
     system_msg = %{role: "system",
                    content: SystemPrompt.generate_assistant(profile: profile)}
@@ -171,7 +172,75 @@ defmodule Dmhai.Agent.ContextEngine do
       |> Dmhai.Agent.Anchor.resolve(silent_turn_task_id: Keyword.get(opts, :silent_turn_task_id))
       |> render_anchor_block()
 
-    [system_msg] ++ prefix ++ history_llm ++ relevant_msgs ++ task_list_block ++ extracted_files_block ++ anchor_block ++ last_msgs
+    available_services_block = build_available_services_block(user_id)
+
+    [system_msg] ++ prefix ++ history_llm ++ relevant_msgs ++ task_list_block ++ available_services_block ++ extracted_files_block ++ anchor_block ++ last_msgs
+  end
+
+  # User-scoped catalog of services the user has authorized at some
+  # point. Included so the model knows what `connect_service` URLs
+  # are already known-good — without this, the model has no view
+  # into past authorizations and tends to fall back on `web_search`
+  # instead of attaching the right MCP server. Each row carries
+  # everything the model needs to make a correct attach call: alias,
+  # canonical URL, sample namespaced tool names from the cached
+  # catalog, and a literal `connect_service(...)` template. Empty
+  # list when no services have been authorized.
+  defp build_available_services_block(nil), do: []
+
+  defp build_available_services_block(user_id) when is_binary(user_id) do
+    case Dmhai.MCP.Registry.list_authorized(user_id) do
+      [] ->
+        []
+
+      services ->
+        rows = Enum.map_join(services, "\n", &format_service_row/1)
+
+        body =
+          "## Authorized MCP services\n\n" <>
+            "External services this user has authorized previously. They are NOT in your " <>
+            "current tool catalog — to use any of them in this task, call `connect_service` " <>
+            "with the URL listed below. Re-attachment is fast (auth is cached at user level; no browser dance). " <>
+            "Attachments are per-task: every new task that needs a service must re-attach.\n\n" <>
+            rows
+
+        [
+          %{role: "user",      content: body},
+          %{role: "assistant", content: "Understood — I'll call `connect_service` when I need to use one of these."}
+        ]
+    end
+  end
+
+  defp build_available_services_block(_), do: []
+
+  defp format_service_row(s) do
+    tools_summary = format_tools_summary(s.tools, s.alias)
+
+    "- Alias: `#{s.alias}`, URL: `#{s.canonical_resource}`, " <>
+      tools_summary <> ", " <>
+      "Attach: `connect_service(url: \"#{s.canonical_resource}\")`"
+  end
+
+  defp format_tools_summary([], _alias_), do: "Tools: (catalog refreshed on next attach)"
+
+  defp format_tools_summary(tools, alias_) when is_list(tools) do
+    count = length(tools)
+
+    examples =
+      tools
+      |> Enum.take(3)
+      |> Enum.map(fn t ->
+        n = Map.get(t, "name") || Map.get(t, :name) || ""
+        "#{alias_}.#{n}"
+      end)
+      |> Enum.reject(&(&1 == "#{alias_}."))
+      |> Enum.join(", ")
+
+    if examples == "" do
+      "Tools: #{count}"
+    else
+      "Tools: #{count} (e.g. #{examples})"
+    end
   end
 
   # Anchor rendering. Produces a user/assistant pair so the

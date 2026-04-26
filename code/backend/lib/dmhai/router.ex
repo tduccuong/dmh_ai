@@ -220,6 +220,25 @@ defmodule Dmhai.Router do
     end
   end
 
+  # POST /sessions/:session_id/inputs/:token — submit an in-chat form
+  # rendered by the model's `request_input` tool. Body: {"values": ...}.
+  # Single-use token; submission marks the source assistant message
+  # `form.submitted = true` and synthesises a user-role message that
+  # auto-resumes the chain.
+  post "/sessions/:session_id/inputs/:token" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      Data.submit_input(conn, user, session_id, token)
+    end
+  end
+
+  # GET /oauth/callback?code=…&state=…
+  # OAuth callback for `connect_service`. Unauthenticated — the state
+  # token (single-use, TTL-bounded) ties the request back to a
+  # specific user_id + session_id + connection alias. See specs/mcp.md.
+  get "/oauth/callback" do
+    Data.oauth_callback(conn)
+  end
+
   get "/image-descriptions/:session_id" do
     with {:ok, conn, user} <- check_auth(conn) do
       Data.get_image_descriptions(conn, user, session_id)

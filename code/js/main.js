@@ -156,37 +156,51 @@ const UIManager = {
         // redirects the assistant by sending a new chat message — it's
         // spliced into the current chain on the next LLM roundtrip. See
         // architecture.md §Mid-chain user message injection.
-        document.getElementById('scroll-bottom-btn').addEventListener('click', function() {
-            var c = document.getElementById('chat-container');
-            c.scrollTop = c.scrollHeight;
+        document.getElementById('scroll-to-bottom-btn').addEventListener('click', function() {
+            // Re-engage follow-bottom mode and scroll to tail. Goes
+            // through the policy state machine so the next render or
+            // stream tick keeps the user pinned at the bottom (instead
+            // of immediately classifying the click as a manual scroll).
+            self._pinChatToBottom();
         });
-        (function() {
-            var scrollBtn = document.getElementById('scroll-bottom-btn');
-            var inputArea = document.querySelector('.input-area');
-            function updateScrollBtnPos() {
-                scrollBtn.style.bottom = (inputArea.offsetHeight + 50) + 'px';
-                var c = document.getElementById('chat-container');
-                var atBottom = c.scrollHeight - c.scrollTop - c.clientHeight < 40;
-                if (!atBottom && c.scrollHeight > c.clientHeight) {
-                    scrollBtn.style.display = 'flex';
-                } else {
-                    scrollBtn.style.display = 'none';
-                }
-            }
-            updateScrollBtnPos();
-            new ResizeObserver(updateScrollBtnPos).observe(inputArea);
-        })();
         document.getElementById('chat-container').addEventListener('scroll', function() {
             var c = this;
-            var atBottom = c.scrollHeight - c.scrollTop - c.clientHeight < 40;
-            if (atBottom) {
-                document.getElementById('scroll-bottom-btn').style.display = 'none';
-            } else if (c.scrollHeight > c.clientHeight) {
-                document.getElementById('scroll-bottom-btn').style.display = 'flex';
+            UIManager._updateScrollFab();
+
+            // Distinguish user-initiated scroll from our own
+            // programmatic writes via _setScroll. The suppress window
+            // covers async layout-shift scroll events that follow a
+            // programmatic set; the scrollTop-vs-expected check covers
+            // synchronous ones.
+            if (typeof self._suppressScrollUntil === 'number' && Date.now() < self._suppressScrollUntil) {
+                return;
+            }
+            var expected = self._scrollExpected;
+            if (typeof expected !== 'number' || Math.abs(c.scrollTop - expected) > 2) {
+                self._scrollMode = 'manual';
+                self._scrollAnchorEl = null;
+                // Drop the anchored-mode tail-room reservation right
+                // away so the empty space behind the content goes with
+                // the user's scroll instead of waiting for the next
+                // render to clear it.
+                self._clearTailRoom();
             }
         });
         window.addEventListener('beforeunload', function() {
             if (self.isStreaming) self.saveStreamingProgress();
+        });
+
+        // Background-tab visibility catch-up. Browsers throttle
+        // setTimeout aggressively in hidden tabs (Chrome ≥1s,
+        // Firefox/Safari can drop to once-per-minute), which stalls
+        // both poll loops (pollTurnToCompletion, startProgressPolling).
+        // When the tab returns to visible, immediately kick whichever
+        // loop is armed so the chat catches up to BE state without
+        // waiting for the next throttled tick.
+        document.addEventListener('visibilitychange', function() {
+            if (document.visibilityState !== 'visible') return;
+            if (typeof self._kickActiveTurnPoll === 'function') self._kickActiveTurnPoll();
+            if (typeof self._kickIdleProgressPoll === 'function') self._kickIdleProgressPoll();
         });
 
         if (window.visualViewport) {
@@ -204,7 +218,11 @@ const UIManager = {
                 var wasAtBottom = chat &&
                     (chat.scrollHeight - chat.scrollTop - chat.clientHeight) < 40;
                 if (newH < lastVvH - 50 && wasAtBottom && chat) {
-                    chat.scrollTop = chat.scrollHeight;
+                    // Keep the user pinned to the bottom across the
+                    // soft-keyboard shrink. Go through _setScroll so
+                    // the scroll listener doesn't mis-classify the
+                    // browser-driven scroll event as manual input.
+                    self._setScroll(chat.scrollHeight - chat.clientHeight);
                 }
                 lastVvH = newH;
             });

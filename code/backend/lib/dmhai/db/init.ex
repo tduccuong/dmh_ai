@@ -256,6 +256,74 @@ defmodule Dmhai.DB.Init do
 
     query!(Repo, "CREATE INDEX IF NOT EXISTS idx_user_credentials_user ON user_credentials (user_id)")
 
+    # Pending OAuth2 state tokens for the connect_service flow. One
+    # row per in-flight authorization. Carries everything needed to
+    # exchange the code and attach the service to the originating
+    # task without re-doing discovery: PKCE verifier, client_id (and
+    # optional client_secret), the cached ASM doc, the canonical
+    # resource id, and the (user_id, session_id, anchor_task_id,
+    # alias) the connection is being established for. Single-use —
+    # the callback handler deletes the row on success. TTL via
+    # `expires_at` (default `oauthStateTtlSecs`, 600 s).
+    query!(Repo, """
+    CREATE TABLE IF NOT EXISTS pending_oauth_states (
+      state              TEXT PRIMARY KEY,
+      user_id            TEXT NOT NULL,
+      session_id         TEXT NOT NULL,
+      anchor_task_id     TEXT NOT NULL,
+      alias              TEXT NOT NULL,
+      canonical_resource TEXT NOT NULL,
+      server_url         TEXT NOT NULL,
+      pkce_verifier      TEXT NOT NULL,
+      client_id          TEXT NOT NULL,
+      client_secret      TEXT,
+      asm_json           TEXT NOT NULL,
+      scopes             TEXT,
+      redirect_uri       TEXT NOT NULL,
+      created_at         INTEGER NOT NULL,
+      expires_at         INTEGER NOT NULL
+    )
+    """)
+    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_pending_oauth_states_user ON pending_oauth_states (user_id)")
+
+    # Per-user authorized external services. One row per service the
+    # user has ever authorized. Survives sessions, restarts, task
+    # lifecycles. Authorization here is necessary but not sufficient
+    # for the LLM to see the service's tools — task_services must
+    # also bind the service to the active task. `server_tools_json`
+    # is the last-known tools/list result; `asm_json` caches the
+    # authorization-server metadata for the refresh hook.
+    query!(Repo, """
+    CREATE TABLE IF NOT EXISTS authorized_services (
+      user_id                TEXT NOT NULL,
+      alias                  TEXT NOT NULL,
+      canonical_resource     TEXT NOT NULL,
+      server_url             TEXT NOT NULL,
+      asm_json               TEXT,
+      server_tools_json      TEXT,
+      server_tools_cached_at INTEGER,
+      created_ts             INTEGER NOT NULL,
+      PRIMARY KEY (user_id, alias)
+    )
+    """)
+    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_authorized_services_user ON authorized_services (user_id)")
+    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_authorized_services_resource ON authorized_services (canonical_resource)")
+
+    # Task ↔ authorized-service junction. One row per service
+    # attached to a task. Per-turn tool catalog filters to services
+    # in this table for the current anchor task; complete_task /
+    # cancel_task drop every row for that task.
+    query!(Repo, """
+    CREATE TABLE IF NOT EXISTS task_services (
+      task_id     TEXT NOT NULL,
+      user_id     TEXT NOT NULL,
+      alias       TEXT NOT NULL,
+      attached_ts INTEGER NOT NULL,
+      PRIMARY KEY (task_id, alias)
+    )
+    """)
+    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_task_services_user ON task_services (user_id, alias)")
+
     query!(Repo, """
     CREATE TABLE IF NOT EXISTS model_behavior_stats (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

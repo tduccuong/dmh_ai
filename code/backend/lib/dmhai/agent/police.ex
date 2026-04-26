@@ -39,11 +39,11 @@ defmodule Dmhai.Agent.Police do
   # pickup_task / complete_task / pause_task / cancel_task / fetch_task —
   # how the model complies) and trivial utilities (datetime, calculator).
   #
-  # Creds tools (`lookup_creds` / `save_creds` / `delete_creds`) ARE
-  # gated: credentials are always fetched in service of a user-facing
-  # objective, so they sit under the task wrapper like any other
-  # execution tool. Without the gate, a mid-chain "stop the task"
-  # has nothing to bind to.
+  # Creds tools and `connect_service` ARE gated: they're always fetched
+  # / set up in service of a user-facing objective, so they sit under
+  # the task wrapper like any other execution tool. Without the gate,
+  # a mid-chain "stop the task" has nothing to bind to, and the chat
+  # timeline shows execution work that isn't tied to a tracked task.
   @gated_tools [
     "run_script",
     "web_fetch",
@@ -54,7 +54,10 @@ defmodule Dmhai.Agent.Police do
     "spawn_task",
     "lookup_creds",
     "save_creds",
-    "delete_creds"
+    "delete_creds",
+    "request_input",
+    "connect_service",
+    "provision_ssh_identity"
   ]
 
   @abs_path_regex ~r{(?:^|\s|[=<>|;`'"(])(/[^\s"'`;&|<>()\$\\]+)}
@@ -455,27 +458,62 @@ defmodule Dmhai.Agent.Police do
   the progress row is never written for an unknown-tool rejection.
   """
   @spec check_tool_known(String.t()) :: :ok | {:rejected, {atom(), String.t()}}
-  def check_tool_known(name) when is_binary(name) do
-    if Dmhai.Tools.Registry.known?(name) do
+  def check_tool_known(name) when is_binary(name), do: check_tool_known(name, nil, nil)
+
+  def check_tool_known(_),
+    do: {:rejected, {:unknown_tool_name, "Error: tool_call `function.name` must be a string."}}
+
+  @doc """
+  Task-aware variant. Includes the MCP tools attached to the user's
+  current anchor task in the validity check so `<alias>.<tool>`
+  names registered via `connect_service` are accepted while their
+  task is alive, and rejected once it closes.
+  """
+  @spec check_tool_known(String.t(), String.t() | nil, String.t() | nil) ::
+          :ok | {:rejected, {atom(), String.t()}}
+  def check_tool_known(name, user_id, task_id) when is_binary(name) do
+    if Dmhai.Tools.Registry.known?(name, user_id, task_id) do
       :ok
     else
       name_preview = String.slice(name, 0, 120)
 
-      reason =
-        "Error: `#{name_preview}` is not a valid tool name. " <>
-          "Pick one of: " <>
-          Enum.join(Dmhai.Tools.Registry.names(), ", ") <>
-          ". Each tool_call must have a plain tool name in the `function.name` " <>
-          "field and the arguments as a JSON object in `function.arguments`. " <>
-          "Retry with the correct structure."
+      valid_names = Dmhai.Tools.Registry.names(user_id, task_id)
+
+      reason = unknown_tool_name_reason(name_preview, valid_names)
 
       Logger.warning("[Police] REJECTED unknown_tool_name: name=#{inspect(String.slice(name, 0, 200))}")
       Dmhai.SysLog.log("[POLICE] REJECTED unknown_tool_name: name=#{inspect(String.slice(name, 0, 200))}")
       {:rejected, {:unknown_tool_name, reason}}
     end
   end
-  def check_tool_known(_),
+
+  def check_tool_known(_, _, _),
     do: {:rejected, {:unknown_tool_name, "Error: tool_call `function.name` must be a string."}}
+
+  # MCP-attached tools live under `<alias>.<tool>`. When a name has
+  # that shape but isn't in the catalog, the most likely cause is
+  # the model is reaching for a service it used in a previous task
+  # but hasn't attached to the current one — `connect_service` per
+  # task is the contract. Lead with that hint instead of the bare
+  # tool list, which won't help if the right tool genuinely needs
+  # to be brought in via attachment.
+  defp unknown_tool_name_reason(name_preview, valid_names) do
+    case String.split(name_preview, ".", parts: 2) do
+      [alias_, _tool] when alias_ != "" ->
+        "Error: `#{name_preview}` is not currently attached to this task. Namespaced tools " <>
+          "(`<alias>.<tool>`) come from external services attached via `connect_service`. " <>
+          "If you want to use `#{alias_}` here, call `connect_service` first with the service's " <>
+          "URL — even if you've connected it in a previous task, attachments are per-task and " <>
+          "must be re-established.\n\n" <>
+          "Tools currently available: " <> Enum.join(valid_names, ", ") <> "."
+
+      _ ->
+        "Error: `#{name_preview}` is not a valid tool name. Pick one of: " <>
+          Enum.join(valid_names, ", ") <>
+          ". Each tool_call must have a plain tool name in the `function.name` field and the " <>
+          "arguments as a JSON object in `function.arguments`. Retry with the correct structure."
+    end
+  end
 
   @doc """
   Guard on the TEXT turn's final content. Catches the failure mode
@@ -733,12 +771,23 @@ defmodule Dmhai.Agent.Police do
 
       if role == "assistant" and is_list(calls) do
         Enum.any?(calls, fn c ->
-          fn_map    = c["function"] || c[:function] || %{}
-          call_name = fn_map["name"] || fn_map[:name] || ""
-          raw_args  = fn_map["arguments"] || fn_map[:arguments] || %{}
-          call_args = if is_binary(raw_args), do: decode_or_empty(raw_args), else: raw_args
+          # Skip calls Police itself rejected upstream. A rejection
+          # means the call never ran, so the next attempt with the
+          # same args is a retry — not a duplicate. `execute_tools`
+          # tags the call dict with `_rejected: true` when its
+          # tool_msg carried a rejection marker.
+          rejected? = c["_rejected"] || c[:_rejected] || false
 
-          call_name == name and significant_key(call_name, call_args) == key
+          if rejected? do
+            false
+          else
+            fn_map    = c["function"] || c[:function] || %{}
+            call_name = fn_map["name"] || fn_map[:name] || ""
+            raw_args  = fn_map["arguments"] || fn_map[:arguments] || %{}
+            call_args = if is_binary(raw_args), do: decode_or_empty(raw_args), else: raw_args
+
+            call_name == name and significant_key(call_name, call_args) == key
+          end
         end)
       else
         false
@@ -877,6 +926,82 @@ defmodule Dmhai.Agent.Police do
     end
   end
   def check_silent_turn_scope(_, _, _), do: :ok
+
+  @doc """
+  Per-tool-call gate: enforce that every gated tool call self-attests
+  with `relevant: true|false` whether it advances the active anchor
+  task's spec, and reject calls that declare themselves unrelated.
+
+  Targets the silent-pivot failure mode: anchor task X is `ongoing`,
+  the user sends a message unrelated to X, and the model just runs
+  `web_search` / `run_script` for the new ask without confirming with
+  the user — leaving X in limbo and the user's expectation ("we were
+  on X") unmet. Forcing the explicit attestation surfaces a question
+  the model otherwise never asks itself.
+
+  Skipped when:
+    * No anchor task is set (`ctx.anchor_task_num` not an integer).
+      Nothing to be relevant *to* — gate is a no-op.
+    * The tool is exempt (`Tools.Registry.relevance_exempt?/1`):
+      `complete_task` / `cancel_task` / `pause_task` / `pickup_task`
+      / `fetch_task` / `request_input`. These manage or feed the
+      active task by definition.
+
+  Otherwise inspects `args["relevant"]`:
+    * `true`           → pass (the model attests the work is on-anchor).
+    * `false`          → reject with an educational nudge teaching the
+                         three legitimate paths (push back to user via
+                         plain text, `pause_task` then proceed, or
+                         re-call with `relevant: true` if compatible).
+    * missing / wrong  → caught earlier by `check_tool_call_schema`
+                         (the schema injection marks the field
+                         required), so we treat anything that lands
+                         here as effectively `true` (pass).
+  """
+  @spec check_relevance(String.t(), map(), map()) ::
+          :ok | {:rejected, {atom(), String.t()}}
+  def check_relevance(name, args, ctx)
+      when is_binary(name) and is_map(args) and is_map(ctx) do
+    cond do
+      not is_integer(Map.get(ctx, :anchor_task_num)) ->
+        :ok
+
+      Dmhai.Tools.Registry.relevance_exempt?(name) ->
+        :ok
+
+      Map.get(args, "relevant") == false ->
+        anchor_num = Map.get(ctx, :anchor_task_num)
+
+        reason =
+          "Error: you declared `#{name}` `relevant: false` while task " <>
+            "(#{anchor_num}) is the active anchor. Don't silently pivot to unrelated " <>
+            "work — the user is still expecting an outcome on (#{anchor_num}). " <>
+            "Three legitimate paths:\n" <>
+            "  (a) Reply to the user in plain text (NO tool call): tell them " <>
+            "you're on (#{anchor_num}) and ask whether to pause it and switch to " <>
+            "their new request. Wait for their answer.\n" <>
+            "  (b) `pause_task(task_num: #{anchor_num})` first — the anchor " <>
+            "releases, then you may proceed with the new ask freely (your " <>
+            "next call can start a fresh `create_task`).\n" <>
+            "  (c) The new ask is actually compatible with (#{anchor_num})'s " <>
+            "spec (it's a refinement / clarification / next step) — re-call " <>
+            "`#{name}` with `relevant: true`."
+
+        Logger.warning(
+          "[Police] REJECTED irrelevant_to_anchor: tool=#{name} anchor=#{inspect(anchor_num)}"
+        )
+
+        Dmhai.SysLog.log(
+          "[POLICE] REJECTED irrelevant_to_anchor: tool=#{name} anchor=#{inspect(anchor_num)}"
+        )
+
+        {:rejected, {:irrelevant_to_anchor, reason}}
+
+      true ->
+        :ok
+    end
+  end
+  def check_relevance(_, _, _), do: :ok
 
   @doc """
   Per-tool-call gate enforcing the "one periodic task per chat session"
@@ -1029,9 +1154,17 @@ defmodule Dmhai.Agent.Police do
       calls = msg[:tool_calls] || msg["tool_calls"] || []
 
       if role == "assistant" and is_list(calls) and calls != [] do
-        last_call = List.last(calls)
-        fn_map    = last_call["function"] || last_call[:function] || %{}
-        fn_map["name"] || fn_map[:name]
+        # Skip Police-rejected calls — they never actually ran, so
+        # they shouldn't count as "the prior call" for chaining
+        # checks like consecutive_web_search.
+        live_calls = Enum.reject(calls, &(&1["_rejected"] || &1[:_rejected] || false))
+
+        case List.last(live_calls) do
+          nil -> nil
+          last_call ->
+            fn_map = last_call["function"] || last_call[:function] || %{}
+            fn_map["name"] || fn_map[:name]
+        end
       else
         nil
       end

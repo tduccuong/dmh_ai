@@ -19,7 +19,7 @@ RUN magick /tmp/logo.png -resize 180x180 /tmp/apple-touch-icon.png
 FROM alpine:3
 RUN apk add --no-cache \
       su-exec openssl libstdc++ libgcc ncurses-libs bash \
-      ffmpeg imagemagick poppler-utils pandoc docker-cli && \
+      ffmpeg imagemagick poppler-utils pandoc docker-cli openssh-keygen && \
     mkdir -p /app/ssl && \
     openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
       -keyout /app/ssl/key.pem \

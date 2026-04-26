@@ -12,6 +12,17 @@
 function buildSessionTimeline(session) {
     var entries = [];
     (session.messages || []).forEach(function(m) {
+        // `kind: "form_response"` user messages are runtime plumbing —
+        // the structured form payload the model consumes on the next
+        // chain. The visible "✓ Submitted" already shows on the
+        // assistant message that emitted the form, so rendering the
+        // form_response message here would be a redundant bubble. Hide.
+        if (m.role === 'user' && m.kind === 'form_response') return;
+        // `kind: "service_connected"` user messages are synthesised by
+        // the OAuth callback to auto-resume the chain after the user
+        // authorises an external service. Hide from the timeline; the
+        // assistant's follow-up text confirms the connection.
+        if (m.role === 'user' && m.kind === 'service_connected') return;
         entries.push({ kind: 'message', ts: m.ts || 0, payload: m });
     });
     (session.progress || []).forEach(function(p) {
@@ -130,61 +141,335 @@ function isAtBottom(container) {
     return (container.scrollHeight - container.scrollTop - container.clientHeight) < SCROLL_STICKY_PX;
 }
 
-UIManager.renderChat = function() {
-    const container = document.getElementById('chat-container');
-    if (!container) return;  // DOM torn down / not ready — nothing to render into.
+// Scroll-policy state machine. Three modes:
+//   'anchored' — the just-sent user message is pinned to viewport top.
+//                Used right after sendMessage so the user reads from
+//                the top of their question while the answer streams
+//                below.
+//   'follow'   — stick to bottom (tail -f). Used once content extends
+//                past the anchored view, on session switch / new chat,
+//                and after the scroll-to-bottom FAB is clicked.
+//   'manual'   — disengaged. Set when the user manually scrolls. No
+//                programmatic scroll touches the container.
+//
+// `_scrollAnchorEl` holds the DOM node for the anchored user message
+// (used in 'anchored' mode). `_scrollExpected` is the last scrollTop
+// value we set programmatically, so the container's scroll listener
+// can distinguish our own writes from user input.
+UIManager._scrollMode = 'follow';
+UIManager._scrollAnchorEl = null;
+UIManager._scrollExpected = null;
 
-    // Capture scrollTop BEFORE rebuilding so we can restore it after,
-    // unchanged. Scroll position is the user's domain — sendMessage
-    // sets it once on send (user message at top of viewport via
-    // `msgScrollPos`), and the user adjusts manually after that.
-    // renderChat should NEVER auto-scroll: doing so yanked readers
-    // mid-stream.
-    const savedScrollTop = container.scrollTop;
-    const msgCount = (this.currentSession && Array.isArray(this.currentSession.messages))
-        ? this.currentSession.messages.length : 0;
-    this._lastRenderedMsgCount = msgCount;
+UIManager._setScroll = function(target) {
+    var c = document.getElementById('chat-container');
+    if (!c) return;
+    var maxTop = Math.max(0, c.scrollHeight - c.clientHeight);
+    target = Math.max(0, Math.min(target, maxTop));
+    c.scrollTop = target;
+    // Browser may have clamped — use the post-set value as the source
+    // of truth so the scroll listener's "is this from us" check stays
+    // accurate.
+    this._scrollExpected = c.scrollTop;
+    // Suppress manual-classification of scroll events for a short
+    // window so layout-shift-induced scroll events (browser scroll
+    // anchoring after DOM mutation, etc.) don't get misread as user
+    // input. The listener still updates the FAB visibility.
+    this._suppressScrollUntil = Date.now() + 150;
+};
 
-    // Detach the streaming placeholder (created at turn start in
-    // manager-search.js, id='streaming-body') before wiping the chat
-    // DOM. Two reasons:
-    //  (1) Preserves the same DOM node so `_updateStreamPlaceholder`'s
-    //      in-place innerHTML updates keep working tick-to-tick.
-    //  (2) Avoids re-rendering the whole accumulating answer (markdown +
-    //      math) on every poll tick — that's what caused the visible
-    //      flash at turn completion.
-    // Reattached at the very end so the placeholder stays chronologically
-    // last in the timeline.
-    var streamingMessage = null;
-    var streamingBody = document.getElementById('streaming-body');
-    if (streamingBody) {
-        streamingMessage = streamingBody.closest('.message.assistant');
-        if (streamingMessage && streamingMessage.parentNode === container) {
-            container.removeChild(streamingMessage);
+UIManager._applyScrollPolicy = function() {
+    var c = document.getElementById('chat-container');
+    if (!c) return;
+
+    // Tail-room reservation. While in 'anchored' mode the chat must be
+    // tall enough that scrollTop = anchorTop doesn't get clamped by the
+    // browser — without that, a session whose total content (history +
+    // user msg + placeholder) is shorter than (anchorTop + clientHeight)
+    // can't scroll the user msg to the viewport top. The reservation
+    // sits on the LAST message body (streaming placeholder during a
+    // chain, real assistant body after chain end) as `min-height:
+    // clientHeight`. This is the only acceptable cost of the spec
+    // "user msg on top, content streams below" — there's no way around
+    // it when content is short. We CLEAR the reservation the moment
+    // mode flips to 'follow' or 'manual', so once content overflows
+    // (auto-switch to 'follow') or the user disengages (manual), the
+    // empty space goes away.
+    var clearTailRoom = function() { UIManager._clearTailRoom(); };
+    var applyTailRoom = function() {
+        var bodies = c.querySelectorAll('.msg-body');
+        for (var i = 0; i < bodies.length - 1; i++) {
+            if (bodies[i].style.minHeight) bodies[i].style.minHeight = '';
+        }
+        var last = bodies.length > 0 ? bodies[bodies.length - 1] : null;
+        if (last) last.style.minHeight = c.clientHeight + 'px';
+    };
+
+    if (this._scrollMode === 'anchored') {
+        // Re-find the anchor on every application: renderChat's keyed
+        // diff rebuilds the user message DOM whenever its hash changes
+        // (e.g. BE-stamped ts replacing the optimistic Date.now() value),
+        // which invalidates a stored DOM ref. The anchored user message
+        // is always the LAST `.message.user` in the container — that's
+        // the just-sent one, which is what 'anchored' mode tracks.
+        var userMsgs = c.querySelectorAll('.message.user');
+        var el = userMsgs.length > 0 ? userMsgs[userMsgs.length - 1] : null;
+        if (!el) {
+            clearTailRoom();
+            this._scrollMode = 'follow';
+            this._scrollAnchorEl = null;
+        } else {
+            this._scrollAnchorEl = el;
+            // Measure NATURAL scrollHeight without tail-room first so
+            // overflow detection isn't poisoned by our own min-height
+            // reservation. Order matters: clear → measure → decide;
+            // only THEN apply tail-room and scroll to the anchor.
+            clearTailRoom();
+            var msgRect = el.getBoundingClientRect();
+            var contRect = c.getBoundingClientRect();
+            var anchorTop = msgRect.top - contRect.top + c.scrollTop;
+            if (c.scrollHeight > anchorTop + c.clientHeight) {
+                // Natural content extends past the viewport from the
+                // anchor — switch to follow-bottom.
+                this._scrollMode = 'follow';
+                this._scrollAnchorEl = null;
+            } else {
+                // Reserve tail-room so the browser doesn't clamp our
+                // scrollTop = anchorTop set, then anchor.
+                applyTailRoom();
+                this._setScroll(anchorTop);
+                this._updateScrollFab();
+                return;
+            }
         }
     }
-
-    container.innerHTML = '';
-    if (!this.currentSession) {
-        if (streamingMessage) container.appendChild(streamingMessage);
-        return;
+    if (this._scrollMode === 'follow') {
+        clearTailRoom();
+        this._setScroll(c.scrollHeight - c.clientHeight);
+    } else if (this._scrollMode === 'manual') {
+        clearTailRoom();
     }
-    var sessionId = this.currentSession.id;
-    var renderSession = this.currentSession;
-    var timeline = buildSessionTimeline(this.currentSession);
-    timeline.forEach(function(entry) {
-        if (entry.kind === 'progress') {
-            container.appendChild(renderProgressRow(entry.payload));
+    this._updateScrollFab();
+};
+
+// Show/hide the scroll-to-bottom FAB based on whether the chat is at
+// (or near) the bottom. Idempotent.
+UIManager._updateScrollFab = function() {
+    var c = document.getElementById('chat-container');
+    var btn = document.getElementById('scroll-to-bottom-btn');
+    if (!c || !btn) return;
+    if (isAtBottom(c) || c.scrollHeight <= c.clientHeight) {
+        btn.setAttribute('hidden', '');
+    } else {
+        btn.removeAttribute('hidden');
+    }
+};
+
+// Clear the inline `min-height` reservation set by the anchored-mode
+// branch of _applyScrollPolicy. Called when the policy transitions
+// out of anchored (auto or manual) so the empty space below the
+// content goes away immediately.
+UIManager._clearTailRoom = function() {
+    var c = document.getElementById('chat-container');
+    if (!c) return;
+    var bodies = c.querySelectorAll('.msg-body');
+    for (var i = 0; i < bodies.length; i++) {
+        if (bodies[i].style.minHeight) bodies[i].style.minHeight = '';
+    }
+};
+
+// Engage anchored mode: pin the given user-message DOM node to the
+// viewport top. Called by sendMessage after the optimistic user msg
+// has been rendered.
+UIManager._anchorAtMsg = function(msgEl) {
+    if (!msgEl) return;
+    this._scrollAnchorEl = msgEl;
+    this._scrollMode = 'anchored';
+    this._applyScrollPolicy();
+};
+
+// Engage follow mode and pin to the current bottom. Used by session
+// switch / clear / new-chat paths where the prior scroll position is
+// meaningless.
+UIManager._pinChatToBottom = function() {
+    this._scrollMode = 'follow';
+    this._scrollAnchorEl = null;
+    this._applyScrollPolicy();
+};
+
+// Build the inline form widget for a `request_input` assistant
+// message. Three states drive rendering:
+//   1. Submitted (form.submitted === true): show a "✓ Submitted"
+//      summary derived from `values_meta` (label + length, secrets
+//      shown as `••• (N chars)`). No live inputs.
+//   2. Expired (!submitted && expires_at < now): show "Form expired"
+//      banner; render disabled inputs for visual continuity.
+//   3. Pending: live inputs + submit button. POSTs to
+//      `/sessions/:id/inputs/:token` on submit; on 200, polling will
+//      pick up the BE-rewritten message and re-render in submitted
+//      state.
+function renderRequestInputForm(form, sessionId) {
+    var wrap = document.createElement('div');
+    wrap.className = 'request-input-form';
+
+    var token = form.token;
+    var submitted = form.submitted === true;
+    var now = Date.now();
+    var expiresAt = typeof form.expires_at === 'number' ? form.expires_at : 0;
+    var expired = !submitted && expiresAt > 0 && expiresAt < now;
+    var fields = Array.isArray(form.fields) ? form.fields : [];
+
+    if (submitted) {
+        var head = document.createElement('div');
+        head.className = 'request-input-state-submitted';
+        head.textContent = '✓ Submitted';
+        wrap.appendChild(head);
+        return wrap;
+    }
+
+    if (expired) {
+        var banner = document.createElement('div');
+        banner.className = 'request-input-state-expired';
+        banner.textContent = 'This form expired. Ask the assistant to redo if you still want to provide.';
+        wrap.appendChild(banner);
+    }
+
+    var inputsByName = {};
+    fields.forEach(function(f) {
+        var row = document.createElement('div');
+        row.className = 'request-input-field';
+
+        var label = document.createElement('label');
+        label.className = 'request-input-label';
+        label.textContent = f.label || f.name;
+        row.appendChild(label);
+
+        var input;
+        if (f.type === 'select' && Array.isArray(f.options)) {
+            input = document.createElement('select');
+            input.className = 'request-input-input';
+            f.options.forEach(function(opt) {
+                var o = document.createElement('option');
+                o.value = (opt && typeof opt === 'object') ? (opt.value || '') : String(opt);
+                o.textContent = (opt && typeof opt === 'object') ? (opt.label || opt.value || '') : String(opt);
+                input.appendChild(o);
+            });
+            if (typeof f.default === 'string' && f.default !== '') {
+                input.value = f.default;
+            }
+        } else {
+            input = document.createElement('input');
+            input.type = (f.type === 'password') ? 'password' : 'text';
+            input.className = 'request-input-input';
+        }
+        input.disabled = expired;
+        input.dataset.fieldName = f.name;
+        inputsByName[f.name] = input;
+        row.appendChild(input);
+        wrap.appendChild(row);
+    });
+
+    var btn = document.createElement('button');
+    btn.className = 'request-input-submit';
+    btn.textContent = form.submit_label || 'Submit';
+    btn.disabled = expired;
+    wrap.appendChild(btn);
+
+    var errEl = document.createElement('div');
+    errEl.className = 'request-input-error';
+    errEl.style.display = 'none';
+    wrap.appendChild(errEl);
+
+    btn.addEventListener('click', async function() {
+        btn.disabled = true;
+        Object.keys(inputsByName).forEach(function(n) { inputsByName[n].disabled = true; });
+        errEl.style.display = 'none';
+
+        var values = {};
+        var anyEmpty = false;
+        fields.forEach(function(f) {
+            var v = inputsByName[f.name].value || '';
+            values[f.name] = v;
+            if (!v) anyEmpty = true;
+        });
+
+        if (anyEmpty) {
+            errEl.textContent = 'Please fill in all fields.';
+            errEl.style.display = 'block';
+            btn.disabled = false;
+            Object.keys(inputsByName).forEach(function(n) { inputsByName[n].disabled = false; });
             return;
         }
-        var msg = entry.payload;
-        const div = document.createElement('div');
-        div.className = 'message ' + msg.role;
-        var hdr = buildMsgHeaderEl(msg, renderSession);
-        div.appendChild(hdr);
-        var body = document.createElement('div');
-        body.className = 'msg-body';
-        if (msg.role === 'assistant') {
+
+        try {
+            var res = await apiFetch('/sessions/' + encodeURIComponent(sessionId) + '/inputs/' + encodeURIComponent(token), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ values: values })
+            });
+
+            if (!res.ok) {
+                var detail = '';
+                try { detail = (await res.json()).error || ''; } catch (e) {}
+                errEl.textContent = detail || ('Submit failed (' + res.status + ')');
+                errEl.style.display = 'block';
+                btn.disabled = false;
+                Object.keys(inputsByName).forEach(function(n) { inputsByName[n].disabled = false; });
+                return;
+            }
+            // Success: mutate the form object in-place (it's a live
+            // reference to msg.form on the rendered message) and
+            // re-render. /poll is a delta-by-ts fetch; submit_input
+            // mutates the message without bumping ts so the FE would
+            // otherwise never see the submitted state until the next
+            // full session load.
+            form.submitted = true;
+            try { UIManager.renderChat(); } catch (e) {}
+
+            // Force an immediate poll. For `connect_service_setup`
+            // forms the BE work runs async (MCP handshake takes a few
+            // seconds); a fresh poll picks up the pending
+            // session_progress row right away so the status bar
+            // shows "Assistant is …" instead of staying silent until
+            // the next idle 5 s tick.
+            try { UIManager.startProgressPolling(); } catch (e) {}
+            return;
+        } catch (e) {
+            errEl.textContent = 'Network error — please retry.';
+            errEl.style.display = 'block';
+            btn.disabled = false;
+            Object.keys(inputsByName).forEach(function(n) { inputsByName[n].disabled = false; });
+        }
+    });
+
+    return wrap;
+}
+
+// Render the user-side post-submit summary for a `form_response`
+// message. The assistant's ORIGINAL request_input message already
+// shows a "✓ Submitted" summary (with secret masking driven by the
+// form's `secret` flags). The form_response message itself is the
+// LLM-context payload; here we just show a one-line confirmation so
+// the timeline reads naturally without revealing values.
+function renderFormResponseSummary(formResponse) {
+    var wrap = document.createElement('div');
+    wrap.className = 'form-response-summary';
+    var values = formResponse && formResponse.values ? formResponse.values : {};
+    var n = Object.keys(values).length;
+    wrap.textContent = '✓ Submitted ' + n + ' field' + (n === 1 ? '' : 's');
+    return wrap;
+}
+
+// Build the DOM node for one message timeline entry. Extracted from
+// `renderChat` so the keyed-diff path can rebuild a single entry in
+// place without rebuilding the surrounding container.
+function buildMessageEntryNode(msg, sessionId, renderSession) {
+    const div = document.createElement('div');
+    div.className = 'message ' + msg.role;
+    var hdr = buildMsgHeaderEl(msg, renderSession);
+    div.appendChild(hdr);
+    var body = document.createElement('div');
+    body.className = 'msg-body';
+    if (msg.role === 'assistant') {
             if (msg.thinking) {
                 var thinkBlock = document.createElement('details');
                 thinkBlock.className = 'think-block';
@@ -211,9 +496,31 @@ UIManager.renderChat = function() {
             body.innerHTML = renderWithMath(msg.content || '');
             div.appendChild(body);
             addCopyButtons(body); wrapTables(body);
+
+            // Inline form rendered when the assistant emitted a
+            // `request_input` tool_call. Pre-submit: live inputs +
+            // submit button; post-submit: redacted "✓ Submitted"
+            // summary; expired: disabled with banner. See
+            // architecture.md §In-chain structured input.
+            if (msg.form && typeof msg.form === 'object') {
+                body.appendChild(renderRequestInputForm(msg.form, sessionId));
+            }
         } else {
-            body.innerHTML = renderWithMath(msg.content || '');
-            wrapTables(body);
+            // `form_response` user messages are the runtime's
+            // synthesised answer to a `request_input` form. The
+            // literal `[input submitted]` is meant for the LLM
+            // context; users see a styled "✓ Submitted" summary
+            // built from `form_response.values` (with secrets masked
+            // by the source form's `secret` flags, which we don't
+            // have here — so we mask anything that LOOKS like a
+            // secret defensively). The full plaintext goes to the
+            // LLM context only.
+            if (msg.kind === 'form_response' && msg.form_response) {
+                body.appendChild(renderFormResponseSummary(msg.form_response));
+            } else {
+                body.innerHTML = renderWithMath(msg.content || '');
+                wrapTables(body);
+            }
             if (msg.images && msg.images.length > 0) {
                 msg.images.forEach(function(img) {
                     var wrap = document.createElement('div');
@@ -341,8 +648,123 @@ UIManager.renderChat = function() {
             }
             div.appendChild(body);
         }
-        container.appendChild(div);
+    return div;
+}
+
+// Stable identity + render-hash for one timeline entry. The diff in
+// `renderChat` uses `key` to match new entries against existing DOM
+// nodes (so unchanged entries keep their identity — open <details>,
+// KaTeX nodes, text selection, code highlighting all stay intact),
+// and `hash` to detect when a matched entry needs an in-place rebuild
+// (e.g. progress row's pending → done flip, form's submitted toggle).
+//
+// Messages key on `client_msg_id` when present (stable across the
+// optimistic → BE-stamped ts swap from the mid-chain user message
+// path); otherwise on (ts, role). Hash includes ts (header timestamp
+// re-renders if it changes) and the only post-persistence mutable bit
+// — `form.submitted`. Content itself is immutable post-persistence so
+// it isn't hashed.
+//
+// Progress rows key on id; hash on the structurally visible fields
+// (status, kind, label, sub_labels list). Sub-label rotation is
+// handled in-place by `_ensureSubLabelsRotator` and does NOT change
+// the hash — only the rotation set itself does.
+function entryKeyHash(entry) {
+    if (entry.kind === 'progress') {
+        var p = entry.payload || {};
+        return {
+            key: 'prog-' + p.id,
+            hash: 'prog:' + p.status + ':' + (p.kind || '') + ':' + (p.label || '')
+                + ':' + (Array.isArray(p.sub_labels) ? p.sub_labels.join('|') : '')
+        };
+    }
+    var m = entry.payload || {};
+    var idPart = (m.client_msg_id && typeof m.client_msg_id === 'string')
+        ? 'cid-' + m.client_msg_id
+        : 'ts-' + m.ts;
+    var formBit = (m.form && m.form.submitted === true) ? '1' : '0';
+    return {
+        key: 'msg-' + m.role + '-' + idPart,
+        hash: 'msg:' + m.ts + ':' + formBit
+    };
+}
+
+UIManager.renderChat = function() {
+    const container = document.getElementById('chat-container');
+    if (!container) return;  // DOM torn down / not ready — nothing to render into.
+
+    // Detach the streaming placeholder (created at turn start in
+    // manager-search.js, id='streaming-body') from the diff scope so
+    // it isn't seen as a stray node and removed. Re-attached at the
+    // end so it stays chronologically last.
+    var streamingMessage = null;
+    var streamingBody = document.getElementById('streaming-body');
+    if (streamingBody) {
+        streamingMessage = streamingBody.closest('.message.assistant');
+        if (streamingMessage && streamingMessage.parentNode === container) {
+            container.removeChild(streamingMessage);
+        }
+    }
+
+    if (!this.currentSession) {
+        container.innerHTML = '';
+        if (streamingMessage) container.appendChild(streamingMessage);
+        return;
+    }
+    var sessionId = this.currentSession.id;
+    var renderSession = this.currentSession;
+    var timeline = buildSessionTimeline(this.currentSession);
+
+    // Index existing DOM children by their stable entry key. Anything
+    // without a key (legacy / streaming placeholder leftover) is
+    // dropped to be rebuilt cleanly.
+    var existingByKey = {};
+    Array.prototype.slice.call(container.children).forEach(function(ch) {
+        var k = ch.dataset && ch.dataset.entryKey;
+        if (k) existingByKey[k] = ch;
+        else if (ch.parentNode === container) container.removeChild(ch);
     });
+
+    // Walk the new timeline in order; reuse, rebuild-in-place, or
+    // insert each entry, tracking the previous node so order matches
+    // the timeline regardless of prior DOM ordering.
+    var stillPresent = {};
+    var prevNode = null;
+    timeline.forEach(function(entry) {
+        var kh = entryKeyHash(entry);
+        stillPresent[kh.key] = true;
+
+        var node = existingByKey[kh.key] || null;
+        var needsBuild = !node || node.dataset.entryHash !== kh.hash;
+
+        if (needsBuild) {
+            var fresh = (entry.kind === 'progress')
+                ? renderProgressRow(entry.payload)
+                : buildMessageEntryNode(entry.payload, sessionId, renderSession);
+            fresh.dataset.entryKey = kh.key;
+            fresh.dataset.entryHash = kh.hash;
+            if (node && node.parentNode === container) {
+                container.replaceChild(fresh, node);
+            } else {
+                container.insertBefore(fresh, prevNode ? prevNode.nextSibling : container.firstChild);
+            }
+            node = fresh;
+        } else if (node.previousElementSibling !== prevNode) {
+            // Same content, wrong position — reorder without rebuilding.
+            container.insertBefore(node, prevNode ? prevNode.nextSibling : container.firstChild);
+        }
+        prevNode = node;
+    });
+
+    // Drop any nodes whose entries no longer appear in the timeline
+    // (rare — message deletions don't happen in normal flow).
+    Object.keys(existingByKey).forEach(function(k) {
+        if (!stillPresent[k]) {
+            var stale = existingByKey[k];
+            if (stale.parentNode === container) container.removeChild(stale);
+        }
+    });
+
     // Streaming placeholder handling:
     //   - If we detached an existing placeholder at the top → reattach the
     //     SAME node. Preserves its content + node identity for
@@ -361,14 +783,6 @@ UIManager.renderChat = function() {
             var streamBody = document.createElement('div');
             streamBody.className = 'msg-body';
             streamBody.id = 'streaming-body';
-            // While the body is empty (tool phase, no content yet),
-            // reserve viewport-tall min-height so the user-message
-            // direct-scroll in `sendMessage` always has room to put
-            // the user msg at the top. As content streams in,
-            // min-height becomes irrelevant; cleared at chain end.
-            if (!streamEntry.content) {
-                streamBody.style.minHeight = container.clientHeight + 'px';
-            }
             streamBody.innerHTML = streamEntry.searchWarning + renderWithMath(streamEntry.content);
             addCopyButtons(streamBody); wrapTables(streamBody);
             streamDiv.appendChild(streamBody);
@@ -376,10 +790,7 @@ UIManager.renderChat = function() {
         }
     }
 
-    // Restore the pre-rebuild scroll position. The DOM was rebuilt
-    // with mostly the same content (one message added at end at most),
-    // so reapplying the same scrollTop keeps the user's view stable.
-    container.scrollTop = savedScrollTop;
+    UIManager._applyScrollPolicy();
 };
 
 // Scale a video down to VIDEO_WORKSPACE_MAX_PX resolution at VIDEO_WORKSPACE_BITRATE

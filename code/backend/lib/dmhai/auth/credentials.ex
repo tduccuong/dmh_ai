@@ -3,17 +3,16 @@
 # See the LICENSE file in the repository root for full details.
 # For commercial inquiries, contact: tduccuong@gmail.com
 
-defmodule Dmhai.Agent.Credentials do
+defmodule Dmhai.Auth.Credentials do
   @moduledoc """
-  Per-user creds store. Single primitive backing every credential
-  kind — passwords, SSH keys, API keys, OAuth2 tokens. Higher-level
-  provider-specific helpers (Phase 2+) layer on top, persisting their
-  results here.
+  Per-user credentials store. Single primitive backing every credential
+  kind — passwords, SSH keys, API keys, OAuth2 tokens, MCP server
+  tokens.
 
   Schema: `user_credentials` keyed by `(user_id, target)`. `kind` is a
   free-form string the caller chooses to describe `payload`'s shape.
-  `expires_at` (optional unix-ms) supports time-bounded creds (OAuth2
-  access tokens); `nil` for non-expiring creds.
+  `expires_at` (optional unix-ms) supports time-bounded credentials
+  such as OAuth2 access tokens; `nil` for non-expiring creds.
 
   Security: payloads stored **plaintext** in SQLite — known shortcut
   matching how the rest of the app treats sensitive fields. Revisit

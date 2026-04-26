@@ -245,13 +245,9 @@ UIManager.createNewSession = async function() {
     }
     await SessionStore.setCurrentSessionId(empty.id);
     this.currentSession = empty;
-    // Reset the renderChat scroll-policy counter for the new session
-    // (same as switchSession). Without this, a prior session's count
-    // carries over and the new session's first render may not scroll
-    // to bottom.
-    this._lastRenderedMsgCount = 0;
     await this.renderSessions();
     this.renderChat();
+    this._pinChatToBottom();
     // Arm `startProgressPolling` for the new session — mirror what
     // switchSession already does. Without this, the session ID swap on
     // line `this.currentSession = empty;` above triggers the old
@@ -283,15 +279,9 @@ UIManager.switchSession = async function(id) {
     this.currentSession = await SessionStore.getSession(id);
     await SessionStore.setCurrentSessionId(id);
     this.clearTaskStatusArea();
-    // Reset the "new message arrived?" counter used by renderChat's
-    // scroll policy. On session switch the first render should scroll
-    // to the bottom naturally (the loaded session has N messages; prev
-    // was 0 → counts as "new" → scrolls to end, which is the expected
-    // UX). Without the reset, a prior session's count carries over and
-    // the new session's initial render may not pin to bottom.
-    this._lastRenderedMsgCount = 0;
     await this.refreshSessionProgress();
     this.renderChat();
+    this._pinChatToBottom();
     this.startProgressPolling();
     if ((this.currentSession.mode || 'confidant') === 'assistant') {
         this.showAssistantHint();
@@ -334,7 +324,23 @@ UIManager.startProgressPolling = function() {
     }
     var self = this;
     var sid = this.currentSession && this.currentSession.id;
-    if (!sid) return;
+    if (!sid) {
+        self._kickIdleProgressPoll = null;
+        return;
+    }
+
+    // Force-fire the next tick. Wired to the document-level
+    // visibilitychange handler in main.js so a backgrounded tab
+    // catches up immediately when it returns to visible, instead of
+    // waiting on a setTimeout the browser throttled to ≥1s (Chrome)
+    // or once-per-minute (Firefox/Safari).
+    self._kickIdleProgressPoll = function() {
+        if (self._progressPoll) {
+            clearTimeout(self._progressPoll);
+            self._progressPoll = null;
+        }
+        if (self.currentSession && self.currentSession.id === sid) tick();
+    };
 
     // Baselines: only request deltas we haven't seen yet.
     var msgSince = 0;
@@ -349,6 +355,7 @@ UIManager.startProgressPolling = function() {
     async function tick() {
         if (!self.currentSession || self.currentSession.id !== sid) {
             self._progressPoll = null;
+            self._kickIdleProgressPoll = null;
             return;
         }
         // sendMessage drives its own polling loop during a turn; skip a tick
@@ -513,11 +520,9 @@ UIManager.clearSession = async function() {
     VideoDescriptionStore.deleteForSession(oldSessionId);
     this.attachedFiles = [];
     this.renderAttachments();
-    // Reset the scroll-policy counter so the new empty session pins
-    // properly on first render (same rationale as createNewSession).
-    this._lastRenderedMsgCount = 0;
     await this.renderSessions();
     this.renderChat();
+    this._pinChatToBottom();
     // Arm the idle progress-poller for the new session id — without
     // this, any later background delivery into this session (periodic
     // task fires, mid-chain BE message) silently never reaches the FE.

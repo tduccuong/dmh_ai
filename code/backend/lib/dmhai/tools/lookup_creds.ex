@@ -6,7 +6,7 @@
 defmodule Dmhai.Tools.LookupCreds do
   @behaviour Dmhai.Tools.Behaviour
 
-  alias Dmhai.Agent.Credentials
+  alias Dmhai.Auth.Credentials
 
   @impl true
   def name, do: "lookup_creds"

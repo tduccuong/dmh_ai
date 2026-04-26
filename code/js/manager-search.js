@@ -120,7 +120,6 @@ UIManager.sendMessage = async function() {
 
     // --- Set up streaming UI immediately (before await) so layout is correct from the start ---
     const container = document.getElementById('chat-container');
-    var userMsgEl = container.lastElementChild;
 
     // assistantTs is not captured at click time — BE stamps it when it
     // persists the final assistant message and echoes it back in the
@@ -140,31 +139,21 @@ UIManager.sendMessage = async function() {
     // prepends the header. Matches natural reading order.
     const assistantDiv = document.createElement('div');
     assistantDiv.className = 'message assistant';
-    // Build the placeholder fully visible — header + body — from the
-    // start. The body carries `min-height: viewport` so the chat is
-    // guaranteed to be at least one viewport tall, giving the
-    // direct-scroll below room to put the user message at the top.
-    // As real content streams in, min-height becomes irrelevant; it's
-    // cleared explicitly at chain end.
     var assistantHdr = buildMsgHeaderEl({ role: 'assistant', ts: Date.now() }, sessionAtSend);
     assistantDiv.appendChild(assistantHdr);
     const bodyDiv = document.createElement('div');
     bodyDiv.className = 'msg-body';
     bodyDiv.id = 'streaming-body';
-    bodyDiv.style.minHeight = container.clientHeight + 'px';
     assistantDiv.appendChild(bodyDiv);
     container.appendChild(assistantDiv);
 
-    // Direct scroll: place user message's top at the chat's viewport
-    // top. Deterministic and unaffected by `scrollIntoView`'s
-    // browser-specific "scroll as far as possible" fallback. The
-    // body's min-height above guarantees there's room.
-    if (userMsgEl) {
-        var msgScrollPos = userMsgEl.getBoundingClientRect().top
-                         - container.getBoundingClientRect().top
-                         + container.scrollTop;
-        container.scrollTop = msgScrollPos;
-    }
+    // Anchor the just-sent user message at the top of the viewport.
+    // The scroll policy keeps it pinned while the answer streams below;
+    // once content overflows past viewport-tall, it auto-switches to
+    // follow-bottom (stick to tail).
+    var userMsgs = container.querySelectorAll('.message.user');
+    var anchorEl = userMsgs.length > 0 ? userMsgs[userMsgs.length - 1] : null;
+    self._anchorAtMsg(anchorEl);
 
     // Do NOT PUT session.messages here. The BE persists the user message
     // itself (with a BE-stamped ts) inside /agent/chat before dispatching
@@ -226,7 +215,6 @@ UIManager.sendMessage = async function() {
     function onError(err) {
         var errBody = document.getElementById('streaming-body') || self._activeBodyDiv;
         if (errBody) {
-            errBody.style.minHeight = '';
             var errMsg = hasVideo
                 ? '⚠ ' + modeRole(sessionAtSend) + " doesn't support video input. Please switch to another one."
                 : '⚠ ' + (err && err.message ? err.message : 'No response received — please try again.');
@@ -445,15 +433,43 @@ UIManager.pollTurnToCompletion = function(sessionAtSend, onComplete, onError, ab
 
     var sawAssistantMessage = false;
     var pollCount = 0;
+    var pollTimeoutHandle = null;
+    var done = false;
+
+    // Force-fire the next tick. Wired to the document-level
+    // visibilitychange handler in main.js so a backgrounded tab
+    // catches up immediately when it returns to visible, instead of
+    // waiting on a setTimeout the browser throttled to ≥1s (Chrome)
+    // or once-per-minute (Firefox/Safari) — which previously left the
+    // chat frozen mid-turn until the user interacted with the page.
+    self._kickActiveTurnPoll = function() {
+        if (done) return;
+        if (pollTimeoutHandle) {
+            clearTimeout(pollTimeoutHandle);
+            pollTimeoutHandle = null;
+        }
+        tick();
+    };
+
+    function finish(action) {
+        done = true;
+        if (pollTimeoutHandle) {
+            clearTimeout(pollTimeoutHandle);
+            pollTimeoutHandle = null;
+        }
+        if (self._kickActiveTurnPoll) self._kickActiveTurnPoll = null;
+        action();
+    }
 
     async function tick() {
+        if (done) return;
         if (abortSignal && abortSignal.aborted) {
-            onError(new DOMException('Aborted', 'AbortError'));
+            finish(function() { onError(new DOMException('Aborted', 'AbortError')); });
             return;
         }
         pollCount++;
         if (pollCount > MAX_SILENT_POLLS) {
-            onError(new Error('Polling timeout — turn is taking too long'));
+            finish(function() { onError(new Error('Polling timeout — turn is taking too long')); });
             return;
         }
 
@@ -462,7 +478,7 @@ UIManager.pollTurnToCompletion = function(sessionAtSend, onComplete, onError, ab
         try {
             var res = await apiFetch(url, { signal: abortSignal });
             if (!res.ok) {
-                onError(new Error('Poll failed (' + res.status + ')'));
+                finish(function() { onError(new Error('Poll failed (' + res.status + ')')); });
                 return;
             }
             var data = await res.json();
@@ -563,17 +579,13 @@ UIManager.pollTurnToCompletion = function(sessionAtSend, onComplete, onError, ab
             // (`UserAgent.current_task` serializes them), so a different
             // turn's assistant message can't prematurely trip this.
             if (sawAssistantMessage && !data.stream_buffer) {
-                onComplete();
+                finish(onComplete);
                 return;
             }
 
-            setTimeout(tick, ACTIVE_POLL_MS);
+            pollTimeoutHandle = setTimeout(tick, ACTIVE_POLL_MS);
         } catch (e) {
-            if (e && e.name === 'AbortError') {
-                onError(e);
-            } else {
-                onError(e);
-            }
+            finish(function() { onError(e); });
         }
     }
 
@@ -611,17 +623,18 @@ UIManager._updateStreamPlaceholder = function(sessionAtSend, streamBuffer) {
             var activeBody = document.getElementById('streaming-body');
             if (!activeBody) return;
 
-            // No streaming auto-follow. `sendMessage` already scrolled
-            // the just-sent user message to the top of the viewport via
-            // `scrollIntoView({block:'start'})`; the assistant's text
-            // grows below it. As content overflows the viewport the
-            // browser shows a scrollbar but does NOT auto-scroll —
-            // user reads from the top and scrolls down at their own
-            // pace. A prior auto-follow here re-pinned to the bottom
-            // every tick, yanking the answer up out of view.
             activeBody.innerHTML = renderWithMath(streamBuffer);
             addCopyButtons(activeBody);
             wrapTables(activeBody);
+
+            // Re-apply the active scroll policy after writing the new
+            // buffer. In 'anchored' mode this keeps the user message
+            // pinned to viewport-top until content overflows past it,
+            // at which point the policy auto-switches to 'follow' and
+            // sticks to the bottom. In 'follow' mode it tails the new
+            // bottom. In 'manual' mode it leaves the user's position
+            // alone.
+            self._applyScrollPolicy();
         });
     }
 };

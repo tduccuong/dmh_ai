@@ -148,15 +148,21 @@ defmodule Dmhai.Agent.UserAgent do
   # refused here as a safety net.
   @impl true
   def handle_call({:dispatch_assistant, %AssistantCommand{} = command}, _from, state) do
-    dispatch_run(command, state, fn session_data ->
-      run_assistant(command, state, session_data)
-    end, required_mode: "assistant")
+    {result, new_state} =
+      dispatch_run(command, state, fn session_data ->
+        run_assistant(command, state, session_data)
+      end, required_mode: "assistant")
+
+    {:reply, result, new_state, @idle_timeout}
   end
 
   def handle_call({:dispatch_confidant, %ConfidantCommand{} = command}, _from, state) do
-    dispatch_run(command, state, fn session_data ->
-      run_confidant(command, state, session_data)
-    end, required_mode: "confidant")
+    {result, new_state} =
+      dispatch_run(command, state, fn session_data ->
+        run_confidant(command, state, session_data)
+      end, required_mode: "confidant")
+
+    {:reply, result, new_state, @idle_timeout}
   end
 
   # Platform state
@@ -288,9 +294,12 @@ defmodule Dmhai.Agent.UserAgent do
 
     Dmhai.SysLog.log("[ASSISTANT:resume] user=#{state.user_id} session=#{session_id}")
 
-    dispatch_run(command, state, fn session_data ->
-      run_assistant(command, state, session_data)
-    end, required_mode: "assistant")
+    {_result, new_state} =
+      dispatch_run(command, state, fn session_data ->
+        run_assistant(command, state, session_data)
+      end, required_mode: "assistant")
+
+    {:noreply, new_state, @idle_timeout}
   end
 
   def handle_info({:auto_resume_assistant, _session_id}, state) do
@@ -402,6 +411,7 @@ defmodule Dmhai.Agent.UserAgent do
 
     llm_messages =
       ContextEngine.build_assistant_messages(session_data,
+        user_id:      user_id,
         profile:      profile,
         active_tasks: active_tasks,
         recent_done:  recent_done,
@@ -470,6 +480,7 @@ defmodule Dmhai.Agent.UserAgent do
       session_root:  Dmhai.Constants.session_root(email, session_id),
       data_dir:      data_dir,
       workspace_dir: workspace_dir,
+      keystore_dir:  Dmhai.Constants.user_keystore_dir(email),
       log_trace:     AgentSettings.log_trace(),
       # Snapshot the initial message count so the duplicate-tool-call
       # police check only sees the within-chain accumulator, never history.
@@ -659,6 +670,14 @@ defmodule Dmhai.Agent.UserAgent do
   # load, then hands off to the mode-specific pipeline via `run_fn`. Each
   # dispatch_* handler supplies its own run_fn, so the two pipelines never
   # cross paths here.
+  #
+  # Returns `{result, new_state}`. Callers wrap into the appropriate
+  # GenServer reply tuple — `handle_call` uses `{:reply, result, new_state, t}`,
+  # `handle_info` uses `{:noreply, new_state, t}` (and ignores result).
+  # OTP forbids `{:reply, ...}` from `handle_info`; returning it crashes the
+  # GenServer, the supervisor respawns it, and any `async_nolink` task spawned
+  # before the crash keeps running — which previously allowed multiple
+  # `auto_resume_assistant` messages to each spawn parallel chains.
   defp dispatch_run(command, state, run_fn, opts) do
     required_mode = Keyword.fetch!(opts, :required_mode)
     reply_pid     = command.reply_pid
@@ -673,13 +692,13 @@ defmodule Dmhai.Agent.UserAgent do
         # way, the FE gets a 202-like ack here. See architecture.md
         # §Mid-chain user message injection.
         send(reply_pid, {:error, :queued})
-        {:reply, {:error, :queued}, state, @idle_timeout}
+        {{:error, :queued}, state}
 
       state.current_task ->
         # Confidant still uses a synchronous busy reject (its one-shot
         # streaming contract has no chain to fold messages into).
         send(reply_pid, {:error, :busy})
-        {:reply, {:error, :busy}, state, @idle_timeout}
+        {{:error, :busy}, state}
 
       true ->
         task =
@@ -702,9 +721,8 @@ defmodule Dmhai.Agent.UserAgent do
             end
           end)
 
-        {:reply, :ok,
-         %{state | current_task: {task.ref, task.pid, reply_pid, command.session_id}},
-         @idle_timeout}
+        {:ok,
+         %{state | current_task: {task.ref, task.pid, reply_pid, command.session_id}}}
     end
   end
 
@@ -860,6 +878,7 @@ defmodule Dmhai.Agent.UserAgent do
 
     llm_messages =
       ContextEngine.build_assistant_messages(session_data,
+        user_id:      user_id,
         profile:      profile,
         active_tasks: active_tasks,
         recent_done:  recent_done,
@@ -896,6 +915,7 @@ defmodule Dmhai.Agent.UserAgent do
       session_root:  Dmhai.Constants.session_root(email, session_id),
       data_dir:      data_dir,
       workspace_dir: workspace_dir,
+      keystore_dir:  Dmhai.Constants.user_keystore_dir(email),
       log_trace:     AgentSettings.log_trace(),
       fresh_attachment_paths: fresh_attachment_paths,
       # Snapshot the initial message count so the duplicate-tool-call
@@ -980,7 +1000,7 @@ defmodule Dmhai.Agent.UserAgent do
       {:ok, _} = append_session_message(ctx.session_id, ctx.user_id, cap_msg)
       {:chain_done, max_user_ts_in_messages(messages)}
     else
-      tools = Dmhai.Tools.Registry.all_definitions()
+      tools = Dmhai.Tools.Registry.all_definitions(ctx.user_id, anchor_task_id_from_ctx(ctx))
 
       trace = %{
         origin: "assistant",
@@ -1042,7 +1062,20 @@ defmodule Dmhai.Agent.UserAgent do
             (get_in(c, ["function", "name"]) || "") in ~w(complete_task cancel_task pause_task)
           end)
 
-          if String.trim(clean_narration) != "" and not closes_chain? do
+          # Chain-terminating-with-form tools: `request_input` always
+          # emits a form; `connect_service` may emit one (the
+          # `needs_setup` branch). Suppress separate narration
+          # persistence for both — when a form lands in the tool
+          # results, the narration rides on the form-bearing assistant
+          # message; when no form lands (e.g. `connect_service` returns
+          # `needs_auth` or `connected`), the chain recurses and the
+          # narration sits in the in-memory `assistant_msg` for the
+          # next LLM call without being shown to the user.
+          may_emit_form? = Enum.any?(calls, fn c ->
+            (get_in(c, ["function", "name"]) || "") in ~w(request_input connect_service)
+          end)
+
+          if String.trim(clean_narration) != "" and not closes_chain? and not may_emit_form? do
             Dmhai.SysLog.log("[ASSISTANT] turn=#{turn} narration(#{String.length(clean_narration)} chars) persisted")
 
             narration_msg = %{role: "assistant", content: clean_narration}
@@ -1056,8 +1089,8 @@ defmodule Dmhai.Agent.UserAgent do
           # so subsequent LLM calls in this chain see the model's own
           # reasoning alongside its tool_calls — without it the LLM
           # would lose track of why it picked a particular tool.
-          assistant_msg = %{role: "assistant", content: clean_narration, tool_calls: calls}
-          {tool_result_msgs_raw, ctx} = execute_tools(calls, messages, ctx)
+          {tool_result_msgs_raw, tagged_calls, ctx} = execute_tools(calls, messages, ctx)
+          assistant_msg = %{role: "assistant", content: clean_narration, tool_calls: tagged_calls}
 
           # Tally any tagged Police rejections from this turn and bump
           # the matching nudge counters. Returns the cleaned messages
@@ -1065,13 +1098,47 @@ defmodule Dmhai.Agent.UserAgent do
           # model just sees the nudge prose.
           {ctx, tool_result_msgs} = bump_nudge_counters(ctx, tool_result_msgs_raw)
 
-          case maybe_abort_on_model_behavior_issue(ctx, model) do
-            :continue ->
-              new_messages = messages ++ [assistant_msg] ++ tool_result_msgs
-              session_chain_loop(new_messages, model, ctx, turn + 1)
+          form = if may_emit_form?, do: extract_form_from_results(tool_result_msgs), else: nil
 
-            :aborted ->
+          cond do
+            form != nil ->
+              # Persist a single assistant message carrying both the
+              # narration (the prompt text shown above the form) and
+              # the form spec extracted from the tool result. End the
+              # chain. The next chain — auto-resumed when the user
+              # submits — picks up either the synthesised user-role
+              # message (request_input) or the service_connected
+              # message (connect_service api_key submission).
+              #
+              # Inject a placeholder when the model's narration was
+              # empty: an assistant message with `content: ""` and no
+              # `tool_calls` slot is invalid input to most chat-
+              # completion APIs (Ollama rejects with "Assistant
+              # message must have either content or tool_calls"),
+              # which would crash the next chain when this message
+              # gets replayed as context.
+              content =
+                case String.trim(clean_narration) do
+                  "" -> fallback_content_for_form(form)
+                  s  -> s
+                end
+
+              msg = %{role: "assistant", content: content, form: form}
+              msg = maybe_tag_task_num(msg, ctx)
+              {:ok, _} = append_session_message(ctx.session_id, ctx.user_id, msg)
+              Dmhai.SysLog.log("[ASSISTANT] turn=#{turn} form persisted (kind=#{form["kind"] || "request_input"} token=#{form["token"] || form[:token]})")
+
               {:chain_done, max_user_ts_in_messages(messages)}
+
+            true ->
+              case maybe_abort_on_model_behavior_issue(ctx, model) do
+                :continue ->
+                  new_messages = messages ++ [assistant_msg] ++ tool_result_msgs
+                  session_chain_loop(new_messages, model, ctx, turn + 1)
+
+                :aborted ->
+                  {:chain_done, max_user_ts_in_messages(messages)}
+              end
           end
 
         {:ok, text} when is_binary(text) and text != "" ->
@@ -1335,6 +1402,61 @@ defmodule Dmhai.Agent.UserAgent do
     end
   end
 
+  # Pull the `form` spec out of a `request_input` call's tool result.
+  # The tool returns `{:ok, %{token, expires_at, form}}`; the runtime
+  # JSON-encodes that into the tool message's content. Match the
+  # tool_call by name + id, decode its tool_result, return the `form`
+  # Look at every tool result in the batch and return the first one
+  # whose JSON-encoded content carries a top-level `"form"` field.
+  # Tool-name-agnostic — works for both `request_input` (always
+  # form-bearing) and `connect_service` (form-bearing only on the
+  # `needs_setup` branch). Returns the form map (string keys) ready
+  # for embedding in `session.messages`, or `nil` when no result in
+  # the batch carried a form.
+  defp extract_form_from_results(tool_result_msgs) do
+    Enum.find_value(tool_result_msgs, fn m ->
+      decode_form_from_content(m[:content] || m["content"])
+    end)
+  end
+
+  defp decode_form_from_content(content) when is_binary(content) do
+    case Jason.decode(content) do
+      {:ok, %{"form" => form}} when is_map(form) -> form
+      _                                            -> nil
+    end
+  end
+
+  defp decode_form_from_content(_), do: nil
+
+  # Resolve the chain's anchor task to its internal task_id (UUID) so
+  # downstream callers (Tools.Registry, Police, MCP.Registry.attach)
+  # can key on the stable identifier. `nil` when no anchor task is
+  # active — those callers treat that as "no task scope".
+  defp anchor_task_id_from_ctx(%{} = ctx) do
+    session_id = Map.get(ctx, :session_id)
+    n          = Map.get(ctx, :anchor_task_num)
+
+    cond do
+      not (is_binary(session_id) and is_integer(n)) ->
+        nil
+
+      true ->
+        case Tasks.resolve_num(session_id, n) do
+          {:ok, task_id} -> task_id
+          _              -> nil
+        end
+    end
+  end
+
+  defp fallback_content_for_form(form) when is_map(form) do
+    case form["kind"] || form[:kind] do
+      "connect_service_setup" -> "Setting up the connection — please fill in the form below."
+      _                        -> "Please fill in the form below."
+    end
+  end
+
+  defp fallback_content_for_form(_), do: "Please fill in the form below."
+
   # Sweep any tasks still in `ongoing` for this session and mark them done
   # with the assistant's final text as the task_result. Called at the end
   # of a successful text turn (chain end) — catches the case where the
@@ -1498,7 +1620,7 @@ defmodule Dmhai.Agent.UserAgent do
     chain_start_idx = Map.get(ctx, :chain_start_idx, 0)
     in_chain_prior  = Enum.drop(messages, chain_start_idx)
 
-    {results, {_final_prior, final_ctx}} =
+    {pairs, {_final_prior, final_ctx}} =
       Enum.map_reduce(calls, {in_chain_prior, ctx}, fn call, {prior_acc, ctx} ->
         name         = get_in(call, ["function", "name"]) || ""
         args         = get_in(call, ["function", "arguments"]) || %{}
@@ -1519,7 +1641,7 @@ defmodule Dmhai.Agent.UserAgent do
           # hallucinated names before we ever log or dispatch. Silent to the
           # user (no progress row). Model reads the error on its next turn
           # and retries with a clean name. See §Police::Tool-name validity.
-          with :ok <- Dmhai.Agent.Police.check_tool_known(name),
+          with :ok <- Dmhai.Agent.Police.check_tool_known(name, ctx.user_id, anchor_task_id_from_ctx(ctx)),
                # Police gate 2 — task discipline. Silent to the user. Same
                # self-correction pattern.
                :ok <- Dmhai.Agent.Police.check_task_discipline(name, ctx, prior_acc),
@@ -1555,7 +1677,15 @@ defmodule Dmhai.Agent.UserAgent do
                # OTHER than the triggered one. A pickup fires for ONE
                # specific task; the model must not use that trigger as
                # license to spawn new tasks or touch unrelated ones.
-               :ok <- Dmhai.Agent.Police.check_silent_turn_scope(name, args, ctx) do
+               :ok <- Dmhai.Agent.Police.check_silent_turn_scope(name, args, ctx),
+               # Police gate 8 — anchor-relevance attestation. Every
+               # gated tool call self-attests `relevant: true|false`
+               # (schema-injected by Tools.Registry). When the anchor
+               # is set and the model declares `relevant: false`,
+               # reject — the model must confirm the pivot with the
+               # user (or pause_task the anchor) before proceeding
+               # with unrelated work.
+               :ok <- Dmhai.Agent.Police.check_relevance(name, args, ctx) do
             progress_label = Dmhai.Agent.ProgressLabel.format(name, args)
             # `complete_task` is pure cleanup — the final assistant
             # message IS the completion event from the user's
@@ -1614,21 +1744,29 @@ defmodule Dmhai.Agent.UserAgent do
               %{role: "tool", content: marker <> reason, tool_call_id: tool_call_id}
           end
 
-        # Append a synthetic assistant-role message for this call so later
-        # calls in the SAME batch see it and dedupe against it. Rejected
-        # calls also contribute — the model should not "double down" on a
-        # rejected duplicate within the same round either.
-        pseudo = %{"role" => "assistant", "tool_calls" => [call]}
+        # Police rejections leave a `[[ISSUE:...]]` marker on the
+        # tool_msg's content; tag the call so dedup checks (both
+        # within this batch and across turns once the call lands in
+        # `assistant_msg.tool_calls`) can skip it. Rejection means
+        # the call never actually ran; the next attempt with the
+        # same args is a legitimate retry, not a duplicate.
+        rejected? = is_binary(tool_msg.content) and String.starts_with?(tool_msg.content, "[[ISSUE:")
+        tagged_call = if rejected?, do: Map.put(call, "_rejected", true), else: call
+
+        pseudo = %{"role" => "assistant", "tool_calls" => [tagged_call]}
 
         # Update ctx.anchor_task_num based on the verb and its outcome.
         # Also persists back_to_when_done on pickup_task success. See
         # architecture.md §Anchor mutation via back_to_when_done back-stack.
         new_ctx = maybe_mutate_anchor(ctx, name, args, tool_msg)
 
-        {tool_msg, {prior_acc ++ [pseudo], new_ctx}}
+        {{tool_msg, tagged_call}, {prior_acc ++ [pseudo], new_ctx}}
       end)
 
-    {results, final_ctx}
+    tool_msgs    = Enum.map(pairs, fn {m, _} -> m end)
+    tagged_calls = Enum.map(pairs, fn {_, c} -> c end)
+
+    {tool_msgs, tagged_calls, final_ctx}
   end
 
   # Apply anchor transitions based on tool verb + outcome. Only mutates

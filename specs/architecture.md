@@ -1459,18 +1459,76 @@ updated_at   INTEGER
 UNIQUE(user_id, target)
 ```
 
-**Higher-level provider tools** (Phase 2 onwards): per-provider
-helpers (e.g. a Gmail OAuth2 tool) drive the multi-step flow
-(browser redirect → code exchange → refresh-token rotation) and
-persist results via `save_creds` with `expires_at` from the provider
-response. Generic OAuth2 abstractions are not built — each provider's
-quirks (scopes, redirect URLs, token formats) make a generic tool
-brittle, so per-provider helpers are added on demand.
+External-service integrations (Slack, Gmail, Bitrix24, custom APIs)
+are wired through MCP rather than per-provider helper tools — see
+`specs/mcp.md` for the `connect_service` flow, the `Auth.OAuth2`
+metadata-driven client, and the on-disk shape for MCP-issued
+credentials.
 
-**Removed tools** (no longer exist): `plan`, `step_signal`, `task_signal`,
-`handoff_to_worker`, `pause_task`, `resume_task`, `set_periodic_for_task`,
-`read_task_status` (collapsed into `update_task`, `fetch_task`, and
-direct replies).
+---
+
+## In-chain structured input — `request_input`
+
+Generic agentic primitive: when the model needs structured input from
+the user mid-chain (multi-field config, secrets, OAuth setup,
+provider credentials), it calls `request_input(fields, submit_label?)`.
+The FE renders a form inline inside the assistant message bubble; the
+user fills it and submits; the values flow back into the chain as a
+synthesised user-role message.
+
+### Tool
+
+| Tool | Args | Effect |
+|------|------|--------|
+| `request_input` | `fields: [{name, label, type, secret?}]`, `submit_label?` | Chain-terminating. BE persists a pending-input record `{token, fields, expires_at}`, embeds the form spec on the just-emitted assistant message in `session.messages`, ends the chain. Returns `{token, expires_at}` to the model (chain ends; no further model action this chain). |
+
+`type` ∈ {`text`, `password`}. `secret: true` (defaults from `password` type) tells the FE to mask while typing AND never re-render the value after submit (only "✓ provided (N chars)").
+
+### Lifecycle
+
+1. **Emit**: model emits any narration text + `request_input` tool_call. The chain loop captures the narration via `StreamBuffer.read`, runs the tool (which mints a token + TTL of `requestInputTtlSecs`, default 600 s), and persists ONE assistant message to `session.messages`:
+
+   ```
+   {role: "assistant", content: narration, ts, task_num,
+    form: {token, fields, submit_label, expires_at,
+           submitted: false, submitted_at: nil, values_meta: nil}}
+   ```
+
+   Chain ends (treated as a chain-terminating verb, alongside
+   `complete_task` / `pause_task` / `cancel_task`).
+
+2. **Render** (FE): assistant message with non-nil `form` field renders text + inline form widget (one input per field, types respected, submit button labelled `submit_label || "Submit"`). Chat input below stays usable for free-text mid-chain interrupts.
+
+3. **Submit** (FE → BE): `POST /sessions/:id/inputs/:token` with body `{values: {field_name: value, ...}}`.
+   - BE looks up the assistant message by token (scan `session.messages` for `form.token`).
+   - Rejects if `submitted == true` (already used), `expires_at < now` (expired), or `values` doesn't match `fields`.
+   - Marks the form `submitted: true`, `submitted_at: now`, `values_meta: [{name, secret, length}, ...]` (no plaintext stored on the assistant message).
+   - Synthesises a user-role message at the end of `session.messages` carrying the structured payload:
+     ```
+     {role: "user", content: "[input submitted]", ts,
+      kind: "form_response",
+      form_response: {token, values: {...}}}
+     ```
+     The plaintext values are visible to the LLM here. The FE renderer for `kind: "form_response"` shows the labels + redacted summary, never the secret values.
+   - Triggers an auto-resume: same plumbing as `auto_resume_assistant` from the mid-chain user message injection path. The model's next chain sees the form_response and continues.
+
+4. **Locked state** (post-submit, including page reload / session switch): FE checks `form.submitted` on the assistant message. If true: form widget renders disabled, with `values_meta` driving a "✓ Submitted" summary (`client_id (24 chars), client_secret (40 chars)` for example). No re-submission possible — the BE rejects on token reuse anyway, so this is defence in depth.
+
+5. **Expiry**: if `submitted == false && expires_at < now`, the FE renders an "(expired)" banner with disabled inputs. No watchdog resumes the chain — the chain just stays paused. The user can ask the model to redo the form in a new chain.
+
+### Why chain-terminating
+
+The model can't usefully proceed without the user's input — re-loop would just sit idle. Treating `request_input` as a chain-terminator (like `complete_task`) makes the chain shape predictable: model emits → chain ends → user submits → auto-resume.
+
+### Token storage
+
+The pending-input lookup is done by scanning `session.messages` for the assistant message whose `form.token` matches. No separate `pending_inputs` table — the message IS the source of truth, and the scan is bounded (last ~50 messages). Simpler than a side table and avoids consistency drift.
+
+### Settings
+
+| Key | Default | Description |
+|-----|---:|-----|
+| `requestInputTtlSecs` | 600 | Time-to-live for a pending input. Form expires this many seconds after creation; BE rejects late submissions. |
 
 ---
 
@@ -1835,6 +1893,43 @@ runtime safety net for when this guidance doesn't stick.
    Tagged rejections `{:silent_turn_create_task, reason}` and
    `{:silent_turn_other_task_verb, reason}` feed the existing
    `[[ISSUE:...]]` / `ctx.nudges` / 3-strike escalation plumbing.
+
+10. **Anchor-relevance attestation** — `check_relevance/3` enforces
+    that every gated tool call carry an explicit `relevant: true|false`
+    boolean naming whether the call advances the active anchor task's
+    `task_spec`. Catches the silent-pivot failure mode: an anchor task
+    is `ongoing`, the user sends a message unrelated to it, and the
+    model just runs `web_search` / `run_script` for the new ask without
+    confirming with the user — leaving the anchor in limbo and the
+    user's expectation ("we were on X") unmet.
+    * `relevant` is **injected into the schema** of every non-exempt
+      tool by `Tools.Registry` (so individual tool modules don't carry
+      it), marked required, and described to the model in the system
+      prompt.
+    * Exempt (no `relevant` field, gate skips): task-lifecycle verbs
+      `complete_task`, `cancel_task`, `pause_task`, `pickup_task`,
+      `fetch_task`, plus `request_input` (always serves the active
+      task by definition). `create_task` is **not** exempt — the
+      legitimate way to switch tasks is to first push back to the
+      user conversationally; once they confirm, `pause_task` clears
+      the anchor and the subsequent `create_task` runs unchecked.
+    * Gate logic: when `ctx.anchor_task_num` is set AND the tool is
+      non-exempt AND `args["relevant"] == false`, reject. Otherwise
+      pass. Missing field is caught earlier by `check_tool_call_schema`
+      (rule that's always run on every call).
+    * Rejection nudge teaches three legitimate paths: (a) push back
+      conversationally with no tool call, (b) `pause_task` then
+      proceed, or (c) re-call with `relevant: true` if the work is
+      actually compatible with the anchor.
+    * Rejection is tagged `{:irrelevant_to_anchor, reason}` so the
+      `[[ISSUE:...]]` / nudges / 3-strike plumbing applies.
+    * Self-attestation, not classification: the gate cannot detect a
+      lie (model setting `relevant: true` for clearly-unrelated work).
+      The point is to force the model to *make the judgment* —
+      surfacing a question it currently never asks itself. Lying via
+      `true` is a stronger failure than silently acting; in practice
+      forcing the field flips the dominant failure mode from "didn't
+      think" to "thought correctly".
 
 **Prompt-level counterpart to #7**: the Assistant prompt's
 `## Tool selection` section teaches the model WHICH tool matches WHICH

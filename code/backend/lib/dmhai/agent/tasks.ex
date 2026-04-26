@@ -157,6 +157,8 @@ defmodule Dmhai.Agent.Tasks do
 
     case task && task.task_type do
       "periodic" ->
+        # Periodic re-arm is not a terminal transition — keep any
+        # MCP services attached so the next firing reuses them.
         next_at = now + (task.intvl_sec || 0) * 1_000
         query!(Repo, """
         UPDATE tasks SET task_status='pending',
@@ -175,6 +177,10 @@ defmodule Dmhai.Agent.Tasks do
                         updated_at=?
         WHERE task_id=?
         """, [result || "", now, task_id])
+
+        # Terminal: drop every MCP service attachment so the per-turn
+        # tool catalog reverts on the next chain.
+        Dmhai.MCP.Registry.detach_all_for_task(task_id)
     end
   end
 
@@ -199,6 +205,10 @@ defmodule Dmhai.Agent.Tasks do
     end
 
     Dmhai.Agent.TaskRuntime.cancel_pickup(task_id)
+
+    # Terminal: drop every MCP service attachment for this task so
+    # the per-turn tool catalog reverts on the next chain.
+    Dmhai.MCP.Registry.detach_all_for_task(task_id)
   end
 
   def mark_paused(task_id) do

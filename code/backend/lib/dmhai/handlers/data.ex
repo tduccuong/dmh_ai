@@ -708,6 +708,566 @@ defmodule Dmhai.Handlers.Data do
     result.rows != []
   end
 
+  # GET /oauth/callback?code=…&state=…
+  #
+  # Unauthenticated — invoked by the user's browser after they
+  # authorize at the provider. The state token (single-use, TTL-
+  # bounded; minted in `Auth.OAuth2.init_flow/1`) ties the request
+  # back to a specific user_id + session_id + connection alias.
+  #
+  # On success: exchanges code for tokens, persists them at
+  # `target="mcp:<canonical_resource>"`, runs the MCP handshake +
+  # tools/list, registers the connection, appends a synthetic
+  # `service_connected` user-role message, and dispatches
+  # `auto_resume_assistant` so the in-flight chain picks up the
+  # newly-attached tools.
+  def oauth_callback(conn) do
+    conn  = fetch_query_params(conn)
+    code  = conn.query_params["code"]  || ""
+    state = conn.query_params["state"] || ""
+    err   = conn.query_params["error"] || conn.query_params["error_description"]
+
+    cond do
+      err && err != "" ->
+        oauth_html_response(conn, 400, "Authorization server returned an error: #{err}")
+
+      code == "" or state == "" ->
+        oauth_html_response(conn, 400, "Missing `code` or `state` query param.")
+
+      true ->
+        do_oauth_callback(conn, state, code)
+    end
+  end
+
+  defp do_oauth_callback(conn, state, code) do
+    case Dmhai.Auth.OAuth2.complete_flow(state, code) do
+      {:ok, %{
+        user_id:            user_id,
+        session_id:         session_id,
+        anchor_task_id:     anchor_task_id,
+        alias:              alias_,
+        canonical_resource: resource,
+        server_url:         server_url,
+        asm:                asm,
+        tokens:             tokens
+      }} ->
+        finalize_connection(user_id, session_id, anchor_task_id, alias_, resource, server_url, asm, tokens)
+        oauth_html_response(conn, 200, "✓ Authorized — return to your chat.")
+
+      {:error, :not_found} ->
+        oauth_html_response(conn, 404, "Unknown or already-used state. Start the authorization again from chat.")
+
+      {:error, :expired} ->
+        oauth_html_response(conn, 410, "The authorization request expired. Start again from chat.")
+
+      {:error, reason} when is_binary(reason) ->
+        oauth_html_response(conn, 500, "Authorization failed: #{reason}")
+
+      {:error, reason} ->
+        oauth_html_response(conn, 500, "Authorization failed: #{inspect(reason)}")
+    end
+  end
+
+  defp finalize_connection(user_id, session_id, anchor_task_id, alias_, resource, server_url, asm, tokens) do
+    cred_payload = %{
+      "access_token"        => tokens.access_token,
+      "refresh_token"       => tokens.refresh_token,
+      "scope"               => tokens.scope,
+      "token_type"          => tokens.token_type,
+      "server_url"          => server_url,
+      "alias"               => alias_,
+      "canonical_resource"  => resource,
+      "asm_json"            => Jason.encode!(asm),
+      "client_id"           => nil,
+      "client_secret"       => nil
+    }
+
+    # Pull client identifiers from the AS-scoped row and fold them
+    # into the token credential's payload so the refresh hook has
+    # everything it needs without an extra DB hit per refresh.
+    client_target =
+      "oauth_client:" <> (asm[:issuer] || asm[:authorization_endpoint] || "")
+
+    cred_payload =
+      case Dmhai.Auth.Credentials.lookup(user_id, client_target) do
+        %{payload: %{"client_id" => cid} = cp} ->
+          Map.merge(cred_payload, %{
+            "client_id"     => cid,
+            "client_secret" => cp["client_secret"]
+          })
+
+        _ ->
+          cred_payload
+      end
+
+    Dmhai.Auth.Credentials.save(
+      user_id,
+      "mcp:" <> resource,
+      "oauth2_mcp",
+      cred_payload,
+      notes: "MCP connection: #{alias_}",
+      expires_at: tokens.expires_at
+    )
+
+    handshake_ctx = %{
+      server_url:         server_url,
+      canonical_resource: resource,
+      access_token:       tokens.access_token
+    }
+
+    tools =
+      with {:ok, _server_info, sid} <- Dmhai.MCP.Client.initialize(handshake_ctx),
+           {:ok, tools}              <- Dmhai.MCP.Client.list_tools(handshake_ctx, sid) do
+        tools
+      else
+        _ -> []
+      end
+
+    Dmhai.MCP.Registry.authorize(user_id, alias_, resource, server_url, asm)
+    Dmhai.MCP.Registry.set_authorized_tools(user_id, alias_, tools)
+    Dmhai.MCP.Registry.attach(anchor_task_id, user_id, alias_)
+
+    append_service_connected_message(session_id, user_id, alias_, length(tools))
+
+    case Dmhai.Agent.Supervisor.ensure_started(user_id) do
+      {:ok, pid} -> send(pid, {:auto_resume_assistant, session_id})
+      _          -> :ok
+    end
+  end
+
+  defp append_service_connected_message(session_id, user_id, alias_, tools_count) do
+    case query!(Repo, "SELECT messages FROM sessions WHERE id=? AND user_id=?",
+                [session_id, user_id]) do
+      %{rows: [[msgs_json]]} ->
+        msgs = Jason.decode!(msgs_json || "[]")
+
+        msg = %{
+          "role"              => "user",
+          "content"           => "[#{alias_} connected — #{tools_count} tools available]",
+          "ts"                => System.os_time(:millisecond),
+          "kind"              => "service_connected",
+          "service_connected" => %{"alias" => alias_, "tools_count" => tools_count}
+        }
+
+        new_msgs = msgs ++ [msg]
+
+        query!(Repo, "UPDATE sessions SET messages=? WHERE id=? AND user_id=?",
+               [Jason.encode!(new_msgs), session_id, user_id])
+        :ok
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp oauth_html_response(conn, status, body_text) do
+    html = """
+    <!doctype html>
+    <html><head><meta charset="utf-8"><title>OAuth</title>
+    <style>
+      body{font-family:system-ui,sans-serif;background:#0a0810;color:#e8d8f0;margin:0;display:flex;align-items:center;justify-content:center;min-height:100vh;text-align:center;padding:24px;}
+      .box{padding:32px 40px;background:#1a1428;border:1px solid #2c2238;border-radius:8px;max-width:480px;}
+      h1{margin:0 0 12px;font-size:18px;color:#60c080;}
+      p{margin:0;font-size:13px;color:#b098b8;line-height:1.5;}
+    </style></head>
+    <body><div class="box">
+      <h1>#{Plug.HTML.html_escape_to_iodata(body_text)}</h1>
+      <p>You can close this tab and return to your chat session.</p>
+    </div></body></html>
+    """
+
+    conn
+    |> put_resp_content_type("text/html")
+    |> send_resp(status, html)
+  end
+
+  # POST /sessions/:session_id/inputs/:token
+  # Submission endpoint for `request_input` forms. Body: {"values":
+  # {field_name: value, ...}}. Validates the token resolves to a
+  # pending form on this session, enforces single-use, expiry, and
+  # field-shape, then:
+  #   1. Marks the assistant message's `form` as submitted (stores
+  #      `values_meta` only — no plaintext on the assistant message).
+  #   2. Appends a synthetic user-role message carrying the structured
+  #      payload, which the model sees on the next chain.
+  #   3. Auto-resumes the session's chain via the same plumbing as a
+  #      regular mid-chain user message.
+  def submit_input(conn, user, session_id, token) do
+    case parse_input_submission(conn) do
+      {:error, status, msg} ->
+        json(conn, status, %{error: msg})
+
+      {:ok, values} ->
+        cond do
+          not owns_session?(session_id, user.id) ->
+            json(conn, 403, %{error: "Forbidden"})
+
+          true ->
+            case do_submit_input(session_id, user.id, token, values) do
+              {:ok, :sync, _ts} ->
+                # request_input form_response — the synth user message
+                # is already in session.messages; auto-resume the chain
+                # immediately so the model sees the values.
+                _ = trigger_auto_resume(user.id, session_id)
+                json(conn, 200, %{ok: true})
+
+              {:ok, :async, _ts} ->
+                # connect_service_setup — the spawned Task owns the
+                # service_connected message append and auto-resume
+                # dispatch (after the MCP handshake completes). No
+                # auto-resume from here.
+                json(conn, 200, %{ok: true})
+
+              {:error, :not_found} ->
+                json(conn, 404, %{error: "No pending form for that token"})
+
+              {:error, :already_submitted} ->
+                json(conn, 409, %{error: "Form already submitted"})
+
+              {:error, :expired} ->
+                json(conn, 410, %{error: "Form expired"})
+
+              {:error, :schema_mismatch} ->
+                json(conn, 400, %{error: "Submitted values don't match form schema"})
+            end
+        end
+    end
+  end
+
+  defp parse_input_submission(conn) do
+    case read_body(conn) do
+      {:ok, body, _conn} ->
+        case Jason.decode(body) do
+          {:ok, %{"values" => values}} when is_map(values) -> {:ok, values}
+          _ -> {:error, 400, "Body must be JSON {\"values\": {...}}"}
+        end
+
+      _ ->
+        {:error, 400, "Empty body"}
+    end
+  end
+
+  defp do_submit_input(session_id, user_id, token, values) do
+    result =
+      query!(Repo, "SELECT messages FROM sessions WHERE id=? AND user_id=?",
+             [session_id, user_id])
+
+    case result.rows do
+      [[msgs_json]] ->
+        msgs = Jason.decode!(msgs_json || "[]")
+        now = System.os_time(:millisecond)
+
+        case find_form(msgs, token) do
+          nil ->
+            {:error, :not_found}
+
+          {idx, msg, form} ->
+            cond do
+              form["submitted"] == true ->
+                {:error, :already_submitted}
+
+              is_integer(form["expires_at"]) and form["expires_at"] < now ->
+                {:error, :expired}
+
+              not values_match_schema?(form["fields"] || [], values) ->
+                {:error, :schema_mismatch}
+
+              true ->
+                meta = build_values_meta(form["fields"] || [], values)
+                updated_form =
+                  form
+                  |> Map.put("submitted", true)
+                  |> Map.put("submitted_at", now)
+                  |> Map.put("values_meta", meta)
+
+                updated_msg = Map.put(msg, "form", updated_form)
+
+                case form["kind"] do
+                  "connect_service_setup" ->
+                    # Persist the form-submitted state synchronously so
+                    # the FE optimistic re-render matches what the next
+                    # poll returns. Then hand the slow work (MCP
+                    # handshake + tools/list) off to a Task so the POST
+                    # returns immediately. Append a pending progress
+                    # row so polling sees `is_working=true` and the
+                    # status bar shows activity during the handshake.
+                    new_msgs = List.replace_at(msgs, idx, updated_msg)
+
+                    query!(Repo, "UPDATE sessions SET messages=? WHERE id=? AND user_id=?",
+                           [Jason.encode!(new_msgs), session_id, user_id])
+
+                    spawn_connect_service_setup(session_id, user_id, form, values)
+                    {:ok, :async, now}
+
+                  _ ->
+                    synth_msg = build_form_response_msg(form, values, token, now)
+
+                    new_msgs =
+                      msgs
+                      |> List.replace_at(idx, updated_msg)
+                      |> Kernel.++([synth_msg])
+
+                    query!(Repo, "UPDATE sessions SET messages=? WHERE id=? AND user_id=?",
+                           [Jason.encode!(new_msgs), session_id, user_id])
+
+                    {:ok, :sync, now}
+                end
+            end
+        end
+
+      _ ->
+        {:error, :not_found}
+    end
+  end
+
+  # `request_input` form — synth a user-role message carrying the
+  # submitted values so the model sees them on the next chain. LLM
+  # chat-completion APIs forward only `role` + `content`; custom
+  # fields drop silently on serialisation, so the values must live
+  # in `content`.
+  defp build_form_response_msg(form, values, token, now) do
+    content =
+      "[input submitted via request_input form]\n" <>
+        Enum.map_join(form["fields"] || [], "\n", fn f ->
+          name = f["name"] || f[:name]
+          "#{name}: #{Map.get(values, name, "")}"
+        end)
+
+    %{
+      "role"          => "user",
+      "content"       => content,
+      "ts"            => now,
+      "kind"          => "form_response",
+      "form_response" => %{"token" => token, "values" => values}
+    }
+  end
+
+  # `connect_service_setup` form. Heavy work (MCP handshake +
+  # tools/list, ~3 s) runs in a fire-and-forget Task so the POST
+  # returns fast. A pending session_progress row appears in the chat
+  # immediately so the FE polling shows "Assistant is …" status
+  # during the handshake; the Task flips it to done and appends the
+  # `service_connected` synthetic user message + auto-resumes when
+  # the work finishes.
+  defp spawn_connect_service_setup(session_id, user_id, form, values) do
+    setup = form["setup_payload"] || %{}
+    alias_ = setup["alias"] || "service"
+
+    {:ok, prog_row} =
+      Dmhai.Agent.SessionProgress.append_tool_pending(
+        %{session_id: session_id, user_id: user_id, task_id: nil},
+        "Connecting #{alias_}…"
+      )
+
+    Task.Supervisor.start_child(Dmhai.Agent.TaskSupervisor, fn ->
+      do_connect_service_setup(session_id, user_id, form, values, prog_row.id)
+    end)
+
+    :ok
+  end
+
+  defp do_connect_service_setup(session_id, user_id, form, values, prog_id) do
+    setup = form["setup_payload"] || %{}
+
+    result =
+      case setup["auth_method"] do
+        "api_key" -> finalize_api_key_setup(setup, values, user_id)
+        other     -> {:error, "auth_method '#{inspect(other)}' not yet supported"}
+      end
+
+    Dmhai.Agent.SessionProgress.mark_tool_done(prog_id)
+
+    msg = build_service_connected_msg(setup, result)
+    append_session_user_msg(session_id, user_id, msg)
+
+    trigger_auto_resume(user_id, session_id)
+    :ok
+  rescue
+    e ->
+      Dmhai.Agent.SessionProgress.mark_tool_done(prog_id)
+
+      msg = build_service_connected_msg(form["setup_payload"] || %{},
+              {:error, "internal error: #{inspect(e)}"})
+      append_session_user_msg(session_id, user_id, msg)
+
+      trigger_auto_resume(user_id, session_id)
+      :ok
+  end
+
+  # Map dropdown option values (set in `connect_service`'s api_key
+  # form) to the actual header name + optional value prefix. Keeping
+  # this small table in one place lets the form options stay
+  # human-friendly while the BE knows exactly what bytes to send.
+  @auth_header_choices %{
+    "Authorization"      => {"Authorization",      "Bearer "},
+    "x-api-key"          => {"x-api-key",          ""},
+    "x-consumer-api-key" => {"x-consumer-api-key", ""}
+  }
+
+  defp finalize_api_key_setup(setup, values, user_id) do
+    alias_         = setup["alias"]
+    server_url     = setup["server_url"]
+    anchor_task_id = setup["anchor_task_id"]
+    canonical      = server_url
+    api_key        = (values["api_key"] || "") |> String.trim()
+    choice         = (values["auth_header"] || "Authorization") |> String.trim()
+
+    cond do
+      api_key == "" ->
+        {:error, "API key is empty"}
+
+      not Map.has_key?(@auth_header_choices, choice) ->
+        {:error, "Unknown auth header choice: #{inspect(choice)}"}
+
+      not is_binary(anchor_task_id) ->
+        {:error, "setup payload missing anchor_task_id"}
+
+      true ->
+        {header, prefix} = Map.fetch!(@auth_header_choices, choice)
+        value = prefix <> api_key
+
+        handshake_ctx = %{
+          server_url:         server_url,
+          canonical_resource: canonical,
+          auth: %{
+            type:               "api_key",
+            header:             header,
+            key:                value,
+            canonical_resource: canonical
+          }
+        }
+
+        with {:ok, _info, sid} <- Dmhai.MCP.Client.initialize(handshake_ctx),
+             {:ok, tools}       <- Dmhai.MCP.Client.list_tools(handshake_ctx, sid) do
+          cred_payload = %{
+            "api_key"            => value,
+            "api_key_header"     => header,
+            "server_url"         => server_url,
+            "alias"              => alias_,
+            "canonical_resource" => canonical
+          }
+
+          Dmhai.Auth.Credentials.save(
+            user_id,
+            "mcp:" <> canonical,
+            "api_key_mcp",
+            cred_payload,
+            notes: "API-key MCP connection: #{alias_} (header: #{header})"
+          )
+
+          Dmhai.MCP.Registry.authorize(user_id, alias_, canonical, server_url, nil)
+          Dmhai.MCP.Registry.set_authorized_tools(user_id, alias_, tools)
+          Dmhai.MCP.Registry.attach(anchor_task_id, user_id, alias_)
+          {:ok, %{alias: alias_, tools_count: length(tools)}}
+        else
+          {:error, reason} ->
+            {:error, format_handshake_error(choice, reason)}
+        end
+    end
+  end
+
+  defp format_handshake_error(choice, {:status, 401, body}) do
+    server_msg =
+      case body do
+        %{"error" => msg} when is_binary(msg) -> msg
+        _ -> inspect(body)
+      end
+
+    other_choices =
+      @auth_header_choices
+      |> Map.keys()
+      |> Enum.reject(&(&1 == choice))
+      |> Enum.join(" / ")
+
+    "Server returned 401 with the `#{choice}` auth header. Server says: #{server_msg}. " <>
+      "If the URL is right, retry connect_service and pick a different header (#{other_choices}). " <>
+      "If that still 401s, the URL is probably not a real MCP endpoint."
+  end
+
+  defp format_handshake_error(choice, {:status, status, body}),
+    do: "Server returned HTTP #{status} with the `#{choice}` header. Body: #{inspect(body)}."
+
+  defp format_handshake_error(choice, reason),
+    do: "MCP handshake failed (header: `#{choice}`): #{inspect(reason)}. The URL may not be a real MCP endpoint."
+
+  defp build_service_connected_msg(_setup, {:ok, %{alias: alias_, tools_count: n}}) do
+    %{
+      "role"              => "user",
+      "content"           => "[#{alias_} connected — #{n} tools available]",
+      "ts"                => System.os_time(:millisecond),
+      "kind"              => "service_connected",
+      "service_connected" => %{"alias" => alias_, "tools_count" => n, "error" => nil}
+    }
+  end
+
+  defp build_service_connected_msg(setup, {:error, reason}) do
+    alias_ = setup["alias"] || "service"
+
+    %{
+      "role"              => "user",
+      "content"           => "[#{alias_} connection error — #{reason}]",
+      "ts"                => System.os_time(:millisecond),
+      "kind"              => "service_connected",
+      "service_connected" => %{"alias" => alias_, "tools_count" => 0, "error" => reason}
+    }
+  end
+
+  defp append_session_user_msg(session_id, user_id, msg) do
+    case query!(Repo, "SELECT messages FROM sessions WHERE id=? AND user_id=?",
+                [session_id, user_id]) do
+      %{rows: [[msgs_json]]} ->
+        msgs = Jason.decode!(msgs_json || "[]")
+        new_msgs = msgs ++ [msg]
+
+        query!(Repo, "UPDATE sessions SET messages=? WHERE id=? AND user_id=?",
+               [Jason.encode!(new_msgs), session_id, user_id])
+        :ok
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp trigger_auto_resume(user_id, session_id) do
+    case Dmhai.Agent.Supervisor.ensure_started(user_id) do
+      {:ok, pid} -> send(pid, {:auto_resume_assistant, session_id})
+      _          -> :ok
+    end
+  end
+
+  defp find_form(msgs, token) do
+    msgs
+    |> Enum.with_index()
+    |> Enum.find_value(fn {m, idx} ->
+      with %{"role" => "assistant", "form" => %{"token" => ^token} = form} <- m do
+        {idx, m, form}
+      else
+        _ -> nil
+      end
+    end)
+  end
+
+  defp values_match_schema?(fields, values) when is_list(fields) and is_map(values) do
+    Enum.all?(fields, fn f ->
+      name = f["name"] || f[:name]
+      Map.has_key?(values, name) and is_binary(values[name])
+    end)
+  end
+
+  defp values_match_schema?(_, _), do: false
+
+  # Build a per-field [{name, secret, length}] list to persist on the
+  # assistant message — gives the FE enough to render a "✓ Submitted"
+  # summary without ever holding the plaintext value after submit.
+  defp build_values_meta(fields, values) do
+    Enum.map(fields, fn f ->
+      name   = f["name"]   || f[:name]
+      secret = f["secret"] || f[:secret] || false
+      val    = Map.get(values, name) || ""
+      %{"name" => name, "secret" => secret, "length" => String.length(val)}
+    end)
+  end
+
   defp user_asset_dir(email, session_id) do
     Dmhai.Constants.session_root(email, session_id)
   end

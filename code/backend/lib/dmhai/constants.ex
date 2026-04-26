@@ -86,4 +86,15 @@ defmodule Dmhai.Constants do
   def session_workspace_dir(email, session_id) do
     Path.join(session_root(email, session_id), "workspace")
   end
+
+  @doc """
+  Per-user keystore directory — a sibling of the per-session roots, never
+  inside any session. Long-lived material that must outlive session
+  deletion (e.g., harness-generated SSH identities) lives here. The leading
+  underscore signals "not a session" so listings are unambiguous.
+  """
+  @spec user_keystore_dir(String.t()) :: String.t()
+  def user_keystore_dir(email) do
+    Path.join([@assets_dir, to_string(email), "_keystore"])
+  end
 end

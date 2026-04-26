@@ -79,6 +79,23 @@ defmodule Dmhai.Agent.AgentSettings do
   # tokens) while still bounding a runaway model that never emits EOS.
   @llm_num_predict_assistant_default 16_384
 
+  # Time-to-live (seconds) for a `request_input` form. After this,
+  # the BE rejects late submissions and the FE renders the form as
+  # expired. The chain that emitted the form stays paused — user can
+  # re-ask in a new chain.
+  @request_input_ttl_secs_default 600
+
+  # OAuth2 pending-state TTL (seconds). State token mints when a
+  # `connect_service` flow starts; expires N seconds later. Callbacks
+  # past expiry are rejected.
+  @oauth_state_ttl_secs_default 600
+
+  # Base URL the BE uses to construct OAuth2 redirect URIs. Combined
+  # with a state token to form `<base>/oauth/callback/<state>`. Must
+  # match the redirect URI the provider's OAuth App / authorization
+  # server allows (or its prefix, when the provider accepts a prefix).
+  @oauth_redirect_base_url_default "http://localhost:8080"
+
   # Web / HTTP defaults
   @http_user_agent_default "Mozilla/5.0 (compatible; DMH-AI/1.0)"
   @searxng_url_default "http://127.0.0.1:8888"
@@ -233,6 +250,32 @@ defmodule Dmhai.Agent.AgentSettings do
   @spec llm_num_predict_assistant() :: pos_integer()
   def llm_num_predict_assistant,
     do: int_setting("llmNumPredictAssistant", @llm_num_predict_assistant_default)
+
+  @doc """
+  Time-to-live (seconds) for a `request_input` form. The BE rejects
+  submissions whose form is older than this; the FE renders the form
+  as expired. The chain that emitted the form stays paused.
+  """
+  @spec request_input_ttl_secs() :: pos_integer()
+  def request_input_ttl_secs,
+    do: int_setting("requestInputTtlSecs", @request_input_ttl_secs_default)
+
+  @doc "TTL (seconds) for pending OAuth2 state tokens before they expire."
+  @spec oauth_state_ttl_secs() :: pos_integer()
+  def oauth_state_ttl_secs,
+    do: int_setting("oauthStateTtlSecs", @oauth_state_ttl_secs_default)
+
+  @doc """
+  Base URL the BE uses when constructing OAuth2 redirect URIs.
+  Combined with a state token as `<base>/oauth/callback/<state>`.
+  Must match the redirect URI (or its prefix) registered with the
+  provider. Genuinely per-deployment — the BE listens on a single
+  host; per-user OAuth App credentials are stored separately in
+  `user_credentials`.
+  """
+  @spec oauth_redirect_base_url() :: String.t()
+  def oauth_redirect_base_url,
+    do: string_setting("oauth_redirect_base_url", @oauth_redirect_base_url_default)
 
   @doc "HTTP User-Agent string for outbound web requests."
   @spec http_user_agent() :: String.t()
