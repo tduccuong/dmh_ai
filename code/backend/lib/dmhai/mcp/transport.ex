@@ -54,20 +54,30 @@ defmodule Dmhai.MCP.Transport do
 
     headers = build_headers(auth, Map.get(req, :session_id))
 
-    case Req.post(server_url,
-           json: body,
-           headers: headers,
-           receive_timeout: @http_timeout_ms,
-           retry: false
-         ) do
-      {:ok, %{status: 200, body: resp_body, headers: resp_headers}} ->
-        {:ok, decode_body(resp_body), %{session_id: extract_session_id(resp_headers)}}
+    # Test hook (mirrors `Application.get_env(:dmhai,
+    # :__llm_call_stub__)` in `Dmhai.Agent.LLM.call/3`). Lets tests
+    # drive the discovery cascade and per-tool calls without standing
+    # up a real MCP server. The stub receives the same arguments the
+    # real Req.post would and must return one of the
+    # request/3-shaped tuples. Production runs never set this env.
+    if stub = Application.get_env(:dmhai, :__mcp_transport_stub__) do
+      stub.(server_url, %{method: method, body: body, headers: headers, auth: auth, session_id: Map.get(req, :session_id)})
+    else
+      case Req.post(server_url,
+             json: body,
+             headers: headers,
+             receive_timeout: @http_timeout_ms,
+             retry: false
+           ) do
+        {:ok, %{status: 200, body: resp_body, headers: resp_headers}} ->
+          {:ok, decode_body(resp_body), %{session_id: extract_session_id(resp_headers)}}
 
-      {:ok, %{status: status, body: resp_body}} ->
-        {:error, {:status, status, decode_body(resp_body)}}
+        {:ok, %{status: status, body: resp_body}} ->
+          {:error, {:status, status, decode_body(resp_body)}}
 
-      {:error, reason} ->
-        {:error, {:network, reason}}
+        {:error, reason} ->
+          {:error, {:network, reason}}
+      end
     end
   end
 

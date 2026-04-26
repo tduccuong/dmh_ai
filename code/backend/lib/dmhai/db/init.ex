@@ -302,6 +302,14 @@ defmodule Dmhai.DB.Init do
       asm_json               TEXT,
       server_tools_json      TEXT,
       server_tools_cached_at INTEGER,
+      -- Lifecycle: 'authorized' (token works) | 'needs_auth' (token
+      -- refresh failed AS-side; model must call connect_service to
+      -- recover). `tools_for_task/2` filters out needs_auth services
+      -- so the LLM doesn't emit names it can no longer invoke; the
+      -- §Authorized MCP services context block surfaces them with a
+      -- `[needs re-auth]` annotation so the model knows to act.
+      -- `authorize/5` resets to 'authorized' on re-auth.
+      status                 TEXT NOT NULL DEFAULT 'authorized',
       created_ts             INTEGER NOT NULL,
       PRIMARY KEY (user_id, alias)
     )

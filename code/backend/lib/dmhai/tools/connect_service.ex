@@ -164,6 +164,14 @@ defmodule Dmhai.Tools.ConnectService do
     }}
   end
 
+  defp build_handshake_ctx(authz, %{kind: "none_mcp"}) do
+    {:ok, %{
+      server_url:         authz.server_url,
+      canonical_resource: authz.canonical_resource,
+      auth:               %{type: "none"}
+    }}
+  end
+
   defp build_handshake_ctx(_, _), do: {:error, :unsupported_credential_kind}
 
   # ── fresh OAuth flow ──────────────────────────────────────────────────
@@ -182,21 +190,55 @@ defmodule Dmhai.Tools.ConnectService do
         message:  "Click the link to authorize. The chat resumes automatically once you complete authorization in the browser."
       }}
     else
-      # Auto-fallback: when the spec-compliant path fails for a
-      # well-understood reason (server didn't publish PRM, or PRM
-      # exists but the AS doesn't advertise DCR/CIMD), produce the
-      # api_key setup form directly. This is the common case for
-      # non-spec providers. The user can retry with
-      # `auth_method: "oauth"` if they happen to have OAuth
-      # credentials but the server lacks discovery.
+      # Auto-fallback when the spec-compliant path fails:
+      #
+      #   1. PRM `:not_found` — server doesn't advertise OAuth at all.
+      #      Phase D probes for an open MCP first: an unauthed
+      #      `initialize` that returns 200 + Mcp-Session-Id means the
+      #      server is genuinely open; we route through `no_auth_connect`
+      #      and return `connected` with zero user friction. Probes that
+      #      fail (401, transport error, anything not-200) fall through
+      #      to the api_key form below — i.e. the server requires SOME
+      #      auth but doesn't publish discovery.
+      #
+      #   2. `:needs_manual` — PRM exists but ASM doesn't advertise DCR
+      #      or CIMD. The server clearly wants OAuth but we can't
+      #      auto-register a client; the user retries with
+      #      `auth_method: "oauth"` if they have manual credentials,
+      #      or with `auth_method: "api_key"` if it's an API-key
+      #      service in disguise.
       {:error, :not_found} ->
-        api_key_setup_form(anchor_task_id, server_url, alias_)
+        case probe_open_mcp(server_url) do
+          :open  -> no_auth_connect(user_id, anchor_task_id, alias_, server_url)
+          :gated -> api_key_setup_form(anchor_task_id, server_url, alias_)
+        end
 
       :needs_manual ->
         api_key_setup_form(anchor_task_id, server_url, alias_)
 
       {:error, reason} ->
         {:error, "connect_service failed: #{inspect(reason)}"}
+    end
+  end
+
+  # Probe an MCP server for the "open" shape: send an unauthenticated
+  # `initialize` and look for the spec-compliant 200 + Mcp-Session-Id
+  # response. Anything else (401, 404, transport failure) is treated
+  # as `:gated` so the caller falls through to the api_key form. The
+  # session id we get back IS discarded — `no_auth_connect/4` opens
+  # its own session via the standard handshake. The probe exists
+  # purely to disambiguate "open" from "gated" before committing to
+  # either path.
+  defp probe_open_mcp(server_url) do
+    handshake_ctx = %{
+      server_url:         server_url,
+      canonical_resource: server_url,
+      auth:               %{type: "none"}
+    }
+
+    case MCPClient.initialize(handshake_ctx) do
+      {:ok, _info, sid} when is_binary(sid) and sid != "" -> :open
+      _                                                    -> :gated
     end
   end
 
@@ -295,6 +337,20 @@ defmodule Dmhai.Tools.ConnectService do
   end
 
   # ── no auth path ──────────────────────────────────────────────────────
+  #
+  # Single helper used by both:
+  #   * `auth_method: "none"` — the model explicitly declares the
+  #     server is open.
+  #   * `auth_method: "auto"` open auto-detect — Phase D's cascade
+  #     fallthrough probes an unauthed `initialize` when PRM 404s
+  #     and routes here on success.
+  #
+  # The credential row at `mcp:<canonical>` is a sentinel of kind
+  # `none_mcp`. It carries no secrets but lets `MCP.Client.load_connection`
+  # find the canonical resource on subsequent calls and route through
+  # the standard pipeline (`build_auth/3`'s `none_mcp` clause yields
+  # `%{type: "none"}`). Without it, follow-up `<alias>.<tool>` calls
+  # would 404 at credential lookup.
 
   defp no_auth_connect(user_id, anchor_task_id, alias_, url) do
     handshake_ctx = %{
@@ -308,6 +364,19 @@ defmodule Dmhai.Tools.ConnectService do
       MCPRegistry.authorize(user_id, alias_, url, url, nil)
       MCPRegistry.set_authorized_tools(user_id, alias_, tools)
       MCPRegistry.attach(anchor_task_id, user_id, alias_)
+
+      Credentials.save(
+        user_id,
+        "mcp:" <> url,
+        "none_mcp",
+        %{
+          "alias"              => alias_,
+          "canonical_resource" => url,
+          "server_url"         => url
+        },
+        notes: "Open MCP — no auth"
+      )
+
       {:ok, %{status: "connected", alias: alias_, tools: summarize_tools(tools)}}
     else
       {:error, reason} -> {:error, "no-auth connect failed: #{inspect(reason)}"}

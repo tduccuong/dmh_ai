@@ -338,6 +338,66 @@ defmodule Dmhai.Auth.OAuth2 do
   defp normalize_token_response(other),
     do: {:error, {:malformed_token_response, other}}
 
+  # ── lookup_with_refresh ───────────────────────────────────────────────
+
+  @doc """
+  Proactive auto-refresh wrapper around `Credentials.lookup/2` for
+  `oauth2_mcp` rows. Saves the 401 round-trip when the access token
+  is known to be expired by reading `is_expired` straight from the
+  credential record.
+
+  Behavior:
+    * Row missing → `{:error, :missing}`.
+    * Wrong kind (not `oauth2_mcp`) → returns the credential as-is via
+      `{:ok, cred}` (caller decides; e.g. `api_key_mcp` doesn't expire).
+    * `oauth2_mcp` with `is_expired == false` → `{:ok, cred}`.
+    * `oauth2_mcp` with `is_expired == true` → fires `refresh/2`. On
+      success: `{:ok, refreshed_cred}`. On failure: flips the
+      registry to `needs_auth` (consistent with the reactive 401 path
+      in `MCP.Client.handle_401_refresh`) and returns
+      `{:error, {:refresh_failed, reason}}` so the caller can surface
+      a model-readable error. The flip needs the alias, which we
+      derive from the credential's `target = "mcp:<canonical>"` via
+      `MCP.Registry.find_authorized_by_resource/2`.
+
+  Living in `Auth.OAuth2` rather than `Auth.Credentials` to avoid the
+  circular dependency Credentials → OAuth2 → Credentials.
+  """
+  @spec lookup_with_refresh(String.t(), String.t()) ::
+          {:ok, map()}
+          | {:error, :missing | {:refresh_failed, term()}}
+  def lookup_with_refresh(user_id, target) when is_binary(user_id) and is_binary(target) do
+    case Credentials.lookup(user_id, target) do
+      nil ->
+        {:error, :missing}
+
+      %{kind: "oauth2_mcp", is_expired: true} ->
+        case refresh(user_id, target) do
+          {:ok, fresh} ->
+            {:ok, fresh}
+
+          {:error, reason} ->
+            mark_resource_needs_auth(user_id, target)
+            {:error, {:refresh_failed, reason}}
+        end
+
+      %{} = cred ->
+        {:ok, cred}
+    end
+  end
+
+  # Map an `mcp:<canonical>` credential target back to the alias the
+  # registry knows the service by, then flip its status. No-op when
+  # the target shape doesn't match (e.g. ad-hoc creds the user
+  # stashed) or when no authorized_services row exists.
+  defp mark_resource_needs_auth(user_id, "mcp:" <> canonical) do
+    case Dmhai.MCP.Registry.find_authorized_by_resource(user_id, canonical) do
+      %{alias: alias_} -> Dmhai.MCP.Registry.mark_needs_auth(user_id, alias_)
+      _                -> :ok
+    end
+  end
+  defp mark_resource_needs_auth(_, _), do: :ok
+
   # ── refresh ───────────────────────────────────────────────────────────
 
   @doc """

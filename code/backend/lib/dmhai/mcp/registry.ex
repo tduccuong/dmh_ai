@@ -38,12 +38,19 @@ defmodule Dmhai.MCP.Registry do
           server_url:         String.t(),
           asm:                map() | nil,
           tools:              [map()],
+          status:             String.t(),
           created_ts:         integer()
         }
 
   # ── user-tier (authorization) ─────────────────────────────────────────
 
-  @doc "Upsert an authorized-service row. Cache invalidated."
+  @doc """
+  Upsert an authorized-service row. Cache invalidated.
+
+  On conflict, `status` is reset to `'authorized'` — re-running
+  `connect_service` after a `needs_auth` flip is the recovery
+  action, and a fresh authorize means the token works again.
+  """
   @spec authorize(String.t(), String.t(), String.t(), String.t(), map() | nil) :: :ok
   def authorize(user_id, alias_, canonical, server_url, asm) do
     now = System.os_time(:millisecond)
@@ -51,17 +58,48 @@ defmodule Dmhai.MCP.Registry do
     query!(Repo, """
     INSERT INTO authorized_services
       (user_id, alias, canonical_resource, server_url, asm_json,
-       server_tools_json, server_tools_cached_at, created_ts)
-    VALUES (?, ?, ?, ?, ?, NULL, NULL, ?)
+       server_tools_json, server_tools_cached_at, status, created_ts)
+    VALUES (?, ?, ?, ?, ?, NULL, NULL, 'authorized', ?)
     ON CONFLICT(user_id, alias) DO UPDATE SET
       canonical_resource = excluded.canonical_resource,
       server_url         = excluded.server_url,
-      asm_json           = excluded.asm_json
+      asm_json           = excluded.asm_json,
+      status             = 'authorized'
     """, [
       user_id, alias_, canonical, server_url,
       if(is_map(asm), do: Jason.encode!(asm), else: nil),
       now
     ])
+
+    invalidate_cache(user_id)
+    :ok
+  end
+
+  @doc """
+  Flip a service's status to `'needs_auth'`. Called by
+  `MCP.Client.handle_401_refresh` and `OAuth2.lookup_with_refresh`
+  when refresh fails AS-side — typically the user revoked access
+  through the provider's dashboard, or the refresh token expired.
+
+  After this fires:
+    * `tools_for_task/2` filters this service's tools out of the
+      LLM-visible catalog (no names to hallucinate).
+    * The §Authorized MCP services context block annotates the row
+      `[needs re-auth]`, telling the model to call `connect_service`
+      with the same URL.
+    * A subsequent successful `authorize/5` (i.e. the user
+      re-completed the OAuth dance) resets status back to
+      `'authorized'`.
+
+  No-op when the row doesn't exist. Cache invalidated either way.
+  """
+  @spec mark_needs_auth(String.t(), String.t()) :: :ok
+  def mark_needs_auth(user_id, alias_) when is_binary(user_id) and is_binary(alias_) do
+    query!(Repo, """
+    UPDATE authorized_services
+       SET status = 'needs_auth'
+     WHERE user_id=? AND alias=?
+    """, [user_id, alias_])
 
     invalidate_cache(user_id)
     :ok
@@ -87,7 +125,7 @@ defmodule Dmhai.MCP.Registry do
   def find_authorized(user_id, alias_) do
     case query!(Repo, """
          SELECT user_id, alias, canonical_resource, server_url, asm_json,
-                server_tools_json, created_ts
+                server_tools_json, status, created_ts
          FROM authorized_services WHERE user_id=? AND alias=?
          """, [user_id, alias_]) do
       %{rows: [row]} -> row_to_map(row)
@@ -100,7 +138,7 @@ defmodule Dmhai.MCP.Registry do
   def find_authorized_by_resource(user_id, canonical) do
     case query!(Repo, """
          SELECT user_id, alias, canonical_resource, server_url, asm_json,
-                server_tools_json, created_ts
+                server_tools_json, status, created_ts
          FROM authorized_services WHERE user_id=? AND canonical_resource=?
          """, [user_id, canonical]) do
       %{rows: [row | _]} -> row_to_map(row)
@@ -113,7 +151,7 @@ defmodule Dmhai.MCP.Registry do
   def list_authorized(user_id) do
     r = query!(Repo, """
     SELECT user_id, alias, canonical_resource, server_url, asm_json,
-           server_tools_json, created_ts
+           server_tools_json, status, created_ts
     FROM authorized_services
     WHERE user_id=?
     ORDER BY created_ts ASC
@@ -233,6 +271,12 @@ defmodule Dmhai.MCP.Registry do
   defp build_user_catalog(user_id) do
     user_id
     |> list_authorized()
+    # Services in `needs_auth` status keep their row (the §Authorized
+    # MCP services context block surfaces them with a re-auth hint),
+    # but they don't contribute tool names to the LLM-visible catalog
+    # — invoking those would just 401 again until the user re-runs
+    # `connect_service`.
+    |> Enum.reject(&(&1.status == "needs_auth"))
     |> Map.new(fn auth ->
       entries =
         Enum.map(auth.tools, fn t ->
@@ -250,7 +294,7 @@ defmodule Dmhai.MCP.Registry do
     end)
   end
 
-  defp row_to_map([user_id, alias_, canonical, server_url, asm_json, tools_json, created_ts]) do
+  defp row_to_map([user_id, alias_, canonical, server_url, asm_json, tools_json, status, created_ts]) do
     %{
       user_id:            user_id,
       alias:              alias_,
@@ -258,6 +302,7 @@ defmodule Dmhai.MCP.Registry do
       server_url:         server_url,
       asm:                decode_json(asm_json, nil),
       tools:              decode_json(tools_json, []),
+      status:             status || "authorized",
       created_ts:         created_ts
     }
   end

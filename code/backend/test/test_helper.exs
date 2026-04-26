@@ -50,6 +50,19 @@ defmodule T do
     ExUnit.Callbacks.on_exit(fn -> Application.delete_env(:dmhai, :__llm_stream_stub__) end)
   end
 
+  # Install a stub for `Dmhai.MCP.Transport.request/3`. `fun` receives
+  # (server_url, %{method, body, headers, auth, session_id}) and must
+  # return one of:
+  #   {:ok, body :: map(), %{session_id: String.t() | nil}}
+  #   {:error, {:status, integer(), term()}}
+  #   {:error, {:network, term()}}
+  # Used by tests that drive the discovery cascade or per-tool calls
+  # without spinning up a real MCP server.
+  def stub_mcp_transport(fun) when is_function(fun, 2) do
+    Application.put_env(:dmhai, :__mcp_transport_stub__, fun)
+    ExUnit.Callbacks.on_exit(fn -> Application.delete_env(:dmhai, :__mcp_transport_stub__) end)
+  end
+
   # Build a normalised tool-call list (as returned by LLM.normalize_tool_calls).
   def tool_call(name, args \\ %{}, id \\ nil) do
     %{"id" => id || uid(), "function" => %{"name" => name, "arguments" => args}}

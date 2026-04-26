@@ -31,6 +31,8 @@ defmodule Dmhai.Tools.RequestInput do
     This call ENDS the chain. The user's submission triggers a new chain where you'll see a user-role message carrying the values. Do NOT call other tools in the same turn.
 
     Optional `submit_label` overrides the button text (defaults to "Submit"). Optional narration text emitted alongside the tool_call is the prompt the user sees above the form.
+
+    Don't use this for open-ended questions ("how do you want to proceed?", "what should we try?") — those go in plain text. `request_input` is for STRUCTURED, NAMED values you've identified concretely (a password to a specific account, an API key for a specific service, a setting whose name and shape are clear).
     """
   end
 

@@ -215,11 +215,21 @@ defmodule Dmhai.Agent.ContextEngine do
 
   defp format_service_row(s) do
     tools_summary = format_tools_summary(s.tools, s.alias)
+    status_tag    = format_status_tag(s.status)
 
-    "- Alias: `#{s.alias}`, URL: `#{s.canonical_resource}`, " <>
+    "- Alias: `#{s.alias}`#{status_tag}, URL: `#{s.canonical_resource}`, " <>
       tools_summary <> ", " <>
       "Attach: `connect_service(url: \"#{s.canonical_resource}\")`"
   end
+
+  # Surfaces a `needs_auth` service to the model: the tool catalog is
+  # filtered (it can't invoke any of the alias's tools), but the row
+  # is still here with a `[needs re-auth]` annotation. The recovery
+  # action — `connect_service(url: …)` — appears on the same line so
+  # the model can act on a single read.
+  defp format_status_tag("needs_auth"),
+    do: " **[needs re-auth — call `connect_service` to recover]**"
+  defp format_status_tag(_), do: ""
 
   defp format_tools_summary([], _alias_), do: "Tools: (catalog refreshed on next attach)"
 

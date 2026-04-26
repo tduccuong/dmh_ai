@@ -22,7 +22,6 @@ defmodule Dmhai.MCP.Client do
       caller flips the connection's status to `needs_auth`.
   """
 
-  alias Dmhai.Auth.Credentials
   alias Dmhai.Auth.OAuth2
   alias Dmhai.MCP.Transport
 
@@ -129,8 +128,17 @@ defmodule Dmhai.MCP.Client do
         refreshed = %{conn | auth: bearer_auth(payload, conn.canonical_resource)}
         do_call(user_id, refreshed, tool_name, args, false)
 
-      {:error, _} ->
-        {:error, :unauthorized}
+      {:error, _reason} ->
+        # Refresh failed AS-side (revoked grant, expired refresh
+        # token, AS down, …). Flip the registry to `needs_auth` so
+        # the model: (a) stops seeing this service's tools in its
+        # catalog and (b) sees the `[needs re-auth]` annotation in
+        # the §Authorized MCP services block, which routes it to
+        # `connect_service` for recovery. Returning `:needs_auth`
+        # rather than `:unauthorized` lets the surface-level error
+        # in the chat be specific.
+        Dmhai.MCP.Registry.mark_needs_auth(user_id, conn.alias)
+        {:error, :needs_auth}
     end
   end
 
@@ -144,11 +152,20 @@ defmodule Dmhai.MCP.Client do
       row ->
         target = "mcp:" <> row.canonical_resource
 
-        case Credentials.lookup(user_id, target) do
-          %{kind: kind, payload: payload} ->
+        # Proactive auto-refresh: when the credential is `oauth2_mcp`
+        # and `is_expired`, `lookup_with_refresh/2` fires `refresh/2`
+        # and returns the rotated tokens. Saves the 401 round-trip
+        # the reactive path in `handle_401_refresh` would otherwise
+        # catch. On `refresh_failed`, the wrapper has ALREADY flipped
+        # the registry to `needs_auth`; we surface
+        # `{:error, :needs_auth}` so the model gets the same recovery
+        # path it'd get from a 401-then-refresh-fail.
+        case OAuth2.lookup_with_refresh(user_id, target) do
+          {:ok, %{kind: kind, payload: payload}} ->
             case build_auth(kind, payload, row.canonical_resource) do
               {:ok, auth} ->
                 {:ok, %{
+                  alias:              row.alias,
                   server_url:         row.server_url,
                   canonical_resource: row.canonical_resource,
                   auth:               auth,
@@ -161,7 +178,13 @@ defmodule Dmhai.MCP.Client do
                 err
             end
 
-          _ ->
+          {:error, {:refresh_failed, _reason}} ->
+            # Wrapper already flipped the registry to needs_auth;
+            # the next chain will see the catalog filtered + the
+            # `[needs re-auth]` annotation in the context block.
+            {:error, :needs_auth}
+
+          {:error, :missing} ->
             {:error, :missing_credentials}
         end
     end
@@ -178,6 +201,16 @@ defmodule Dmhai.MCP.Client do
 
     {:ok, %{type: "api_key", header: header, key: key, canonical_resource: resource}}
   end
+
+  # Open MCP server: no Authorization header, no API key. The
+  # credential row is a sentinel — written so `load_connection` can
+  # find SOMETHING for the canonical resource and route through the
+  # standard pipeline. Subsequent calls send `MCP-Resource:` only
+  # (Resource Indicator stays for spec compliance) and skip auth
+  # headers entirely. See `Tools.ConnectService` for the
+  # storage-side contract.
+  defp build_auth("none_mcp", _payload, resource),
+    do: {:ok, %{type: "none", canonical_resource: resource}}
 
   defp build_auth(_kind, _payload, _resource),
     do: {:error, :unsupported_credential_kind}

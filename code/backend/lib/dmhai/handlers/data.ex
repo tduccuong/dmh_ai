@@ -1072,6 +1072,7 @@ defmodule Dmhai.Handlers.Data do
     result =
       case setup["auth_method"] do
         "api_key" -> finalize_api_key_setup(setup, values, user_id)
+        "oauth"   -> finalize_oauth_setup(setup, values, user_id, session_id)
         other     -> {:error, "auth_method '#{inspect(other)}' not yet supported"}
       end
 
@@ -1080,7 +1081,18 @@ defmodule Dmhai.Handlers.Data do
     msg = build_service_connected_msg(setup, result)
     append_session_user_msg(session_id, user_id, msg)
 
-    trigger_auto_resume(user_id, session_id)
+    # The api_key + error paths are terminal: the chain can resume
+    # with the result. The oauth-manual `:ok` path is NOT terminal —
+    # the user still has to visit auth_url and authorize. The OAuth
+    # callback handler (`finalize_connection`) triggers auto_resume
+    # itself after the token exchange completes, so kicking the
+    # assistant here would either spam an empty turn or race the
+    # callback. Skip it for the auth_url shape.
+    case result do
+      {:ok, %{auth_url: _}} -> :ok
+      _                      -> trigger_auto_resume(user_id, session_id)
+    end
+
     :ok
   rescue
     e ->
@@ -1190,6 +1202,113 @@ defmodule Dmhai.Handlers.Data do
   defp format_handshake_error(choice, reason),
     do: "MCP handshake failed (header: `#{choice}`): #{inspect(reason)}. The URL may not be a real MCP endpoint."
 
+  @doc false
+  # Public for unit testing in `itgr_oauth_manual_setup.exs`. Not
+  # part of the module's user-facing API; subject to change without
+  # notice.
+  #
+  # ── oauth (manual) form finalization ──────────────────────────────────
+  #
+  # The form was filled with the AS endpoints + client credentials the
+  # user copied from the provider's dashboard (used when the AS does
+  # NOT publish RFC 8414 metadata or RFC 7591 DCR). We synthesise the
+  # ASM map the rest of the pipeline expects, save the manual
+  # `oauth_client` row keyed by auth_endpoint (so the callback can
+  # fold client identifiers into the token payload), and feed
+  # everything through the same `Auth.OAuth2.init_flow/1` the auto
+  # path uses. Returns `{:ok, %{alias, auth_url}}` on success — the
+  # caller renders the auth_url to the user; the OAuth callback at
+  # `/oauth/callback` finishes the token exchange + handshake.
+  def finalize_oauth_setup(setup, values, user_id, session_id) do
+    alias_         = setup["alias"]
+    server_url     = setup["server_url"]
+    canonical      = setup["canonical_resource"] || server_url
+    anchor_task_id = setup["anchor_task_id"]
+
+    auth_endpoint  = trim_or_empty(values["authorization_endpoint"])
+    token_endpoint = trim_or_empty(values["token_endpoint"])
+    scopes_str     = trim_or_empty(values["scopes"])
+    client_id      = trim_or_empty(values["client_id"])
+    client_secret  = trim_or_empty(values["client_secret"])
+
+    cond do
+      auth_endpoint == "" ->
+        {:error, "Authorization URL is required"}
+
+      token_endpoint == "" ->
+        {:error, "Token URL is required"}
+
+      client_id == "" ->
+        {:error, "Client ID is required"}
+
+      not is_binary(anchor_task_id) ->
+        {:error, "setup payload missing anchor_task_id"}
+
+      true ->
+        scopes = if scopes_str == "", do: [], else: String.split(scopes_str, ~r/\s+/, trim: true)
+        secret = if client_secret == "", do: nil, else: client_secret
+
+        # Synthesised ASM — atom keys, matching the shape `Auth.Discovery.fetch_asm/1`
+        # produces, so init_flow + complete_flow + callback are happy.
+        asm = %{
+          issuer:                            auth_endpoint,
+          authorization_endpoint:            auth_endpoint,
+          token_endpoint:                    token_endpoint,
+          scopes_supported:                  scopes,
+          code_challenge_methods_supported:  ["S256"],
+          registration_endpoint:             nil,
+          revocation_endpoint:               nil,
+          grant_types_supported:             ["authorization_code", "refresh_token"]
+        }
+
+        # Save the manual oauth_client row. `finalize_connection` (in
+        # the OAuth callback) reads this back via the
+        # `oauth_client:<auth-server>` target so it can stash
+        # client_id/secret on the token credential payload for
+        # refresh-time use.
+        Dmhai.Auth.Credentials.save(
+          user_id,
+          "oauth_client:" <> auth_endpoint,
+          "oauth_client",
+          %{"client_id" => client_id, "client_secret" => secret},
+          notes: "Manual oauth_client for #{alias_}"
+        )
+
+        redirect_uri = build_oauth_redirect_uri()
+
+        # init_flow either returns `{:ok, %{auth_url, ...}}` or
+        # raises (DB writes go through query!). Exceptions land in
+        # `do_connect_service_setup`'s outer rescue, which renders a
+        # clean error message — no extra error branch needed here.
+        {:ok, %{auth_url: auth_url}} =
+          Dmhai.Auth.OAuth2.init_flow(%{
+            user_id:            user_id,
+            session_id:         session_id,
+            anchor_task_id:     anchor_task_id,
+            alias:              alias_,
+            canonical_resource: canonical,
+            server_url:         server_url,
+            asm:                asm,
+            client_id:          client_id,
+            client_secret:      secret,
+            redirect_uri:       redirect_uri,
+            scopes:             scopes
+          })
+
+        {:ok, %{alias: alias_, auth_url: auth_url}}
+    end
+  end
+
+  defp trim_or_empty(nil), do: ""
+  defp trim_or_empty(s) when is_binary(s), do: String.trim(s)
+  defp trim_or_empty(_), do: ""
+
+  defp build_oauth_redirect_uri do
+    Dmhai.Agent.AgentSettings.oauth_redirect_base_url()
+    |> String.trim_trailing("/")
+    |> Kernel.<>("/oauth/callback")
+  end
+
   defp build_service_connected_msg(_setup, {:ok, %{alias: alias_, tools_count: n}}) do
     %{
       "role"              => "user",
@@ -1197,6 +1316,26 @@ defmodule Dmhai.Handlers.Data do
       "ts"                => System.os_time(:millisecond),
       "kind"              => "service_connected",
       "service_connected" => %{"alias" => alias_, "tools_count" => n, "error" => nil}
+    }
+  end
+
+  # Manual OAuth path: form was submitted, init_flow succeeded, and we
+  # now have an authorization URL the user must visit to grant access.
+  # The connection completes asynchronously when the OAuth callback
+  # fires — `finalize_connection` runs the MCP handshake there and
+  # auto-resumes the assistant. The message here renders the auth_url
+  # inline as a clickable markdown link so the user can act without
+  # an extra assistant turn relaying it.
+  defp build_service_connected_msg(_setup, {:ok, %{alias: alias_, auth_url: auth_url}}) do
+    %{
+      "role"              => "user",
+      "content"           =>
+        "[#{alias_} authorization step — please visit this URL to authorize, then your task will resume:\n\n" <>
+          auth_url <>
+          "\n]",
+      "ts"                => System.os_time(:millisecond),
+      "kind"              => "service_setup_authorize",
+      "service_setup_authorize" => %{"alias" => alias_, "auth_url" => auth_url}
     }
   end
 
