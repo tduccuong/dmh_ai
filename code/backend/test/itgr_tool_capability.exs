@@ -12,6 +12,10 @@
 defmodule Itgr.ToolCapability do
   use ExUnit.Case, async: false
 
+  # Real LLM round-trips, gated behind the `:network` tag so default
+  # `mix test` skips them. Run explicitly with:
+  #   mix test test/itgr_tool_capability.exs --only network
+  @moduletag :network
   @moduletag timeout: 120_000
 
   alias Dmhai.Agent.{AgentSettings, LLM}

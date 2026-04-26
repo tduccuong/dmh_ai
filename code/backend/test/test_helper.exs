@@ -1,5 +1,14 @@
 ExUnit.start(timeout: 60_000)
 
+# Skip `@tag :network` tests by default — they make real HTTP calls
+# (LLM round-trips, MCP discovery, web fetches against live sites)
+# and depend on credentials / external uptime / API-key budget. Run
+# them explicitly with:
+#   mix test --only network
+# or per-file:
+#   mix test test/itgr_mcp_huggingface.exs --only network
+ExUnit.configure(exclude: [:network])
+
 defmodule T do
   @moduledoc "Shared test helpers."
 

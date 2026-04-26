@@ -240,7 +240,7 @@ System prompt teaches the model:
 
 ## Implementation phases
 
-Phase A — **Spec-compliant MCP path.** Discovery + OAuth 2.1 + DCR/CIMD + MCP handshake (Mcp-Session-Id threaded). End-to-end against any RFC 9728 / 8414 / 8707-compliant MCP server. Smoke target: HuggingFace MCP at `https://huggingface.co/mcp`.
+Phase A — **Spec-compliant MCP path.** Discovery + OAuth 2.1 + DCR/CIMD + MCP handshake (Mcp-Session-Id threaded). End-to-end against any RFC 9728 / 8414 / 8707-compliant MCP server. Smoke target: HuggingFace MCP at `https://huggingface.co/mcp`. Verified by `test/itgr_mcp_huggingface.exs` (run `mix test test/itgr_mcp_huggingface.exs --only network`); the test exercises PRM, ASM, Mcp-Session-Id threading, and canonical-resource shape against real HF.
 
 Phase B — **Manual fallback.** `auth_method = "api_key" | "oauth" | "none"` paths return `needs_setup` forms; submission handler finalizes server-side and dispatches `auto_resume_assistant`.
 

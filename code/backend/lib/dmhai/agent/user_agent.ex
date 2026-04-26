@@ -1925,6 +1925,10 @@ defmodule Dmhai.Agent.UserAgent do
 
   defp maybe_mutate_anchor(ctx, _name, _args, _tool_msg), do: ctx
 
+  @doc false
+  # Public for unit testing in `itgr_oracle_pivot.exs`. Not part of
+  # the module's user-facing API; subject to change without notice.
+  #
   # When the model successfully closes the active anchor with
   # `pause_task` or `cancel_task` AND the chain-start Oracle gate
   # had stashed a pending pivot for this session (because the
@@ -1941,7 +1945,7 @@ defmodule Dmhai.Agent.UserAgent do
   # iteration output; `extra_pseudos` is the matching list of
   # `assistant` pseudo-messages for the duplicate-tool-call gate's
   # in-chain accumulator. Empty lists when no auto-create fires.
-  defp maybe_auto_create_task(name, %{content: content} = _tool_msg, ctx)
+  def maybe_auto_create_task(name, %{content: content} = _tool_msg, ctx)
        when name in ~w(pause_task cancel_task) and is_binary(content) do
     if pause_or_cancel_succeeded?(content) do
       do_auto_create_task(ctx)
@@ -1949,9 +1953,25 @@ defmodule Dmhai.Agent.UserAgent do
       {[], [], ctx}
     end
   end
-  defp maybe_auto_create_task(_, _, ctx), do: {[], [], ctx}
+  def maybe_auto_create_task(_, _, ctx), do: {[], [], ctx}
 
-  defp pause_or_cancel_succeeded?(content) do
+  @doc false
+  # Public for unit testing in `itgr_oracle_pivot.exs`. Not part of
+  # the module's user-facing API; subject to change without notice.
+  #
+  # Detects the success shape of a `pause_task` / `cancel_task` tool
+  # result. Used by `maybe_auto_create_task/3` to decide whether the
+  # auto-create-task hook should fire after the model closes the
+  # current anchor on a confirmed pivot.
+  #
+  # Returns true when:
+  #   * `content` is a binary, AND
+  #   * the JSON payload carries `"ok": true`, AND
+  #   * the content does NOT start with the `[[ISSUE:...]]` Police
+  #     rejection marker, AND
+  #   * the content does NOT start with the `Error:` prefix used by
+  #     execute-tools' `{:error, reason}` branch.
+  def pause_or_cancel_succeeded?(content) do
     is_binary(content) and
       String.contains?(content, "\"ok\": true") and
       not String.starts_with?(content, "[[ISSUE:") and
@@ -2031,10 +2051,14 @@ defmodule Dmhai.Agent.UserAgent do
     end
   end
 
+  @doc false
+  # Public for unit testing in `itgr_oracle_pivot.exs`. Not part of
+  # the module's user-facing API; subject to change without notice.
+  #
   # First line, trimmed, capped at 60 chars — same shape as the
   # naming flow uses for one_off tasks. Operator can rename later
   # via the sidebar.
-  defp derive_task_title(user_msg) do
+  def derive_task_title(user_msg) when is_binary(user_msg) do
     user_msg
     |> String.split("\n", parts: 2)
     |> List.first()
