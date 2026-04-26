@@ -927,81 +927,129 @@ defmodule Dmhai.Agent.Police do
   end
   def check_silent_turn_scope(_, _, _), do: :ok
 
+  # Tools whose semantics are inherently tied to managing/closing the
+  # active anchor task or to feeding/clarifying it. Exempt from the
+  # `:unrelated` branch of `check_pivot/3` — a model who's been told
+  # to confirm the pivot must still be ABLE to call pause/cancel/etc.
+  # to follow through. The `:knowledge` branch has NO exemption — a
+  # knowledge question never warrants any tool, not even task-mgmt.
+  @pivot_unrelated_exempt MapSet.new(~w(
+    pause_task cancel_task complete_task pickup_task fetch_task request_input
+  ))
+
   @doc """
-  Per-tool-call gate: enforce that every gated tool call self-attests
-  with `relevant: true|false` whether it advances the active anchor
-  task's spec, and reject calls that declare themselves unrelated.
+  Per-tool-call gate backed by the Oracle classifier. Reads
+  `ctx.oracle_task` (a `Task` struct kicked off at chain start in
+  `run_assistant`) and decides:
 
-  Targets the silent-pivot failure mode: anchor task X is `ongoing`,
-  the user sends a message unrelated to X, and the model just runs
-  `web_search` / `run_script` for the new ask without confirming with
-  the user — leaving X in limbo and the user's expectation ("we were
-  on X") unmet. Forcing the explicit attestation surfaces a question
-  the model otherwise never asks itself.
+    * `:related`   → pass.
+    * `:unrelated` → reject UNLESS `name` is in
+      `@pivot_unrelated_exempt`. The nudge tells the model to confirm
+      with the user (pause / cancel / stop the anchor) before doing
+      tool work for the new ask.
+    * `:knowledge` → reject ALL tool names. Nudge: "this is a
+      knowledge / chitchat question — answer from your training in
+      plain text, no tool call."
+    * `:error` (timeout / classifier failure) → pass (soft fail; we
+      never block legitimate work on a flaky classifier).
 
-  Skipped when:
-    * No anchor task is set (`ctx.anchor_task_num` not an integer).
-      Nothing to be relevant *to* — gate is a no-op.
-    * The tool is exempt (`Tools.Registry.relevance_exempt?/1`):
-      `complete_task` / `cancel_task` / `pause_task` / `pickup_task`
-      / `fetch_task` / `request_input`. These manage or feed the
-      active task by definition.
+  Cache: the verdict is awaited at most once per chain. The first
+  call to this gate awaits, parks the verdict in the process
+  dictionary, and subsequent calls in the same chain read from
+  there. The Oracle Task is shut down right after the await so it
+  doesn't outlive its usefulness.
 
-  Otherwise inspects `args["relevant"]`:
-    * `true`           → pass (the model attests the work is on-anchor).
-    * `false`          → reject with an educational nudge teaching the
-                         three legitimate paths (push back to user via
-                         plain text, `pause_task` then proceed, or
-                         re-call with `relevant: true` if compatible).
-    * missing / wrong  → caught earlier by `check_tool_call_schema`
-                         (the schema injection marks the field
-                         required), so we treat anything that lands
-                         here as effectively `true` (pass).
+  Pending-pivot stashing happens INSIDE the Oracle Task itself
+  (see `Dmhai.Agent.UserAgent.maybe_start_oracle/3`) — fired as a
+  side effect when the verdict resolves to `:unrelated`. That way
+  the stash happens whether or not Police's gate ever runs (e.g.
+  the model went text-only on the off-topic chain), so the
+  auto-create-task hook fires correctly when the user later
+  confirms with `pause_task` / `cancel_task`.
   """
-  @spec check_relevance(String.t(), map(), map()) ::
+  @spec check_pivot(String.t(), map(), map()) ::
           :ok | {:rejected, {atom(), String.t()}}
-  def check_relevance(name, args, ctx)
+  def check_pivot(name, args, ctx)
       when is_binary(name) and is_map(args) and is_map(ctx) do
-    cond do
-      not is_integer(Map.get(ctx, :anchor_task_num)) ->
+    case oracle_verdict(ctx) do
+      :related ->
         :ok
 
-      Dmhai.Tools.Registry.relevance_exempt?(name) ->
+      :error ->
         :ok
 
-      Map.get(args, "relevant") == false ->
-        anchor_num = Map.get(ctx, :anchor_task_num)
+      :knowledge ->
+        reject_knowledge(name)
 
-        reason =
-          "Error: you declared `#{name}` `relevant: false` while task " <>
-            "(#{anchor_num}) is the active anchor. Don't silently pivot to unrelated " <>
-            "work — the user is still expecting an outcome on (#{anchor_num}). " <>
-            "Three legitimate paths:\n" <>
-            "  (a) Reply to the user in plain text (NO tool call): tell them " <>
-            "you're on (#{anchor_num}) and ask whether to pause it and switch to " <>
-            "their new request. Wait for their answer.\n" <>
-            "  (b) `pause_task(task_num: #{anchor_num})` first — the anchor " <>
-            "releases, then you may proceed with the new ask freely (your " <>
-            "next call can start a fresh `create_task`).\n" <>
-            "  (c) The new ask is actually compatible with (#{anchor_num})'s " <>
-            "spec (it's a refinement / clarification / next step) — re-call " <>
-            "`#{name}` with `relevant: true`."
-
-        Logger.warning(
-          "[Police] REJECTED irrelevant_to_anchor: tool=#{name} anchor=#{inspect(anchor_num)}"
-        )
-
-        Dmhai.SysLog.log(
-          "[POLICE] REJECTED irrelevant_to_anchor: tool=#{name} anchor=#{inspect(anchor_num)}"
-        )
-
-        {:rejected, {:irrelevant_to_anchor, reason}}
-
-      true ->
-        :ok
+      :unrelated ->
+        if MapSet.member?(@pivot_unrelated_exempt, name) do
+          :ok
+        else
+          reject_unrelated(name, ctx)
+        end
     end
   end
-  def check_relevance(_, _, _), do: :ok
+  def check_pivot(_, _, _), do: :ok
+
+  @oracle_await_ms 3_000
+
+  defp oracle_verdict(ctx) do
+    case Process.get(:dmhai_oracle_verdict_cached) do
+      {:resolved, v} ->
+        v
+
+      _ ->
+        v = await_oracle(Map.get(ctx, :oracle_task))
+        Process.put(:dmhai_oracle_verdict_cached, {:resolved, v})
+        v
+    end
+  end
+
+  defp await_oracle(nil), do: :related
+  defp await_oracle(%Task{} = task) do
+    case Task.yield(task, @oracle_await_ms) || Task.shutdown(task, :brutal_kill) do
+      {:ok, v} when v in [:related, :unrelated, :knowledge, :error] -> v
+      _ -> :error
+    end
+  end
+  defp await_oracle(_), do: :error
+
+  defp reject_unrelated(name, ctx) do
+    anchor_num = Map.get(ctx, :anchor_task_num)
+
+    reason =
+      "Error: the user's latest message is OFF-TOPIC from active anchor task " <>
+        "(#{anchor_num}). Calling `#{name}` for it would silently abandon " <>
+        "(#{anchor_num}) — the user is still expecting an outcome there.\n\n" <>
+        "Your ONLY action this turn is plain text. Ask the user (no tool call):\n" <>
+        "  \"I'm currently on task (#{anchor_num}). Want me to pause/cancel/stop it " <>
+        "and handle your new request first, or finish (#{anchor_num}) before " <>
+        "getting to it?\"\n\n" <>
+        "Then end the turn and wait for their answer. When they confirm with " <>
+        "pause/cancel/stop, the runtime will create the new task automatically " <>
+        "from their original message — you won't need to call `create_task` " <>
+        "yourself; just proceed with whatever tool the new ask actually needs."
+
+    Logger.warning("[Police] REJECTED pivot_unrelated: tool=#{name} anchor=#{inspect(anchor_num)}")
+    Dmhai.SysLog.log("[POLICE] REJECTED pivot_unrelated: tool=#{name} anchor=#{inspect(anchor_num)}")
+
+    {:rejected, {:pivot_unrelated, reason}}
+  end
+
+  defp reject_knowledge(name) do
+    reason =
+      "Error: the user's latest message is a knowledge / chitchat / greeting " <>
+        "question — answerable from your own training, no tool call needed. " <>
+        "Calling `#{name}` for it is overkill and slows the response.\n\n" <>
+        "Reply directly in plain text. Use the language the user wrote in. " <>
+        "If you genuinely don't know the answer, say so — don't try to web_search " <>
+        "your way around a casual question."
+
+    Logger.warning("[Police] REJECTED pivot_knowledge: tool=#{name}")
+    Dmhai.SysLog.log("[POLICE] REJECTED pivot_knowledge: tool=#{name}")
+
+    {:rejected, {:pivot_knowledge, reason}}
+  end
 
   @doc """
   Per-tool-call gate enforcing the "one periodic task per chat session"

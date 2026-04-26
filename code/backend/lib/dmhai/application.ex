@@ -51,6 +51,7 @@ defmodule Dmhai.Application do
         if Application.get_env(:dmhai, :run_startup_check, true), do: Dmhai.StartupCheck.run()
         Dmhai.DB.Init.run()
         Dmhai.DomainBlocker.load_from_db()
+        Dmhai.Agent.PendingPivots.init()
         attach_finch_telemetry()
         Logger.info("Sessions API on :3000")
         {:ok, pid}

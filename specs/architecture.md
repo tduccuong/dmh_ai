@@ -1894,42 +1894,79 @@ runtime safety net for when this guidance doesn't stick.
    `{:silent_turn_other_task_verb, reason}` feed the existing
    `[[ISSUE:...]]` / `ctx.nudges` / 3-strike escalation plumbing.
 
-10. **Anchor-relevance attestation** — `check_relevance/3` enforces
-    that every gated tool call carry an explicit `relevant: true|false`
-    boolean naming whether the call advances the active anchor task's
-    `task_spec`. Catches the silent-pivot failure mode: an anchor task
-    is `ongoing`, the user sends a message unrelated to it, and the
-    model just runs `web_search` / `run_script` for the new ask without
-    confirming with the user — leaving the anchor in limbo and the
-    user's expectation ("we were on X") unmet.
-    * `relevant` is **injected into the schema** of every non-exempt
-      tool by `Tools.Registry` (so individual tool modules don't carry
-      it), marked required, and described to the model in the system
-      prompt.
-    * Exempt (no `relevant` field, gate skips): task-lifecycle verbs
-      `complete_task`, `cancel_task`, `pause_task`, `pickup_task`,
-      `fetch_task`, plus `request_input` (always serves the active
-      task by definition). `create_task` is **not** exempt — the
-      legitimate way to switch tasks is to first push back to the
-      user conversationally; once they confirm, `pause_task` clears
-      the anchor and the subsequent `create_task` runs unchecked.
-    * Gate logic: when `ctx.anchor_task_num` is set AND the tool is
-      non-exempt AND `args["relevant"] == false`, reject. Otherwise
-      pass. Missing field is caught earlier by `check_tool_call_schema`
-      (rule that's always run on every call).
-    * Rejection nudge teaches three legitimate paths: (a) push back
-      conversationally with no tool call, (b) `pause_task` then
-      proceed, or (c) re-call with `relevant: true` if the work is
-      actually compatible with the anchor.
-    * Rejection is tagged `{:irrelevant_to_anchor, reason}` so the
-      `[[ISSUE:...]]` / nudges / 3-strike plumbing applies.
-    * Self-attestation, not classification: the gate cannot detect a
-      lie (model setting `relevant: true` for clearly-unrelated work).
-      The point is to force the model to *make the judgment* —
-      surfacing a question it currently never asks itself. Lying via
-      `true` is a stronger failure than silently acting; in practice
-      forcing the field flips the dominant failure mode from "didn't
-      think" to "thought correctly".
+10. **Oracle-backed pivot / knowledge gate** — `check_pivot/3` reads
+    a verdict from the **Oracle**, an independent classifier
+    (`Dmhai.Agent.Oracle`, default model role `oracleModel` →
+    `ministral-3:14b-cloud`). The Oracle compares the chain-start
+    user message against the active anchor's `task_spec` and
+    returns one of `:related`, `:unrelated`, `:knowledge`, or
+    `:error`. The classifier fires in parallel with the assistant
+    LLM call (kicked off in `run_assistant` via
+    `Task.Supervisor.async_nolink`) so its latency overlaps. Police
+    awaits it lazily inside `check_pivot/3` — if the model goes
+    text-only, the task is shut down at chain end without ever
+    being awaited.
+
+    Verdict semantics:
+
+    * `:related`   → pass. Tool call is on-anchor.
+    * `:unrelated` → reject UNLESS `name` is in the
+      pivot-unrelated-exempt set (`pause_task`, `cancel_task`,
+      `complete_task`, `pickup_task`, `fetch_task`, `request_input`).
+      Those verbs are how the model FOLLOWS THROUGH on a confirmed
+      pivot; blocking them would deadlock the recovery path. The
+      nudge tells the model to ask the user (in plain text, no tool
+      call) whether to pause / cancel / stop the anchor before
+      starting any tool work for the new ask.
+    * `:knowledge` → reject ALL tool calls (no exemptions). The
+      nudge tells the model to answer from its training in plain
+      text. Knowledge / chitchat / greeting questions never warrant
+      a tool, not even `create_task` — turning them into formal
+      tasks pollutes the task list.
+    * `:error` (timeout / classifier failure / parse fail) → pass
+      (soft fail). A flaky classifier never blocks legitimate work;
+      the existing prompt-side discipline takes over.
+
+    Skipped entirely when no anchor is set at chain start (the
+    classifier task isn't even started — `:related`/`:unrelated`
+    have no meaning, and `:knowledge` is enforced prompt-side
+    instead). Also skipped on silent / scheduler-triggered turns
+    (no chain-start human message to classify).
+
+    **Per-chain caching**: the verdict is awaited at most once. The
+    first call to the gate awaits with a 3-second timeout, parks
+    the result in the process dictionary, and subsequent gate
+    calls in the same chain read from there. Bounded latency cost
+    (≤ 3 s once per chain when anchor is set), zero cost on
+    text-only chains.
+
+    **Auto-create-task on confirmed pivot**: when the gate fires
+    `:unrelated`, it stashes a record in
+    `Dmhai.Agent.PendingPivots` (ETS, keyed by `session_id`,
+    30-minute TTL): `%{user_msg: <chain-start text>,
+    anchor_task_num: N}`. After the model emits a successful
+    `pause_task` or `cancel_task` (success detected by `"ok": true`
+    in the tool result with no `[[ISSUE:...]]` marker),
+    `execute_tools` checks PendingPivots and synthesises a fresh
+    `create_task` call: `task_spec=<stashed user_msg>`,
+    `task_title=<first 60 chars>`, `task_type="one_off"`. The
+    synthesised call goes through the normal `Tools.Registry.execute`
+    path so anchor-flip plumbing fires; an `assistant`/`tool`
+    message pair is appended alongside the original
+    pause/cancel pair. The model's next roundtrip sees the new
+    anchor and proceeds against it — no separate `create_task` from
+    the model. PendingPivots is cleared and the cached Oracle
+    verdict is forced to `:related` so subsequent gate checks in
+    this chain (now under the new anchor) pass through.
+
+    **Tagged rejections** `{:pivot_unrelated, reason}` and
+    `{:pivot_knowledge, reason}` feed the existing `[[ISSUE:...]]`
+    / `ctx.nudges` / 3-strike escalation plumbing.
+
+    **Prompt-level counterpart**: §Pivot rule (HARD) and
+    §Knowledge / chitchat — never tool-up sections in
+    `system_prompt.ex` teach the model the same shape the runtime
+    enforces.
 
 **Prompt-level counterpart to #7**: the Assistant prompt's
 `## Tool selection` section teaches the model WHICH tool matches WHICH

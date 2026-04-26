@@ -51,34 +51,11 @@ defmodule Dmhai.Tools.Registry do
     Dmhai.Tools.ProvisionSshIdentity
   ]
 
-  # Tools whose semantics are inherently tied to managing/closing the
-  # active anchor task (or asking the user for input that progresses
-  # it). They never need a `relevant` self-attestation because the gate
-  # they would otherwise feed (`Police.check_relevance/3`) is meaningless
-  # for them — there's no "unrelated to anchor" interpretation. The
-  # schema injection in `with_relevance_field/1` skips these, and
-  # `Police` skips them in its gate.
-  @relevance_exempt MapSet.new(~w(
-    complete_task cancel_task pause_task pickup_task fetch_task request_input
-  ))
-
-  @doc """
-  True when `name` is exempt from the anchor-relevance attestation
-  rule. Police consults this before enforcing the gate; the schema
-  injection consults it before adding the `relevant` field. Single
-  source of truth.
-  """
-  @spec relevance_exempt?(String.t()) :: boolean()
-  def relevance_exempt?(name) when is_binary(name), do: MapSet.member?(@relevance_exempt, name)
-  def relevance_exempt?(_), do: false
-
   # ── definitions ───────────────────────────────────────────────────────
 
   @doc "Built-in tool definitions only. For static catalog endpoints."
   @spec all_definitions() :: [map()]
-  def all_definitions do
-    @tools |> Enum.map(& &1.definition()) |> Enum.map(&with_relevance_field/1)
-  end
+  def all_definitions, do: Enum.map(@tools, & &1.definition())
 
   @doc """
   Built-in tool definitions plus the MCP tools attached to the
@@ -90,7 +67,7 @@ defmodule Dmhai.Tools.Registry do
   def all_definitions(nil, _task_id), do: all_definitions()
 
   def all_definitions(user_id, task_id) when is_binary(user_id) do
-    all_definitions() ++ Enum.map(mcp_definitions(user_id, task_id), &with_relevance_field/1)
+    all_definitions() ++ mcp_definitions(user_id, task_id)
   end
 
   defp mcp_definitions(user_id, task_id) do
@@ -104,51 +81,6 @@ defmodule Dmhai.Tools.Registry do
       }
     end)
   end
-
-  # Inject the `relevant` boolean as a required parameter on every
-  # non-exempt tool. Police's anchor-relevance gate
-  # (`check_relevance/3`) reads it; tool implementations don't.
-  #
-  # Built-in tool definitions use atom keys; MCP `inputSchema` arrives
-  # as a JSON-decoded map with string keys. Both are accepted on read;
-  # the rewritten map normalises to atom keys so Police's schema check
-  # (`schema[:parameters][:properties]`) works uniformly afterwards.
-  defp with_relevance_field(%{name: name} = def_) when is_binary(name) do
-    if relevance_exempt?(name) do
-      def_
-    else
-      params_raw = Map.get(def_, :parameters) || %{}
-
-      props    = Map.get(params_raw, :properties) || Map.get(params_raw, "properties") || %{}
-      required = Map.get(params_raw, :required)   || Map.get(params_raw, "required")   || []
-      type_    = Map.get(params_raw, :type)       || Map.get(params_raw, "type")       || "object"
-
-      new_props =
-        Map.put(props, :relevant, %{
-          type: "boolean",
-          description:
-            "Set true ONLY when this call advances the ACTIVE anchor task's spec. " <>
-              "Set false when you'd be using this call for something unrelated to the anchor — " <>
-              "the runtime then rejects the call and prompts you to confirm the pivot with the user " <>
-              "first (or `pause_task` the anchor before continuing). When no anchor task exists this " <>
-              "field is ignored; pass true."
-        })
-
-      required_strs = Enum.map(required, &to_string/1)
-      new_required  = if "relevant" in required_strs, do: required_strs, else: required_strs ++ ["relevant"]
-
-      new_params =
-        params_raw
-        |> Map.drop(["properties", "required", "type"])
-        |> Map.put(:properties, new_props)
-        |> Map.put(:required, new_required)
-        |> Map.put(:type, type_)
-
-      Map.put(def_, :parameters, new_params)
-    end
-  end
-
-  defp with_relevance_field(def_), do: def_
 
   # ── names ─────────────────────────────────────────────────────────────
 
@@ -189,15 +121,13 @@ defmodule Dmhai.Tools.Registry do
 
   @doc """
   Return the function-calling definition for `name`, or `nil` when
-  unknown. Used by Police's schema-validation check. Goes through
-  `with_relevance_field/1` so Police sees the same shape the LLM did,
-  including the injected `relevant` field on non-exempt tools.
+  unknown. Used by Police's schema-validation check.
   """
   @spec definition_for(String.t()) :: map() | nil
   def definition_for(name) when is_binary(name) do
     case Enum.find(@tools, &(&1.name() == name)) do
       nil  -> nil
-      tool -> with_relevance_field(tool.definition())
+      tool -> tool.definition()
     end
   end
 
@@ -221,11 +151,11 @@ defmodule Dmhai.Tools.Registry do
         case Enum.find(Dmhai.MCP.Registry.tools_for_task(user_id, task_id), &(&1.name == name)) do
           nil -> nil
           t ->
-            with_relevance_field(%{
+            %{
               name:        t.name,
               description: t.description,
               parameters:  t.inputSchema || %{type: "object", properties: %{}}
-            })
+            }
         end
     end
   end

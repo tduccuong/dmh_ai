@@ -940,7 +940,29 @@ defmodule Dmhai.Agent.UserAgent do
 
     Dmhai.SysLog.log("[ASSISTANT] user=#{user_id} session=#{session_id} msg=#{String.slice(command.content, 0, 200)} fresh_attachments=#{inspect(fresh_attachment_paths)} anchor=#{inspect(anchor_task_num)}")
 
+    # Fire the Oracle classifier in parallel with the chain so its
+    # latency overlaps the first assistant LLM call. Skipped when no
+    # anchor is set (RELATED/UNRELATED would be meaningless), and
+    # also when the anchor's task_spec can't be resolved (e.g. the
+    # anchored row was deleted between resolve and dispatch — soft
+    # fail). The verdict is awaited lazily inside Police's pivot
+    # gate; if the model goes text-only, the task is shut down at
+    # chain end without ever being awaited. Pending-pivot stashing
+    # is a side effect inside the task body (see
+    # `maybe_start_oracle/3`) so it fires regardless of whether
+    # Police's gate runs.
+    {oracle_task, _anchor_task_spec} = maybe_start_oracle(anchor, command.content, ctx)
+
+    ctx = Map.put(ctx, :oracle_task, oracle_task)
+
     result = session_chain_loop(llm_messages, model, ctx, 0)
+
+    # Make sure the classifier task can't outlive the chain; harmless
+    # if it's already done. Police's pivot gate may have shut it
+    # down already (cached the verdict) — Task.shutdown is idempotent.
+    if is_struct(oracle_task, Task) do
+      Task.shutdown(oracle_task, :brutal_kill)
+    end
 
     Task.start(fn ->
       maybe_compact(session_id, user_id)
@@ -1621,7 +1643,7 @@ defmodule Dmhai.Agent.UserAgent do
     in_chain_prior  = Enum.drop(messages, chain_start_idx)
 
     {pairs, {_final_prior, final_ctx}} =
-      Enum.map_reduce(calls, {in_chain_prior, ctx}, fn call, {prior_acc, ctx} ->
+      Enum.flat_map_reduce(calls, {in_chain_prior, ctx}, fn call, {prior_acc, ctx} ->
         name         = get_in(call, ["function", "name"]) || ""
         args         = get_in(call, ["function", "arguments"]) || %{}
         tool_call_id = call["id"] || ""
@@ -1678,14 +1700,15 @@ defmodule Dmhai.Agent.UserAgent do
                # specific task; the model must not use that trigger as
                # license to spawn new tasks or touch unrelated ones.
                :ok <- Dmhai.Agent.Police.check_silent_turn_scope(name, args, ctx),
-               # Police gate 8 — anchor-relevance attestation. Every
-               # gated tool call self-attests `relevant: true|false`
-               # (schema-injected by Tools.Registry). When the anchor
-               # is set and the model declares `relevant: false`,
-               # reject — the model must confirm the pivot with the
-               # user (or pause_task the anchor) before proceeding
-               # with unrelated work.
-               :ok <- Dmhai.Agent.Police.check_relevance(name, args, ctx) do
+               # Police gate 8 — Oracle-backed anchor pivot / knowledge
+               # check. A small classifier model runs in parallel with
+               # the assistant LLM at chain start; this gate consults
+               # its verdict. UNRELATED tool calls are rejected with a
+               # nudge to confirm the pivot first (auto-create-task
+               # fires after pause/cancel). KNOWLEDGE-class messages
+               # are rejected for ALL tools — those should be answered
+               # in plain text from training. RELATED passes through.
+               :ok <- Dmhai.Agent.Police.check_pivot(name, args, ctx) do
             progress_label = Dmhai.Agent.ProgressLabel.format(name, args)
             # `complete_task` is pure cleanup — the final assistant
             # message IS the completion event from the user's
@@ -1760,7 +1783,21 @@ defmodule Dmhai.Agent.UserAgent do
         # architecture.md §Anchor mutation via back_to_when_done back-stack.
         new_ctx = maybe_mutate_anchor(ctx, name, args, tool_msg)
 
-        {{tool_msg, tagged_call}, {prior_acc ++ [pseudo], new_ctx}}
+        # Auto-create-task hook: if this call was a successful
+        # `pause_task` or `cancel_task` AND the session has a pending
+        # pivot stashed by Police's Oracle gate, synthesize a fresh
+        # `create_task` call with the user's earlier off-topic message
+        # as the spec, execute it through the normal Tools.Registry
+        # path, and emit it alongside the original call so the model
+        # sees both events. Returns `{extra_pairs, extra_pseudos,
+        # ctx''}`; empty when the trigger doesn't match.
+        {extra_pairs, extra_pseudos, new_ctx} =
+          maybe_auto_create_task(name, tool_msg, new_ctx)
+
+        pairs    = [{tool_msg, tagged_call}] ++ extra_pairs
+        pseudos  = [pseudo] ++ extra_pseudos
+
+        {pairs, {prior_acc ++ pseudos, new_ctx}}
       end)
 
     tool_msgs    = Enum.map(pairs, fn {m, _} -> m end)
@@ -1887,6 +1924,159 @@ defmodule Dmhai.Agent.UserAgent do
   end
 
   defp maybe_mutate_anchor(ctx, _name, _args, _tool_msg), do: ctx
+
+  # When the model successfully closes the active anchor with
+  # `pause_task` or `cancel_task` AND the chain-start Oracle gate
+  # had stashed a pending pivot for this session (because the
+  # user's chain-start message was off-topic to the prior anchor),
+  # synthesise a fresh `create_task` for that off-topic message and
+  # execute it through the normal tool dispatch. The model sees the
+  # result on its next roundtrip — the anchor flips to the new
+  # task, and the model proceeds against it (its first call against
+  # the new anchor is exactly what it originally wanted to do
+  # before being told to confirm the pivot).
+  #
+  # Returns `{extra_pairs, extra_pseudos, ctx_after}`. `extra_pairs`
+  # is a list of `{tool_msg, tool_call}` to splice into the
+  # iteration output; `extra_pseudos` is the matching list of
+  # `assistant` pseudo-messages for the duplicate-tool-call gate's
+  # in-chain accumulator. Empty lists when no auto-create fires.
+  defp maybe_auto_create_task(name, %{content: content} = _tool_msg, ctx)
+       when name in ~w(pause_task cancel_task) and is_binary(content) do
+    if pause_or_cancel_succeeded?(content) do
+      do_auto_create_task(ctx)
+    else
+      {[], [], ctx}
+    end
+  end
+  defp maybe_auto_create_task(_, _, ctx), do: {[], [], ctx}
+
+  defp pause_or_cancel_succeeded?(content) do
+    is_binary(content) and
+      String.contains?(content, "\"ok\": true") and
+      not String.starts_with?(content, "[[ISSUE:") and
+      not String.starts_with?(content, "Error:")
+  end
+
+  defp do_auto_create_task(ctx) do
+    session_id = Map.get(ctx, :session_id)
+
+    case Dmhai.Agent.PendingPivots.get(session_id) do
+      %{user_msg: user_msg} when is_binary(user_msg) and user_msg != "" ->
+        args = %{
+          "task_type"  => "one_off",
+          "task_spec"  => user_msg,
+          "task_title" => derive_task_title(user_msg),
+          "language"   => "en"
+        }
+
+        synthetic_tool_call_id = "auto_pivot_" <> :crypto.strong_rand_bytes(6) |> Base.url_encode64(padding: false)
+
+        # Surface the auto-create as a real progress row so the FE
+        # timeline shows it next to the pause_task / cancel_task that
+        # triggered it. Without this, the user sees pause → silence →
+        # the model suddenly working on a different task, with no
+        # explanation. The row is appended pending-then-done so the
+        # spinner-to-check transition matches a normal tool call.
+        progress_label = Dmhai.Agent.ProgressLabel.format("create_task", args)
+        progress_ctx = %{
+          session_id: ctx.session_id,
+          user_id:    ctx.user_id,
+          task_id:    nil
+        }
+
+        {:ok, progress_row} =
+          Dmhai.Agent.SessionProgress.append(progress_ctx, "tool", progress_label, status: "pending")
+
+        case Dmhai.Tools.Registry.execute("create_task", args, ctx) do
+          {:ok, result} ->
+            Dmhai.Agent.SessionProgress.mark_tool_done(progress_row.id)
+            content = format_tool_result(result)
+            tool_msg = %{role: "tool", content: content, tool_call_id: synthetic_tool_call_id}
+
+            tagged_call = %{
+              "id" => synthetic_tool_call_id,
+              "function" => %{"name" => "create_task", "arguments" => args}
+            }
+
+            pseudo = %{"role" => "assistant", "tool_calls" => [tagged_call]}
+
+            ctx_after =
+              ctx
+              |> maybe_mutate_anchor("create_task", args, tool_msg)
+
+            Dmhai.Agent.PendingPivots.clear(session_id)
+            # Verdict against the OLD anchor is now stale (the
+            # anchor just flipped). Clear the cache so subsequent
+            # tool calls in this chain pass through Police's pivot
+            # gate (no oracle_task → :related fallback).
+            Process.put(:dmhai_oracle_verdict_cached, {:resolved, :related})
+
+            Dmhai.SysLog.log(
+              "[ASSISTANT] auto-create-task: session=#{session_id} " <>
+                "spec=#{inspect(String.slice(user_msg, 0, 80))}"
+            )
+
+            {[{tool_msg, tagged_call}], [pseudo], ctx_after}
+
+          {:error, reason} ->
+            Dmhai.Agent.SessionProgress.mark_tool_done(progress_row.id)
+            Dmhai.Agent.PendingPivots.clear(session_id)
+            Dmhai.SysLog.log("[ASSISTANT] auto-create-task FAILED: #{inspect(reason)}")
+            {[], [], ctx}
+        end
+
+      _ ->
+        {[], [], ctx}
+    end
+  end
+
+  # First line, trimmed, capped at 60 chars — same shape as the
+  # naming flow uses for one_off tasks. Operator can rename later
+  # via the sidebar.
+  defp derive_task_title(user_msg) do
+    user_msg
+    |> String.split("\n", parts: 2)
+    |> List.first()
+    |> String.trim()
+    |> String.slice(0, 60)
+  end
+
+  # Kick off the Oracle classifier in the background when an anchor
+  # is set. Returns `{task | nil, anchor_task_spec | nil}`. The
+  # task body classifies AND, on `:unrelated`, stashes a pending
+  # pivot record in `PendingPivots` as a side effect — so the
+  # auto-create-task hook fires later even if the model went text-
+  # only on the off-topic chain (no Police gate ever ran). Police
+  # awaits the same task value lazily inside its pivot gate.
+  defp maybe_start_oracle(nil, _user_msg, _ctx), do: {nil, nil}
+  defp maybe_start_oracle(%{task_id: task_id, task_num: anchor_task_num}, user_msg, ctx)
+       when is_binary(task_id) and is_binary(user_msg) and user_msg != "" do
+    case Tasks.get(task_id) do
+      %{task_spec: spec} when is_binary(spec) and spec != "" ->
+        session_id = ctx.session_id
+
+        task =
+          Task.Supervisor.async_nolink(Dmhai.Agent.TaskSupervisor, fn ->
+            verdict = Dmhai.Agent.Oracle.classify(user_msg, spec)
+
+            if verdict == :unrelated do
+              Dmhai.Agent.PendingPivots.put(session_id, %{
+                user_msg: user_msg,
+                anchor_task_num: anchor_task_num
+              })
+            end
+
+            verdict
+          end)
+
+        {task, spec}
+
+      _ ->
+        {nil, nil}
+    end
+  end
+  defp maybe_start_oracle(_, _, _), do: {nil, nil}
 
   defp coerce_task_num(n) when is_integer(n), do: n
   defp coerce_task_num(n) when is_binary(n) do

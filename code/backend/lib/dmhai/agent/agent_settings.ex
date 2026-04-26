@@ -18,6 +18,7 @@ defmodule Dmhai.Agent.AgentSettings do
     "compactorModel"       => "gemini-3-flash-preview:cloud",
     "summarizerModel"      => "gemini-3-flash-preview:cloud",
     "webSearchModel"       => "ministral-3:14b-cloud",
+    "oracleModel"          => "ministral-3:14b-cloud",
     "imageDescriberModel"  => "gemini-3-flash-preview:cloud",
     "videoDescriberModel"  => "gemini-3-flash-preview:cloud",
     "profileExtractorModel" => "gemini-3-flash-preview:cloud"
@@ -144,6 +145,7 @@ defmodule Dmhai.Agent.AgentSettings do
   def compactor_model,        do: model_for("compactorModel")
   def summarizer_model,       do: model_for("summarizerModel")
   def web_search_model,       do: model_for("webSearchModel")
+  def oracle_model,           do: model_for("oracleModel")
   def image_describer_model,  do: model_for("imageDescriberModel")
   def video_describer_model,  do: model_for("videoDescriberModel")
   def profile_extractor_model, do: model_for("profileExtractorModel")
