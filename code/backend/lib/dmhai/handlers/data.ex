@@ -912,7 +912,7 @@ defmodule Dmhai.Handlers.Data do
                 json(conn, 200, %{ok: true})
 
               {:ok, :async, _ts} ->
-                # connect_service_setup — the spawned Task owns the
+                # connect_mcp_setup — the spawned Task owns the
                 # service_connected message append and auto-resume
                 # dispatch (after the MCP handshake completes). No
                 # auto-resume from here.
@@ -983,7 +983,7 @@ defmodule Dmhai.Handlers.Data do
                 updated_msg = Map.put(msg, "form", updated_form)
 
                 case form["kind"] do
-                  "connect_service_setup" ->
+                  "connect_mcp_setup" ->
                     # Persist the form-submitted state synchronously so
                     # the FE optimistic re-render matches what the next
                     # poll returns. Then hand the slow work (MCP
@@ -996,7 +996,7 @@ defmodule Dmhai.Handlers.Data do
                     query!(Repo, "UPDATE sessions SET messages=? WHERE id=? AND user_id=?",
                            [Jason.encode!(new_msgs), session_id, user_id])
 
-                    spawn_connect_service_setup(session_id, user_id, form, values)
+                    spawn_connect_mcp_setup(session_id, user_id, form, values)
                     {:ok, :async, now}
 
                   _ ->
@@ -1042,14 +1042,14 @@ defmodule Dmhai.Handlers.Data do
     }
   end
 
-  # `connect_service_setup` form. Heavy work (MCP handshake +
+  # `connect_mcp_setup` form. Heavy work (MCP handshake +
   # tools/list, ~3 s) runs in a fire-and-forget Task so the POST
   # returns fast. A pending session_progress row appears in the chat
   # immediately so the FE polling shows "Assistant is …" status
   # during the handshake; the Task flips it to done and appends the
   # `service_connected` synthetic user message + auto-resumes when
   # the work finishes.
-  defp spawn_connect_service_setup(session_id, user_id, form, values) do
+  defp spawn_connect_mcp_setup(session_id, user_id, form, values) do
     setup = form["setup_payload"] || %{}
     alias_ = setup["alias"] || "service"
 
@@ -1060,13 +1060,13 @@ defmodule Dmhai.Handlers.Data do
       )
 
     Task.Supervisor.start_child(Dmhai.Agent.TaskSupervisor, fn ->
-      do_connect_service_setup(session_id, user_id, form, values, prog_row.id)
+      do_connect_mcp_setup(session_id, user_id, form, values, prog_row.id)
     end)
 
     :ok
   end
 
-  defp do_connect_service_setup(session_id, user_id, form, values, prog_id) do
+  defp do_connect_mcp_setup(session_id, user_id, form, values, prog_id) do
     setup = form["setup_payload"] || %{}
 
     result =
@@ -1106,7 +1106,7 @@ defmodule Dmhai.Handlers.Data do
       :ok
   end
 
-  # Map dropdown option values (set in `connect_service`'s api_key
+  # Map dropdown option values (set in `connect_mcp`'s api_key
   # form) to the actual header name + optional value prefix. Keeping
   # this small table in one place lets the form options stay
   # human-friendly while the BE knows exactly what bytes to send.
@@ -1192,7 +1192,7 @@ defmodule Dmhai.Handlers.Data do
       |> Enum.join(" / ")
 
     "Server returned 401 with the `#{choice}` auth header. Server says: #{server_msg}. " <>
-      "If the URL is right, retry connect_service and pick a different header (#{other_choices}). " <>
+      "If the URL is right, retry connect_mcp and pick a different header (#{other_choices}). " <>
       "If that still 401s, the URL is probably not a real MCP endpoint."
   end
 
@@ -1278,7 +1278,7 @@ defmodule Dmhai.Handlers.Data do
 
         # init_flow either returns `{:ok, %{auth_url, ...}}` or
         # raises (DB writes go through query!). Exceptions land in
-        # `do_connect_service_setup`'s outer rescue, which renders a
+        # `do_connect_mcp_setup`'s outer rescue, which renders a
         # clean error message — no extra error branch needed here.
         {:ok, %{auth_url: auth_url}} =
           Dmhai.Auth.OAuth2.init_flow(%{

@@ -16,18 +16,16 @@ defmodule Dmhai.Tools.WebSearch do
   # different framing ("Say YES/NO"), same underlying criteria; the two can
   # be DRYed later if they drift.
   @tool_description """
-  Performs the search AND returns the content of the top results as a numbered list:
+  Searches AND returns top results' content as a numbered list:
 
       N. <title>
       <url>
       [fetched]
       <content>
 
-  `[fetched]` means the content is here in full. Do NOT call `web_fetch` on any URL already in your recent `web_search` result — nothing more to retrieve. Compile your answer from the returned content and cite source URLs alongside each claim.
+  `[fetched]` = full content inline; don't `web_fetch` these URLs. Cite source URLs alongside each claim.
 
-  **Call `web_search` for**: current / changing information — news, prices, weather, live data, statistics, regulations, a person's recent work, library versions, anything that could have changed since your training cutoff. If the ask is time-sensitive or names something whose state could be newer than your training data, search rather than answer from memory.
-
-  Any other use will be REJECTED.
+  Use for current / changing information — news, prices, weather, live data, regulations, library versions, anything newer than training data. Anything not time-sensitive → answer from memory.
   """
 
   @impl true

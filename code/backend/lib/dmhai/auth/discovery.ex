@@ -22,7 +22,7 @@ defmodule Dmhai.Auth.Discovery do
 
   Both endpoints return a JSON document. The fetch helpers normalise
   the response into a flat keyword-friendly map and perform minimal
-  validation; callers (`Auth.OAuth2`, `Tools.ConnectService`) decide
+  validation; callers (`Auth.OAuth2`, `Tools.ConnectMcp`) decide
   what to do when fields are missing.
   """
 
@@ -54,20 +54,64 @@ defmodule Dmhai.Auth.Discovery do
   end
 
   @doc """
+  Fetch a PRM document directly from a known URL. Used when the
+  authorization server's 401 response advertised the PRM location
+  via `WWW-Authenticate: ... resource_metadata="<url>"` (RFC 9728
+  §5.1). That hint is preferred over the RFC 8615 well-known
+  construction because it works regardless of where the server
+  actually publishes the doc.
+  """
+  @spec fetch_prm_at(String.t()) ::
+          {:ok, map()}
+          | {:error, :not_found | {:status, integer()} | {:network, term()} | {:malformed, term()}}
+  def fetch_prm_at(prm_url) when is_binary(prm_url) do
+    do_fetch_json(prm_url, &parse_prm/1)
+  end
+
+  @doc """
   Fetch ASM (RFC 8414) for `auth_server_url`. Well-known URI is
   built the same way as `fetch_prm/1` — `.well-known/oauth-
   authorization-server` is inserted between authority and path.
 
-  Returns the same shape as `fetch_prm/1`. `:not_found` means the AS
-  doesn't publish RFC 8414 metadata; discovery falls through to the
-  manual setup branch in that case.
+  Falls back to OpenID Connect Discovery
+  (`.well-known/openid-configuration`, RFC 5785 + OIDC §4) on
+  `:not_found`. The OIDC document is a SUPERSET of RFC 8414 — it
+  carries the same `authorization_endpoint`, `token_endpoint`,
+  `code_challenge_methods_supported`, `scopes_supported`,
+  `registration_endpoint` fields plus OIDC-specific extras we
+  ignore. Without this fallback every OIDC-only provider (Google,
+  Microsoft Entra, Okta, Auth0, Keycloak, AWS Cognito, Atlassian,
+  …) bounces to the manual-setup form even though their metadata
+  is right there.
+
+  Returns the same shape as `fetch_prm/1`. `:not_found` means
+  neither well-known path responded; discovery falls through to
+  the manual setup branch.
   """
   @spec fetch_asm(String.t()) ::
           {:ok, map()}
           | {:error, :not_found | {:status, integer()} | {:network, term()} | {:malformed, term()}}
   def fetch_asm(auth_server_url) when is_binary(auth_server_url) do
-    url = rfc8615_well_known(auth_server_url, "oauth-authorization-server")
-    do_fetch_json(url, &parse_asm/1)
+    rfc8414_url = rfc8615_well_known(auth_server_url, "oauth-authorization-server")
+
+    case do_fetch_json(rfc8414_url, &parse_asm/1) do
+      {:ok, _} = ok ->
+        ok
+
+      {:error, :not_found} ->
+        # OIDC Discovery (OpenID Connect Core §4) appends
+        # `.well-known/openid-configuration` to the issuer URL —
+        # different from RFC 8615's "insert between authority and
+        # path" convention RFC 8414 mandates. Microsoft Entra,
+        # Auth0, and Keycloak all publish at the append-form path.
+        # Google publishes at both, so we'd find it either way; the
+        # append form makes the failing providers work too.
+        oidc_url = String.trim_trailing(auth_server_url, "/") <> "/.well-known/openid-configuration"
+        do_fetch_json(oidc_url, &parse_asm/1)
+
+      err ->
+        err
+    end
   end
 
   # ── private ───────────────────────────────────────────────────────────

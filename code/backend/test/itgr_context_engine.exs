@@ -186,6 +186,56 @@ defmodule Itgr.ContextEngine do
     refute String.contains?(task_msg.content, "xyz")
   end
 
+  test "assistant: done section enriches the head with [most recent] and includes task_result" do
+    # Pronoun-resolution support: the model needs the most-recent done
+    # task explicitly tagged AND its task_result surfaced under each
+    # title, so that 'that server' / 'the API we just used' can resolve
+    # without re-fetching. See architecture.md §Task list block.
+    sd = session(messages: [user_msg("hi")])
+    done = [
+      # Newest first (recent_done_for_session orders by updated_at DESC).
+      %{task_id: "id1", task_num: 5, task_title: "Install Docker on 52.2.230.102",
+        task_status: "done", task_type: "one_off", task_spec: "...",
+        task_result: "Docker installed and verified via hello-world container on ubuntu@52.2.230.102.",
+        time_to_pickup: nil},
+      %{task_id: "id2", task_num: 4, task_title: "Order new bike",
+        task_status: "done", task_type: "one_off", task_spec: "...",
+        task_result: "Ordered the Trek FX3 in matte blue.",
+        time_to_pickup: nil}
+    ]
+    msgs = ContextEngine.build_assistant_messages(sd, recent_done: done)
+    task_msg = find_msg(msgs, "user", &String.starts_with?(&1, "## Task list"))
+    content = task_msg.content
+
+    # Head row tagged with [most recent] adjacent to the title.
+    assert content =~ ~r/- \(5\) Install Docker on 52\.2\.230\.102\s+\*\[most recent\]\*/
+
+    # task_result surfaced beneath each title (indented 2 spaces).
+    assert content =~ "Docker installed and verified via hello-world container on ubuntu@52.2.230.102."
+    assert content =~ "Ordered the Trek FX3 in matte blue."
+
+    # Only the head gets the recency tag — older done tasks don't.
+    assert content =~ ~r/- \(4\) Order new bike(?!.*\[most recent\])/m
+  end
+
+  test "assistant: done section omits task_result line when result is missing or empty" do
+    # Tolerate missing/empty task_result without raising — some test
+    # fixtures (and historical data) may not carry a result string.
+    sd = session(messages: [user_msg("hi")])
+    done = [
+      %{task_id: "a", task_num: 1, task_title: "Task A", task_status: "done",
+        task_type: "one_off", task_spec: "...", time_to_pickup: nil},
+      %{task_id: "b", task_num: 2, task_title: "Task B", task_status: "done",
+        task_type: "one_off", task_spec: "...", task_result: "",
+        time_to_pickup: nil}
+    ]
+    msgs = ContextEngine.build_assistant_messages(sd, recent_done: done)
+    task_msg = find_msg(msgs, "user", &String.starts_with?(&1, "## Task list"))
+    # Both bullets present, neither has a continuation line.
+    assert task_msg.content =~ "- (1) Task A"
+    assert task_msg.content =~ "- (2) Task B"
+  end
+
   test "task-list block: attachments extracted from 📎 lines, emoji stripped" do
     sd = session(messages: [user_msg("x")])
     tasks = [

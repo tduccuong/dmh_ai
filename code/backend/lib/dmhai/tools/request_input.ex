@@ -24,15 +24,11 @@ defmodule Dmhai.Tools.RequestInput do
   @impl true
   def description do
     """
-    Ask the user for structured input via an inline form rendered in the chat. Use when you need one or more named values from the user (multi-field config, secrets, provider client_id + client_secret pairs, anything the user would otherwise have to paste field-by-field).
+    Render an inline form to collect STRUCTURED, NAMED values (API key, client_id + client_secret, multi-field config). Each field: `{name, label, type: "text"|"password", secret?}` — `password` auto-implies `secret: true`. Optional `submit_label` (default "Submit"); narration text emitted with the call is shown above the form.
 
-    Each field: {name, label, type, secret?}. `type` is "text" or "password". `secret: true` (auto-implied for `password`) tells the FE to mask while typing and to never display the value after submit.
+    Chain-terminating: don't pair with other tool calls. The user's submission flows back as a user-role message that resumes the chain.
 
-    This call ENDS the chain. The user's submission triggers a new chain where you'll see a user-role message carrying the values. Do NOT call other tools in the same turn.
-
-    Optional `submit_label` overrides the button text (defaults to "Submit"). Optional narration text emitted alongside the tool_call is the prompt the user sees above the form.
-
-    Don't use this for open-ended questions ("how do you want to proceed?", "what should we try?") — those go in plain text. `request_input` is for STRUCTURED, NAMED values you've identified concretely (a password to a specific account, an API key for a specific service, a setting whose name and shape are clear).
+    NOT for open-ended questions ("how should we proceed?") — those go in plain text.
     """
   end
 

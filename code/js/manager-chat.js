@@ -8,29 +8,68 @@
 // Build a chronological timeline that interleaves chat messages with
 // progress rows fetched from /sessions/:id/progress. Progress rows are
 // persisted and shown in the chat window but NEVER injected into LLM context.
-// Entry shape: { kind: 'message' | 'progress', ts, payload }
+//
+// Entry shape:
+//   { kind: 'message' | 'progress', ts, payload, progress? }
+//
+// Progress rows that flowed during a chain are nested UNDER the
+// assistant message that ends the chain (in the entry's `progress`
+// field) — they render inside the assistant bubble below the header,
+// above the final text. Bracketing rule: a progress row with
+// `ts ∈ (prev_assistant_ts, this_assistant_ts]` belongs to
+// `this_assistant_msg`. Any progress rows AFTER the last assistant
+// message (chain in flight) render flat as before.
 function buildSessionTimeline(session) {
-    var entries = [];
-    (session.messages || []).forEach(function(m) {
+    var msgs = (session.messages || []).filter(function(m) {
         // `kind: "form_response"` user messages are runtime plumbing —
         // the structured form payload the model consumes on the next
         // chain. The visible "✓ Submitted" already shows on the
         // assistant message that emitted the form, so rendering the
         // form_response message here would be a redundant bubble. Hide.
-        if (m.role === 'user' && m.kind === 'form_response') return;
+        if (m.role === 'user' && m.kind === 'form_response') return false;
         // `kind: "service_connected"` user messages are synthesised by
         // the OAuth callback to auto-resume the chain after the user
         // authorises an external service. Hide from the timeline; the
         // assistant's follow-up text confirms the connection.
-        if (m.role === 'user' && m.kind === 'service_connected') return;
-        entries.push({ kind: 'message', ts: m.ts || 0, payload: m });
+        if (m.role === 'user' && m.kind === 'service_connected') return false;
+        return true;
     });
-    (session.progress || []).forEach(function(p) {
+    var progress = (session.progress || []).filter(function(p) {
         // final rows surface as real assistant messages already; skip to avoid duplication.
-        if (p.kind === 'final') return;
-        entries.push({ kind: 'progress', ts: p.ts || 0, payload: p });
+        return p.kind !== 'final';
     });
-    entries.sort(function(a, b) { return (a.ts || 0) - (b.ts || 0); });
+    // Sort both by ts so the bracketing walk is linear.
+    msgs = msgs.slice().sort(function(a, b) { return (a.ts || 0) - (b.ts || 0); });
+    progress = progress.slice().sort(function(a, b) { return (a.ts || 0) - (b.ts || 0); });
+
+    var entries = [];
+    var pIdx = 0;
+
+    msgs.forEach(function(m) {
+        var t = m.ts || 0;
+        if (m.role === 'assistant') {
+            // Claim every pending progress row with ts ≤ this assistant ts.
+            // (Linear because progress is sorted by ts and pIdx only advances.)
+            var claimed = [];
+            while (pIdx < progress.length && (progress[pIdx].ts || 0) <= t) {
+                claimed.push(progress[pIdx]);
+                pIdx++;
+            }
+            entries.push({ kind: 'message', ts: t, payload: m, progress: claimed });
+        } else {
+            entries.push({ kind: 'message', ts: t, payload: m });
+        }
+    });
+
+    // Anything left = progress rows that flowed AFTER the last assistant
+    // message — chain in flight. Render flat for now (the streaming
+    // placeholder created in manager-search.js sits chronologically
+    // last; these rows precede it in chat order).
+    while (pIdx < progress.length) {
+        var p = progress[pIdx++];
+        entries.push({ kind: 'progress', ts: p.ts || 0, payload: p });
+    }
+
     return entries;
 }
 
@@ -97,6 +136,9 @@ function renderProgressRow(row) {
         icon.textContent = '\u270e';
     } else if (row.kind === 'summary') {
         icon.textContent = '\u2026';
+    } else if (row.kind === 'chain_aborted') {
+        // ⏹ matches the sidebar Stop button the user just clicked.
+        icon.textContent = '\u23F9';
     } else {
         icon.textContent = '\u00b7';
     }
@@ -462,7 +504,7 @@ function renderFormResponseSummary(formResponse) {
 // Build the DOM node for one message timeline entry. Extracted from
 // `renderChat` so the keyed-diff path can rebuild a single entry in
 // place without rebuilding the surrounding container.
-function buildMessageEntryNode(msg, sessionId, renderSession) {
+function buildMessageEntryNode(msg, sessionId, renderSession, progressRows) {
     const div = document.createElement('div');
     div.className = 'message ' + msg.role;
     var hdr = buildMsgHeaderEl(msg, renderSession);
@@ -492,6 +534,18 @@ function buildMessageEntryNode(msg, sessionId, renderSession) {
                     if (arr) arr.textContent = thinkBlock.open ? '\u25b2' : '\u25ba';
                 });
                 div.appendChild(thinkBlock);
+            }
+            // Nested progress rows from the chain that ended in this
+            // message — render them between the header (already
+            // appended) and the final-text body. Rendering order:
+            // user msg → assistant header → tool calls → final answer.
+            if (Array.isArray(progressRows) && progressRows.length > 0) {
+                var progContainer = document.createElement('div');
+                progContainer.className = 'msg-progress-rows';
+                progressRows.forEach(function(p) {
+                    progContainer.appendChild(renderProgressRow(p));
+                });
+                div.appendChild(progContainer);
             }
             body.innerHTML = renderWithMath(msg.content || '');
             div.appendChild(body);
@@ -683,9 +737,21 @@ function entryKeyHash(entry) {
         ? 'cid-' + m.client_msg_id
         : 'ts-' + m.ts;
     var formBit = (m.form && m.form.submitted === true) ? '1' : '0';
+    // Nested progress rows (assistant entries only): hash on each
+    // child's structurally visible fields so a status flip /
+    // sub_label update / new row rebuilds the whole bubble. Less
+    // efficient than per-child diffing, but the bubble is a single
+    // DOM unit so the rebuild cost is bounded.
+    var progBit = '';
+    if (Array.isArray(entry.progress) && entry.progress.length > 0) {
+        progBit = ':p' + entry.progress.map(function(p) {
+            return p.id + '/' + p.status + '/' + (p.kind || '') + '/' + (p.label || '')
+                 + '/' + (Array.isArray(p.sub_labels) ? p.sub_labels.join('|') : '');
+        }).join(',');
+    }
     return {
         key: 'msg-' + m.role + '-' + idPart,
-        hash: 'msg:' + m.ts + ':' + formBit
+        hash: 'msg:' + m.ts + ':' + formBit + progBit
     };
 }
 
@@ -715,6 +781,25 @@ UIManager.renderChat = function() {
     var renderSession = this.currentSession;
     var timeline = buildSessionTimeline(this.currentSession);
 
+    // Partition off trailing in-flight progress entries (those after
+    // the last message in the timeline — `buildSessionTimeline` emits
+    // them as flat 'progress' entries when no upcoming assistant
+    // message exists to nest under). These get rendered INSIDE the
+    // streaming placeholder below, between its header and body — so
+    // the in-flight visual order matches the post-chain layout:
+    //   user msg → assistant header → tool calls → (streaming body)
+    // The diff loop only manages the permanent DOM in `container`.
+    var inflightProgress = [];
+    var splitAt = timeline.length;
+    for (var ti = timeline.length - 1; ti >= 0; ti--) {
+        if (timeline[ti].kind === 'progress') splitAt = ti;
+        else break;
+    }
+    if (splitAt < timeline.length) {
+        inflightProgress = timeline.slice(splitAt);
+        timeline = timeline.slice(0, splitAt);
+    }
+
     // Index existing DOM children by their stable entry key. Anything
     // without a key (legacy / streaming placeholder leftover) is
     // dropped to be rebuilt cleanly.
@@ -740,7 +825,7 @@ UIManager.renderChat = function() {
         if (needsBuild) {
             var fresh = (entry.kind === 'progress')
                 ? renderProgressRow(entry.payload)
-                : buildMessageEntryNode(entry.payload, sessionId, renderSession);
+                : buildMessageEntryNode(entry.payload, sessionId, renderSession, entry.progress);
             fresh.dataset.entryKey = kh.key;
             fresh.dataset.entryHash = kh.hash;
             if (node && node.parentNode === container) {
@@ -787,6 +872,33 @@ UIManager.renderChat = function() {
             addCopyButtons(streamBody); wrapTables(streamBody);
             streamDiv.appendChild(streamBody);
             container.appendChild(streamDiv);
+        }
+    }
+
+    // In-flight progress nesting: any tool-call rows that flowed during
+    // the active chain go INSIDE the streaming placeholder, between its
+    // header and the streaming body. Rebuild from scratch each render —
+    // the in-flight progress list is short in practice and per-row
+    // diffing across DOM moves would be more complex than worth.
+    var activeStreamingBody = document.getElementById('streaming-body');
+    var activeStreamingMsg = activeStreamingBody ? activeStreamingBody.parentNode : null;
+    if (activeStreamingMsg) {
+        var existingProgContainer = activeStreamingMsg.querySelector('.msg-progress-rows');
+        if (inflightProgress.length === 0) {
+            if (existingProgContainer) existingProgContainer.remove();
+        } else {
+            var progContainer;
+            if (existingProgContainer) {
+                progContainer = existingProgContainer;
+                while (progContainer.firstChild) progContainer.removeChild(progContainer.firstChild);
+            } else {
+                progContainer = document.createElement('div');
+                progContainer.className = 'msg-progress-rows';
+                activeStreamingMsg.insertBefore(progContainer, activeStreamingBody);
+            }
+            inflightProgress.forEach(function(entry) {
+                progContainer.appendChild(renderProgressRow(entry.payload));
+            });
         }
     }
 

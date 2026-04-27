@@ -11,12 +11,14 @@ defmodule Dmhai.Plugs.RateLimit do
   See specs/architecture.md §Rate limiting for the full sizing rationale
   and tradeoffs. The short version:
 
-    auth    —   8 req/min  (IP-keyed; login flood protection)
-    upload  —  30 req/min  (/assets, /describe-video, /describe-image)
-    poll    — 200 req/min  (/sessions/:id/poll, /sessions/:id/tasks,
-                             /sessions/:id/progress — the FE's delta
-                             polling surface)
-    general — 120 req/min  (everything else)
+    auth    —    8 req/min  (IP-keyed; login flood protection)
+    upload  —   30 req/min  (/assets, /describe-video, /describe-image)
+    poll    — 1200 req/min  (/sessions/:id/poll, /sessions/:id/tasks,
+                              /sessions/:id/progress — the FE's delta
+                              polling surface; sized for hours-long
+                              tool-heavy chains, see architecture.md
+                              §Rate limiting)
+    general —  120 req/min  (everything else)
 
   Keying: `"user:<user_id>:<tier>"` when the request carries a valid
   bearer token; `"ip:<addr>:<tier>"` otherwise. Per-user keying is
@@ -33,7 +35,7 @@ defmodule Dmhai.Plugs.RateLimit do
   @limits %{
     auth:    8,
     upload:  30,
-    poll:    200,
+    poll:    1200,
     general: 120
   }
 

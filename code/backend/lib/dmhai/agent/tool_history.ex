@@ -63,31 +63,104 @@ defmodule Dmhai.Agent.ToolHistory do
   def save_turn(_session_id, _user_id, _assistant_ts, [], _task_num), do: :ok
   def save_turn(session_id, user_id, assistant_ts, tool_messages, task_num)
       when is_list(tool_messages) do
-    try do
-      existing = load(session_id)
-
-      entry = %{
-        "assistant_ts" => assistant_ts,
-        "ts"           => System.os_time(:millisecond),
-        "task_num"     => task_num,
-        "messages"     => Enum.map(tool_messages, &stringify_keys/1)
-      }
-
-      appended = existing ++ [entry]
-      {trimmed, evicted} = cap_and_split(appended)
-
-      # Archive evicted entries that carry a task_num.
-      archive_evicted(evicted, session_id)
-
-      query!(Repo,
-             "UPDATE sessions SET tool_history=? WHERE id=? AND user_id=?",
-             [Jason.encode!(trimmed), session_id, user_id])
-      :ok
-    rescue
-      e ->
-        Logger.warning("[ToolHistory] save_turn failed: #{Exception.message(e)}")
+    # Strip any fetch_task tool_call / tool_result pairs — its result
+    # body is a snapshot of another task's archive, already stored in
+    # that task's task_turn_archive row. Persisting it again here
+    # would duplicate bytes for no model-visible benefit. See
+    # architecture.md §Tool-result retention.
+    case strip_fetch_task_pairs(tool_messages) do
+      [] ->
         :ok
+
+      stripped ->
+        try do
+          existing = load(session_id)
+
+          entry = %{
+            "assistant_ts" => assistant_ts,
+            "ts"           => System.os_time(:millisecond),
+            "task_num"     => task_num,
+            "messages"     => Enum.map(stripped, &stringify_keys/1)
+          }
+
+          appended = existing ++ [entry]
+          {trimmed, evicted} = cap_and_split(appended)
+
+          # Archive evicted entries that carry a task_num.
+          archive_evicted(evicted, session_id)
+
+          query!(Repo,
+                 "UPDATE sessions SET tool_history=? WHERE id=? AND user_id=?",
+                 [Jason.encode!(trimmed), session_id, user_id])
+          :ok
+        rescue
+          e ->
+            Logger.warning("[ToolHistory] save_turn failed: #{Exception.message(e)}")
+            :ok
+        end
     end
+  end
+
+  # Two-pass scrub: collect every fetch_task tool_call's id, then drop
+  # both (a) the assistant message's fetch_task tool_call entries
+  # (preserving siblings — multi-batch turns are common) and (b) the
+  # corresponding tool-result messages. An assistant message whose
+  # tool_calls list becomes empty after filtering is dropped entirely.
+  # Accepts both atom-keyed and string-keyed maps (chain accumulator vs.
+  # JSON-decoded shapes both flow through here at different times).
+  defp strip_fetch_task_pairs([]), do: []
+  defp strip_fetch_task_pairs(messages) do
+    fetch_ids =
+      messages
+      |> Enum.flat_map(fn m -> tool_calls_of(m) end)
+      |> Enum.filter(&fetch_task?/1)
+      |> Enum.map(&tc_id/1)
+      |> MapSet.new()
+
+    if MapSet.size(fetch_ids) == 0 do
+      messages
+    else
+      Enum.flat_map(messages, fn m -> strip_message(m, fetch_ids) end)
+    end
+  end
+
+  defp strip_message(m, fetch_ids) do
+    case role_of(m) do
+      "tool" ->
+        if MapSet.member?(fetch_ids, Map.get(m, :tool_call_id) || Map.get(m, "tool_call_id")) do
+          []
+        else
+          [m]
+        end
+
+      "assistant" ->
+        tcs = tool_calls_of(m)
+        remaining = Enum.reject(tcs, fn tc -> MapSet.member?(fetch_ids, tc_id(tc)) end)
+
+        cond do
+          length(remaining) == length(tcs) -> [m]
+          remaining == [] -> []
+          true ->
+            [m
+             |> Map.put(:tool_calls, remaining)
+             |> Map.put("tool_calls", remaining)]
+        end
+
+      _ ->
+        [m]
+    end
+  end
+
+  defp role_of(m), do: Map.get(m, :role) || Map.get(m, "role")
+
+  defp tool_calls_of(m), do: Map.get(m, :tool_calls) || Map.get(m, "tool_calls") || []
+
+  defp tc_id(tc), do: Map.get(tc, :id) || Map.get(tc, "id")
+
+  defp fetch_task?(tc) do
+    fn_map = Map.get(tc, :function) || Map.get(tc, "function") || %{}
+    name   = Map.get(fn_map, :name) || Map.get(fn_map, "name")
+    name == "fetch_task"
   end
 
   # Apply both caps and return the retained list AND the list of
@@ -122,6 +195,57 @@ defmodule Dmhai.Agent.ToolHistory do
           :ok
       end
     end)
+  end
+
+  @doc """
+  Move every retained tool_history entry whose `task_num` matches
+  from `sessions.tool_history` into `task_turn_archive`. Called by
+  `Tasks.mark_done/2` and `Tasks.mark_cancelled/2` immediately after
+  the status flip — completed work no longer ships to the LLM on
+  subsequent chains, while remaining recoverable via `fetch_task(N)`
+  from the archive. See architecture.md §Tool-result retention.
+
+  Same archive path as eviction (`TaskTurnArchive.append_raw`), so
+  ordering and shape match.
+
+  No-op when `task_num` is nil (some periodics resolve at chain end
+  with an `anchor_task_num=nil` ctx — defensive). No-op when nothing
+  in the rolling window matches.
+  """
+  @spec flush_for_task(String.t(), integer() | nil) :: :ok
+  def flush_for_task(_session_id, nil), do: :ok
+  def flush_for_task(session_id, task_num) when is_integer(task_num) do
+    try do
+      existing = load(session_id)
+
+      {to_archive, retained} =
+        Enum.split_with(existing, fn entry ->
+          Map.get(entry, "task_num") == task_num
+        end)
+
+      if to_archive != [] do
+        case Dmhai.Agent.Tasks.resolve_num(session_id, task_num) do
+          {:ok, task_id} ->
+            Enum.each(to_archive, fn entry ->
+              msgs = Map.get(entry, "messages") || []
+              Dmhai.Agent.TaskTurnArchive.append_raw(task_id, session_id, msgs)
+            end)
+
+          {:error, :not_found} ->
+            Logger.warning("[ToolHistory] flush_for_task: task_num=#{task_num} not found in session=#{session_id}; entries dropped without archival")
+        end
+
+        query!(Repo,
+               "UPDATE sessions SET tool_history=? WHERE id=?",
+               [Jason.encode!(retained), session_id])
+      end
+
+      :ok
+    rescue
+      e ->
+        Logger.warning("[ToolHistory] flush_for_task failed: #{Exception.message(e)}")
+        :ok
+    end
   end
 
   @doc """

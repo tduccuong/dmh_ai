@@ -14,9 +14,9 @@ defmodule Dmhai.Tools.LookupCreds do
   @impl true
   def description do
     """
-    Fetch a previously-saved credential for the current user by target. With `target`: returns `{found, kind, payload, expires_at, is_expired, notes}` — the model decides what to do when `is_expired` (re-prompt the user, run a refresh flow if a provider-specific helper exists, etc.). Without `target`: returns the list of saved targets (metadata only, no secrets) so you can pick the right one.
+    Fetch a previously-saved credential. With `target`: returns `{found, kind, payload, expires_at, is_expired, notes}`. Without `target`: returns the list of saved targets (metadata only, no secrets) so you can pick one.
 
-    Use lookup_creds for cross-chain recall when the credential isn't visible in your current conversation context. Within a single chain where the user just provided creds, use the ones in context directly — no tool call needed.
+    For cross-chain recall only — when the user just provided creds in the current chain, use them directly from context.
     """
   end
 

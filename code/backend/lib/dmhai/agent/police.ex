@@ -39,7 +39,7 @@ defmodule Dmhai.Agent.Police do
   # pickup_task / complete_task / pause_task / cancel_task / fetch_task —
   # how the model complies) and trivial utilities (datetime, calculator).
   #
-  # Creds tools and `connect_service` ARE gated: they're always fetched
+  # Creds tools and `connect_mcp` ARE gated: they're always fetched
   # / set up in service of a user-facing objective, so they sit under
   # the task wrapper like any other execution tool. Without the gate,
   # a mid-chain "stop the task" has nothing to bind to, and the chat
@@ -56,7 +56,7 @@ defmodule Dmhai.Agent.Police do
     "save_creds",
     "delete_creds",
     "request_input",
-    "connect_service",
+    "connect_mcp",
     "provision_ssh_identity"
   ]
 
@@ -466,7 +466,7 @@ defmodule Dmhai.Agent.Police do
   @doc """
   Task-aware variant. Includes the MCP tools attached to the user's
   current anchor task in the validity check so `<alias>.<tool>`
-  names registered via `connect_service` are accepted while their
+  names registered via `connect_mcp` are accepted while their
   task is alive, and rejected once it closes.
   """
   @spec check_tool_known(String.t(), String.t() | nil, String.t() | nil) ::
@@ -493,7 +493,7 @@ defmodule Dmhai.Agent.Police do
   # MCP-attached tools live under `<alias>.<tool>`. When a name has
   # that shape but isn't in the catalog, the most likely cause is
   # the model is reaching for a service it used in a previous task
-  # but hasn't attached to the current one — `connect_service` per
+  # but hasn't attached to the current one — `connect_mcp` per
   # task is the contract. Lead with that hint instead of the bare
   # tool list, which won't help if the right tool genuinely needs
   # to be brought in via attachment.
@@ -501,8 +501,8 @@ defmodule Dmhai.Agent.Police do
     case String.split(name_preview, ".", parts: 2) do
       [alias_, _tool] when alias_ != "" ->
         "Error: `#{name_preview}` is not currently attached to this task. Namespaced tools " <>
-          "(`<alias>.<tool>`) come from external services attached via `connect_service`. " <>
-          "If you want to use `#{alias_}` here, call `connect_service` first with the service's " <>
+          "(`<alias>.<tool>`) come from external services attached via `connect_mcp`. " <>
+          "If you want to use `#{alias_}` here, call `connect_mcp` first with the server's " <>
           "URL — even if you've connected it in a previous task, attachments are per-task and " <>
           "must be re-established.\n\n" <>
           "Tools currently available: " <> Enum.join(valid_names, ", ") <> "."
@@ -657,6 +657,9 @@ defmodule Dmhai.Agent.Police do
     * `create_task`     → `task_title` (downcased + trimmed)
     * `extract_content` → `path` (case-sensitive; Linux FS)
     * `web_search`      → `query` (downcased + trimmed)
+    * `run_script`      → `script` normalised (comment lines stripped,
+                          whitespace runs collapsed) — catches loops
+                          where the model only varies a comment
 
   Tools outside this list bypass the check (no significance key defined).
   """
@@ -742,6 +745,32 @@ defmodule Dmhai.Agent.Police do
     end
   end
 
+  # `run_script` keys on the script text NORMALISED — comment lines (`#`-
+  # prefixed) stripped, whitespace runs collapsed to single spaces.
+  # Catches the common misbehaviour where a model loops on the same curl
+  # / shell command and only varies the leading comment ("# Try again",
+  # "# With correct syntax"). The actual underlying command stays
+  # identical → wasted turn. Different operations / URLs / args / flags
+  # produce a different normalised key and pass through. See
+  # architecture.md §Police gate #6.
+  defp significant_key("run_script", args) do
+    case args["script"] do
+      s when is_binary(s) and s != "" ->
+        normalised =
+          s
+          |> String.split("\n")
+          |> Enum.reject(&(&1 |> String.trim() |> String.starts_with?("#")))
+          |> Enum.join(" ")
+          |> String.replace(~r/\s+/, " ")
+          |> String.trim()
+
+        if normalised == "", do: nil, else: normalised
+
+      _ ->
+        nil
+    end
+  end
+
   defp significant_key(_, _), do: nil
 
   defp describe_key("create_task"),     do: "task_title"
@@ -749,6 +778,7 @@ defmodule Dmhai.Agent.Police do
     do: "task_num"
   defp describe_key("extract_content"), do: "path"
   defp describe_key("web_search"),      do: "query"
+  defp describe_key("run_script"),      do: "normalized script"
   defp describe_key(_),                 do: "arg"
 
   # Integer-or-stringified-integer → integer | nil. Used by
@@ -1185,6 +1215,72 @@ defmodule Dmhai.Agent.Police do
     end
   end
   def check_no_consecutive_web_search(_, _, _), do: :ok
+
+  @doc """
+  Per-tool-call gate: cap `run_script` at `AgentSettings.run_script_probe_budget()`
+  per chain (default 5). The (N+1)th `run_script` is rejected with a
+  nudge that teaches the model to either compose the rest into ONE more
+  script OR end the chain by asking the user the specific question
+  probes can't answer.
+
+  Counts ALL `run_script` calls in `prior_messages`, not just consecutive
+  ones — once the model is on a probing trajectory, mixing in
+  `web_fetch` / `read_file` / etc. doesn't reset the count.
+
+  Rationale: weaker models default to a small-batch loop (1-3 curls per
+  `run_script`, fire, read, fire 2-3 more, repeat) accumulating 10-20
+  turns to do work that ONE composed script plus ONE clarification
+  could finish. The gate is the runtime backstop for the prompt rule
+  "Three probe-batches max" in §Working with external APIs.
+
+  Returns `:ok` or `{:rejected, {:run_script_probe_budget, reason}}`.
+  """
+  @spec check_run_script_probe_budget(String.t(), map(), [map()]) ::
+          :ok | {:rejected, {atom(), String.t()}}
+  def check_run_script_probe_budget("run_script", _args, prior_messages)
+      when is_list(prior_messages) do
+    budget = Dmhai.Agent.AgentSettings.run_script_probe_budget()
+    count  = count_run_script_calls(prior_messages)
+
+    if count >= budget do
+      reason =
+        "Error: you've probed enough — #{count} `run_script` call#{if count == 1, do: "", else: "s"} " <>
+          "already done on this chain. You've got ONLY one more chance: either combine everything " <>
+          "you still want to do into ONE single script (chain values with bash variables — " <>
+          "`X=$(curl ...); Y=$(echo \"$X\" | jq ...); curl ... -d \"$Y\"`), OR ask the user the " <>
+          "specific question your probes can't answer (which scope to widen, which alternative " <>
+          "to accept, which existing field to use). After that, no more probing — text only."
+
+      Logger.warning("[Police] REJECTED run_script_probe_budget: chain count=#{count}")
+      Dmhai.SysLog.log("[POLICE] REJECTED run_script_probe_budget: chain count=#{count}")
+      {:rejected, {:run_script_probe_budget, reason}}
+    else
+      :ok
+    end
+  end
+
+  def check_run_script_probe_budget(_, _, _), do: :ok
+
+  # Count assistant tool_calls named "run_script" across the prior-messages
+  # accumulator. Both atom-key and string-key shapes accepted (the chain
+  # loop builds atom-key maps; LLM responses replayed from history use
+  # string keys). Intra-batch counting is automatic — each tool_call in
+  # one assistant message contributes independently.
+  defp count_run_script_calls(messages) do
+    messages
+    |> Enum.flat_map(fn
+      %{role: "assistant", tool_calls: tcs} when is_list(tcs)         -> tcs
+      %{"role" => "assistant", "tool_calls" => tcs} when is_list(tcs) -> tcs
+      _ -> []
+    end)
+    |> Enum.count(fn tc ->
+      case tc do
+        %{function: %{name: "run_script"}}                  -> true
+        %{"function" => %{"name" => "run_script"}}          -> true
+        _                                                    -> false
+      end
+    end)
+  end
 
   # Walk `prior_messages` newest-to-oldest, find the last assistant-role
   # message that carries a non-empty `tool_calls` list, return the name

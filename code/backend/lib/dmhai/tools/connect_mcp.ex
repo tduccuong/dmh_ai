@@ -3,13 +3,15 @@
 # See the LICENSE file in the repository root for full details.
 # For commercial inquiries, contact: tduccuong@gmail.com
 
-defmodule Dmhai.Tools.ConnectService do
+defmodule Dmhai.Tools.ConnectMcp do
   @moduledoc """
-  Single user-facing tool for attaching an external service to the
-  current task. Drives the discovery cascade (PRM → ASM), client
+  Single user-facing tool for attaching an MCP server to the current
+  task. MCP-only: the discovery cascade (PRM → ASM), client
   identification (DCR or reusing manual creds saved earlier), and
-  OAuth 2.1 init. Returns one of `connected`, `needs_auth`, or — for
-  non-spec-compliant servers — `needs_setup`.
+  OAuth 2.1 init are all parts of the MCP-2025-06-18 spec. Non-MCP
+  external integrations (regular REST APIs, webhooks, raw OAuth-
+  protected endpoints) live outside this tool — the model uses
+  `run_script` + `lookup_creds`/`save_creds` for those instead.
 
   Authorization is per-user (persists across sessions and tasks); the
   resulting tool catalog is per-task (visible only while the
@@ -25,27 +27,25 @@ defmodule Dmhai.Tools.ConnectService do
   alias Dmhai.MCP.Client, as: MCPClient
 
   @impl true
-  def name, do: "connect_service"
+  def name, do: "connect_mcp"
 
   @impl true
   def description do
     """
-    Attach an external service to the current task so its tools become available in subsequent turns. Pass the service's MCP server URL (or its base URL — discovery resolves the rest). Optional `alias` is a friendly label (defaults to a slug derived from the URL); reuse the same alias to refer to the same service across chains.
+    MCP-only — attach an MCP server (speaks JSON-RPC `initialize` / `tools/list` / `tools/call`) to the current task. NOT for webhooks, REST APIs, or non-MCP OAuth endpoints — those go to `run_script` + `curl`.
 
-    `auth_method` selects how the server authenticates clients (default `"auto"`):
-      • `"auto"` — try OAuth 2.1 + RFC 9728/8414 discovery. If the server exposes Protected Resource Metadata, full auto-flow runs and returns `needs_auth` with a clickable URL.
-      • `"api_key"` — server uses a static auth header. Returns a `needs_setup` form for the key + header choice.
-      • `"oauth"` — server uses OAuth 2.0/2.1 but doesn't expose discovery metadata. Returns a `needs_setup` form for endpoints + client credentials.
-      • `"none"` — server requires no auth. Connects immediately.
+    `auth_method` (default `"auto"`):
+      • `"auto"` — OAuth 2.1 + RFC 9728/8414 discovery, then `needs_auth` with auth_url.
+      • `"api_key"` — static auth header; returns a `needs_setup` form (key + header choice).
+      • `"oauth"` — manual OAuth (no discovery); returns a `needs_setup` form (endpoints + client creds).
+      • `"none"` — no auth; connects immediately.
 
     Returns one of:
-      • `{status: "connected", alias, tools}` — tools are live this chain.
-      • `{status: "needs_auth", alias, auth_url}` — relay `auth_url` as a clickable link in your final text. Chain-terminating.
-      • `{status: "needs_setup", alias, form}` — relay the inline form via the form widget. Chain-terminating.
+      • `{status: "connected", alias, tools}` — tools live this chain.
+      • `{status: "needs_auth", alias, auth_url}` — relay auth_url as a clickable link; chain ends.
+      • `{status: "needs_setup", alias, form}` — relay the inline form; chain ends.
 
-    Tools attach to the current task and detach when the task closes (`complete_task` / `cancel_task`). A new task that needs the same service must call `connect_service` again — re-attachment is fast (auth is cached at the user level, no browser dance) but explicit.
-
-    Don't pair `connect_service` with other tool calls in the same turn — `needs_auth` and `needs_setup` are chain-terminating.
+    Tools detach on `complete_task` / `cancel_task` — a new task that needs the same server must call `connect_mcp` again (re-attach is fast, auth is cached). Don't pair with other tool calls.
     """
   end
 
@@ -117,7 +117,7 @@ defmodule Dmhai.Tools.ConnectService do
   end
 
   defp resolve_anchor(_, _),
-    do: {:error, "connect_service requires an anchor task — call create_task or pickup_task first"}
+    do: {:error, "connect_mcp requires an anchor task — call create_task or pickup_task first"}
 
   # ── already-authorized: re-handshake + attach ─────────────────────────
 
@@ -174,10 +174,100 @@ defmodule Dmhai.Tools.ConnectService do
 
   defp build_handshake_ctx(_, _), do: {:error, :unsupported_credential_kind}
 
-  # ── fresh OAuth flow ──────────────────────────────────────────────────
+  # ── fresh-connection cascade — probe-first ────────────────────────────
+  #
+  # We don't know up front what kind of server lives at this URL: an
+  # open MCP, a gated OAuth-protected MCP, an MCP that needs an API
+  # key, or — sometimes — a non-MCP URL the user pasted by mistake.
+  # The cascade decides by ASKING the URL via an unauthenticated
+  # `initialize`:
+  #
+  #   * 200 + Mcp-Session-Id  → open MCP. Run `no_auth_connect`.
+  #   * 401                   → gated MCP. Inspect `WWW-Authenticate`
+  #     for the RFC 9728 §5.1 `resource_metadata=<PRM URL>` hint; that
+  #     URL takes us straight to the right PRM doc without guessing
+  #     the well-known location. Without the hint, fall back to the
+  #     RFC 8615 well-known construction.
+  #   * Anything else (404, 5xx, 200-with-non-MCP-body, transport error)
+  #     → this URL is not an MCP server. Fall to the api_key form,
+  #     where the message tells the model: if this is a regular REST
+  #     API or webhook, abandon `connect_mcp` and call it directly
+  #     with `run_script` + curl.
+  #
+  # The OAuth-2 dance only fires when the server explicitly tells us
+  # it's OAuth-protected — we don't ASSUME OAuth from URL shape.
 
   defp connect_fresh(user_id, session_id, anchor_task_id, server_url, alias_) do
-    with {:ok, prm}    <- Discovery.fetch_prm(server_url),
+    case probe_mcp(server_url) do
+      :open ->
+        no_auth_connect(user_id, anchor_task_id, alias_, server_url)
+
+      {:gated, prm_hint_url} ->
+        gated_oauth_flow(user_id, session_id, anchor_task_id, server_url, alias_, prm_hint_url)
+
+      :not_mcp ->
+        api_key_setup_form(anchor_task_id, server_url, alias_)
+    end
+  end
+
+  # Probe with an unauthed `initialize` and classify the response:
+  #   :open                  — 200 + valid MCP result.
+  #   {:gated, prm_url|nil}  — 401; PRM URL pulled from
+  #                            `WWW-Authenticate: resource_metadata=`
+  #                            when present, else nil (caller falls
+  #                            back to RFC 8615 well-known).
+  #   :not_mcp               — anything else; URL is not an MCP server.
+  defp probe_mcp(server_url) do
+    handshake_ctx = %{
+      server_url:         server_url,
+      canonical_resource: server_url,
+      auth:               %{type: "none"}
+    }
+
+    case MCPClient.initialize(handshake_ctx) do
+      {:ok, _info, sid} when is_binary(sid) and sid != "" ->
+        :open
+
+      {:error, {:rpc, _err}} ->
+        # Server understood our JSON-RPC but errored — still MCP,
+        # treat as gated and let the OAuth path try.
+        {:gated, nil}
+
+      {:error, {:status, 401, _body, headers}} ->
+        {:gated, parse_resource_metadata_hint(headers)}
+
+      _ ->
+        :not_mcp
+    end
+  end
+
+  # Pull the `resource_metadata=<URL>` parameter out of a
+  # `WWW-Authenticate` header per RFC 9728 §5.1. Tolerates quoted
+  # and unquoted forms, multiple challenge schemes, and extra
+  # whitespace. Returns nil when missing.
+  defp parse_resource_metadata_hint(headers) when is_list(headers) do
+    case Enum.find(headers, fn {k, _} -> k == "www-authenticate" end) do
+      nil -> nil
+      {_, value} when is_binary(value) -> extract_resource_metadata(value)
+      _ -> nil
+    end
+  end
+  defp parse_resource_metadata_hint(_), do: nil
+
+  defp extract_resource_metadata(value) do
+    case Regex.run(~r/resource_metadata\s*=\s*"?([^",\s]+)"?/i, value) do
+      [_, url] -> url
+      _        -> nil
+    end
+  end
+
+  # OAuth dance: fetch PRM (using the hint URL when the server gave
+  # one, otherwise falling back to the RFC 8615 well-known path),
+  # then ASM, then DCR/CIMD/manual client identification, then
+  # `init_flow`. Falls through to the api_key form on any expected
+  # failure (PRM not found, ASM missing, no DCR, etc.).
+  defp gated_oauth_flow(user_id, session_id, anchor_task_id, server_url, alias_, prm_hint_url) do
+    with {:ok, prm}    <- fetch_prm_via_hint_or_well_known(server_url, prm_hint_url),
          auth_server    = hd(prm.authorization_servers),
          {:ok, asm}     <- Discovery.fetch_asm(auth_server),
          redirect_uri   = build_redirect_uri(),
@@ -190,56 +280,26 @@ defmodule Dmhai.Tools.ConnectService do
         message:  "Click the link to authorize. The chat resumes automatically once you complete authorization in the browser."
       }}
     else
-      # Auto-fallback when the spec-compliant path fails:
-      #
-      #   1. PRM `:not_found` — server doesn't advertise OAuth at all.
-      #      Phase D probes for an open MCP first: an unauthed
-      #      `initialize` that returns 200 + Mcp-Session-Id means the
-      #      server is genuinely open; we route through `no_auth_connect`
-      #      and return `connected` with zero user friction. Probes that
-      #      fail (401, transport error, anything not-200) fall through
-      #      to the api_key form below — i.e. the server requires SOME
-      #      auth but doesn't publish discovery.
-      #
-      #   2. `:needs_manual` — PRM exists but ASM doesn't advertise DCR
-      #      or CIMD. The server clearly wants OAuth but we can't
-      #      auto-register a client; the user retries with
-      #      `auth_method: "oauth"` if they have manual credentials,
-      #      or with `auth_method: "api_key"` if it's an API-key
-      #      service in disguise.
-      {:error, :not_found} ->
-        case probe_open_mcp(server_url) do
-          :open  -> no_auth_connect(user_id, anchor_task_id, alias_, server_url)
-          :gated -> api_key_setup_form(anchor_task_id, server_url, alias_)
-        end
-
       :needs_manual ->
         api_key_setup_form(anchor_task_id, server_url, alias_)
 
-      {:error, reason} ->
-        {:error, "connect_service failed: #{inspect(reason)}"}
+      # PRM unreachable / malformed / 404; ASM missing or non-spec.
+      # The server gated on us but doesn't publish enough metadata
+      # for the auto-OAuth path. Drop to the api_key form so the
+      # user can paste a key (or the model can re-call with
+      # `auth_method: "oauth"` for a manual OAuth dance).
+      {:error, _reason} ->
+        api_key_setup_form(anchor_task_id, server_url, alias_)
     end
   end
 
-  # Probe an MCP server for the "open" shape: send an unauthenticated
-  # `initialize` and look for the spec-compliant 200 + Mcp-Session-Id
-  # response. Anything else (401, 404, transport failure) is treated
-  # as `:gated` so the caller falls through to the api_key form. The
-  # session id we get back IS discarded — `no_auth_connect/4` opens
-  # its own session via the standard handshake. The probe exists
-  # purely to disambiguate "open" from "gated" before committing to
-  # either path.
-  defp probe_open_mcp(server_url) do
-    handshake_ctx = %{
-      server_url:         server_url,
-      canonical_resource: server_url,
-      auth:               %{type: "none"}
-    }
+  defp fetch_prm_via_hint_or_well_known(server_url, nil),
+    do: Discovery.fetch_prm(server_url)
 
-    case MCPClient.initialize(handshake_ctx) do
-      {:ok, _info, sid} when is_binary(sid) and sid != "" -> :open
-      _                                                    -> :gated
-    end
+  defp fetch_prm_via_hint_or_well_known(_server_url, hint_url) when is_binary(hint_url) do
+    # The hint URL is a fully-qualified PRM document URL emitted by
+    # the AS. We bypass `rfc8615_well_known/2` and fetch directly.
+    Discovery.fetch_prm_at(hint_url)
   end
 
   defp acquire_or_signal(user_id, asm, redirect_uri, scopes) do
@@ -303,7 +363,7 @@ defmodule Dmhai.Tools.ConnectService do
       status:  "needs_setup",
       alias:   alias_,
       form:    form,
-      message: "Paste this service's API key and pick which auth header it expects. If you pick the wrong one the server returns 401 and you can retry with another."
+      message: "Paste this service's API key and pick which auth header it expects. If you pick the wrong one the server returns 401 and you can retry with another. If this URL isn't an MCP server but a regular REST API or webhook, abandon `connect_mcp` and call the API directly with `run_script` + `curl`."
     }}
   end
 
@@ -398,7 +458,7 @@ defmodule Dmhai.Tools.ConnectService do
       "submitted"     => false,
       "submitted_at"  => nil,
       "values_meta"   => nil,
-      "kind"          => "connect_service_setup",
+      "kind"          => "connect_mcp_setup",
       "setup_payload" => setup_payload
     }
   end
@@ -436,8 +496,8 @@ defmodule Dmhai.Tools.ConnectService do
 
   # ── helpers ───────────────────────────────────────────────────────────
 
-  defp require_ctx(nil, _), do: {:error, "connect_service called without user_id in context"}
-  defp require_ctx(_, nil), do: {:error, "connect_service called without session_id in context"}
+  defp require_ctx(nil, _), do: {:error, "connect_mcp called without user_id in context"}
+  defp require_ctx(_, nil), do: {:error, "connect_mcp called without session_id in context"}
   defp require_ctx(_, _),    do: :ok
 
   defp validate_url(url) when is_binary(url) and url != "" do

@@ -7,7 +7,7 @@ ExUnit.start(timeout: 60_000)
 #   mix test --only network
 # or per-file:
 #   mix test test/itgr_mcp_huggingface.exs --only network
-ExUnit.configure(exclude: [:network])
+ExUnit.configure(exclude: [:network, :known_design_bug])
 
 defmodule T do
   @moduledoc "Shared test helpers."

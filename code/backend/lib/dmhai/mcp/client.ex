@@ -78,7 +78,7 @@ defmodule Dmhai.MCP.Client do
   On 401 attempts a one-shot OAuth refresh + retry; on still-401
   returns `{:error, :unauthorized}` — the caller flips status to
   `needs_auth` and the model re-prompts the user via
-  `connect_service`.
+  `connect_mcp`.
   """
   @spec call_tool(String.t(), String.t(), String.t(), map()) ::
           {:ok, term()} | {:error, term()}
@@ -101,20 +101,20 @@ defmodule Dmhai.MCP.Client do
           |> unwrap_result()
 
         case res do
-          {:error, {:status, 401, _body}} when retry? and conn.cred_kind == "oauth2_mcp" ->
+          {:error, {:status, 401, _body, _hdrs}} when retry? and conn.cred_kind == "oauth2_mcp" ->
             handle_401_refresh(user_id, conn, tool_name, args)
 
-          {:error, {:status, 401, _body}} ->
+          {:error, {:status, 401, _body, _hdrs}} ->
             {:error, :unauthorized}
 
           other ->
             other
         end
 
-      {:error, {:status, 401, _body}} when retry? and conn.cred_kind == "oauth2_mcp" ->
+      {:error, {:status, 401, _body, _hdrs}} when retry? and conn.cred_kind == "oauth2_mcp" ->
         handle_401_refresh(user_id, conn, tool_name, args)
 
-      {:error, {:status, 401, _body}} ->
+      {:error, {:status, 401, _body, _hdrs}} ->
         {:error, :unauthorized}
 
       err ->
@@ -134,7 +134,7 @@ defmodule Dmhai.MCP.Client do
         # the model: (a) stops seeing this service's tools in its
         # catalog and (b) sees the `[needs re-auth]` annotation in
         # the §Authorized MCP services block, which routes it to
-        # `connect_service` for recovery. Returning `:needs_auth`
+        # `connect_mcp` for recovery. Returning `:needs_auth`
         # rather than `:unauthorized` lets the surface-level error
         # in the chat be specific.
         Dmhai.MCP.Registry.mark_needs_auth(user_id, conn.alias)
@@ -207,7 +207,7 @@ defmodule Dmhai.MCP.Client do
   # find SOMETHING for the canonical resource and route through the
   # standard pipeline. Subsequent calls send `MCP-Resource:` only
   # (Resource Indicator stays for spec compliance) and skip auth
-  # headers entirely. See `Tools.ConnectService` for the
+  # headers entirely. See `Tools.ConnectMcp` for the
   # storage-side contract.
   defp build_auth("none_mcp", _payload, resource),
     do: {:ok, %{type: "none", canonical_resource: resource}}

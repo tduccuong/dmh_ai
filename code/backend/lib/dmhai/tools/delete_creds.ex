@@ -39,9 +39,9 @@ defmodule Dmhai.Tools.DeleteCreds do
   @impl true
   def description do
     """
-    Remove a saved credential by target. Use ONLY on explicit user request ("forget my password for X", "remove the saved key for Y"). Don't auto-delete on lookup misses — `is_expired=true` from `lookup_creds` is a refresh signal, not a delete signal.
+    Remove a saved credential. ONLY on explicit user request ("forget my password for X"). `is_expired=true` from `lookup_creds` is a refresh signal, NOT a delete signal.
 
-    For `mcp:<canonical>` targets the deletion ALSO disconnects the service: the authorization is revoked at the AS (RFC 7009 best-effort), the `authorized_services` row is dropped, and every task currently holding that service detaches. Effectively a "disconnect this service entirely" verb when the target is an MCP one.
+    For `mcp:<canonical>` targets, also disconnects the service: revokes at the AS (RFC 7009, best-effort), drops the `authorized_services` row, detaches every task holding it.
     """
   end
 

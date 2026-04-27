@@ -58,7 +58,7 @@ defmodule Itgr.McpNeedsAuth do
       :ok = Registry.mark_needs_auth(ctx.user_id, ctx.alias)
       assert Registry.find_authorized(ctx.user_id, ctx.alias).status == "needs_auth"
 
-      # User re-runs connect_service → authorize/5 fires the upsert path.
+      # User re-runs connect_mcp → authorize/5 fires the upsert path.
       Registry.authorize(ctx.user_id, ctx.alias, ctx.canonical, ctx.server_url, %{})
 
       assert Registry.find_authorized(ctx.user_id, ctx.alias).status == "authorized"

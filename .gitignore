@@ -8,7 +8,8 @@ build/
 *.o
 *.so
 *.dll
-mock_mcp/server
+mocks/wiki
+mocks/*.log
 
 # Elixir / Mix (detailed rules live in code/backend/.gitignore)
 *.beam

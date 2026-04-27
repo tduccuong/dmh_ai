@@ -14,7 +14,7 @@ defmodule Dmhai.Agent.AgentSettings do
 
   @defaults %{
     "confidantModel"         => "gemini-3-flash-preview:cloud",
-    "assistantModel"         => "gpt-oss:120b-cloud",
+    "assistantModel"         => "gemma4:31b-cloud",
     "compactorModel"       => "gemini-3-flash-preview:cloud",
     "summarizerModel"      => "gemini-3-flash-preview:cloud",
     "webSearchModel"       => "ministral-3:14b-cloud",
@@ -32,6 +32,16 @@ defmodule Dmhai.Agent.AgentSettings do
   @master_compact_turn_threshold_default 50
   @master_compact_fraction_default 0.45
   @max_assistant_turns_per_chain_default 50
+
+  # Cap on the number of `run_script` calls per single chain. The
+  # (N+1)th run_script is rejected by Police's run_script_probe_budget
+  # gate with a nudge that teaches the model to compose the rest into
+  # ONE more script OR ask the user the specific question probes can't
+  # answer. Default 5: leaves room for genuinely complex API
+  # discovery (probe stages → probe methods → probe fields → execute
+  # → verify) while still surfacing scope walls and missing entities
+  # to the user fast. See architecture.md §Police gate #11.
+  @run_script_probe_budget_default 5
 
   # Estimated usable context window (in tokens) of the assistant LLM.
   # Used by ContextEngine.should_compact? to derive the char-based
@@ -87,7 +97,7 @@ defmodule Dmhai.Agent.AgentSettings do
   @request_input_ttl_secs_default 600
 
   # OAuth2 pending-state TTL (seconds). State token mints when a
-  # `connect_service` flow starts; expires N seconds later. Callbacks
+  # `connect_mcp` flow starts; expires N seconds later. Callbacks
   # past expiry are rejected.
   @oauth_state_ttl_secs_default 600
 
@@ -175,6 +185,9 @@ defmodule Dmhai.Agent.AgentSettings do
   """
   @spec max_assistant_turns_per_chain() :: pos_integer()
   def max_assistant_turns_per_chain, do: int_setting("maxAssistantTurnsPerChain", @max_assistant_turns_per_chain_default)
+
+  @spec run_script_probe_budget() :: pos_integer()
+  def run_script_probe_budget, do: int_setting("runScriptProbeBudget", @run_script_probe_budget_default)
 
   @doc "Minimum post-trim char count for an `extract_content` result to count as 'meaningful' (not blank/scanned)."
   @spec min_extracted_text_chars() :: pos_integer()

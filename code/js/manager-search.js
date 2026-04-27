@@ -418,8 +418,18 @@ UIManager._sendMidChainMessage = async function() {
 // stream_buffer deltas into sessionAtSend and re-renders.
 UIManager.pollTurnToCompletion = function(sessionAtSend, onComplete, onError, abortSignal) {
     var self = this;
-    var ACTIVE_POLL_MS = 500;
-    var MAX_SILENT_POLLS = 1200;  // safety cap ≈ 10 min of 500ms ticks
+    // Adaptive cadence (see specs/architecture.md §FE cadence):
+    //   - 500 ms while the LLM is streaming final-text tokens
+    //     (`stream_buffer != null`) — sub-second visual update.
+    //   - 2000 ms during tool-call waits — tools take seconds, sub-
+    //     second polling there just burns the rate-limit budget.
+    // The actual delay used at each tick is picked from `data.stream_buffer`.
+    var STREAMING_POLL_MS = 500;
+    var TOOL_WAIT_POLL_MS = 2000;
+    // Safety cap. With adaptive cadence, worst case is all 1200 ticks
+    // at 500ms = 10 min of continuous streaming. In practice mixed
+    // streaming/tool-wait, total wall-clock is much higher.
+    var MAX_SILENT_POLLS = 1200;
 
     // Baselines: only return messages / progress newer than what we already have.
     var msgSince = 0;
@@ -562,6 +572,23 @@ UIManager.pollTurnToCompletion = function(sessionAtSend, onComplete, onError, ab
                 }
             }
 
+            // User-initiated chain cancellation: the BE `session_chain_loop`
+            // checks the anchor task's `task_status` at the top of every
+            // turn iteration; on `cancelled`, it appends a
+            // `kind="chain_aborted"` session_progress row as the chain-end
+            // signal (see specs/architecture.md §User-initiated chain
+            // cancellation). When that row hits this poll's progress delta,
+            // tear down via the same path as a normal completion — the
+            // FE's "Stopped by user." status line is rendered by
+            // `renderProgress`, no fabricated assistant message.
+            var sawChainAborted = (data.progress || []).some(function(p) {
+                return p && p.kind === 'chain_aborted';
+            });
+            if (sawChainAborted) {
+                finish(onComplete);
+                return;
+            }
+
             // Completion: a fresh assistant message has landed AND no round
             // is currently streaming tokens.
             //
@@ -583,7 +610,12 @@ UIManager.pollTurnToCompletion = function(sessionAtSend, onComplete, onError, ab
                 return;
             }
 
-            pollTimeoutHandle = setTimeout(tick, ACTIVE_POLL_MS);
+            // Adaptive cadence: 500ms while final-text streaming
+            // (sub-second visual update of new tokens), 2s otherwise
+            // (tool-call wait — sub-second polling here just burns
+            // rate-limit budget without improving perceived latency).
+            var nextDelay = data.stream_buffer ? STREAMING_POLL_MS : TOOL_WAIT_POLL_MS;
+            pollTimeoutHandle = setTimeout(tick, nextDelay);
         } catch (e) {
             finish(function() { onError(e); });
         }

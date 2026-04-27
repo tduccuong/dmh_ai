@@ -182,10 +182,20 @@ defmodule Dmhai.Agent.Tasks do
         # tool catalog reverts on the next chain.
         Dmhai.MCP.Registry.detach_all_for_task(task_id)
     end
+
+    # Flush this task's entries from the rolling tool_history window
+    # into task_turn_archive — completed work stops paying LLM
+    # context-rent on subsequent chains. fetch_task(N) still
+    # surfaces the data from the archive when needed. See
+    # architecture.md §Tool-result retention.
+    if task do
+      Dmhai.Agent.ToolHistory.flush_for_task(task.session_id, task.task_num)
+    end
   end
 
   def mark_cancelled(task_id, task_result \\ nil) do
-    now = System.os_time(:millisecond)
+    task = get(task_id)
+    now  = System.os_time(:millisecond)
 
     if is_binary(task_result) and task_result != "" do
       query!(Repo, """
@@ -209,6 +219,13 @@ defmodule Dmhai.Agent.Tasks do
     # Terminal: drop every MCP service attachment for this task so
     # the per-turn tool catalog reverts on the next chain.
     Dmhai.MCP.Registry.detach_all_for_task(task_id)
+
+    # Flush this task's tool_history entries into task_turn_archive
+    # so the cancelled task stops shipping its tool results to the
+    # LLM on subsequent chains. See architecture.md §Tool-result retention.
+    if task do
+      Dmhai.Agent.ToolHistory.flush_for_task(task.session_id, task.task_num)
+    end
   end
 
   def mark_paused(task_id) do

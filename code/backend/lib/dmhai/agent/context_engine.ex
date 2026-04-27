@@ -178,13 +178,13 @@ defmodule Dmhai.Agent.ContextEngine do
   end
 
   # User-scoped catalog of services the user has authorized at some
-  # point. Included so the model knows what `connect_service` URLs
+  # point. Included so the model knows what `connect_mcp` URLs
   # are already known-good — without this, the model has no view
   # into past authorizations and tends to fall back on `web_search`
   # instead of attaching the right MCP server. Each row carries
   # everything the model needs to make a correct attach call: alias,
   # canonical URL, sample namespaced tool names from the cached
-  # catalog, and a literal `connect_service(...)` template. Empty
+  # catalog, and a literal `connect_mcp(...)` template. Empty
   # list when no services have been authorized.
   defp build_available_services_block(nil), do: []
 
@@ -199,14 +199,14 @@ defmodule Dmhai.Agent.ContextEngine do
         body =
           "## Authorized MCP services\n\n" <>
             "External services this user has authorized previously. They are NOT in your " <>
-            "current tool catalog — to use any of them in this task, call `connect_service` " <>
+            "current tool catalog — to use any of them in this task, call `connect_mcp` " <>
             "with the URL listed below. Re-attachment is fast (auth is cached at user level; no browser dance). " <>
             "Attachments are per-task: every new task that needs a service must re-attach.\n\n" <>
             rows
 
         [
           %{role: "user",      content: body},
-          %{role: "assistant", content: "Understood — I'll call `connect_service` when I need to use one of these."}
+          %{role: "assistant", content: "Understood — I'll call `connect_mcp` when I need to use one of these."}
         ]
     end
   end
@@ -219,16 +219,16 @@ defmodule Dmhai.Agent.ContextEngine do
 
     "- Alias: `#{s.alias}`#{status_tag}, URL: `#{s.canonical_resource}`, " <>
       tools_summary <> ", " <>
-      "Attach: `connect_service(url: \"#{s.canonical_resource}\")`"
+      "Attach: `connect_mcp(url: \"#{s.canonical_resource}\")`"
   end
 
   # Surfaces a `needs_auth` service to the model: the tool catalog is
   # filtered (it can't invoke any of the alias's tools), but the row
   # is still here with a `[needs re-auth]` annotation. The recovery
-  # action — `connect_service(url: …)` — appears on the same line so
+  # action — `connect_mcp(url: …)` — appears on the same line so
   # the model can act on a single read.
   defp format_status_tag("needs_auth"),
-    do: " **[needs re-auth — call `connect_service` to recover]**"
+    do: " **[needs re-auth — call `connect_mcp` to recover]**"
   defp format_status_tag(_), do: ""
 
   defp format_tools_summary([], _alias_), do: "Tools: (catalog refreshed on next attach)"
@@ -376,9 +376,27 @@ defmodule Dmhai.Agent.ContextEngine do
 
   defp render_done_section([], _sub), do: nil
   defp render_done_section(tasks, sub) do
+    # `tasks` is ordered newest-first by `Tasks.recent_done_for_session`
+    # (ORDER BY updated_at DESC). Tag the head with `*[most recent]*` so
+    # the model has an explicit anchor for pronoun resolution in the
+    # NEXT chain ("that server", "the API we just used"). Surface each
+    # row's `task_result` underneath the title — that's the one-line
+    # outcome the model stored at `complete_task` time, and it's the
+    # piece that lets pronouns resolve to concrete referents (server
+    # names, IDs, URLs) without re-fetching the task.
+    # See architecture.md §Task list block.
     lines =
-      Enum.map_join(tasks, "\n", fn t ->
-        "- #{num_label(t)}#{t.task_title}"
+      tasks
+      |> Enum.with_index()
+      |> Enum.map_join("\n", fn {t, idx} ->
+        tag = if idx == 0, do: "  *[most recent]*", else: ""
+        result_line =
+          case Map.get(t, :task_result) do
+            r when is_binary(r) and r != "" -> "\n  #{r}"
+            _ -> ""
+          end
+
+        "- #{num_label(t)}#{t.task_title}#{tag}#{result_line}"
       end)
     "#{sub} done\n\n" <> lines
   end

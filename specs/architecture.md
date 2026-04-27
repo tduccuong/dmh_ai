@@ -295,9 +295,9 @@ GET /sessions/:id/poll?msg_since=<ts>&prog_since=<id>
 
 - `messages` delta: new user / assistant messages persisted since the
   last tick. Usually one at a time.
-- `progress` delta: `session_progress` rows (kind=tool pending/done, or
-  kind=thinking, or kind=summary) since the last tick. Cheap — indexed
-  on `(session_id, id)`.
+- `progress` delta: `session_progress` rows (kind=tool pending/done,
+  kind=thinking, kind=summary, or kind=chain_aborted) since the last
+  tick. Cheap — indexed on `(session_id, id)`.
 - `stream_buffer`: partial text of the in-flight final-answer turn.
   Updated on the BE in-place as tokens arrive from the LLM, capped to a
   hard update cadence (default 250 ms between writes — see
@@ -305,10 +305,18 @@ GET /sessions/:id/poll?msg_since=<ts>&prog_since=<id>
 - `is_working`: `true` when the UserAgent's `current_task` is set or
   `stream_buffer` is non-null. Drives the FE polling cadence.
 
-**FE cadence** (`manager-*` scripts):
+**FE cadence** (`manager-*` scripts) — *adaptive* during active turns:
 
-- Active session + `is_working=true`: **500 ms** poll.
-- Active session + `is_working=false`: **5 s** poll.
+- Active turn + `stream_buffer != null` (final-text streaming): **500 ms** poll.
+  Sub-second visual update of streamed tokens.
+- Active turn + `stream_buffer == null` (tool-call wait): **2 s** poll.
+  Tool calls take seconds-to-tens-of-seconds; sub-second polling
+  during this phase wastes the rate-limit budget without improving
+  perceived latency. Tool-call rows render *optimistically* the
+  moment a new `progress` row of `kind=tool` is seen, so the user
+  sees "Running `<tool>(...)`" within one poll-tick of the BE
+  inserting the row.
+- Active session + `is_working=false` (idle): **5 s** poll.
 - `document.hidden` / session switch: poll paused entirely.
 - Session switch: one `GET /sessions/:id` snapshot to rebuild local
   state, then resume polling on the new session id.
@@ -330,12 +338,16 @@ GET /sessions/:id/poll?msg_since=<ts>&prog_since=<id>
   placeholder is replaced with the permanent message and the buffer
   goes to `null`.
 
-**Latency** (500 ms poll):
-- Tool spinner / tick: visible within 500 ms of tool start / finish.
-- Final-text reveal: updated every 500 ms in chunks as the LLM produces
-  tokens — text grows visibly rather than appearing in one bam. Not
-  token-perfect, but well above the "visibly moving" perceptual
-  threshold.
+**Latency** (adaptive cadence):
+- Tool spinner / tick: visible within 2 s of tool start / finish (the
+  tool-call wait cadence). Acceptable: tools take seconds-to-tens-of-
+  seconds, so a 2 s render delay is invisible against the actual
+  duration. The optimistic render at row-insert time is what makes
+  this feel live.
+- Final-text reveal: updated every 500 ms (streaming cadence) as the
+  LLM produces tokens — text grows visibly rather than appearing in
+  one bam. Not token-perfect, but well above the "visibly moving"
+  perceptual threshold.
 - First byte (user optimistic render → first tool line): ~same as
   today, gated by BE turn dispatch speed.
 
@@ -472,6 +484,26 @@ immediate follow-ups without re-running the tool.
 - Entries age out naturally past the N-turn window; pathological
   extraction marathons are bounded by the byte budget (oldest-first
   eviction).
+- **Flush on task close.** `Tasks.mark_done/2` and `Tasks.mark_cancelled/2`
+  call `ToolHistory.flush_for_task(session_id, task_num)` immediately
+  after flipping `task_status`. The flush moves every retained entry
+  whose `task_num` matches from `sessions.tool_history` into
+  `task_turn_archive` (same path eviction takes), then removes them
+  from the rolling window. Effect: a completed task's tool results
+  stop being shipped to the LLM on every subsequent chain — they're
+  still recoverable via `fetch_task(N)` from the archive, but they
+  no longer pay context-rent. Applies to both one_off and periodic
+  closures (periodic re-arms with a clean rolling window for the
+  next cycle's silent turn).
+- **`fetch_task` pairs stripped before save.** `ToolHistory.save_turn/5`
+  removes any `fetch_task` tool_call / tool_result pairs from the
+  messages it persists. The fetch's result body is a snapshot of
+  another task's archive — that data already lives in the source
+  task's `task_turn_archive` row, so re-storing it under the current
+  chain's tool_history entry (and again on archive-eviction) would
+  duplicate bytes for no model-visible benefit. Other tool_calls
+  emitted in the same assistant batch are preserved; the assistant
+  message is dropped only if `fetch_task` was its sole tool_call.
 - Independent budget from compaction: compaction's char trigger counts
   only `session.messages` text — tool_history is a separate ceiling.
 
@@ -675,20 +707,26 @@ message injection for the full semantics.
 
               ### done
 
-              - `01HQ4Z…ghi` — Research physics
-              - `01HQ4Z…jkl` — Order new bike
+              - (3) Research physics  *[most recent]*
+                Found 4 candidates; recommended Niels Bohr Institute.
+              - (2) Order new bike
+                Ordered the Trek FX3 in matte blue.
 
           Rules:
           - Type sub-sections appear ONLY when they contain at least one task.
           - Non-terminal tasks (pending / ongoing / paused) render the full
-            block (description, status, pickup, attachments). `task_id` is
-            rendered inside the title heading as `` `<id>` — <title> `` so the
-            model always sees the ID adjacent to the title and never needs
-            to invent one.
-          - Done / cancelled tasks render flat under `### done` using the
-            SAME id-prefix format: `- \`<task_id>\` — <task_title>`.
-            Keeps the list manageable as sessions age — the model can call
-            `fetch_task(task_id)` for details (e.g. to redo a task).
+            block (description, status, pickup, attachments). The per-session
+            `(N)` label appears in the title heading as `(N) — <title>` so the
+            model always sees the number adjacent to the title.
+          - Done / cancelled tasks render flat under `### done`. Each row:
+            ``- (N) <task_title>[  *[most recent]*]\n  <task_result>``.
+            The first row carries a `*[most recent]*` tag — done rows are
+            ordered newest-first by `updated_at`, so the head is the
+            natural antecedent when the user's next message uses a pronoun
+            ("that server", "the API we just used"). The `task_result` line
+            beneath each title surfaces the one-line outcome the model
+            stored at `complete_task` time, giving the next chain enough
+            material to resolve those pronouns without re-fetching.
           - Attachments are extracted at render time from lines matching
             `^📎\s+(.+)$` in `task_spec`; the 📎 is stripped when rendering.
             If no matching lines → the **Attachments:** row is omitted.
@@ -1461,7 +1499,7 @@ UNIQUE(user_id, target)
 
 External-service integrations (Slack, Gmail, Bitrix24, custom APIs)
 are wired through MCP rather than per-provider helper tools — see
-`specs/mcp.md` for the `connect_service` flow, the `Auth.OAuth2`
+`specs/mcp.md` for the `connect_mcp` flow, the `Auth.OAuth2`
 metadata-driven client, and the on-disk shape for MCP-issued
 credentials.
 
@@ -1586,11 +1624,11 @@ GenServer and its own task list.
 
 ### Mid-chain user message injection
 
-There is no Stop button and no `/agent/interrupt` endpoint. The user can
-send a new message at any time, including while the assistant is
-mid-chain; the message is persisted and folded into the assistant's
-context as soon as possible — typically on the very next LLM roundtrip
-within the current chain.
+The user can send a new message at any time, including while the
+assistant is mid-chain; the message is persisted and folded into the
+assistant's context as soon as possible — typically on the very next
+LLM roundtrip within the current chain. (For the per-task Stop button,
+see §User-initiated chain cancellation below.)
 
 The design is **stateless DB-driven queuing**. The DB is the source of
 truth; there is no in-memory mailbox tracking pending messages.
@@ -1636,12 +1674,56 @@ Consequences:
   which is typically within 1–10 s. Token burn on the in-flight call
   is accepted as the cost of not having an interrupt path.
 - **Safety nets for runaway behaviour**: Police's 3-strike escalation,
-  `max_assistant_turns_per_chain` cap. No user-initiated hard-stop;
-  if a turn is genuinely stuck, sending a new message ("stop what
-  you're doing, cancel task X") is the escape hatch — the model sees
-  it on the next LLM call and is expected to comply.
+  `max_assistant_turns_per_chain` cap, and the per-task Stop button
+  (see §User-initiated chain cancellation).
 - **No `session_progress` zombie cleanup** — tools always run to
   completion and mark their own progress rows done.
+
+### User-initiated chain cancellation
+
+The sidebar's task list renders a small ⏹ Stop button on every row whose
+`task_status == "ongoing"`. Clicking it POSTs `/tasks/:task_id/cancel`,
+which:
+
+1. Verifies ownership (task → session → user).
+2. Calls `Tasks.mark_cancelled/2` — flips `task_status` to `cancelled`,
+   stores `task_result = "Stopped by user"`, and (for periodic tasks)
+   cancels any armed pickup timer.
+
+The chain itself is not signalled directly. Instead, `session_chain_loop`
+re-reads the anchor task's `task_status` from the DB at the top of every
+turn iteration, BEFORE dispatching the next LLM call. If the status is
+`cancelled`, the loop:
+
+1. Clears `sessions.stream_buffer` (so the FE's streaming placeholder
+   stops updating).
+2. Appends a `session_progress` row with `kind="chain_aborted"` and a
+   short label ("Stopped by user."). This is the **runtime signal of
+   chain end** — *not* a fabricated assistant message; the chat log
+   (`session.messages`) is untouched.
+3. Returns `{:chain_done, watermark_ts}` from the loop, terminating
+   the chain like any other completion.
+
+The FE's `pollTurnToCompletion` watches the `progress` delta for any
+row of `kind="chain_aborted"`; on first sight, it tears down the
+streaming placeholder UI via the same path as a normal `onComplete`.
+The user sees a small "Stopped by user." status line in the chat
+timeline, distinct in styling from assistant messages.
+
+Why the indirect signal (DB poll) instead of a direct GenServer
+message: the truth-source for "is this task cancelled" must be the DB
+row that the cancel-task endpoint wrote, and the chain loop is the
+only piece of code authoritative on "what turn is next" — it owns the
+moment-of-decision. A direct `send/2` to the UserAgent would race
+against the loop's existing self-dispatched continuations and risk
+either a missed cancel or a double-fire. DB-as-truth, polled at the
+top of each turn iteration, is the single point of authority.
+
+What an in-flight tool call (curl, web_fetch, etc.) does when the
+task is cancelled: nothing — it runs to completion. The cancel only
+prevents the NEXT LLM call. This bounds the user's wait to "current
+turn finishes" rather than "chain finishes naturally." For the
+typical case (a multi-turn loop), that's a 1–30 s wait.
 
 ### Boot scan for orphan recovery
 
@@ -1804,18 +1886,24 @@ Checks:
    invoked earlier in THIS chain. Significance key per tool:
    `create_task` → `task_title` (case-insensitive, trimmed);
    `extract_content` → `path` (case-sensitive, Linux FS);
-   `web_search` → `query` (case-insensitive, trimmed). Tools outside
-   that list bypass. Scans both the in-chain message accumulator (prior
-   turns) AND earlier calls in the SAME batch (one LLM response with
-   multiple tool_calls) — `execute_tools/3` threads a rolling pseudo-
-   message list through `Enum.map_reduce/3` so a second call in the
-   same batch sees the first. Cross-chain repeats are NOT flagged here —
+   `web_search` → `query` (case-insensitive, trimmed);
+   `run_script` → `script` **normalised** (comment lines stripped,
+   whitespace runs collapsed). Normalisation matters because models
+   often emit byte-different but semantically-identical scripts —
+   same curl, different header comment ("# Try again", "# Attempt
+   2", "# With correct syntax"). Tools outside that list bypass.
+   Scans both the in-chain message accumulator (prior turns) AND
+   earlier calls in the SAME batch (one LLM response with multiple
+   tool_calls) — `execute_tools/3` threads a rolling pseudo-message
+   list through `Enum.map_reduce/3` so a second call in the same
+   batch sees the first. Cross-chain repeats are NOT flagged here —
    those are addressed by the `## Recently-extracted files` prompt
    block and the `[newly attached]` marker logic. Tagged rejection
    `{:duplicate_tool_call_in_chain, reason}` → `[[ISSUE:...]]` marker →
    `ctx.nudges` counter bump → 3-strike escalation. Catches the
    "create_task twice with same title for one follow-up question"
-   misbehaviour we see on weaker models like gemini-3-flash.
+   misbehaviour AND the "run_script with comment-only changes"
+   loop seen on slower models against under-documented APIs.
 
 7. **Consecutive-web_search** — `check_no_consecutive_web_search/3`
    rejects a `web_search` call when the IMMEDIATELY-PRIOR tool call in
@@ -1968,6 +2056,40 @@ runtime safety net for when this guidance doesn't stick.
     `system_prompt.ex` teach the model the same shape the runtime
     enforces.
 
+11. **`run_script` probe budget** — `check_run_script_probe_budget/3`
+    caps the number of `run_script` calls a single chain may emit at
+    `AgentSettings.run_script_probe_budget()` (default 5). Counts
+    ALL `run_script` calls in the chain accumulator, not just
+    consecutive — once the model is on a probing trajectory,
+    interleaving with `web_fetch` / `read_file` / etc. doesn't reset
+    the count. The (N+1)th `run_script` is rejected with a nudge
+    teaching the model to either compose the rest into ONE more
+    script (chaining values with bash variables across steps) OR
+    end the chain by asking the user the specific question the
+    probes can't answer (which scope to widen, which alternative to
+    accept, which existing field to use).
+
+    Why a hard cap: weaker models default to a small-batch loop —
+    1–3 curls per `run_script`, fire, read, fire 2–3 more, repeat —
+    accumulating 10–20 turns to do a job that ONE composed script
+    plus ONE clarification message could finish. Each separate
+    `run_script` is a full LLM round-trip (10–100 s wall clock at
+    cloud-LLM throughput); the cap pulls a typical task from ~20
+    turns to ~4.
+
+    Tagged rejection `{:run_script_probe_budget, reason}` →
+    `[[ISSUE:...]]` marker → `ctx.nudges` counter → 3-strike
+    escalation, same as other Police gates. The 3-strike ceiling
+    means the model gets up to 3 retries to comply (one composed
+    script, OR a text-turn pivot) before the chain is killed. In
+    practice the first nudge usually lands.
+
+    **Prompt-level counterpart**: §Working with external APIs in
+    `system_prompt.ex` — *Probe, then execute in ONE script* and
+    *Three probe-batches max* — teach the same discipline. Rule
+    #11 is the runtime backstop for when that guidance doesn't
+    stick.
+
 **Prompt-level counterpart to #7**: the Assistant prompt's
 `## Tool selection` section teaches the model WHICH tool matches WHICH
 question shape up-front — "if the user names a service with an HTTP
@@ -2027,15 +2149,21 @@ endpoint, where no user_id is available yet.
 |------|-----|-----|-------|
 | `:auth` | 8 | **IP** (pre-auth) | `/auth/*` — login flood protection |
 | `:upload` | 30 | user | `/assets`, `/describe-video`, `/describe-image` |
-| `:poll` | 200 | user | `/sessions/:id/poll`, `/sessions/:id/tasks`, `/sessions/:id/progress` |
+| `:poll` | 1200 | user | `/sessions/:id/poll`, `/sessions/:id/tasks`, `/sessions/:id/progress` |
 | `:general` | 120 | user | everything else |
 
-**Sizing the `:poll` tier**: the FE's active-turn cadence is 500 ms on
-`/poll` = 120 req/min. Idle cadence is 5 s = 12 req/min. Add task-list
-sidebar polling at ~3 s while tasks are active = 20 req/min. Sum:
-~140 req/min nominal. Cap at 200 leaves headroom for two tabs viewing
-the same session, brief double-polling during session switch, and
-transient bursts while scrolling history.
+**Sizing the `:poll` tier**: the FE's active-turn cadence is adaptive —
+500 ms during final-text streaming, 2 s otherwise (see §FE cadence).
+A long, tool-heavy chain that streams final text intermittently can
+sustain ~120 req/min on `/poll` plus task-list polling at 3 s = 20
+req/min, summing to ~140 req/min nominal — same envelope as the prior
+fixed-500 ms cadence. The 1200/min cap is generous headroom for the
+"task can run for hours" case (where the user keeps the tab open
+through long tool work), multi-tab views, and reconnect bursts. Why
+not lower: a tool-heavy chain that exits the rate-limit budget during
+its run leaves the FE's polling loop with a 429, which surfaces as
+`Poll failed (NNN)` and tears down the streaming UI mid-turn — losing
+the user's view of work that's still happening on the BE.
 
 ### Aggregate load — 50-user SME scenario
 

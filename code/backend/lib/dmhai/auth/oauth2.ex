@@ -17,7 +17,7 @@ defmodule Dmhai.Auth.OAuth2 do
     * `acquire_client_id/3` — establish a client_id (and optional
       client_secret) for the auth server, via Dynamic Client
       Registration (RFC 7591) or by reading manual credentials the
-      user provided in an earlier `connect_service` setup form.
+      user provided in an earlier `connect_mcp` setup form.
     * `init_flow/3` — mint a state token + PKCE verifier, persist a
       `pending_oauth_states` row, return the authorization URL the
       user must visit.

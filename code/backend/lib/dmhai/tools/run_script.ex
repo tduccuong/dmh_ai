@@ -20,28 +20,13 @@ defmodule Dmhai.Tools.RunScript do
     pre_installed = Sandbox.installed_tools() |> Enum.join(", ")
 
     """
-    Write and run a shell script (bash / python / node / …) in ONE call. Do NOT split sequential steps across multiple `run_script` calls — compose them into a single script with pipes, variables, and conditionals.
+    Run a shell script (bash / python / node / …) in ONE call. Compose sequential steps inline with pipes, variables, conditionals — don't split across multiple `run_script` calls.
 
-    ## Sandbox — Alpine Linux, root, `apk`
+    Sandbox: Alpine Linux, root. Output cap 50 KB; default timeout 30 s (max 120 s). Pre-installed: #{pre_installed}, plus BusyBox basics. Package manager is `apk` (NOT apt / yum / dnf): install missing with `apk add --no-cache <pkg>`; Python extras via `pip install <pkg>`.
 
-    Runs inside an Alpine container with root privileges. Output capped at 50 KB; default timeout 30 s (max 120 s). Pre-installed top-level packages: #{pre_installed}. Plus BusyBox basics (`sh`, `awk`, `sed`, `grep`, `find`, `tar`, `gzip`, …).
+    Remote SSH: commands BEFORE `ssh` run in the Alpine sandbox (use `apk`); commands INSIDE `ssh "<cmd>"` run on the remote (use that distro's manager — Ubuntu apt, Fedora dnf, …).
 
-    The package manager is `apk` — NOT `apt` / `yum` / `dnf`. Install anything missing with `apk add --no-cache <pkg>`; Python extras via `pip install <pkg>`.
-
-    ## Plan dependencies before writing
-
-    List every external command your script will invoke. For each, check whether it's in the pre-installed set above. Any command NOT pre-installed must be installed with `apk add --no-cache <pkg>` as an earlier line of the SAME script, before the line that uses it. The recovery rule below is a safety net, not a plan — relying on it always costs an extra turn.
-
-    ## Sandbox vs. remote target
-
-    When your script opens an SSH session to a remote host, two distinct environments are in play:
-
-    1. **Sandbox (Alpine)** — commands BEFORE `ssh` and the `run_script` script body itself. Install prereqs here with `apk`.
-    2. **Remote target** — commands INSIDE the quoted `ssh "<cmd>"` block. Use the REMOTE distro's package manager there (Ubuntu → `apt`, Fedora → `dnf`, …), not Alpine's.
-
-    ## Recovery rule
-
-    If the tool result contains `<cmd>: command not found` on a LOCAL (sandbox-side) command, your next action is `apk add --no-cache <pkg>` and retry. Do NOT pivot to a different approach or fall back to explaining the task manually — you're root, install what you need. Only stop for remote-side failures you genuinely can't unblock (host unreachable, auth denied).
+    On `<cmd>: command not found` (sandbox-side), install via `apk add --no-cache` and retry — don't pivot to a different approach.
     """
   end
 

@@ -476,6 +476,18 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
     to   { transform: rotate(360deg); }
 }
 
+/* Nested progress rows inside an assistant bubble. Sit between the
+   header (top) and the msg-body (bottom), separated by a subtle rule
+   so the tool-call list reads as a distinct block from the final
+   answer text. The negative horizontal margin lets the rows extend
+   to the bubble's inner edges, then re-pad via the existing
+   .progress-row's own padding. */
+.message.assistant .msg-progress-rows {
+    margin: 6px -16px 10px;
+    padding: 4px 0 6px;
+    border-bottom: 1px solid rgba(200, 184, 232, 0.10);
+}
+
 /* ── Task-list sidebar (#102) ─────────────────────────────────────────
    Lives under #sessions-list in the left sidebar. Scoped to the current
    session. Visible only in Assistant mode (Confidant hides via JS).

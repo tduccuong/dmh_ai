@@ -232,7 +232,7 @@ defmodule Dmhai.Router do
   end
 
   # GET /oauth/callback?code=…&state=…
-  # OAuth callback for `connect_service`. Unauthenticated — the state
+  # OAuth callback for `connect_mcp`. Unauthenticated — the state
   # token (single-use, TTL-bounded) ties the request back to a
   # specific user_id + session_id + connection alias. See specs/mcp.md.
   get "/oauth/callback" do

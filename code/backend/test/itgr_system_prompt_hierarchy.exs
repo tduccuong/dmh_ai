@@ -64,7 +64,7 @@ defmodule Itgr.SystemPromptHierarchy do
 
     # Sequence of the top-level sections we rely on elsewhere.
     sections_in_order = [
-      "## Turn shape",
+      "## Chain shape",
       "## Do, don't teach",
       "## Tasks",
       "## Context blocks you will see",

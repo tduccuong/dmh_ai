@@ -42,14 +42,13 @@ defmodule Dmhai.Tools.ProvisionSshIdentity do
   @impl true
   def description do
     """
-    Provision a sandbox-owned SSH identity for a remote host. Call BEFORE attempting `ssh` in `run_script` when key-based authentication is needed and not yet set up. Never ask the user to upload their personal private key — generate a fresh one here instead.
+    Provision a sandbox-owned SSH identity for a remote host. Call BEFORE `ssh` in `run_script` when key auth isn't set up yet. NEVER ask the user for their personal private key.
 
-    First call for a `(user, host)`: generates an ed25519 keypair, persists it under this user, materialises the private key in the sandbox workspace, and returns the public key plus two setup options to relay to the user — (a) password-based one-time install, or (b) pubkey copy-paste into the remote `~/.ssh/authorized_keys`.
+    First call for a `(user, host)`: generates an ed25519 keypair, persists it, materialises the private key in the sandbox, returns the public key plus two setup options to relay — (a) password-based one-time install, or (b) pubkey copy-paste into remote `~/.ssh/authorized_keys`.
 
-    Subsequent calls: returns `status: "ready"` with `private_key_path` already materialised; the model uses `ssh -i <path> <host>` directly.
+    Subsequent calls: returns `status: "ready"` with `private_key_path`; use `ssh -i <path> <host>` directly.
 
-    Argument:
-      host — remote hostname or `user@host` (e.g. `"ubuntu@52.2.230.102"` or `"server.example.com"`).
+    `host` — hostname or `user@host` (e.g. `"ubuntu@52.2.230.102"`).
     """
   end
 

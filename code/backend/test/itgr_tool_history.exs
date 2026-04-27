@@ -215,6 +215,256 @@ defmodule Itgr.ToolHistory do
     assert a1_idx == 1 + length(th1)
   end
 
+  # ─── fetch_task pair stripping in save_turn ─────────────────────────────
+
+  describe "save_turn strips fetch_task pairs" do
+    test "drops a fetch_task tool_call and its matching tool_result" do
+      sid = uid(); uid_ = uid()
+      insert_session(sid, uid_)
+
+      msgs = [
+        %{
+          role: "assistant", content: "",
+          tool_calls: [%{
+            "id" => "ft1",
+            "function" => %{"name" => "fetch_task", "arguments" => %{"task_num" => 2}}
+          }]
+        },
+        %{role: "tool", tool_call_id: "ft1", content: "TASK_2_ARCHIVE_CONTENT (large)"}
+      ]
+
+      :ok = ToolHistory.save_turn(sid, uid_, 1_777_100_000_000, msgs)
+      assert ToolHistory.load(sid) == [], "pure-fetch chain leaves nothing to save"
+    end
+
+    test "preserves non-fetch_task tool_calls in the same batch; drops only fetch's pair" do
+      sid = uid(); uid_ = uid()
+      insert_session(sid, uid_)
+
+      msgs = [
+        %{
+          role: "assistant", content: "",
+          tool_calls: [
+            %{"id" => "rs1", "function" => %{"name" => "run_script", "arguments" => %{"script" => "echo ok"}}},
+            %{"id" => "ft1", "function" => %{"name" => "fetch_task", "arguments" => %{"task_num" => 3}}}
+          ]
+        },
+        %{role: "tool", tool_call_id: "rs1", content: "ok"},
+        %{role: "tool", tool_call_id: "ft1", content: "TASK_3_ARCHIVE (would dup)"}
+      ]
+
+      :ok = ToolHistory.save_turn(sid, uid_, 1_777_101_000_000, msgs)
+      [entry] = ToolHistory.load(sid)
+      stored = entry["messages"]
+
+      # Assistant message kept, with run_script remaining only.
+      asst = Enum.find(stored, &(&1["role"] == "assistant"))
+      assert asst != nil
+      assert length(asst["tool_calls"]) == 1
+      assert hd(asst["tool_calls"])["function"]["name"] == "run_script"
+
+      # Only the run_script tool_result survives.
+      tool_results = Enum.filter(stored, &(&1["role"] == "tool"))
+      assert length(tool_results) == 1
+      assert hd(tool_results)["tool_call_id"] == "rs1"
+      refute Enum.any?(tool_results, fn t -> String.contains?(t["content"], "TASK_3_ARCHIVE") end),
+             "fetch_task result content must not appear in saved entry"
+    end
+
+    test "drops the entire assistant message when fetch_task was its sole tool_call" do
+      sid = uid(); uid_ = uid()
+      insert_session(sid, uid_)
+
+      msgs = [
+        # Solo fetch_task message — drops entirely.
+        %{role: "assistant", content: "",
+          tool_calls: [%{"id" => "ft1",
+                         "function" => %{"name" => "fetch_task", "arguments" => %{"task_num" => 5}}}]},
+        %{role: "tool", tool_call_id: "ft1", content: "fetched data"},
+        # Followed by a real run_script — stays.
+        %{role: "assistant", content: "",
+          tool_calls: [%{"id" => "rs1",
+                         "function" => %{"name" => "run_script", "arguments" => %{"script" => "echo hi"}}}]},
+        %{role: "tool", tool_call_id: "rs1", content: "hi"}
+      ]
+
+      :ok = ToolHistory.save_turn(sid, uid_, 1_777_102_000_000, msgs)
+      [entry] = ToolHistory.load(sid)
+      stored = entry["messages"]
+
+      # Only the run_script pair remains — 1 assistant + 1 tool.
+      assert length(stored) == 2
+      asst = Enum.at(stored, 0)
+      tool = Enum.at(stored, 1)
+      assert asst["role"] == "assistant"
+      assert hd(asst["tool_calls"])["function"]["name"] == "run_script"
+      assert tool["role"] == "tool"
+      assert tool["tool_call_id"] == "rs1"
+    end
+
+    test "passthrough when no fetch_task is present" do
+      sid = uid(); uid_ = uid()
+      insert_session(sid, uid_)
+
+      msgs = stub_extract_messages("t_" <> uid(), "workspace/x.pdf", "extracted")
+      :ok = ToolHistory.save_turn(sid, uid_, 1_777_103_000_000, msgs)
+      [entry] = ToolHistory.load(sid)
+      assert length(entry["messages"]) == 4, "non-fetch chain stored verbatim"
+    end
+  end
+
+  # ─── flush_for_task ──────────────────────────────────────────────────────
+
+  describe "flush_for_task/2" do
+    alias Dmhai.Agent.{Tasks, TaskTurnArchive}
+
+    defp insert_task(sid, uid_) do
+      Tasks.insert(%{
+        session_id:  sid,
+        user_id:     uid_,
+        task_title:  "T",
+        task_spec:   "spec",
+        task_status: "ongoing",
+        task_type:   "one_off"
+      })
+    end
+
+    test "moves matching task's entries from rolling window to task_turn_archive" do
+      sid = uid(); uid_ = uid()
+      insert_session(sid, uid_)
+      task_id = insert_task(sid, uid_)
+      task = Tasks.get(task_id)
+
+      msgs = stub_extract_messages(task_id, "workspace/foo.pdf", "extracted content")
+      :ok = ToolHistory.save_turn(sid, uid_, 1_777_000_000_000, msgs, task.task_num)
+
+      assert length(ToolHistory.load(sid)) == 1
+      assert TaskTurnArchive.fetch_for_task(task_id) == []
+
+      :ok = ToolHistory.flush_for_task(sid, task.task_num)
+
+      assert ToolHistory.load(sid) == [], "task's entries should be removed from rolling window"
+      archive = TaskTurnArchive.fetch_for_task(task_id)
+      assert length(archive) == 4, "task's tool messages should land in task_turn_archive"
+    end
+
+    test "leaves entries from other tasks in place" do
+      sid = uid(); uid_ = uid()
+      insert_session(sid, uid_)
+      task_a = Tasks.get(insert_task(sid, uid_))
+      task_b = Tasks.get(insert_task(sid, uid_))
+
+      :ok = ToolHistory.save_turn(sid, uid_, 1_777_001_000_000,
+              stub_extract_messages(task_a.task_id, "a.pdf", "A content"), task_a.task_num)
+      :ok = ToolHistory.save_turn(sid, uid_, 1_777_002_000_000,
+              stub_extract_messages(task_b.task_id, "b.pdf", "B content"), task_b.task_num)
+
+      assert length(ToolHistory.load(sid)) == 2
+
+      :ok = ToolHistory.flush_for_task(sid, task_a.task_num)
+
+      retained = ToolHistory.load(sid)
+      assert length(retained) == 1, "task B's entry should still be in rolling window"
+      assert hd(retained)["task_num"] == task_b.task_num
+
+      assert length(TaskTurnArchive.fetch_for_task(task_a.task_id)) == 4
+      assert TaskTurnArchive.fetch_for_task(task_b.task_id) == []
+    end
+
+    test "no-op when nil task_num" do
+      sid = uid(); uid_ = uid()
+      insert_session(sid, uid_)
+      task = Tasks.get(insert_task(sid, uid_))
+      :ok = ToolHistory.save_turn(sid, uid_, 1_777_003_000_000,
+              stub_extract_messages(task.task_id, "x.pdf", "x"), task.task_num)
+
+      :ok = ToolHistory.flush_for_task(sid, nil)
+
+      assert length(ToolHistory.load(sid)) == 1
+    end
+
+    test "no-op when task_num doesn't match anything in retention" do
+      sid = uid(); uid_ = uid()
+      insert_session(sid, uid_)
+      task = Tasks.get(insert_task(sid, uid_))
+      :ok = ToolHistory.save_turn(sid, uid_, 1_777_004_000_000,
+              stub_extract_messages(task.task_id, "x.pdf", "x"), task.task_num)
+
+      :ok = ToolHistory.flush_for_task(sid, 9999)
+
+      assert length(ToolHistory.load(sid)) == 1, "no match → no flush"
+    end
+  end
+
+  # ─── Tasks.mark_done / mark_cancelled wire-through ──────────────────────
+
+  describe "task close → flush integration" do
+    alias Dmhai.Agent.{Tasks, TaskTurnArchive}
+
+    test "mark_done flushes the task's tool_history into the archive" do
+      sid = uid(); uid_ = uid()
+      insert_session(sid, uid_)
+      task_id = Tasks.insert(%{
+        session_id:  sid, user_id: uid_,
+        task_title:  "T", task_spec: "spec",
+        task_status: "ongoing", task_type: "one_off"
+      })
+      task = Tasks.get(task_id)
+
+      :ok = ToolHistory.save_turn(sid, uid_, 1_777_005_000_000,
+              stub_extract_messages(task_id, "doc.pdf", "x"), task.task_num)
+      assert length(ToolHistory.load(sid)) == 1
+
+      Tasks.mark_done(task_id, "completed")
+
+      assert ToolHistory.load(sid) == []
+      assert length(TaskTurnArchive.fetch_for_task(task_id)) == 4
+    end
+
+    test "mark_cancelled flushes the task's tool_history into the archive" do
+      sid = uid(); uid_ = uid()
+      insert_session(sid, uid_)
+      task_id = Tasks.insert(%{
+        session_id:  sid, user_id: uid_,
+        task_title:  "T", task_spec: "spec",
+        task_status: "ongoing", task_type: "one_off"
+      })
+      task = Tasks.get(task_id)
+
+      :ok = ToolHistory.save_turn(sid, uid_, 1_777_006_000_000,
+              stub_extract_messages(task_id, "doc.pdf", "x"), task.task_num)
+      assert length(ToolHistory.load(sid)) == 1
+
+      Tasks.mark_cancelled(task_id, "user stopped")
+
+      assert ToolHistory.load(sid) == []
+      assert length(TaskTurnArchive.fetch_for_task(task_id)) == 4
+    end
+
+    test "periodic mark_done flushes too (next cycle starts with clean rolling window)" do
+      sid = uid(); uid_ = uid()
+      insert_session(sid, uid_)
+      task_id = Tasks.insert(%{
+        session_id:  sid, user_id: uid_,
+        task_title:  "P", task_spec: "spec",
+        task_status: "ongoing", task_type: "periodic", intvl_sec: 60
+      })
+      task = Tasks.get(task_id)
+
+      :ok = ToolHistory.save_turn(sid, uid_, 1_777_007_000_000,
+              stub_extract_messages(task_id, "doc.pdf", "x"), task.task_num)
+      assert length(ToolHistory.load(sid)) == 1
+
+      Tasks.mark_done(task_id, "cycle 1 complete")
+
+      # Periodic re-arm: status flipped to pending, but tool_history flushed.
+      assert ToolHistory.load(sid) == []
+      assert length(TaskTurnArchive.fetch_for_task(task_id)) == 4
+      # And the task is still alive (re-armed for next cycle).
+      assert Tasks.get(task_id).task_status == "pending"
+    end
+  end
+
   # String-key normaliser to match the stored shape (JSON-decoded maps).
   defp stringify_keys(msg) do
     msg

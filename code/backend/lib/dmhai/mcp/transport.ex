@@ -43,7 +43,7 @@ defmodule Dmhai.MCP.Transport do
   """
   @spec request(String.t(), map(), map()) ::
           {:ok, map(), %{session_id: String.t() | nil}}
-          | {:error, {:status, integer(), term()} | {:network, term()}}
+          | {:error, {:status, integer(), term(), [{String.t(), String.t()}]} | {:network, term()}}
   def request(server_url, %{method: method} = req, auth \\ %{}) when is_binary(server_url) do
     body = %{
       "jsonrpc" => "2.0",
@@ -72,8 +72,13 @@ defmodule Dmhai.MCP.Transport do
         {:ok, %{status: 200, body: resp_body, headers: resp_headers}} ->
           {:ok, decode_body(resp_body), %{session_id: extract_session_id(resp_headers)}}
 
-        {:ok, %{status: status, body: resp_body}} ->
-          {:error, {:status, status, decode_body(resp_body)}}
+        {:ok, %{status: status, body: resp_body, headers: resp_headers}} ->
+          # Surface response headers on non-200s too — Phase D's
+          # probe-first cascade reads `WWW-Authenticate` on 401 to
+          # find the spec-mandated `resource_metadata=<PRM URL>`
+          # hint per RFC 9728 §5.1, which beats guessing the PRM
+          # location via the RFC 8615 well-known construction.
+          {:error, {:status, status, decode_body(resp_body), normalize_headers(resp_headers)}}
 
         {:error, reason} ->
           {:error, {:network, reason}}
@@ -103,6 +108,28 @@ defmodule Dmhai.MCP.Transport do
   end
 
   defp extract_session_id(_), do: nil
+
+  # Normalise Req's variable header shapes into a flat
+  # `[{lowercased_key, value}]` list — Req sometimes returns a map,
+  # sometimes a list of tuples, and value strings can themselves be
+  # lists of one element. Callers get a stable shape they can grep.
+  defp normalize_headers(h) when is_map(h) do
+    Enum.flat_map(h, fn
+      {k, v} when is_binary(v) -> [{String.downcase(to_string(k)), v}]
+      {k, [v | _]}              -> [{String.downcase(to_string(k)), v}]
+      _                         -> []
+    end)
+  end
+
+  defp normalize_headers(h) when is_list(h) do
+    Enum.flat_map(h, fn
+      {k, v} when is_binary(v) -> [{String.downcase(to_string(k)), v}]
+      {k, [v | _]}              -> [{String.downcase(to_string(k)), v}]
+      _                         -> []
+    end)
+  end
+
+  defp normalize_headers(_), do: []
 
   defp build_headers(%{type: "bearer", token: token} = auth, session_id) when is_binary(token) do
     [{"accept", "application/json, text/event-stream"}, {"authorization", "Bearer " <> token}]

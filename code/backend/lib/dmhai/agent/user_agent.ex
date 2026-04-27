@@ -867,6 +867,19 @@ defmodule Dmhai.Agent.UserAgent do
   # current input and decides what to do turn-by-turn. No plan/exec/signal
   # protocol, no classifier/loop split.
 
+  @doc false
+  # Public for unit testing in `itgr_pivot_two_chains.exs`. Not part
+  # of the module's user-facing API; subject to change without notice.
+  #
+  # Direct synchronous entry point for chain-driver tests. Skips the
+  # GenServer + `dispatch_run` plumbing so tests don't have to orchestrate
+  # `current_task` watch + `auto_resume_assistant` messages. Production
+  # callers still go through `dispatch_assistant/2`.
+  def run_for_test(%AssistantCommand{} = command, user_id, session_data) when is_binary(user_id) do
+    state = %__MODULE__{user_id: user_id}
+    run_assistant(command, state, session_data)
+  end
+
   defp run_assistant(%AssistantCommand{session_id: session_id} = command, state, session_data) do
     user_id = state.user_id
     model   = AgentSettings.assistant_model()
@@ -1016,6 +1029,28 @@ defmodule Dmhai.Agent.UserAgent do
     # runtime ctx. See architecture.md §Anchor mutation.
     {messages, ctx} = maybe_refresh_anchor_block(messages, ctx)
 
+    # User-initiated chain cancellation: if the anchor task's
+    # task_status flipped to "cancelled" since the last turn (typically
+    # because the user clicked the sidebar Stop button → POST
+    # /tasks/:task_id/cancel → Tasks.mark_cancelled/2), end the chain
+    # here. The DB row is the truth-source — no GenServer signal, no
+    # message-text parsing. We append a `kind="chain_aborted"`
+    # session_progress row as the FE-visible chain-end signal (rendered
+    # as a small status line, not a fabricated assistant message), clear
+    # the stream buffer, and return like any normal completion. See
+    # architecture.md §User-initiated chain cancellation.
+    if anchor_task_cancelled?(ctx) do
+      _ = StreamBuffer.clear(ctx.session_id, ctx.user_id)
+      progress_ctx = %{
+        session_id: ctx.session_id,
+        user_id:    ctx.user_id,
+        task_id:    anchor_task_id_from_ctx(ctx)
+      }
+      {:ok, _} = Dmhai.Agent.SessionProgress.append(
+        progress_ctx, "chain_aborted", "Stopped by user.")
+      {:chain_done, max_user_ts_in_messages(messages)}
+    else
+
     if turn >= max_turns do
       msg = Dmhai.I18n.t("turn_cap_reached", "en", %{max: max_turns})
       cap_msg = maybe_tag_task_num(%{role: "assistant", content: msg}, ctx)
@@ -1085,16 +1120,16 @@ defmodule Dmhai.Agent.UserAgent do
           end)
 
           # Chain-terminating-with-form tools: `request_input` always
-          # emits a form; `connect_service` may emit one (the
+          # emits a form; `connect_mcp` may emit one (the
           # `needs_setup` branch). Suppress separate narration
           # persistence for both — when a form lands in the tool
           # results, the narration rides on the form-bearing assistant
-          # message; when no form lands (e.g. `connect_service` returns
+          # message; when no form lands (e.g. `connect_mcp` returns
           # `needs_auth` or `connected`), the chain recurses and the
           # narration sits in the in-memory `assistant_msg` for the
           # next LLM call without being shown to the user.
           may_emit_form? = Enum.any?(calls, fn c ->
-            (get_in(c, ["function", "name"]) || "") in ~w(request_input connect_service)
+            (get_in(c, ["function", "name"]) || "") in ~w(request_input connect_mcp)
           end)
 
           if String.trim(clean_narration) != "" and not closes_chain? and not may_emit_form? do
@@ -1130,7 +1165,7 @@ defmodule Dmhai.Agent.UserAgent do
               # chain. The next chain — auto-resumed when the user
               # submits — picks up either the synthesised user-role
               # message (request_input) or the service_connected
-              # message (connect_service api_key submission).
+              # message (connect_mcp api_key submission).
               #
               # Inject a placeholder when the model's narration was
               # empty: an assistant message with `content: ""` and no
@@ -1313,6 +1348,7 @@ defmodule Dmhai.Agent.UserAgent do
           {:chain_done, max_user_ts_in_messages(messages)}
       end
     end
+    end
   end
 
   # Decide whether an LLM-error reason is a SYSTEM-class failure
@@ -1431,7 +1467,7 @@ defmodule Dmhai.Agent.UserAgent do
   # Look at every tool result in the batch and return the first one
   # whose JSON-encoded content carries a top-level `"form"` field.
   # Tool-name-agnostic — works for both `request_input` (always
-  # form-bearing) and `connect_service` (form-bearing only on the
+  # form-bearing) and `connect_mcp` (form-bearing only on the
   # `needs_setup` branch). Returns the form map (string keys) ready
   # for embedding in `session.messages`, or `nil` when no result in
   # the batch carried a form.
@@ -1470,9 +1506,27 @@ defmodule Dmhai.Agent.UserAgent do
     end
   end
 
+  # User-initiated chain cancellation: the sidebar Stop button POSTs
+  # `/tasks/:task_id/cancel` which flips `task_status` to `cancelled`.
+  # `session_chain_loop` calls this at the top of every turn iteration to
+  # decide whether to keep going. DB row is the truth-source. Returns
+  # false when there's no anchor (no chain to cancel) or the task is
+  # still ongoing/paused/done. See architecture.md
+  # §User-initiated chain cancellation.
+  defp anchor_task_cancelled?(%{} = ctx) do
+    case anchor_task_id_from_ctx(ctx) do
+      nil -> false
+      task_id ->
+        case Tasks.get(task_id) do
+          %{task_status: "cancelled"} -> true
+          _                            -> false
+        end
+    end
+  end
+
   defp fallback_content_for_form(form) when is_map(form) do
     case form["kind"] || form[:kind] do
-      "connect_service_setup" -> "Setting up the connection — please fill in the form below."
+      "connect_mcp_setup" -> "Setting up the connection — please fill in the form below."
       _                        -> "Please fill in the form below."
     end
   end
@@ -1683,7 +1737,15 @@ defmodule Dmhai.Agent.UserAgent do
                # nudge TEACHES the correct loop: digest → dig with a
                # different tool → re-search only if a genuine gap remains.
                :ok <- Dmhai.Agent.Police.check_no_consecutive_web_search(name, args, prior_acc),
-               # Police gate 6 — one periodic task per session. Rejects
+               # Police gate 6 — `run_script` probe budget. Caps total
+               # `run_script` calls per chain at AgentSettings.run_script_probe_budget()
+               # (default 5). The (N+1)th run_script is rejected with a
+               # nudge teaching the model to either compose the rest into
+               # ONE more script OR ask the user the specific question
+               # probes can't answer. Backstop for the prompt rule
+               # "Three probe-batches max" in §Working with external APIs.
+               :ok <- Dmhai.Agent.Police.check_run_script_probe_budget(name, args, prior_acc),
+               # Police gate 7 — one periodic task per session. Rejects
                # create_task(task_type: "periodic") when the session
                # already has an active periodic. Without this a model
                # can spawn multiple periodics for one user ask, each

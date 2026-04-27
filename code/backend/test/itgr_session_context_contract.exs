@@ -268,12 +268,71 @@ defmodule Itgr.SessionContextContract do
     end
 
     test ":ok for unrecognised tools (no significance key defined)" do
-      # Tools outside (create_task, extract_content, web_search) bypass —
-      # too niche to define dedup semantics for yet.
+      # Tools outside (create_task, extract_content, web_search,
+      # run_script, task verbs) bypass — too niche to define dedup
+      # semantics for yet.
       prior = [assistant_tool_msg("datetime", %{})]
 
       assert :ok =
                Police.check_no_duplicate_tool_call("datetime", %{}, prior)
+    end
+
+    test "rejects duplicate run_script with byte-identical script" do
+      script = "curl -s https://api.example.com/foo | jq ."
+      prior = [assistant_tool_msg("run_script", %{"script" => script})]
+
+      assert {:rejected, {:duplicate_tool_call_in_chain, reason}} =
+               Police.check_no_duplicate_tool_call(
+                 "run_script", %{"script" => script}, prior)
+
+      assert reason =~ "`run_script`"
+      assert reason =~ "normalized script"
+    end
+
+    test "rejects duplicate run_script with comment-only differences" do
+      # Real-world failure: model loops on the same curl, varying only
+      # the leading comment. Normalisation strips comments → match.
+      first  = """
+      # Fetch the deal stages
+      curl -s https://api.example.com/stages | jq '.result'
+      """
+      second = """
+      # Try fetching deal stages again with the correct syntax
+      curl -s https://api.example.com/stages | jq '.result'
+      """
+      prior = [assistant_tool_msg("run_script", %{"script" => first})]
+
+      assert {:rejected, {:duplicate_tool_call_in_chain, _}} =
+               Police.check_no_duplicate_tool_call(
+                 "run_script", %{"script" => second}, prior)
+    end
+
+    test "rejects duplicate run_script with whitespace-only differences" do
+      first  = "curl -s https://api.example.com/foo  |   jq ."
+      second = "curl -s https://api.example.com/foo | jq ."
+      prior = [assistant_tool_msg("run_script", %{"script" => first})]
+
+      assert {:rejected, {:duplicate_tool_call_in_chain, _}} =
+               Police.check_no_duplicate_tool_call(
+                 "run_script", %{"script" => second}, prior)
+    end
+
+    test ":ok when run_script scripts differ in URL / args / flags" do
+      first  = "curl -s https://api.example.com/stages | jq '.result'"
+      second = "curl -s https://api.example.com/users | jq '.result'"
+      prior = [assistant_tool_msg("run_script", %{"script" => first})]
+
+      assert :ok =
+               Police.check_no_duplicate_tool_call(
+                 "run_script", %{"script" => second}, prior)
+    end
+
+    test ":ok when run_script script is empty / missing" do
+      prior = [assistant_tool_msg("run_script", %{"script" => ""})]
+
+      assert :ok =
+               Police.check_no_duplicate_tool_call(
+                 "run_script", %{"script" => ""}, prior)
     end
 
     test ":ok when significance key arg is missing / empty" do
@@ -409,6 +468,110 @@ defmodule Itgr.SessionContextContract do
       assert {:rejected, {:consecutive_web_search, _}} =
                Police.check_no_consecutive_web_search(
                  "web_search", %{"query" => "q"}, prior)
+    end
+  end
+
+  # ─── run_script probe-budget Police gate ─────────────────────────────────
+
+  describe "Police.check_run_script_probe_budget/3" do
+    defp rs_msg(script) do
+      %{"role" => "assistant", "tool_calls" => [
+        %{"id" => uid(),
+          "function" => %{"name" => "run_script", "arguments" => %{"script" => script}}}
+      ]}
+    end
+
+    test ":ok when no prior run_scripts" do
+      assert :ok =
+               Police.check_run_script_probe_budget(
+                 "run_script", %{"script" => "echo hi"}, [])
+    end
+
+    test ":ok with 1 prior run_script (under budget)" do
+      prior = [rs_msg("curl https://example.com/probe1")]
+
+      assert :ok =
+               Police.check_run_script_probe_budget(
+                 "run_script", %{"script" => "curl https://example.com/probe2"}, prior)
+    end
+
+    test ":ok with 4 prior run_scripts (still under budget=5)" do
+      prior = [
+        rs_msg("curl https://example.com/probe1"),
+        rs_msg("curl https://example.com/probe2"),
+        rs_msg("curl https://example.com/probe3"),
+        rs_msg("curl https://example.com/probe4")
+      ]
+
+      assert :ok =
+               Police.check_run_script_probe_budget(
+                 "run_script", %{"script" => "curl https://example.com/probe5"}, prior)
+    end
+
+    test "rejects 6th run_script when 5 prior run_scripts exist" do
+      prior =
+        Enum.map(1..5, fn i ->
+          rs_msg("curl https://example.com/probe#{i}")
+        end)
+
+      assert {:rejected, {:run_script_probe_budget, reason}} =
+               Police.check_run_script_probe_budget(
+                 "run_script", %{"script" => "curl https://example.com/probe6"}, prior)
+
+      assert reason =~ "probed enough"
+      assert reason =~ "ONLY one more chance"
+      assert reason =~ "ask the user"
+    end
+
+    test ":ok when current call isn't run_script (gate scoped to run_script only)" do
+      prior =
+        Enum.map(1..5, fn i ->
+          rs_msg("curl https://example.com/probe#{i}")
+        end)
+
+      assert :ok =
+               Police.check_run_script_probe_budget(
+                 "web_search", %{"query" => "anything"}, prior)
+    end
+
+    test "counts run_scripts even when interleaved with other tools" do
+      # Once on a probing trajectory, mixing in other tools doesn't reset.
+      prior = [
+        rs_msg("curl ... probe1"),
+        %{"role" => "assistant", "tool_calls" => [
+          %{"id" => uid(),
+            "function" => %{"name" => "web_fetch",
+                            "arguments" => %{"url" => "https://docs.example.com/"}}}
+        ]},
+        rs_msg("curl ... probe2"),
+        %{"role" => "assistant", "tool_calls" => [
+          %{"id" => uid(),
+            "function" => %{"name" => "read_file",
+                            "arguments" => %{"path" => "workspace/notes.md"}}}
+        ]},
+        rs_msg("curl ... probe3"),
+        rs_msg("curl ... probe4"),
+        rs_msg("curl ... probe5")
+      ]
+
+      assert {:rejected, {:run_script_probe_budget, _}} =
+               Police.check_run_script_probe_budget(
+                 "run_script", %{"script" => "curl ... probe6"}, prior)
+    end
+
+    test "counts intra-batch run_scripts (multiple tool_calls in one assistant msg)" do
+      # Model emits 5 run_scripts in a single batch — the 6th in a
+      # subsequent batch should still trip the gate.
+      prior = [%{"role" => "assistant", "tool_calls" =>
+        Enum.map(1..5, fn i ->
+          %{"id" => uid(),
+            "function" => %{"name" => "run_script", "arguments" => %{"script" => "s#{i}"}}}
+        end)
+      }]
+
+      assert {:rejected, {:run_script_probe_budget, _}} =
+               Police.check_run_script_probe_budget(
+                 "run_script", %{"script" => "extra"}, prior)
     end
   end
 

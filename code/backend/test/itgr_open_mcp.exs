@@ -30,7 +30,7 @@ defmodule Itgr.OpenMcp do
   alias Dmhai.Auth.Credentials
   alias Dmhai.MCP.{Client, Registry}
   alias Dmhai.Repo
-  alias Dmhai.Tools.ConnectService
+  alias Dmhai.Tools.ConnectMcp
   import Ecto.Adapters.SQL, only: [query!: 3]
 
   defp uid, do: T.uid()
@@ -186,7 +186,7 @@ defmodule Itgr.OpenMcp do
       stub_open_server(url)
 
       assert {:ok, %{status: "connected", alias: alias_}} =
-               ConnectService.execute(%{"url" => url, "auth_method" => "none"}, ctx(c))
+               ConnectMcp.execute(%{"url" => url, "auth_method" => "none"}, ctx(c))
 
       cred = Credentials.lookup(c.user_id, "mcp:" <> url)
       assert cred != nil
@@ -217,7 +217,7 @@ defmodule Itgr.OpenMcp do
       stub_open_server(url)
 
       assert {:ok, %{status: "connected"}} =
-               ConnectService.execute(%{"url" => url, "auth_method" => "none"}, ctx(c))
+               ConnectMcp.execute(%{"url" => url, "auth_method" => "none"}, ctx(c))
 
       assert Credentials.lookup(c.user_id, "mcp:" <> url).kind == "none_mcp"
     end
@@ -243,7 +243,7 @@ defmodule Itgr.OpenMcp do
       stub_gated_server(url)
 
       assert {:error, msg} =
-               ConnectService.execute(%{"url" => url, "auth_method" => "none"}, ctx(c))
+               ConnectMcp.execute(%{"url" => url, "auth_method" => "none"}, ctx(c))
 
       assert msg =~ "no-auth connect failed"
     end
@@ -253,7 +253,7 @@ defmodule Itgr.OpenMcp do
       stub_network_error(url)
 
       assert {:error, msg} =
-               ConnectService.execute(%{"url" => url, "auth_method" => "none"}, ctx(c))
+               ConnectMcp.execute(%{"url" => url, "auth_method" => "none"}, ctx(c))
 
       assert msg =~ "no-auth connect failed"
     end
@@ -262,13 +262,13 @@ defmodule Itgr.OpenMcp do
   # ─── 5. already-authorized re-attach for none_mcp ─────────────────────
 
   describe "already_authorized re-attach for none_mcp" do
-    test "second connect_service on the same open URL re-attaches without form", c do
+    test "second connect_mcp on the same open URL re-attaches without form", c do
       url = "https://open.example.test/reattach_" <> uid()
       stub_open_server(url)
 
       # First call — fresh open connect.
       assert {:ok, %{status: "connected", alias: alias_}} =
-               ConnectService.execute(%{"url" => url, "auth_method" => "none"}, ctx(c))
+               ConnectMcp.execute(%{"url" => url, "auth_method" => "none"}, ctx(c))
 
       # Second call — `auth_method: "auto"` should hit the
       # already_authorized_and_attach branch (build_handshake_ctx now
@@ -287,7 +287,7 @@ defmodule Itgr.OpenMcp do
       ctx2 = %{user_id: c.user_id, session_id: c.sid, anchor_task_num: anchor_n2}
 
       assert {:ok, %{status: "connected", alias: ^alias_}} =
-               ConnectService.execute(%{"url" => url, "auth_method" => "auto"}, ctx2)
+               ConnectMcp.execute(%{"url" => url, "auth_method" => "auto"}, ctx2)
 
       # Service is now attached to BOTH tasks.
       attached_first  = Registry.attached_aliases(c.anchor_task_id)

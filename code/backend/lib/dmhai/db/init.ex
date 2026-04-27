@@ -256,7 +256,7 @@ defmodule Dmhai.DB.Init do
 
     query!(Repo, "CREATE INDEX IF NOT EXISTS idx_user_credentials_user ON user_credentials (user_id)")
 
-    # Pending OAuth2 state tokens for the connect_service flow. One
+    # Pending OAuth2 state tokens for the connect_mcp flow. One
     # row per in-flight authorization. Carries everything needed to
     # exchange the code and attach the service to the originating
     # task without re-doing discovery: PKCE verifier, client_id (and
@@ -303,7 +303,7 @@ defmodule Dmhai.DB.Init do
       server_tools_json      TEXT,
       server_tools_cached_at INTEGER,
       -- Lifecycle: 'authorized' (token works) | 'needs_auth' (token
-      -- refresh failed AS-side; model must call connect_service to
+      -- refresh failed AS-side; model must call connect_mcp to
       -- recover). `tools_for_task/2` filters out needs_auth services
       -- so the LLM doesn't emit names it can no longer invoke; the
       -- §Authorized MCP services context block surfaces them with a

@@ -48,7 +48,7 @@ defmodule Dmhai.MCP.Registry do
   Upsert an authorized-service row. Cache invalidated.
 
   On conflict, `status` is reset to `'authorized'` — re-running
-  `connect_service` after a `needs_auth` flip is the recovery
+  `connect_mcp` after a `needs_auth` flip is the recovery
   action, and a fresh authorize means the token works again.
   """
   @spec authorize(String.t(), String.t(), String.t(), String.t(), map() | nil) :: :ok
@@ -85,7 +85,7 @@ defmodule Dmhai.MCP.Registry do
     * `tools_for_task/2` filters this service's tools out of the
       LLM-visible catalog (no names to hallucinate).
     * The §Authorized MCP services context block annotates the row
-      `[needs re-auth]`, telling the model to call `connect_service`
+      `[needs re-auth]`, telling the model to call `connect_mcp`
       with the same URL.
     * A subsequent successful `authorize/5` (i.e. the user
       re-completed the OAuth dance) resets status back to
@@ -275,7 +275,7 @@ defmodule Dmhai.MCP.Registry do
     # MCP services context block surfaces them with a re-auth hint),
     # but they don't contribute tool names to the LLM-visible catalog
     # — invoking those would just 401 again until the user re-runs
-    # `connect_service`.
+    # `connect_mcp`.
     |> Enum.reject(&(&1.status == "needs_auth"))
     |> Map.new(fn auth ->
       entries =

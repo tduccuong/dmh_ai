@@ -47,7 +47,7 @@ defmodule Dmhai.Tools.Registry do
     Dmhai.Tools.LookupCreds,
     Dmhai.Tools.DeleteCreds,
     Dmhai.Tools.RequestInput,
-    Dmhai.Tools.ConnectService,
+    Dmhai.Tools.ConnectMcp,
     Dmhai.Tools.ProvisionSshIdentity
   ]
 

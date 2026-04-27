@@ -6,7 +6,7 @@ Let DMH-AI users connect to **arbitrary** external services (Slack, Gmail, Bitri
 
 The strategy: **DMH-AI is an MCP client.** When the user wants to use a service, the harness connects to its MCP server; the server's tool catalog becomes additional tools the LLM can invoke. Authentication uses the MCP authorization framework (OAuth 2.1 + PRM/ASM discovery + Resource Indicators).
 
-One tool — `connect_service(url)` — covers the entire ecosystem.
+One tool — `connect_mcp(url)` — covers the entire ecosystem.
 
 ## Scoping model
 
@@ -19,9 +19,9 @@ Two tiers, separately persisted:
 Lifecycle:
 - New session: no anchor task ⇒ MCP catalog is empty, regardless of how many services the user has authorized in the past.
 - Task created: still empty until something attaches a service.
-- `connect_service` runs successfully: authorizes (if needed) AND attaches the service to the current anchor task. Tools become live on the next chain turn.
+- `connect_mcp` runs successfully: authorizes (if needed) AND attaches the service to the current anchor task. Tools become live on the next chain turn.
 - `complete_task` / `cancel_task`: every `task_services` row for that task drops. Next turn's catalog reverts to whatever's attached to whatever task is now active (often nothing).
-- `pause_task`: attachments persist. Resume (`pickup_task`) reuses them without re-running `connect_service`.
+- `pause_task`: attachments persist. Resume (`pickup_task`) reuses them without re-running `connect_mcp`.
 
 Token-cost effect: the model sees only the tools its current task explicitly attached. A user with 5 authorized services across 100+ tools spends per-turn token budget only on the 1-2 services this task attached.
 
@@ -31,7 +31,7 @@ Token-cost effect: the model sees only the tools its current task explicitly att
 - The MCP client (`Dmhai.MCP.Client`).
 - Discovery + OAuth handshake (`Dmhai.Auth.Discovery` + `Dmhai.Auth.OAuth2`).
 - Token storage (`Dmhai.Auth.Credentials`).
-- The single `connect_service` tool.
+- The single `connect_mcp` tool.
 - Per-task dynamic tool catalog.
 
 **Out of scope:**
@@ -52,7 +52,7 @@ lib/dmhai/
     transport.ex     # Streamable HTTP transport (Mcp-Session-Id threaded)
     registry.ex      # authorized_services + task_services + per-user tools cache
   tools/
-    connect_service.ex   # the single user-facing tool
+    connect_mcp.ex   # the single user-facing tool
     request_input.ex
     save_creds.ex
     lookup_creds.ex
@@ -62,12 +62,12 @@ lib/dmhai/
 ## The single tool
 
 ```
-connect_service(url, alias?, auth_method?)
+connect_mcp(url, alias?, auth_method?)
 ```
 
 `url` identifies the service. `alias` is an optional friendly name (defaults to a host-derived slug). `auth_method` is `"auto"` (default, runs spec-compliant discovery) | `"api_key"` (static-header form) | `"oauth"` (manual OAuth-without-discovery form) | `"none"` (open MCP, no auth).
 
-Police gates `connect_service` in `@gated_tools`: the model must establish an anchor task (`create_task` or `pickup_task`) before calling it. Tool execution attaches the service to that task on success.
+Police gates `connect_mcp` in `@gated_tools`: the model must establish an anchor task (`create_task` or `pickup_task`) before calling it. Tool execution attaches the service to that task on success.
 
 Return values are one of:
 
@@ -80,7 +80,7 @@ Return values are one of:
 ## Flow
 
 ```
-connect_service(url, alias?, auth_method?)  with anchor_task_id from ctx
+connect_mcp(url, alias?, auth_method?)  with anchor_task_id from ctx
   │
   ├─ 0. Already-authorized check
   │     authorized_services row exists for (user_id, alias) AND
@@ -202,7 +202,7 @@ Streamable HTTP. The client:
 - Captures `Mcp-Session-Id` from `initialize`'s response headers and echoes it on every subsequent request — spec-compliant servers reject sessionless calls with `-32600 Session ID required`.
 - Carries `Authorization: Bearer <access_token>` (OAuth) or `<custom-header>: <key>` (API key) per the connection's auth descriptor.
 - Each `call_tool` opens its own session: `initialize` → grab session id → `tools/call`. Two roundtrips per call; sessions are local to one logical operation, not shared across processes.
-- 401 → one transparent OAuth refresh + retry. Still 401: returns `{:error, :unauthorized}`; caller flips status to `needs_auth` and the model re-prompts via `connect_service`.
+- 401 → one transparent OAuth refresh + retry. Still 401: returns `{:error, :unauthorized}`; caller flips status to `needs_auth` and the model re-prompts via `connect_mcp`.
 
 The transport is a separable trait so adding stdio later is parallel work, not a rewrite.
 
@@ -228,13 +228,13 @@ Cache invalidation:
 ## Disconnection
 
 - `delete_creds(target="mcp:<canonical>")` drops the credential row, calls the AS's `revocation_endpoint` if present (RFC 7009), drops the matching `authorized_services` row, and `detach_all_for_task` for any task currently holding the alias. Cache invalidated.
-- A future `disconnect_service(alias)` tool can layer on the same primitives. The model can already chain `delete_creds` for the same effect.
+- A future `disconnect_mcp(alias)` tool can layer on the same primitives. The model can already chain `delete_creds` for the same effect.
 
 ## Prompt — §Connecting external services
 
 System prompt teaches the model:
 
-> When the current task needs tools from an external service the assistant doesn't have, call `connect_service(url, alias?)`. Tools attach to the current task and become available on your next turn. The tool returns either an authorization URL (relay it as a clickable link; chain ends; chain auto-resumes after authorization) or an inline form (relay via the form widget). Tools detach automatically when the task closes — re-call `connect_service` from the next task that needs them.
+> When the current task needs tools from an external service the assistant doesn't have, call `connect_mcp(url, alias?)`. Tools attach to the current task and become available on your next turn. The tool returns either an authorization URL (relay it as a clickable link; chain ends; chain auto-resumes after authorization) or an inline form (relay via the form widget). Tools detach automatically when the task closes — re-call `connect_mcp` from the next task that needs them.
 >
 > If you don't know the URL, ask the user or `web_search` for the provider's MCP endpoint documentation. Don't invent URLs.
 
@@ -242,16 +242,16 @@ System prompt teaches the model:
 
 Phase A — **Spec-compliant MCP path.** Discovery + OAuth 2.1 + DCR/CIMD + MCP handshake (Mcp-Session-Id threaded). End-to-end against any RFC 9728 / 8414 / 8707-compliant MCP server. Smoke target: HuggingFace MCP at `https://huggingface.co/mcp`. Verified by `test/itgr_mcp_huggingface.exs` (run `mix test test/itgr_mcp_huggingface.exs --only network`); the test exercises PRM, ASM, Mcp-Session-Id threading, and canonical-resource shape against real HF.
 
-Phase B — **Manual fallback.** `auth_method = "api_key" | "oauth" | "none"` paths return `needs_setup` forms; submission handler finalizes server-side and dispatches `auto_resume_assistant`. The `oauth` path synthesises an ASM map from the form values (auth + token endpoints, client_id/secret, scopes), saves the `oauth_client:<auth-server>` row so refresh-time reuse works, and feeds the same `Auth.OAuth2.init_flow/1` the `auto` path uses; the user is shown the auth URL inline and the OAuth callback completes the connection. Verified by `test/itgr_oauth_manual_setup.exs` (14 offline tests covering validation, ASM shape, oauth_client persistence, scopes/client_secret optionality, and the `complete_flow` round-trip contract).
+Phase B — **Manual fallback.** `auth_method = "api_key" | "oauth" | "none"` paths return `needs_setup` forms; submission handler finalizes server-side and dispatches `auto_resume_assistant`. The `oauth` path synthesises an ASM map from the form values (auth + token endpoints, client_id/secret, scopes), saves the `oauth_client:<auth-server>` row so refresh-time reuse works, and feeds the same `Auth.OAuth2.init_flow/1` the `auto` path uses; the user is shown the auth URL inline and the OAuth callback completes the connection. Verified offline by `test/itgr_oauth_manual_setup.exs` (14 tests covering validation, ASM shape, oauth_client persistence, scopes/client_secret optionality, and the `complete_flow` round-trip contract) and end-to-end against a Bitrix24-shaped Go mock at `mock_mcp/server` by `test/itgr_oauth_bitrix_mock.exs` (4 `:network`-tagged tests covering the full authorize → token-exchange → refresh round-trip, including wrong-client-secret and invalid-code rejection paths).
 
 Phase C — **Refresh, revoke, error polish.**
   * Proactive auto-refresh: `Auth.OAuth2.lookup_with_refresh/2` wraps `Credentials.lookup` and fires `refresh/2` when an `oauth2_mcp` row's `is_expired` is true. `MCP.Client.load_connection` uses it so the MCP call is made with a fresh token from the start, saving the 401-then-retry round-trip.
   * `delete_creds` cascade + RFC 7009 revocation: when `target` matches `mcp:<canonical>` the tool decodes `asm_json`, POSTs to `revocation_endpoint` if advertised (best-effort — transport errors / 4xx do not block local cleanup), drops the `authorized_services` row, and removes every `task_services` attachment for the alias. Other targets keep simple delete behavior.
-  * `needs_auth` status flip: `authorized_services` carries `status TEXT NOT NULL DEFAULT 'authorized'` (values: `authorized | needs_auth`). When refresh fails (proactive path or reactive 401 path), `MCP.Registry.mark_needs_auth/2` flips it; `tools_for_task/2` filters the catalog so the LLM doesn't emit names it can no longer invoke; the §Authorized MCP services context block annotates `[needs re-auth]` rows pointing at `connect_service` for recovery; a successful re-`authorize/5` resets to `authorized`.
+  * `needs_auth` status flip: `authorized_services` carries `status TEXT NOT NULL DEFAULT 'authorized'` (values: `authorized | needs_auth`). When refresh fails (proactive path or reactive 401 path), `MCP.Registry.mark_needs_auth/2` flips it; `tools_for_task/2` filters the catalog so the LLM doesn't emit names it can no longer invoke; the §Authorized MCP services context block annotates `[needs re-auth]` rows pointing at `connect_mcp` for recovery; a successful re-`authorize/5` resets to `authorized`.
   * Verified by `test/itgr_mcp_needs_auth.exs` (10), `test/itgr_oauth_lookup_with_refresh.exs` (7), and `test/itgr_delete_creds_cascade.exs` (10).
 
-Phase D — **Open MCP path.** When the auto cascade sees PRM `:not_found`, before falling to the api_key setup form, probe with an unauthenticated `initialize`: a 200 + `Mcp-Session-Id` response means the server is genuinely open (no Authorization header required). The cascade routes through the no-auth handshake (`Tools.ConnectService.no_auth_connect/4`) and returns `connected` with zero user friction. Open services persist a sentinel credential of kind `none_mcp` at `mcp:<canonical>` so subsequent `MCP.Client.load_connection` calls find a credential to route through; `MCP.Client.build_auth/3`'s `none_mcp` clause yields `%{type: "none"}` (the Resource Indicator stays for spec compliance, no auth header). `auth_method: "none"` (the model-explicit path from Phase B) shares the same helper, fixing the prior gap where it didn't persist a credential. Verified by `test/itgr_open_mcp.exs` (6 offline tests covering build_auth round-trip, credential persistence, gated/transport-error fallthrough, and re-attach to subsequent tasks).
+Phase D — **Open MCP path.** When the auto cascade sees PRM `:not_found`, before falling to the api_key setup form, probe with an unauthenticated `initialize`: a 200 + `Mcp-Session-Id` response means the server is genuinely open (no Authorization header required). The cascade routes through the no-auth handshake (`Tools.ConnectMcp.no_auth_connect/4`) and returns `connected` with zero user friction. Open services persist a sentinel credential of kind `none_mcp` at `mcp:<canonical>` so subsequent `MCP.Client.load_connection` calls find a credential to route through; `MCP.Client.build_auth/3`'s `none_mcp` clause yields `%{type: "none"}` (the Resource Indicator stays for spec compliance, no auth header). `auth_method: "none"` (the model-explicit path from Phase B) shares the same helper, fixing the prior gap where it didn't persist a credential. Verified by `test/itgr_open_mcp.exs` (6 offline tests covering build_auth round-trip, credential persistence, gated/transport-error fallthrough, and re-attach to subsequent tasks).
 
-Phase E — **Dashboard catalog UI.** Curated `code/catalog/mcp_services.json` (Slack, Gmail, Outlook, Notion, GitHub, Bitrix24, …); admin-overridable. New "Connections" tab listing authorized services, with click-to-(re)attach into the active task. Both UI and chat invoke the same `connect_service` backend.
+Phase E — **Dashboard catalog UI.** Curated `code/catalog/mcp_services.json` (Slack, Gmail, Outlook, Notion, GitHub, Bitrix24, …); admin-overridable. New "Connections" tab listing authorized services, with click-to-(re)attach into the active task. Both UI and chat invoke the same `connect_mcp` backend.
 
 Phase F — **stdio transport.** Subprocess MCP servers via `stdio://` URLs.
