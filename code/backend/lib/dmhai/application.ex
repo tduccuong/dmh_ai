@@ -52,6 +52,7 @@ defmodule Dmhai.Application do
         Dmhai.DB.Init.run()
         Dmhai.DomainBlocker.load_from_db()
         Dmhai.Agent.PendingPivots.init()
+        Dmhai.Agent.ChainInFlight.init()
         attach_finch_telemetry()
         Logger.info("Sessions API on :3000")
         {:ok, pid}

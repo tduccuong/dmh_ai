@@ -273,6 +273,21 @@ UIManager.createNewSession = async function() {
 };
 
 UIManager.switchSession = async function(id) {
+    // Clear the status bar — it's a global element. If the prior session
+    // was showing "thinking" / "answering", that label belongs to that
+    // session and is wrong for the one we're switching to. The next poll
+    // tick on the new session will re-derive whatever's appropriate.
+    //
+    // Intentionally NOT aborting `_streamController`, NOT clearing
+    // `_streamMap`, NOT resetting `isStreaming`. The BE chain runs
+    // independently of FE viewing — switching away mid-chain must not
+    // kill the stream. `_streamMap` is keyed by session id, so when the
+    // user switches BACK to the in-flight session, `renderChat` rebuilds
+    // the placeholder from the surviving entry. The visual cross-
+    // contamination fix lives in `renderChat`'s session-id check on
+    // placeholder reattach.
+    this.setStatus('');
+
     document.querySelectorAll('.session-item').forEach(function(el) {
         el.classList.toggle('active', el.dataset.id === id);
     });

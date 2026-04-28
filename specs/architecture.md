@@ -289,7 +289,8 @@ GET /sessions/:id/poll?msg_since=<ts>&prog_since=<id>
     "messages":       [... messages with ts > msg_since, newest-last ...],
     "progress":       [... session_progress rows with id > prog_since ...],
     "stream_buffer":  "<partial accumulated text>" | null,
-    "is_working":     true | false
+    "is_working":     true | false,
+    "chain_in_flight": true | false
   }
 ```
 
@@ -304,6 +305,15 @@ GET /sessions/:id/poll?msg_since=<ts>&prog_since=<id>
   `@stream_buffer_flush_ms`). `null` when no generation is active.
 - `is_working`: `true` when the UserAgent's `current_task` is set or
   `stream_buffer` is non-null. Drives the FE polling cadence.
+- `chain_in_flight`: `true` while `UserAgent.session_chain_loop` is
+  iterating for this session — set on chain entry, cleared on chain
+  exit (`Dmhai.Agent.ChainInFlight` ETS table). Lets the FE distinguish
+  *"intermediate text turn just landed"* from *"chain has truly ended"*.
+  `pollTurnToCompletion` only tears down the streaming placeholder
+  when `sawAssistantMessage && !stream_buffer && !chain_in_flight` —
+  without this, an intermediate text turn (e.g. *"I'll check the
+  docs..."*) would prematurely flip the FE to "chain done" and trailing
+  progress rows from the next turn would have nowhere to nest.
 
 **FE cadence** (`manager-*` scripts) — *adaptive* during active turns:
 
@@ -484,17 +494,20 @@ immediate follow-ups without re-running the tool.
 - Entries age out naturally past the N-turn window; pathological
   extraction marathons are bounded by the byte budget (oldest-first
   eviction).
-- **Flush on task close.** `Tasks.mark_done/2` and `Tasks.mark_cancelled/2`
-  call `ToolHistory.flush_for_task(session_id, task_num)` immediately
+- **Flush on task close.** `Tasks.mark_done/2`, `Tasks.mark_cancelled/2`,
+  and `Tasks.mark_paused/1` call
+  `ToolHistory.flush_for_task(session_id, task_num)` immediately
   after flipping `task_status`. The flush moves every retained entry
   whose `task_num` matches from `sessions.tool_history` into
   `task_turn_archive` (same path eviction takes), then removes them
-  from the rolling window. Effect: a completed task's tool results
-  stop being shipped to the LLM on every subsequent chain — they're
+  from the rolling window. Effect: a closed-or-paused task's tool
+  results stop being shipped to the LLM on every subsequent chain —
   still recoverable via `fetch_task(N)` from the archive, but they
-  no longer pay context-rent. Applies to both one_off and periodic
-  closures (periodic re-arms with a clean rolling window for the
-  next cycle's silent turn).
+  no longer pay context-rent. Applies to one_off close, periodic
+  re-arm (next cycle's silent turn starts with a clean rolling
+  window), cancellation, AND pause — long pauses are common; the
+  one-extra-turn cost of `fetch_task` on resume is cheaper than
+  paying context-rent on every unrelated chain in between.
 - **`fetch_task` pairs stripped before save.** `ToolHistory.save_turn/5`
   removes any `fetch_task` tool_call / tool_result pairs from the
   messages it persists. The fetch's result body is a snapshot of
@@ -2086,7 +2099,7 @@ runtime safety net for when this guidance doesn't stick.
 
     **Prompt-level counterpart**: §Working with external APIs in
     `system_prompt.ex` — *Probe, then execute in ONE script* and
-    *Three probe-batches max* — teach the same discipline. Rule
+    *Five probe-batches max* — teach the same discipline. Rule
     #11 is the runtime backstop for when that guidance doesn't
     stick.
 

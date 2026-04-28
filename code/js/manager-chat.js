@@ -856,13 +856,25 @@ UIManager.renderChat = function() {
     //     `_updateStreamPlaceholder` to keep writing into.
     //   - Otherwise (initial render / session reload), build a fresh
     //     placeholder from `_streamMap` if one is pending.
-    if (streamingMessage) {
+    // Reattach the detached placeholder ONLY if it belongs to the
+    // session we're now viewing. Otherwise the in-flight UI from
+    // session A would visually leak into session B's chat container.
+    // The BE chain keeps running independently, and `_streamMap` is
+    // keyed by session ID — when the user switches BACK to session A,
+    // the `else` branch below rebuilds the placeholder fresh from the
+    // surviving `_streamMap` entry, recovering the in-flight UI.
+    if (streamingMessage && streamingMessage.dataset.sessionId === this.currentSession.id) {
         container.appendChild(streamingMessage);
     } else {
+        // Either the detached placeholder is for a different session
+        // (drop it from this view; its `_streamMap` entry survives),
+        // or there was no placeholder. Build a fresh one when this
+        // session has an in-flight stream.
         var streamEntry = this._streamMap.get(this.currentSession.id);
         if (streamEntry) {
             var streamDiv = document.createElement('div');
             streamDiv.className = 'message assistant';
+            streamDiv.dataset.sessionId = this.currentSession.id;
             var streamHdr = buildMsgHeaderEl({ role: 'assistant', ts: Date.now() }, streamEntry.session);
             streamDiv.appendChild(streamHdr);
             var streamBody = document.createElement('div');

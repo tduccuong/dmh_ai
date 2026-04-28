@@ -32,20 +32,13 @@ defmodule Dmhai.Tools.ConnectMcp do
   @impl true
   def description do
     """
-    MCP-only — attach an MCP server (speaks JSON-RPC `initialize` / `tools/list` / `tools/call`) to the current task. NOT for webhooks, REST APIs, or non-MCP OAuth endpoints — those go to `run_script` + `curl`.
+    Attach an MCP server (JSON-RPC `initialize`/`tools/list`/`tools/call`) to the current task.
 
-    `auth_method` (default `"auto"`):
-      • `"auto"` — OAuth 2.1 + RFC 9728/8414 discovery, then `needs_auth` with auth_url.
-      • `"api_key"` — static auth header; returns a `needs_setup` form (key + header choice).
-      • `"oauth"` — manual OAuth (no discovery); returns a `needs_setup` form (endpoints + client creds).
-      • `"none"` — no auth; connects immediately.
+    `auth_method` (default `"auto"`): `"auto"` (OAuth 2.1 + RFC 9728/8414 discovery), `"api_key"` (returns needs_setup form), `"oauth"` (manual, returns needs_setup form), `"none"` (no auth).
 
-    Returns one of:
-      • `{status: "connected", alias, tools}` — tools live this chain.
-      • `{status: "needs_auth", alias, auth_url}` — relay auth_url as a clickable link; chain ends.
-      • `{status: "needs_setup", alias, form}` — relay the inline form; chain ends.
+    Returns: `{status: "connected", alias, tools}` | `{status: "needs_auth", alias, auth_url}` | `{status: "needs_setup", alias, form}`. Last two are chain-terminating.
 
-    Tools detach on `complete_task` / `cancel_task` — a new task that needs the same server must call `connect_mcp` again (re-attach is fast, auth is cached). Don't pair with other tool calls.
+    Tools detach on `complete_task`/`cancel_task`; a new task re-calls `connect_mcp` (re-attach is fast).
     """
   end
 

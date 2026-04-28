@@ -229,13 +229,22 @@ defmodule Dmhai.Agent.Tasks do
   end
 
   def mark_paused(task_id) do
-    now = System.os_time(:millisecond)
+    task = get(task_id)
+    now  = System.os_time(:millisecond)
     query!(Repo, """
     UPDATE tasks SET task_status='paused',
                     updated_at=?
     WHERE task_id=?
     """, [now, task_id])
     Dmhai.Agent.TaskRuntime.cancel_pickup(task_id)
+
+    # Flush this task's tool_history entries into task_turn_archive
+    # so a paused task stops shipping its tool results to the LLM
+    # on every subsequent chain. fetch_task(N) recovers them on
+    # resume. See architecture.md §Tool-result retention.
+    if task do
+      Dmhai.Agent.ToolHistory.flush_for_task(task.session_id, task.task_num)
+    end
   end
 
   def mark_pending(task_id) do

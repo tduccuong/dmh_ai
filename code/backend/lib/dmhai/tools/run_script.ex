@@ -20,13 +20,11 @@ defmodule Dmhai.Tools.RunScript do
     pre_installed = Sandbox.installed_tools() |> Enum.join(", ")
 
     """
-    Run a shell script (bash / python / node / …) in ONE call. Compose sequential steps inline with pipes, variables, conditionals — don't split across multiple `run_script` calls.
+    Run a shell script (bash / python / node / …).
 
-    Sandbox: Alpine Linux, root. Output cap 50 KB; default timeout 30 s (max 120 s). Pre-installed: #{pre_installed}, plus BusyBox basics. Package manager is `apk` (NOT apt / yum / dnf): install missing with `apk add --no-cache <pkg>`; Python extras via `pip install <pkg>`.
+    Sandbox: Alpine Linux, root. Output cap 50 KB; default timeout 30 s (max 120 s). Pre-installed: #{pre_installed}, plus BusyBox basics. Package manager is `apk` (NOT apt / yum / dnf): install missing with `apk add --no-cache <pkg>`; Python extras via `pip install <pkg>`. On `<cmd>: command not found`, install via `apk` and retry — don't pivot.
 
-    Remote SSH: commands BEFORE `ssh` run in the Alpine sandbox (use `apk`); commands INSIDE `ssh "<cmd>"` run on the remote (use that distro's manager — Ubuntu apt, Fedora dnf, …).
-
-    On `<cmd>: command not found` (sandbox-side), install via `apk add --no-cache` and retry — don't pivot to a different approach.
+    Remote SSH: commands BEFORE `ssh` run in the Alpine sandbox (use `apk`); commands INSIDE `ssh "<cmd>"` run on the remote (use that distro's manager).
     """
   end
 

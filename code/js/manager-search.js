@@ -139,6 +139,9 @@ UIManager.sendMessage = async function() {
     // prepends the header. Matches natural reading order.
     const assistantDiv = document.createElement('div');
     assistantDiv.className = 'message assistant';
+    // Stamp the owning session so renderChat doesn't carry a placeholder
+    // belonging to session A into session B's container on switch.
+    assistantDiv.dataset.sessionId = sessionAtSend.id;
     var assistantHdr = buildMsgHeaderEl({ role: 'assistant', ts: Date.now() }, sessionAtSend);
     assistantDiv.appendChild(assistantHdr);
     const bodyDiv = document.createElement('div');
@@ -589,23 +592,33 @@ UIManager.pollTurnToCompletion = function(sessionAtSend, onComplete, onError, ab
                 return;
             }
 
-            // Completion: a fresh assistant message has landed AND no round
-            // is currently streaming tokens.
+            // Completion: a fresh assistant message has landed AND no
+            // round is currently streaming tokens AND the chain loop
+            // has actually exited.
             //
-            // Intentionally NOT gating on `!data.is_working`: that flag now
-            // also means "a periodic task is armed in this session" (kept
-            // FE on 500 ms cadence so periodic deliveries render within
-            // ~500 ms instead of up to 5 s), so a periodic rescheduled at
-            // the end of this turn would pin `is_working=true` forever and
-            // `onComplete` would never fire — leaving `isStreaming=true`,
-            // send button disabled, user locked out. The precise "this
-            // turn is done" signal is just: final text landed
-            // (`sawAssistantMessage` — only final-text messages are
-            // persisted to `session.messages`) AND no round is actively
-            // streaming (`!stream_buffer`). Turns can't run concurrently
-            // (`UserAgent.current_task` serializes them), so a different
-            // turn's assistant message can't prematurely trip this.
-            if (sawAssistantMessage && !data.stream_buffer) {
+            // The `!data.chain_in_flight` term is the load-bearing one
+            // for multi-turn chains. An intermediate text turn (e.g.
+            // "I'll check the docs first" before doing web_search) lands
+            // a fresh assistant message AND clears stream_buffer
+            // momentarily — without the chain-in-flight check, the
+            // earlier `sawAssistantMessage && !stream_buffer` rule would
+            // fire here and prematurely tear down the streaming
+            // placeholder, leaving the next turn's progress rows with
+            // nowhere to nest. `chain_in_flight` is a per-session ETS
+            // flag set by `UserAgent.session_chain_loop` on entry and
+            // cleared on exit (see architecture.md §Polling-based
+            // delivery).
+            //
+            // Intentionally NOT gating on `!data.is_working`: that flag
+            // also means "a periodic task is armed in this session"
+            // (kept FE on 500 ms cadence so periodic deliveries render
+            // within ~500 ms instead of up to 5 s), so a periodic
+            // rescheduled at the end of this turn would pin
+            // `is_working=true` forever and `onComplete` would never
+            // fire — leaving `isStreaming=true`, send button disabled,
+            // user locked out. `chain_in_flight` is the strict subset:
+            // true ONLY while the chain loop is actively iterating.
+            if (sawAssistantMessage && !data.stream_buffer && !data.chain_in_flight) {
                 finish(onComplete);
                 return;
             }

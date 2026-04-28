@@ -441,6 +441,28 @@ defmodule Itgr.ToolHistory do
       assert length(TaskTurnArchive.fetch_for_task(task_id)) == 4
     end
 
+    test "mark_paused flushes the task's tool_history into the archive" do
+      sid = uid(); uid_ = uid()
+      insert_session(sid, uid_)
+      task_id = Tasks.insert(%{
+        session_id:  sid, user_id: uid_,
+        task_title:  "T", task_spec: "spec",
+        task_status: "ongoing", task_type: "one_off"
+      })
+      task = Tasks.get(task_id)
+
+      :ok = ToolHistory.save_turn(sid, uid_, 1_777_008_000_000,
+              stub_extract_messages(task_id, "doc.pdf", "x"), task.task_num)
+      assert length(ToolHistory.load(sid)) == 1
+
+      Tasks.mark_paused(task_id)
+
+      assert ToolHistory.load(sid) == []
+      assert length(TaskTurnArchive.fetch_for_task(task_id)) == 4
+      # And the task is paused (resumable via pickup_task; data recoverable via fetch_task).
+      assert Tasks.get(task_id).task_status == "paused"
+    end
+
     test "periodic mark_done flushes too (next cycle starts with clean rolling window)" do
       sid = uid(); uid_ = uid()
       insert_session(sid, uid_)

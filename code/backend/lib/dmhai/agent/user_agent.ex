@@ -521,7 +521,18 @@ defmodule Dmhai.Agent.UserAgent do
     # regardless of model behaviour.
     Tasks.mark_ongoing(task.task_id)
 
-    result = session_chain_loop(llm_messages, model, ctx, 0)
+    # Mark the chain as in-flight so /poll exposes it to the FE; the
+    # FE's pollTurnToCompletion uses this to avoid tearing down the
+    # streaming placeholder on intermediate-text turns. See
+    # architecture.md §Polling-based delivery.
+    Dmhai.Agent.ChainInFlight.set(session_id)
+
+    result =
+      try do
+        session_chain_loop(llm_messages, model, ctx, 0)
+      after
+        Dmhai.Agent.ChainInFlight.clear(session_id)
+      end
 
     Task.start(fn -> maybe_compact(session_id, user_id) end)
 
@@ -968,7 +979,18 @@ defmodule Dmhai.Agent.UserAgent do
 
     ctx = Map.put(ctx, :oracle_task, oracle_task)
 
-    result = session_chain_loop(llm_messages, model, ctx, 0)
+    # Mark the chain as in-flight so /poll exposes it to the FE; the
+    # FE's pollTurnToCompletion uses this to avoid tearing down the
+    # streaming placeholder on intermediate-text turns. See
+    # architecture.md §Polling-based delivery.
+    Dmhai.Agent.ChainInFlight.set(session_id)
+
+    result =
+      try do
+        session_chain_loop(llm_messages, model, ctx, 0)
+      after
+        Dmhai.Agent.ChainInFlight.clear(session_id)
+      end
 
     # Make sure the classifier task can't outlive the chain; harmless
     # if it's already done. Police's pivot gate may have shut it
@@ -1220,7 +1242,7 @@ defmodule Dmhai.Agent.UserAgent do
               new_messages =
                 messages ++ [
                   %{role: "assistant", content: text},
-                  %{role: "user",      content: reason}
+                  %{role: "user",      content: wrap_runtime_correction(reason)}
                 ]
 
               case maybe_abort_on_model_behavior_issue(ctx, model) do
@@ -1251,7 +1273,7 @@ defmodule Dmhai.Agent.UserAgent do
                   new_messages =
                     messages ++ [
                       %{role: "assistant", content: text},
-                      %{role: "user",      content: reason}
+                      %{role: "user",      content: wrap_runtime_correction(reason)}
                     ]
 
                   case maybe_abort_on_model_behavior_issue(ctx, model) do
@@ -1594,6 +1616,21 @@ defmodule Dmhai.Agent.UserAgent do
       |> then(fn {msgs, acc} -> {acc, msgs} end)
 
     {Map.put(ctx, :nudges, nudges_after), clean_msgs}
+  end
+
+  # Wrap a Police text-rejection reason in a runtime-correction marker
+  # before injecting it as a synthetic user message. The model can't
+  # tell a synthetic correction apart from a real user interruption
+  # by message shape alone — both arrive as `role: "user"`. The
+  # marker prefix gives it an unambiguous signal so it doesn't
+  # mistake the nudge for a fresh user request and reset the chain.
+  #
+  # Phrasing is positive ("apply and continue") and uses the system-
+  # prompt's own primitive ("chain"). Negative framing (e.g. "do NOT
+  # call create_task") would prime the model toward the prohibited
+  # verb — attention latches onto the keyword regardless of negation.
+  defp wrap_runtime_correction(reason) do
+    "[ Runtime correction - Apply the below and continue your current chain ]\n\n" <> reason
   end
 
   # Non-tool-call Police rejections (check_assistant_text,

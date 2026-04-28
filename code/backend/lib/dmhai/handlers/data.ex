@@ -249,10 +249,11 @@ defmodule Dmhai.Handlers.Data do
           or has_pending_progress?
 
         json(conn, 200, %{
-          messages:      new_msgs,
-          progress:      progress,
-          stream_buffer: stream_buffer,
-          is_working:    is_working
+          messages:        new_msgs,
+          progress:        progress,
+          stream_buffer:   stream_buffer,
+          is_working:      is_working,
+          chain_in_flight: Dmhai.Agent.ChainInFlight.in_flight?(session_id)
         })
 
       _ ->
