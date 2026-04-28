@@ -290,7 +290,12 @@ GET /sessions/:id/poll?msg_since=<ts>&prog_since=<id>
     "progress":       [... session_progress rows with id > prog_since ...],
     "stream_buffer":  "<partial accumulated text>" | null,
     "is_working":     true | false,
-    "chain_in_flight": true | false
+    "chain_in_flight": true | false,
+    "running_tool_call": {
+      "tool_call_id":    "...",
+      "progress_row_id": 12345,
+      "started_at_ms":   1234567890
+    } | null
   }
 ```
 
@@ -314,6 +319,14 @@ GET /sessions/:id/poll?msg_since=<ts>&prog_since=<id>
   without this, an intermediate text turn (e.g. *"I'll check the
   docs..."*) would prematurely flip the FE to "chain done" and trailing
   progress rows from the next turn would have nowhere to nest.
+- `running_tool_call`: present (non-null) while a long-running tool is
+  executing. Currently only `run_script` populates this — see
+  §Long-running tool execution. Carries `tool_call_id`,
+  `progress_row_id`, and `started_at_ms`. The FE matches the
+  `progress_row_id` against the live `session_progress` row's `id`
+  and decorates that row's label with a live `(Ns)` elapsed-time
+  suffix computed locally from `started_at_ms`. `null` when no tool
+  is in flight.
 
 **FE cadence** (`manager-*` scripts) — *adaptive* during active turns:
 
@@ -360,6 +373,146 @@ GET /sessions/:id/poll?msg_since=<ts>&prog_since=<id>
   perceptual threshold.
 - First byte (user optimistic render → first tool line): ~same as
   today, gated by BE turn dispatch speed.
+
+---
+
+## Long-running tool execution
+
+Some tool calls (notably `run_script`) can take seconds, minutes, or
+even hours. The runtime handles long-running execution **transparently**
+— the model's tool contract is unchanged (`{:ok, output}` /
+`{:error, reason}`), but the runtime wraps every invocation in a
+detached background process, polls for completion, surfaces an
+in-flight marker on `/poll`, and persists the final wall-clock
+duration on the tool message. The model is not taught about this; it
+just calls `run_script` and gets the output back when the process
+exits.
+
+### Mechanism (BE)
+
+`Dmhai.Tools.RunScript.execute/2`:
+
+1. Writes the script body to a temp file under the session workspace
+   (`/tmp/_dmh_run_<tool_call_id>`), via the same base64-shebang trick
+   used today.
+2. Spawns the script under `nohup` with stdout+stderr redirected to a
+   log file, captures the PID:
+   ```
+   nohup sh -c '<launcher>' > <log> 2>&1 &
+   echo $!
+   ```
+3. Registers `{session_id, tool_call_id} → {started_at_ms,
+   script_preview, pid, log_path}` in `Dmhai.Agent.RunningTools` (ETS
+   table `:dmhai_running_tools`). `script_preview` is the first
+   non-empty line of the script, trimmed.
+4. Enters a poll loop sleeping `AgentSettings.tool_run_poll_interval_ms`
+   (default `2000`, configurable). Each tick checks `kill -0 <pid>`
+   inside the sandbox container.
+5. On exit: reads the log file, computes `duration_ms = now_ms -
+   started_at_ms`, deregisters the ETS entry, returns
+   `{:ok, output}` (or `{:error, "exit N: ..."}` on non-zero).
+6. Hard cap: `AgentSettings.run_script_max_runtime_ms` (default
+   `21_600_000` = 6h). On overrun the runtime kills the process
+   (`kill -TERM`, then `kill -KILL` after a 2 s grace) and returns
+   `{:error, "max_runtime exceeded after Ns"}`.
+
+`tool_call_id` is threaded through `tool_ctx` from `execute_tools/2`
+(it's already captured at the call dispatch site for tool-message
+construction).
+
+### `/poll` surfacing
+
+`Dmhai.Handlers.Data.poll_session/3` does a single ETS lookup
+(`RunningTools.lookup(session_id)`) and adds the result to the poll
+response. Single-tool-at-a-time (tool calls within one assistant
+message execute sequentially via `Enum.flat_map_reduce/3`), so the
+field is a singleton, not a list.
+
+The BE never formats elapsed time — it ships `started_at_ms` and the
+FE computes `(Date.now() - started_at_ms) / 1000` for display. BE
+holds logic, FE holds rendering (rule #9: BE is the timestamp
+authority; FE only computes derived display values).
+
+### FE rendering
+
+- Each `run_script` invocation already produces a
+  `session_progress` row of `kind="tool"` (label `run_script: <slice>`).
+  Render path is unchanged.
+- During execution: the FE checks every pending tool row against
+  `currentSession.runningToolCall?.progress_row_id`. On match, a 1 s
+  `setInterval` writes a `(Ns)` suffix into the row's label using
+  `(Date.now() - started_at_ms) / 1000`. Cleared on the row flipping
+  to `done` (i.e. the next `/poll` returns `progress` row with
+  `status="done"` AND `running_tool_call` is null), or on session
+  switch.
+- After completion: the same row carries `duration_ms` (stamped on
+  the `pending → done` flip). FE reads it off the row and renders a
+  frozen `(Ns)` suffix — no ticker. Persists across reloads.
+- No new component, no new progress-row kind. Same row, decorated.
+
+### Duration persistence
+
+`session_progress.duration_ms` (new INTEGER column, nullable) is
+stamped by `SessionProgress.mark_tool_done/2` on the
+`pending → done` flip. `UserAgent.execute_tools/2` measures wall
+clock around the `Tools.Registry.execute/3` call and passes the
+result. Single source of truth — no parallel `meta.duration_ms` on
+the tool message; the model never sees the duration (which it
+doesn't need) and the FE reads it directly from the row it's
+already rendering.
+
+### Cancellation
+
+When the user clicks Stop or a task is cancelled, `Tasks.mark_cancelled/2`
+calls `RunningTools.kill_all_for_session/1` which sends `kill -TERM`
+(graceful), waits 2 s, then `kill -KILL` if still alive. The tracked
+ETS entry is cleared regardless of whether the kill itself succeeded
+— the contract is "the chain must never wedge waiting on a stuck
+process".
+
+The script's poll loop (still running on the chain GenServer) wakes,
+observes the dead PID, drains whatever output landed in the log
+file, and returns `{:ok, partial_output}` to the chain. The chain
+loop then re-checks the anchor task at the top of the next
+iteration, sees `task_status="cancelled"`, emits a
+`kind="chain_aborted"` progress row, and exits — see
+§User-initiated chain cancellation. The `partial_output` lands in
+`session.messages` as a normal tool result; it isn't fabricated, the
+script genuinely produced it before being killed.
+
+### Why this shape
+
+- **No model teaching needed.** The "use nohup for long jobs"
+  prompt-rule that #155 originally proposed would push the burden to
+  the model — and models don't reliably comply. The runtime can
+  enforce it 100% of the time.
+- **No tool-catalog bloat.** A separate `run_script_long` tool was
+  considered and rejected: forces the model to classify "is this
+  long?" up front, which is exactly the judgment the runtime can
+  defer until it has actual evidence (the process is still running).
+- **`run_script` timeout is gone** — replaced by the per-call max
+  runtime. The old 30s/120s timeout was a defensive cap against
+  hanging shells; with PID-tracking + cancel + max-runtime, those
+  same protections exist with no behavioural cliff at 120s.
+
+### Settings (admin-configurable via `AgentSettings`)
+
+- `tool_run_poll_interval_ms` — runtime poll cadence for process
+  status. Default `2000`. Range 1–5 s reasonable.
+- `run_script_max_runtime_ms` — hard cap per invocation. Default
+  `21_600_000` (6h).
+
+### Caveats
+
+- **SSH-disconnect mid-run.** If the model writes
+  `ssh host "long-cmd"` and the SSH connection drops mid-execution,
+  the remote process is killed regardless of our local nohup wrapper
+  (the wrapper protects the *local* shell, not the remote one). The
+  fix is for the model to wrap the remote body in nohup itself
+  (`ssh host "nohup long-cmd &"`). Auto-detecting and rewriting SSH
+  invocations was considered and deferred — parsing arbitrary shell
+  to find the remote payload is regex-fragile and changing user-
+  written commands silently is worse than the occasional disconnect.
 
 ---
 
@@ -1732,11 +1885,23 @@ against the loop's existing self-dispatched continuations and risk
 either a missed cancel or a double-fire. DB-as-truth, polled at the
 top of each turn iteration, is the single point of authority.
 
-What an in-flight tool call (curl, web_fetch, etc.) does when the
-task is cancelled: nothing — it runs to completion. The cancel only
-prevents the NEXT LLM call. This bounds the user's wait to "current
-turn finishes" rather than "chain finishes naturally." For the
-typical case (a multi-turn loop), that's a 1–30 s wait.
+What an in-flight tool call does when the task is cancelled:
+
+- **`run_script`** — the tracked PID is killed via
+  `RunningTools.kill_all_for_session/1` (TERM, 2 s grace, KILL). The
+  poll loop in `Tools.RunScript.execute/2` wakes on the next tick,
+  drains whatever output the script produced before death, and
+  returns `{:ok, partial}` (or `{:error, …}` on non-zero exit). That
+  partial result lands in `session.messages` as a normal tool
+  message, then the chain loop's anchor check fires on the next
+  iteration and emits `chain_aborted` — exiting cleanly with a
+  complete `tool_call → tool` pair. See §Long-running tool execution.
+- **Other tools (`web_fetch`, `web_search`, `extract_content`, …)** —
+  run to completion. They're typically sub-30s, and HTTP-level kill
+  paths would add complexity for marginal gain. The cancel still
+  prevents the NEXT LLM call. For the typical case (a multi-turn
+  loop), the user's wait is bounded by "current tool finishes" — 1–30
+  s wall clock.
 
 ### Boot scan for orphan recovery
 
@@ -2455,9 +2620,11 @@ Rules:
   `{:ok, x}`) into the model's context. Any code path that would reach
   `inspect/1` is a bug.
 
-`run_script` follows the text convention: on success it returns the raw
-stdout string; on non-zero exit or timeout it returns `{:error, "<reason>"}`
-(handled separately, not through `format_tool_result`).
+`run_script` follows the text convention: on success it returns the
+raw stdout string; on non-zero exit, max-runtime kill, or user
+cancellation it returns `{:error, "<reason>"}` (handled separately,
+not through `format_tool_result`). See §Long-running tool execution
+for the nohup-wrap + poll-loop mechanics that produce these outcomes.
 
 ---
 
@@ -2564,7 +2731,8 @@ Models ending in `:cloud` / `-cloud` auto-route to cloud pool. Cloud keys manage
 |-----|---------|---------|
 | `maxAssistantTurnsPerChain` | 50 | Per-chain cap on the number of turns (LLM roundtrips); abort chain if exceeded |
 | `maxToolResultChars` | 8000 | Truncation threshold for tool results fed back into context |
-| `spawnTaskTimeoutSecs` | 30 | Bash command timeout inside spawn_task |
+| `toolRunPollIntervalMs` | 2000 | Runtime poll cadence for in-flight `run_script` processes (see §Long-running tool execution) |
+| `runScriptMaxRuntimeMs` | 21_600_000 | Hard upper bound (6h) on a single `run_script` invocation. Past this the runtime kills the PID and returns an error |
 | `masterCompactTurnThreshold` | 50 | Session compaction trigger by message count |
 | `masterCompactFraction` | 0.45 | Session compaction char-budget fraction |
 | `estimatedContextTokens` | 64_000 | Usable context-window size driving the char-budget trigger |

@@ -26,13 +26,7 @@ defmodule Dmhai.Tools.PickupTask do
 
   @impl true
   def description,
-    do:
-      "RESUME an existing task in the Task list — flip it to " <>
-        "status='ongoing'. **Do NOT call after create_task** " <>
-        "(redundant; create_task auto-picks up). Use when the user " <>
-        "asks to resume / redo a done / paused / cancelled task, or " <>
-        "to re-focus on an ongoing task whose context was lost. " <>
-        "Returns {task_num, ok: true}."
+    do: "Resume an existing task — flip it to 'ongoing'. Returns `{task_num, ok: true}`."
 
   @impl true
   def execute(args, ctx) do

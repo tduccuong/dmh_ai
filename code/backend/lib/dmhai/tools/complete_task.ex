@@ -33,12 +33,9 @@ defmodule Dmhai.Tools.CompleteTask do
   @impl true
   def description,
     do:
-      "Close a task with its final result. one_off → marked 'done' " <>
-        "terminally; periodic → reschedules the next pickup " <>
-        "(status='pending', time_to_pickup += intvl_sec). " <>
-        "Required: task_result (one-line summary for the sidebar). " <>
-        "Optional: task_title (refine to capture the outcome; " <>
-        "recommended on one_off close)."
+      "Close a task with its final result. one_off → 'done' terminally. " <>
+        "periodic → reschedules next pickup. Required: `task_result` " <>
+        "(one-line for sidebar). Optional: `task_title` (refine on close)."
 
   @impl true
   def execute(args, ctx) do

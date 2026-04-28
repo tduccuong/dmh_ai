@@ -557,6 +557,27 @@ UIManager.pollTurnToCompletion = function(sessionAtSend, onComplete, onError, ab
             // Streaming buffer → rendered in the streaming placeholder div.
             self._updateStreamPlaceholder(sessionAtSend, data.stream_buffer);
 
+            // Long-running tool surfacing (see specs/architecture.md
+            // §Long-running tool execution). The BE ships
+            // {tool_call_id, progress_row_id, started_at_ms} while a
+            // run_script is in flight. The FE matches the
+            // progress_row_id against the live progress row and
+            // decorates its label with a "(Ns)" elapsed-time suffix
+            // ticked locally every 1 s. We only flag a re-render when
+            // the in-flight identity changes — sub-second elapsed
+            // updates are written in-place by the elapsed ticker
+            // (renderProgressRow / _ensureRunScriptElapsedTicker), so
+            // burning a full renderChat per second would just churn.
+            var newRunning = data.running_tool_call || null;
+            var prevRunning = sessionAtSend.runningToolCall || null;
+            var runningChanged =
+                (prevRunning && prevRunning.progress_row_id) !==
+                (newRunning && newRunning.progress_row_id);
+            sessionAtSend.runningToolCall = newRunning;
+            if (self.currentSession && self.currentSession.id === sessionAtSend.id) {
+                self.currentSession.runningToolCall = newRunning;
+            }
+
             // Only re-render the whole chat when there's an actual delta
             // in persisted state (a new message, or a progress-row upsert).
             // Stream-buffer-only ticks go through _updateStreamPlaceholder
@@ -565,7 +586,7 @@ UIManager.pollTurnToCompletion = function(sessionAtSend, onComplete, onError, ab
             // 500ms full-rebuild cadence that caused the flicker.
             var hasMsgDelta  = (data.messages  || []).length > 0;
             var hasProgDelta = (data.progress  || []).length > 0;
-            if ((hasMsgDelta || hasProgDelta) && self.currentSession && self.currentSession.id === sessionAtSend.id) {
+            if ((hasMsgDelta || hasProgDelta || runningChanged) && self.currentSession && self.currentSession.id === sessionAtSend.id) {
                 // Same resilience as startProgressPolling's tick — a render
                 // error must not kill the polling loop. Otherwise a single
                 // bad markdown parse could freeze the whole turn in

@@ -1821,31 +1821,40 @@ defmodule Dmhai.Agent.UserAgent do
 
             args_log = args |> Jason.encode!() |> String.slice(0, 600)
             Dmhai.SysLog.log("[ASSISTANT] tool=#{name} args=#{args_log}")
-            # Thread the progress row id through ctx so tools with parallel
-            # internals (web_search, OCR extract) can stream sub-activity
-            # labels into session_progress.sub_labels for the FE to rotate.
-            tool_ctx = Map.put(ctx, :progress_row_id, row.id)
-            exec_result = Dmhai.Tools.Registry.execute(name, args, tool_ctx)
+            # Thread the progress row id AND the tool_call_id through
+            # ctx so:
+            #   • tools with parallel internals (web_search, OCR extract)
+            #     can stream sub-activity labels into
+            #     session_progress.sub_labels for the FE to rotate.
+            #   • long-running tools (`run_script`) can register
+            #     themselves in `Dmhai.Agent.RunningTools` keyed by
+            #     {session_id, tool_call_id} so the `/poll` handler
+            #     surfaces an in-flight marker. See architecture.md
+            #     §Long-running tool execution.
+            tool_ctx =
+              ctx
+              |> Map.put(:progress_row_id, row.id)
+              |> Map.put(:tool_call_id, tool_call_id)
 
-            # Flip to 'done' on BOTH success and error. A non-zero exit from
-            # `run_script` (or any other tool error) is still a completed
-            # tool invocation — the script ran, produced output, exited
-            # with a code. Deleting the row was the pre-Phase-2 design
-            # intended to hide failed attempts, but the FE never learns
-            # about deletes (poll only returns rows with id > cursor), so
-            # stale `status=pending` rows accumulated in the client's
-            # local cache forever as stuck spinners. Keeping the row as
-            # `done` preserves the audit trail AND lets the FE flip its
-            # spinner off. The model still sees the `"Error: …"` string
-            # as its tool_result and can correct on the next turn.
+            exec_started_ms = System.system_time(:millisecond)
+            exec_result = Dmhai.Tools.Registry.execute(name, args, tool_ctx)
+            duration_ms = System.system_time(:millisecond) - exec_started_ms
+
+            # Flip to 'done' on BOTH success and error. A non-zero exit
+            # from `run_script` (or any other tool error) is still a
+            # completed tool invocation — the script ran, produced
+            # output, exited with a code. Persists the wall-clock
+            # `duration_ms` on the same row so the FE can render a
+            # frozen "(Ns)" suffix on the tool bubble after completion
+            # (see architecture.md §Long-running tool execution).
             content =
               case exec_result do
                 {:ok, result} ->
-                  Dmhai.Agent.SessionProgress.mark_tool_done(row.id)
+                  Dmhai.Agent.SessionProgress.mark_tool_done(row.id, duration_ms)
                   format_tool_result(result)
 
                 {:error, reason} ->
-                  Dmhai.Agent.SessionProgress.mark_tool_done(row.id)
+                  Dmhai.Agent.SessionProgress.mark_tool_done(row.id, duration_ms)
                   "Error: #{reason}"
               end
 

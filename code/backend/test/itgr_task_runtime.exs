@@ -157,10 +157,24 @@ defmodule Itgr.TaskRuntime do
     assert row.kind == "tool"
     assert row.status == "pending"
     assert row.label == "web_fetch(example.com)"
+    assert row.duration_ms == nil
 
     :ok = SessionProgress.mark_tool_done(inserted.id)
     [row2] = SessionProgress.fetch_for_task(tid)
     assert row2.status == "done"
+    assert row2.duration_ms == nil
+  end
+
+  test "SessionProgress.mark_tool_done/2 stamps duration_ms" do
+    sid = uid(); uid_ = uid()
+    tid = Tasks.insert(user_id: uid_, session_id: sid, task_title: "x", task_spec: "s")
+    ctx = %{session_id: sid, user_id: uid_, task_id: tid}
+
+    {:ok, inserted} = SessionProgress.append_tool_pending(ctx, "run_script(echo hi)")
+    :ok = SessionProgress.mark_tool_done(inserted.id, 4_711)
+    [row] = SessionProgress.fetch_for_task(tid)
+    assert row.status == "done"
+    assert row.duration_ms == 4_711
   end
 
   test "SessionProgress truncates large labels" do

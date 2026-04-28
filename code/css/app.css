@@ -456,6 +456,18 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
     overflow: hidden;
     text-overflow: ellipsis;
 }
+/* Elapsed-time decoration on tool rows — live "(Ns)" while running
+   (ticked by _tickElapsed in manager-chat.js) and frozen "(Ns)" once
+   the row flips to done. Right-pinned with `flex-shrink: 0` so the
+   suffix never gets ellipsised; on narrow viewports the .progress-label
+   loses its tail first. Subtle dim so the timer doesn't compete with
+   the tool name. */
+.progress-row .progress-elapsed {
+    flex-shrink: 0;
+    margin-left: 6px;
+    color: #7d6f99;
+    font-variant-numeric: tabular-nums;
+}
 .progress-tool.progress-status-pending .progress-icon {
     display: inline-block;
     animation: progress-spin 1s linear infinite;

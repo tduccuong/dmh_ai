@@ -14,7 +14,7 @@ defmodule Dmhai.Tools.SaveCreds do
   @impl true
   def description do
     """
-    Persist a credential the user just provided. `target` is a stable, specific label (host+user, service name) — reuse it across saves + lookups for cross-chain recall. `kind` describes `payload`'s shape ("ssh_key", "user_pass", "api_key", "oauth2", …). Set `expires_at` (unix ms) for time-bounded creds (OAuth2 access tokens); omit for static.
+    Persist a credential. `target` = stable, specific label (host+user, service name). `kind` describes `payload`'s shape (e.g. "ssh_key", "user_pass", "api_key", "oauth2"). `expires_at` (unix ms) for time-bounded creds; omit for static.
     """
   end
 

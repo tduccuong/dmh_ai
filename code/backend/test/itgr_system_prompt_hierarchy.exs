@@ -27,62 +27,79 @@ defmodule Itgr.SystemPromptHierarchy do
     |> Enum.all?(fn [a, b] -> b <= a + 1 end)
   end
 
-  # ─── Assistant ────────────────────────────────────────────────────────────
+  # ─── Assistant (v2.5 — XML-tag structure) ───────────────────────────────
+  #
+  # The assistant prompt was rewritten in v2.5 to use XML tags instead
+  # of markdown headings. Hierarchy / depth checks no longer apply;
+  # we instead pin the canonical tag set + their order, plus the
+  # attachment-tree ordering inside `<attachments>`.
 
-  test "assistant: full prompt starts at h2 (no orphan h1)" do
+  test "assistant: prompt starts with the <system_purpose> tag" do
     prompt = SystemPrompt.generate_assistant([])
-    [first | _] = heading_depths(prompt)
-    assert first == 2
+    leading = prompt |> String.trim_leading() |> String.slice(0, 32)
+
+    assert String.starts_with?(leading, "<system_purpose>"),
+           "expected prompt to lead with <system_purpose>, got: #{inspect(leading)}"
   end
 
-  test "assistant: heading hierarchy is coherent (no level skips deeper)" do
+  # Canonical section-opener tags. Some of these names also appear
+  # mid-prose as inline references (e.g. `<intent_matrix>` is mentioned
+  # in `<reasoning_protocol>`); we match the section-opener form
+  # `<tag>\n` so a textual reference doesn't fool the position check.
+  @canonical_tags [
+    "system_purpose",
+    "primitives",
+    "reasoning_protocol",
+    "hard_constraints",
+    "intent_matrix",
+    "task_completion",
+    "pivot_rule",
+    "knowledge_chitchat",
+    "resuming_task",
+    "periodic_tasks",
+    "focus_rule",
+    "verbs",
+    "context_blocks",
+    "tool_selection",
+    "external_apis",
+    "credentials",
+    "request_input",
+    "attachments",
+    "connect_mcp",
+    "ssh",
+    "output_formatting",
+    "language",
+    "voice"
+  ]
+
+  test "assistant: canonical XML section openers are present and in order" do
     prompt = SystemPrompt.generate_assistant([])
-    depths = heading_depths(prompt)
-    assert coherent?(depths),
-           "heading depth transitions skipped a level: #{inspect(depths)}"
+
+    indices =
+      Enum.map(@canonical_tags, fn tag ->
+        opener = "<#{tag}>\n"
+        idx = :binary.match(prompt, opener)
+        refute idx == :nomatch, "missing section opener: #{opener}"
+        elem(idx, 0)
+      end)
+
+    assert indices == Enum.sort(indices),
+           "tag order drifted: #{inspect(@canonical_tags)} → positions #{inspect(indices)}"
   end
 
-  test "assistant: heading depths are bounded to h2 and h3 only in the base prompt" do
-    # Base assistant prompt has only ## and ### — h1 would clash with any
-    # h1 in the pipeline, h4+ would visually flatten with the task-list
-    # block's own h4 rows (#### `task_id` — title).
+  test "assistant: every canonical section opener has a matching closer" do
     prompt = SystemPrompt.generate_assistant([])
-    assert Enum.all?(heading_depths(prompt), &(&1 in [2, 3])),
-           "base assistant prompt should only use ## and ###, got: #{inspect(heading_depths(prompt))}"
+
+    Enum.each(@canonical_tags, fn tag ->
+      assert String.contains?(prompt, "</#{tag}>"),
+             "section <#{tag}> has no closing </#{tag}>"
+    end)
   end
 
   test "assistant: profile section appends cleanly when provided" do
     without = SystemPrompt.generate_assistant([])
     with_profile = SystemPrompt.generate_assistant(profile: "Alice, VN, loves jazz.")
     assert byte_size(with_profile) > byte_size(without)
-    # Profile addition preserves hierarchy coherence.
-    assert coherent?(heading_depths(with_profile))
-  end
-
-  test "assistant: canonical sections are present and in order" do
-    prompt = SystemPrompt.generate_assistant([])
-
-    # Sequence of the top-level sections we rely on elsewhere.
-    sections_in_order = [
-      "## Chain shape",
-      "## Do, don't teach",
-      "## Tasks",
-      "## Context blocks you will see",
-      "## Attachments",
-      "## Credentials",
-      "## Language",
-      "## Voice"
-    ]
-
-    indices =
-      Enum.map(sections_in_order, fn s ->
-        idx = :binary.match(prompt, s)
-        refute idx == :nomatch, "missing section: #{s}"
-        elem(idx, 0)
-      end)
-
-    assert indices == Enum.sort(indices),
-           "section order drifted: #{inspect(sections_in_order)} map to #{inspect(indices)}"
   end
 
   # ─── Attachments decision tree — step ordering ──────────────────────────
@@ -92,10 +109,10 @@ defmodule Itgr.SystemPromptHierarchy do
   # model re-extracts files that are already in context (regression we hit
   # with gemini-3-flash in session 1776956365474). Lock the order in.
   #
-  # The decision tree is a "first match wins" three-step list — there's
-  # no explicit STOP HERE marker; the prose at §Bare 📎 declares the
-  # ordering and the test pins it positionally.
-  test "assistant: bare-📎 decision tree puts Recently-extracted check before the re-extract branches" do
+  # In v2.5 the decision tree lives inside `<attachments>` as a numbered
+  # "first match wins" list. Test pins the relative positions of the
+  # three branches inside that tag.
+  test "assistant: <attachments> decision tree puts Recently-extracted check before the re-extract branches" do
     prompt = SystemPrompt.generate_assistant([])
 
     recently_extracted_check = :binary.match(prompt, "File appears in `## Recently-extracted files`")

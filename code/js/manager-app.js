@@ -452,6 +452,16 @@ UIManager.startProgressPolling = function() {
 
                 isWorking = !!data.is_working;
                 streamBuffer = data.stream_buffer;
+
+                // Long-running tool surfacing — see manager-search.js
+                // pollTurnToCompletion for full rationale.
+                var newRunning = data.running_tool_call || null;
+                var prevRunning = self.currentSession.runningToolCall || null;
+                if ((prevRunning && prevRunning.progress_row_id) !==
+                    (newRunning && newRunning.progress_row_id)) {
+                    changed = true;
+                }
+                self.currentSession.runningToolCall = newRunning;
             }
         } catch (e) {}
 

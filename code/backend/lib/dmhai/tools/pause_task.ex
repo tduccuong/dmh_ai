@@ -26,11 +26,7 @@ defmodule Dmhai.Tools.PauseTask do
 
   @impl true
   def description,
-    do:
-      "Pause a task — flip status to 'paused'. For periodic tasks this " <>
-        "also cancels the next-cycle pickup timer (it won't fire until you " <>
-        "pickup_task again). Use ONLY when the user explicitly asks to " <>
-        "pause (\"hold off\", \"pause X\"). Don't pause on your own initiative."
+    do: "Pause a task — flip to 'paused'. For periodic, also cancels the next-cycle pickup timer."
 
   @impl true
   def execute(args, ctx) do

@@ -29,14 +29,9 @@ defmodule Dmhai.Tools.CreateTask do
   @impl true
   def description,
     do:
-      "Register a new task AND immediately start work on it. The task " <>
-        "is created with status='ongoing' and becomes the current " <>
-        "anchor — your next call can be an execution tool directly. " <>
-        "**Do NOT call pickup_task after create_task** (redundant). " <>
-        "Use for any objective worth tracking (research, file ops, " <>
-        "multi-step work). For periodic tasks: task_type='periodic' " <>
-        "and intvl_sec>0. Returns {task_num}. Close with " <>
-        "complete_task(task_num, task_result) when delivered."
+      "Register a new task and start work on it (status='ongoing'). " <>
+        "Returns `{task_num}`. For periodic, set `task_type='periodic'` " <>
+        "+ `intvl_sec` > 0."
 
   @impl true
   def execute(args, ctx) do

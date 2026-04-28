@@ -24,11 +24,7 @@ defmodule Dmhai.Tools.RequestInput do
   @impl true
   def description do
     """
-    Render an inline form to collect STRUCTURED, NAMED values (API key, client_id + client_secret, multi-field config). Each field: `{name, label, type: "text"|"password", secret?}` — `password` auto-implies `secret: true`. Optional `submit_label` (default "Submit"); narration text emitted with the call is shown above the form.
-
-    Chain-terminating: don't pair with other tool calls. The user's submission flows back as a user-role message that resumes the chain.
-
-    NOT for open-ended questions ("how should we proceed?") — those go in plain text.
+    Render an inline form to collect structured, named values. Each field: `{name, label, type: "text"|"password", secret?}` — `password` auto-implies `secret: true`. Optional `submit_label` (default "Submit"); narration emitted with the call shows above the form. Chain-terminating.
     """
   end
 

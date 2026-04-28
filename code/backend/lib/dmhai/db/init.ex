@@ -51,6 +51,12 @@ defmodule Dmhai.DB.Init do
     # static ones in the same table. SQLite RENAME COLUMN is 3.25+.
     rename_column_if_present("user_credentials", "cred_type", "kind")
     add_column_if_missing("user_credentials", "expires_at", "INTEGER")
+    # Wall-clock duration of a tool execution in ms. Stamped by
+    # `SessionProgress.mark_tool_done/2`. Null for non-tool rows
+    # ('thinking' / 'summary' / 'chain_aborted'). FE renders a
+    # "(Ns)" suffix on completed tool bubbles. See architecture.md
+    # §Long-running tool execution.
+    add_column_if_missing("session_progress", "duration_ms", "INTEGER")
   end
 
   # SQLite 3.25+ supports `ALTER TABLE … RENAME COLUMN`. The rename
@@ -227,11 +233,12 @@ defmodule Dmhai.DB.Init do
       session_id TEXT NOT NULL,
       user_id TEXT NOT NULL,
       task_id TEXT,                           -- nullable: direct-response turns have no task
-      kind TEXT NOT NULL,                     -- 'tool' | 'thinking' | 'summary'
+      kind TEXT NOT NULL,                     -- 'tool' | 'thinking' | 'summary' | 'chain_aborted'
       status TEXT,                            -- 'pending' | 'done' (tool only — mutated in place)
       label TEXT,                             -- human-readable one-liner for FE rendering
       sub_labels TEXT DEFAULT NULL,           -- JSON array of sub-activity labels (for tools with parallel internals)
       hidden INTEGER NOT NULL DEFAULT 0,      -- 1 = persisted for audit only, never shown in the FE timeline
+      duration_ms INTEGER,                    -- wall-clock tool-execution duration; stamped on the pending→done flip. Null for non-tool rows.
       ts INTEGER NOT NULL
     )
     """)

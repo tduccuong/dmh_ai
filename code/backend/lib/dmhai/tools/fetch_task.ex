@@ -41,12 +41,9 @@ defmodule Dmhai.Tools.FetchTask do
   @impl true
   def description,
     do:
-      "Load a task's full context — metadata, attachments, prior " <>
-        "conversation (both archived from earlier chains and currently live), " <>
-        "and prior tool outputs. Use when the anchor named a task whose " <>
-        "details aren't in your current context (e.g. after many periodic " <>
-        "pickups interleaved), OR when you need to recall what a done task " <>
-        "produced before deciding whether to redo it."
+      "Load a task's full context: metadata, attachments, archived + " <>
+        "live conversation, prior tool outputs. Use when the anchor's " <>
+        "history isn't in your current context."
 
   @impl true
   def execute(args, ctx) do

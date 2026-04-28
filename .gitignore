@@ -8,8 +8,7 @@ build/
 *.o
 *.so
 *.dll
-mocks/wiki
-mocks/bin
+mocks/bin/
 mocks/*.log
 
 # Elixir / Mix (detailed rules live in code/backend/.gitignore)

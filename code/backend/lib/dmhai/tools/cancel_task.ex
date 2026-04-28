@@ -28,12 +28,7 @@ defmodule Dmhai.Tools.CancelTask do
 
   @impl true
   def description,
-    do:
-      "Cancel a task permanently — flip status to 'cancelled' and " <>
-        "cancel any armed periodic timer. Use ONLY on explicit user " <>
-        "request. Never auto-cancel to work around your own issues. " <>
-        "If the user asked for something new, create_task for the " <>
-        "new work and leave the existing task alone."
+    do: "Cancel a task permanently — flip to 'cancelled'. For periodic, cancels the armed timer."
 
   @impl true
   def execute(args, ctx) do

@@ -14,9 +14,7 @@ defmodule Dmhai.Tools.LookupCreds do
   @impl true
   def description do
     """
-    Fetch a previously-saved credential. With `target`: returns `{found, kind, payload, expires_at, is_expired, notes}`. Without `target`: returns the list of saved targets (metadata only, no secrets) so you can pick one.
-
-    For cross-chain recall only — when the user just provided creds in the current chain, use them directly from context.
+    Fetch a previously-saved credential. With `target`: returns `{found, kind, payload, expires_at, is_expired, notes}`. Without `target`: returns the list of saved targets (metadata only).
     """
   end
 

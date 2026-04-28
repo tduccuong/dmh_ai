@@ -86,13 +86,25 @@ defmodule Dmhai.Agent.SessionProgress do
     do: append(ctx, "tool", label, status: "pending")
 
   @doc """
-  Flip a tool row (appended with status='pending') to status='done'.
-  The row's original `ts` is preserved — it represents chronological position
-  in the chat timeline. The flip is an in-place mutation, not a new row.
+  Flip a tool row (appended with status='pending') to status='done'
+  and stamp its wall-clock `duration_ms`. The row's original `ts` is
+  preserved — it represents chronological position in the chat
+  timeline. The flip is an in-place mutation, not a new row.
+
+  Pass `duration_ms` measured around the corresponding
+  `Tools.Registry.execute/3` call so the FE can render a frozen
+  "(Ns)" suffix on the completed tool bubble. See architecture.md
+  §Long-running tool execution.
   """
-  @spec mark_tool_done(integer()) :: :ok
-  def mark_tool_done(id) when is_integer(id) do
-    query!(Repo, "UPDATE session_progress SET status='done' WHERE id=?", [id])
+  @spec mark_tool_done(integer(), non_neg_integer() | nil) :: :ok
+  def mark_tool_done(id, duration_ms \\ nil) when is_integer(id) do
+    if is_integer(duration_ms) do
+      query!(Repo,
+        "UPDATE session_progress SET status='done', duration_ms=? WHERE id=?",
+        [duration_ms, id])
+    else
+      query!(Repo, "UPDATE session_progress SET status='done' WHERE id=?", [id])
+    end
     :ok
   end
 
@@ -187,7 +199,7 @@ defmodule Dmhai.Agent.SessionProgress do
   @spec fetch_for_task(String.t()) :: [map()]
   def fetch_for_task(task_id) do
     r = query!(Repo, """
-    SELECT id, session_id, user_id, task_id, kind, status, label, sub_labels, ts
+    SELECT id, session_id, user_id, task_id, kind, status, label, sub_labels, duration_ms, ts
     FROM session_progress
     WHERE task_id=?
     ORDER BY id ASC
@@ -215,7 +227,7 @@ defmodule Dmhai.Agent.SessionProgress do
     # The FE upserts by id, so re-returning a pending row is harmless —
     # it just refreshes sub_labels on the existing cached entry.
     r = query!(Repo, """
-    SELECT id, session_id, user_id, task_id, kind, status, label, sub_labels, ts
+    SELECT id, session_id, user_id, task_id, kind, status, label, sub_labels, duration_ms, ts
     FROM session_progress
     WHERE session_id=? AND hidden = 0
       AND (id > ? OR status='pending')
@@ -249,7 +261,7 @@ defmodule Dmhai.Agent.SessionProgress do
   end
   defp truncate(other), do: inspect(other)
 
-  defp row_to_map([id, session_id, user_id, task_id, kind, status, label, sub_labels_json, ts]) do
+  defp row_to_map([id, session_id, user_id, task_id, kind, status, label, sub_labels_json, duration_ms, ts]) do
     sub_labels =
       case sub_labels_json do
         nil  -> []
@@ -270,6 +282,7 @@ defmodule Dmhai.Agent.SessionProgress do
       status: status,
       label: label,
       sub_labels: sub_labels,
+      duration_ms: duration_ms,
       ts: ts
     }
   end

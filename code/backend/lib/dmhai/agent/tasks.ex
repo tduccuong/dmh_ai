@@ -225,6 +225,12 @@ defmodule Dmhai.Agent.Tasks do
     # LLM on subsequent chains. See architecture.md §Tool-result retention.
     if task do
       Dmhai.Agent.ToolHistory.flush_for_task(task.session_id, task.task_num)
+
+      # Kill any in-flight `run_script` for this session so the chain
+      # exits promptly instead of waiting for a multi-hour script to
+      # finish on its own. See architecture.md §Long-running tool
+      # execution and §User-initiated chain cancellation.
+      Dmhai.Agent.RunningTools.kill_all_for_session(task.session_id)
     end
   end
 

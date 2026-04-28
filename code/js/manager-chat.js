@@ -124,6 +124,51 @@ function _ensureSubLabelsRotator() {
     _subLabelsInterval = setInterval(_rotateSubLabels, SUB_LABEL_ROTATE_MS);
 }
 
+// Format wall-clock duration (ms) as a compact "(Ns)" / "(Nm Ss)" /
+// "(Nh Mm)" suffix. Used both for live tickers and the frozen
+// duration_ms suffix on completed tool rows. Single function so the
+// shape stays consistent regardless of which path lit it up.
+function formatElapsedSuffix(ms) {
+    if (typeof ms !== 'number' || !isFinite(ms) || ms < 0) return '';
+    var sec = Math.floor(ms / 1000);
+    if (sec < 60) return ' (' + sec + 's)';
+    if (sec < 3600) return ' (' + Math.floor(sec / 60) + 'm ' + (sec % 60) + 's)';
+    var h = Math.floor(sec / 3600);
+    var m = Math.floor((sec % 3600) / 60);
+    return ' (' + h + 'h ' + m + 'm)';
+}
+
+// Single shared ticker that updates the live elapsed-time suffix on
+// the currently-running run_script row. Walks
+// `.progress-row.progress-tool.progress-status-pending[data-running=1]`,
+// reads `data-started-at-ms`, writes the formatted suffix into
+// `.progress-elapsed`. Stops when no running rows remain — like
+// _rotateSubLabels, no idle heartbeat.
+var _elapsedTickerInterval = null;
+
+function _tickElapsed() {
+    var nodes = document.querySelectorAll('.progress-row.progress-tool.progress-status-pending[data-running="1"]');
+    if (nodes.length === 0) {
+        clearInterval(_elapsedTickerInterval);
+        _elapsedTickerInterval = null;
+        return;
+    }
+    for (var i = 0; i < nodes.length; i++) {
+        var node = nodes[i];
+        var startedStr = node.getAttribute('data-started-at-ms');
+        var elapsedSpan = node.querySelector('.progress-elapsed');
+        if (!startedStr || !elapsedSpan) continue;
+        var startedAt = parseInt(startedStr, 10);
+        if (!isFinite(startedAt)) continue;
+        elapsedSpan.textContent = formatElapsedSuffix(Date.now() - startedAt);
+    }
+}
+
+function _ensureElapsedTicker() {
+    if (_elapsedTickerInterval) return;
+    _elapsedTickerInterval = setInterval(_tickElapsed, 1000);
+}
+
 function renderProgressRow(row) {
     var div = document.createElement('div');
     div.className = 'progress-row progress-' + row.kind +
@@ -169,6 +214,33 @@ function renderProgressRow(row) {
     div.appendChild(label);
 
     if (hasRotating) _ensureSubLabelsRotator();
+
+    // Elapsed-time decoration (see specs/architecture.md
+    // §Long-running tool execution).
+    //   - Pending + matches currentSession.runningToolCall:
+    //     append a live-ticking "(Ns)" suffix. Marked
+    //     data-running=1; the shared _tickElapsed interval updates
+    //     the .progress-elapsed text in place every 1 s.
+    //   - Done + duration_ms set: append a frozen "(Ns)" suffix.
+    //     No ticker.
+    if (row.kind === 'tool') {
+        var elapsedSpan = document.createElement('span');
+        elapsedSpan.className = 'progress-elapsed';
+
+        if (row.status === 'pending') {
+            var running = (UIManager.currentSession && UIManager.currentSession.runningToolCall) || null;
+            if (running && running.progress_row_id === row.id) {
+                div.setAttribute('data-running', '1');
+                div.setAttribute('data-started-at-ms', String(running.started_at_ms || 0));
+                elapsedSpan.textContent = formatElapsedSuffix(Date.now() - (running.started_at_ms || Date.now()));
+                div.appendChild(elapsedSpan);
+                _ensureElapsedTicker();
+            }
+        } else if (row.status === 'done' && typeof row.duration_ms === 'number') {
+            elapsedSpan.textContent = formatElapsedSuffix(row.duration_ms);
+            div.appendChild(elapsedSpan);
+        }
+    }
 
     return div;
 }
@@ -724,12 +796,26 @@ function buildMessageEntryNode(msg, sessionId, renderSession, progressRows) {
 // handled in-place by `_ensureSubLabelsRotator` and does NOT change
 // the hash — only the rotation set itself does.
 function entryKeyHash(entry) {
+    // Identify whether THIS row is the in-flight one. Inclusion in the
+    // hash ensures the row gets rebuilt the moment running status flips
+    // (registration race: BE inserts the progress row, then a few ms
+    // later registers in RunningTools — without this, the second /poll
+    // arrives with running_tool_call set but the row's hash is
+    // unchanged, so renderChat skips the rebuild and the live elapsed
+    // ticker never installs). See specs/architecture.md
+    // §Long-running tool execution.
+    var runningId = (UIManager.currentSession && UIManager.currentSession.runningToolCall
+        && UIManager.currentSession.runningToolCall.progress_row_id) || null;
+
     if (entry.kind === 'progress') {
         var p = entry.payload || {};
+        var runBit = (runningId === p.id) ? ':r1' : ':r0';
+        var durBit = (typeof p.duration_ms === 'number') ? ':d' + p.duration_ms : '';
         return {
             key: 'prog-' + p.id,
             hash: 'prog:' + p.status + ':' + (p.kind || '') + ':' + (p.label || '')
                 + ':' + (Array.isArray(p.sub_labels) ? p.sub_labels.join('|') : '')
+                + runBit + durBit
         };
     }
     var m = entry.payload || {};
@@ -745,8 +831,11 @@ function entryKeyHash(entry) {
     var progBit = '';
     if (Array.isArray(entry.progress) && entry.progress.length > 0) {
         progBit = ':p' + entry.progress.map(function(p) {
+            var rb = (runningId === p.id) ? '/r1' : '/r0';
+            var db = (typeof p.duration_ms === 'number') ? '/d' + p.duration_ms : '';
             return p.id + '/' + p.status + '/' + (p.kind || '') + '/' + (p.label || '')
-                 + '/' + (Array.isArray(p.sub_labels) ? p.sub_labels.join('|') : '');
+                 + '/' + (Array.isArray(p.sub_labels) ? p.sub_labels.join('|') : '')
+                 + rb + db;
         }).join(',');
     }
     return {

@@ -16,7 +16,7 @@ defmodule Dmhai.Tools.WebSearch do
   # different framing ("Say YES/NO"), same underlying criteria; the two can
   # be DRYed later if they drift.
   @tool_description """
-  Searches AND returns top results' content as a numbered list:
+  Search and return top results' content as a numbered list:
 
       N. <title>
       <url>
@@ -24,8 +24,6 @@ defmodule Dmhai.Tools.WebSearch do
       <content>
 
   `[fetched]` = full content inline; don't `web_fetch` these URLs. Cite source URLs alongside each claim.
-
-  Use for current / changing information — news, prices, weather, live data, regulations, library versions, anything newer than training data. Anything not time-sensitive → answer from memory.
   """
 
   @impl true

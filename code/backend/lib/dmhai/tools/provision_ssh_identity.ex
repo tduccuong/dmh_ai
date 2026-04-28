@@ -42,11 +42,7 @@ defmodule Dmhai.Tools.ProvisionSshIdentity do
   @impl true
   def description do
     """
-    Provision a sandbox-owned SSH identity for a remote host (`host` = hostname or `user@host`).
-
-    First call for a `(user, host)`: generates ed25519 keypair, persists it, materialises private key in sandbox, returns public key + two install options (password one-time via `sshpass + ssh-copy-id`, or `authorized_keys` paste).
-
-    Subsequent calls: returns `{status: "ready", private_key_path}` — use `ssh -i <path> <host>` directly.
+    Provision a sandbox-owned SSH identity for a remote host (`host` = hostname or `user@host`). First call returns `{status: "needs_setup", public_key, ...}`. Subsequent calls return `{status: "ready", private_key_path}` — use `ssh -i <path> <host>`.
     """
   end
 

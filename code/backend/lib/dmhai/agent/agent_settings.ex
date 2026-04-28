@@ -43,6 +43,15 @@ defmodule Dmhai.Agent.AgentSettings do
   # to the user fast. See architecture.md §Police gate #11.
   @run_script_probe_budget_default 5
 
+  # Long-running tool execution (see architecture.md
+  # §Long-running tool execution). Every `run_script` invocation is
+  # wrapped in nohup, registered in `Dmhai.Agent.RunningTools`, and
+  # the runtime polls process status every `tool_run_poll_interval_ms`.
+  # Anything still running after `run_script_max_runtime_ms` is
+  # killed and returns `{:error, "max_runtime exceeded after Ns"}`.
+  @tool_run_poll_interval_ms_default 2_000
+  @run_script_max_runtime_ms_default 21_600_000
+
   # Estimated usable context window (in tokens) of the assistant LLM.
   # Used by ContextEngine.should_compact? to derive the char-based
   # compaction trigger. Conservative floor across cloud models (many
@@ -188,6 +197,16 @@ defmodule Dmhai.Agent.AgentSettings do
 
   @spec run_script_probe_budget() :: pos_integer()
   def run_script_probe_budget, do: int_setting("runScriptProbeBudget", @run_script_probe_budget_default)
+
+  @doc "Runtime poll cadence (ms) for in-flight `run_script` processes."
+  @spec tool_run_poll_interval_ms() :: pos_integer()
+  def tool_run_poll_interval_ms,
+    do: int_setting("toolRunPollIntervalMs", @tool_run_poll_interval_ms_default)
+
+  @doc "Hard upper bound (ms) on a single `run_script` invocation. Past this the runtime kills the PID."
+  @spec run_script_max_runtime_ms() :: pos_integer()
+  def run_script_max_runtime_ms,
+    do: int_setting("runScriptMaxRuntimeMs", @run_script_max_runtime_ms_default)
 
   @doc "Minimum post-trim char count for an `extract_content` result to count as 'meaningful' (not blank/scanned)."
   @spec min_extracted_text_chars() :: pos_integer()

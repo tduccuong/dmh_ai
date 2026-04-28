@@ -248,12 +248,26 @@ defmodule Dmhai.Handlers.Data do
           or has_unanswered_user_msg?
           or has_pending_progress?
 
+        running_tool_call =
+          case Dmhai.Agent.RunningTools.lookup(session_id) do
+            %{tool_call_id: tcid, started_at_ms: started} = entry ->
+              %{
+                tool_call_id:    tcid,
+                progress_row_id: Map.get(entry, :progress_row_id),
+                started_at_ms:   started
+              }
+
+            _ ->
+              nil
+          end
+
         json(conn, 200, %{
-          messages:        new_msgs,
-          progress:        progress,
-          stream_buffer:   stream_buffer,
-          is_working:      is_working,
-          chain_in_flight: Dmhai.Agent.ChainInFlight.in_flight?(session_id)
+          messages:          new_msgs,
+          progress:          progress,
+          stream_buffer:     stream_buffer,
+          is_working:        is_working,
+          chain_in_flight:   Dmhai.Agent.ChainInFlight.in_flight?(session_id),
+          running_tool_call: running_tool_call
         })
 
       _ ->

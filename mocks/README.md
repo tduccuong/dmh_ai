@@ -1,84 +1,202 @@
-# mock_mcp — Bitrix24-shaped OAuth2 mock for testing Phase B
+# Mocks — Test Servers for DMH-AI
 
-Tiny Go server that implements the parts of the OAuth 2.1
-authorization-code + refresh-token grants needed to exercise
-DMH-AI's manual-OAuth path (#149) end-to-end without standing up a
-real provider account. Drives the `:network`-tagged tests in
-`code/backend/test/itgr_oauth_bitrix_mock.exs`.
+Collection of mock servers used for integration testing without external dependencies.
 
-## What it implements
+## Folder Layout
 
-Two endpoints:
-
-| Endpoint | Behavior |
-|---|---|
-| `GET /oauth/authorize?client_id=…&redirect_uri=…&state=…` | Mints a 32-char authorization code (5-minute TTL, in-memory) and 302s to `<redirect_uri>?code=<code>&state=<state>`. No human approval — the redirect fires immediately. |
-| `POST /oauth/token` (form-encoded) | Validates `client_id` / `client_secret` against a hardcoded pair (`app.test123` / `test_secret_123`), then handles `grant_type=authorization_code` (consumes the code, returns access + refresh tokens) or `grant_type=refresh_token` (returns rotated tokens). |
-
-Bitrix-shaped token response fields (`client_endpoint`, `server_endpoint`, `domain`, `member_id`, `scope`, `status`) are populated alongside the standard `access_token` / `refresh_token` / `expires_in` so the mock matches the production token-response shape DMH-AI consumes.
-
-The server listens on a random port (`net.Listen("tcp", ":0")`) and prints the chosen port on stdout. Tests parse this line; humans can copy/paste it for ad-hoc curl probing.
-
-## Build
-
-```bash
-cd mock_mcp
-go build -o server bitrix24.go
+```
+mocks/
+├── src/              # Go source files
+│   ├── bitrix24.go   # Bitrix24 OAuth2 mock
+│   ├── wiki.go       # Wiki service mock
+│   └── mcp.go        # MCP server mock
+├── bin/              # Compiled binaries (gitignored)
+│   ├── bitrix24
+│   ├── wiki
+│   └── mcp
+├── build.sh          # Build all mocks
+└── README.md         # This file
 ```
 
-No third-party dependencies — standard library only. Any Go 1.16+ toolchain works.
+## Available Mocks
 
-## Run manually
+### 1. bitrix24 — Bitrix24 OAuth2 Mock
 
-```bash
-./server
-# Bitrix24 OAuth2 mock server running
-# Endpoints:
-#   - GET /oauth/authorize?client_id=...&redirect_uri=...&state=...
-#   - POST /oauth/token
-# Server running on http://localhost:37895
-```
+**Purpose:** Implements OAuth 2.1 authorization-code + refresh-token grants for testing Phase B without a real provider.
 
-Then probe:
+**Endpoints:**
+- `GET /oauth/authorize` — Mints auth code (5-min TTL), 302s to redirect_uri
+- `POST /oauth/token` — Handles authorization_code and refresh_token grants
 
-```bash
-PORT=37895
-curl -i "http://localhost:$PORT/oauth/authorize?client_id=app.test123&redirect_uri=http://localhost:8080/oauth/callback&state=xyz"
-# → 302 Location: http://localhost:8080/oauth/callback?code=<32hex>&state=xyz
-
-CODE=…  # paste from the redirect
-curl -X POST "http://localhost:$PORT/oauth/token" \
-  -d "grant_type=authorization_code&client_id=app.test123&client_secret=test_secret_123&code=$CODE"
-# → JSON with access_token, refresh_token, …
-```
-
-## Run the test suite against it
-
-The test spawns + tears down the mock automatically:
-
-```bash
-cd code/backend
-mix test test/itgr_oauth_bitrix_mock.exs --only network
-```
-
-Default `mix test` skips it (the `@moduletag :network` opt-in mirrors the convention used by `itgr_mcp_huggingface.exs` and `itgr_tool_capability.exs`).
-
-If the `server` binary is missing, the test flunks with a clear message — rebuild via `go build` above.
-
-## Hardcoded client credentials
-
-The mock accepts exactly one client:
-
+**Hardcoded credentials:**
 ```
 client_id     = app.test123
 client_secret = test_secret_123
 ```
 
-These match the values in `itgr_oauth_bitrix_mock.exs`'s setup. To extend with more clients, edit the `clientSecrets` map at the top of `bitrix24.go` and rebuild.
+**Build:**
+```bash
+cd mocks
+./build.sh
+# or manually:
+go build -o bin/bitrix24 src/bitrix24.go
+```
 
-## What it does NOT implement
+**Run:**
+```bash
+./bin/bitrix24
+# Prints: Server running on http://localhost:<PORT>
+```
 
-- No MCP endpoint. The mock is purely an OAuth 2.1 AS — it never returns tools or handles JSON-RPC. Coverage of the MCP handshake side (initialize / tools/list / tools/call) lives in `itgr_open_mcp.exs` (stubbed Transport) and `itgr_mcp_huggingface.exs` (real HuggingFace).
-- No `/.well-known/oauth-authorization-server`. The mock is for the **manual** OAuth path (Phase B). DMH-AI never queries discovery against it; the test feeds endpoints in via the form values directly.
-- No revocation_endpoint. RFC 7009 revocation is covered offline in `itgr_delete_creds_cascade.exs` against a stubbed unrouteable endpoint.
-- No PKCE enforcement on the AS side. The test verifies our **client** side emits the right `code_challenge` / `code_challenge_method=S256` query params; the mock doesn't validate them. Sufficient for the round-trip contract we're checking.
+**Test:**
+```bash
+cd code/backend
+mix test test/itgr_oauth_bitrix_mock.exs --only network
+```
+
+---
+
+### 2. wiki — Wiki Service Mock
+
+**Purpose:** Mock wiki service for testing document/wiki-related features.
+
+**Build:**
+```bash
+go build -o bin/wiki src/wiki.go
+```
+
+**Run:**
+```bash
+./bin/wiki
+```
+
+---
+
+### 3. mcp — MCP Server Mock
+
+**Purpose:** Standard MCP (Model Context Protocol) server for testing MCP client integrations.
+
+**Exposed Tools:**
+- `list_dir` — List contents of a directory (path parameter)
+- `read_file` — Read contents of a file (path parameter)
+
+**Protocol:** JSON-RPC 2.0 over stdin/stdout
+
+**Build:**
+```bash
+go build -o bin/mcp src/mcp.go
+```
+
+**Run:**
+```bash
+./bin/mcp
+# Reads JSON-RPC requests from stdin, prints responses to stdout
+```
+
+**Test:**
+```bash
+echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}' | ./bin/mcp
+echo '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | ./bin/mcp
+echo '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_dir","arguments":{"path":"/tmp"}}}' | ./bin/mcp
+echo '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"/etc/hostname"}}}' | ./bin/mcp
+```
+
+---
+
+### 4. mcp_api_key — API Key Authenticated MCP Server
+
+**Purpose:** HTTP-transport MCP server requiring Bearer API key. Tests `connect_mcp(auth_method: "api_key")` flow end-to-end.
+
+**Transport:** HTTP, single endpoint `POST /mcp` (streamable-HTTP transport, JSON-RPC 2.0)
+
+**Listening:** Port via `--port <N>` flag, default 9091. Prints `MCP api_key mock running on http://localhost:<N>/mcp` on startup.
+
+**Auth:**
+- Valid key (hardcoded): `test-api-key-12345`
+- Read from `Authorization: Bearer <key>` header
+- Missing/wrong key → HTTP 401 with body `{"jsonrpc":"2.0","error":{"code":-32001,"message":"Authentication required"},"id":null}`
+- Sets `WWW-Authenticate: Bearer realm="mcp_api_key"` header (signals api_key auth, not OAuth)
+- No OAuth metadata endpoints (no `/.well-known/oauth-protected-resource` or `/.well-known/oauth-authorization-server`)
+
+**MCP Methods:**
+- `initialize` → `{protocolVersion: "2024-11-05", capabilities: {tools: {}}, serverInfo: {name: "mcp_api_key_mock", version: "0.1.0"}}`
+- `tools/list` → 2 sample tools:
+  - `echo` — Echo a message back (param: `message: string`)
+  - `current_time` — Return current UTC time as RFC3339
+- `tools/call` →
+  - `echo` → `{content:[{type:"text",text:"echo: <message>"}]}`
+  - `current_time` → `{content:[{type:"text",text:"<RFC3339 now>"}]}`
+  - other → JSON-RPC error -32601 "Method not found"
+
+**Build:**
+```bash
+go build -o bin/mcp_api_key src/mcp_api_key.go
+```
+
+**Run:**
+```bash
+./bin/mcp_api_key --port 9091
+# MCP api_key mock running on http://localhost:9091/mcp
+```
+
+**Test:**
+```bash
+# 1. Unauth → 401
+curl -s -X POST http://localhost:9091/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}'
+
+# 2. Auth → success
+curl -s -X POST http://localhost:9091/mcp \
+  -H 'Authorization: Bearer test-api-key-12345' \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}'
+
+# 3. tools/list
+curl -s -X POST http://localhost:9091/mcp \
+  -H 'Authorization: Bearer test-api-key-12345' \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
+
+# 4. tools/call echo
+curl -s -X POST http://localhost:9091/mcp \
+  -H 'Authorization: Bearer test-api-key-12345' \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"echo","arguments":{"message":"hello"}}}'
+
+# 5. tools/call current_time
+curl -s -X POST http://localhost:9091/mcp \
+  -H 'Authorization: Bearer test-api-key-12345' \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"current_time","arguments":{}}}'
+```
+
+---
+
+## Build All Mocks
+
+```bash
+cd mocks
+./build.sh
+```
+
+Or manually:
+```bash
+cd mocks
+go build -o bin/bitrix24 src/bitrix24.go
+go build -o bin/wiki src/wiki.go
+go build -o bin/mcp src/mcp.go
+```
+
+## Requirements
+
+- Go 1.16+ toolchain
+- No third-party dependencies (standard library only)
+
+## .gitignore
+
+The `bin/` directory and compiled binaries are gitignored in `../.gitignore`:
+```
+mocks/bin
+mocks/*.log
+```
