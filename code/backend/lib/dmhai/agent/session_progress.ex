@@ -238,6 +238,46 @@ defmodule Dmhai.Agent.SessionProgress do
   end
 
   @doc """
+  Auto-flip stale pending tool rows to `done` with an
+  `[orphan-cleanup]` marker. "Stale" means: status='pending' AND
+  the row's `ts` is older than `older_than_ms` ago AND the
+  corresponding tool_call isn't currently tracked in
+  `Dmhai.Agent.RunningTools` (i.e. no live execution is associated
+  with it).
+
+  Called from the `/poll` handler when no chain is in flight for
+  the session. Without this, a chain that died mid-tool-call leaves
+  a `pending` row in the DB forever, keeping the FE's spinner
+  spinning AND `is_working` permanently true. This makes the system
+  self-heal across page reloads — the user no longer needs to
+  manually kill the session to recover.
+
+  Idempotent. Returns `:ok` regardless of how many rows were touched.
+  """
+  @spec cleanup_stale_pending(String.t(), non_neg_integer()) :: :ok
+  def cleanup_stale_pending(session_id, older_than_ms) when is_binary(session_id) do
+    cutoff = System.os_time(:millisecond) - older_than_ms
+
+    try do
+      query!(Repo, """
+      UPDATE session_progress
+      SET    status='done',
+             label=label || ' [orphan-cleanup]'
+      WHERE  session_id=?
+        AND  status='pending'
+        AND  ts < ?
+      """, [session_id, cutoff])
+
+      :ok
+    rescue
+      e ->
+        require Logger
+        Logger.warning("[SessionProgress] cleanup_stale_pending failed: #{Exception.message(e)}")
+        :ok
+    end
+  end
+
+  @doc """
   Whether any progress row for this session is still `status='pending'`.
   Used by the `/poll` `is_working` flag so the FE knows a tool_call is
   in flight even when stream_buffer is empty (tool-only turns).

@@ -12,16 +12,23 @@ defmodule Dmhai.Agent.AgentSettings do
   alias Dmhai.Repo
   import Ecto.Adapters.SQL, only: [query!: 3]
 
+  # Defaults use the canonical `<pool>::<model>` format. See
+  # specs/api_pools.md. The `ollama-cloud` pool is seeded on first boot
+  # from the operator's pool seed file (defaults to placeholder zero
+  # accounts; admin must add their cloud accounts via System Settings →
+  # API Pools before these models can be used).
   @defaults %{
-    "confidantModel"         => "gemini-3-flash-preview:cloud",
-    "assistantModel"         => "gemma4:31b-cloud",
-    "compactorModel"       => "gemini-3-flash-preview:cloud",
-    "summarizerModel"      => "gemini-3-flash-preview:cloud",
-    "webSearchModel"       => "ministral-3:14b-cloud",
-    "oracleModel"          => "ministral-3:14b-cloud",
-    "imageDescriberModel"  => "gemini-3-flash-preview:cloud",
-    "videoDescriberModel"  => "gemini-3-flash-preview:cloud",
-    "profileExtractorModel" => "gemini-3-flash-preview:cloud"
+    "confidantModel"         => "ollama-cloud::gemini-3-flash-preview:cloud",
+    "assistantModel"         => "ollama-cloud::gemma4:31b-cloud",
+    "compactorModel"         => "ollama-cloud::gemini-3-flash-preview:cloud",
+    "summarizerModel"        => "ollama-cloud::gemini-3-flash-preview:cloud",
+    "webSearchModel"         => "ollama-cloud::ministral-3:14b-cloud",
+    "oracleModel"            => "ollama-cloud::ministral-3:14b-cloud",
+    "imageDescriberModel"    => "ollama-cloud::gemini-3-flash-preview:cloud",
+    "videoDescriberModel"    => "ollama-cloud::gemini-3-flash-preview:cloud",
+    "profileExtractorModel"  => "ollama-cloud::gemini-3-flash-preview:cloud",
+    # Embedding model used by the vector KB pipeline (see specs/vector_kb.md).
+    "kbEmbeddingModel"       => "miner::qwen3-embedding:0.6b"
   }
 
   @log_trace_default false
@@ -92,6 +99,18 @@ defmodule Dmhai.Agent.AgentSettings do
   @rate_limit_throttle_secs_default 60
   @quota_exhausted_throttle_hours_default 168
 
+  # Outbound HTTP receive_timeout for LLM calls (both streaming and
+  # non-streaming). Belt-and-suspenders cap so a stalled connection
+  # fails out rather than blocking forever; not the primary defence
+  # against hangs (that's `Connection: close` + `compressed: false`
+  # in lib/dmhai/agent/llm.ex). Default 300 s accommodates cold-loads
+  # of large local Ollama models when `num_ctx` forces a KV-cache
+  # reallocation — the prior 120 s was too tight for 24B-class
+  # models on consumer GPUs (see specs/api_pools.md §num_ctx).
+  # Bump higher if your hardware reloads slower; lower if you'd
+  # rather fail fast on misbehaving cloud endpoints.
+  @llm_receive_timeout_ms_default 300_000
+
   # Output-token ceiling (num_predict) passed to every assistant-mode
   # LLM.stream call. `num_predict` is a ceiling, NOT a prepaid budget
   # — unused headroom has no cost. Set far above any practical
@@ -128,25 +147,82 @@ defmodule Dmhai.Agent.AgentSettings do
   @synthesis_threshold_default 45_000
   @synthesis_fallback_chars_default 8_000
 
-  @doc "Get the model string for a given agent role. Returns the default if unset."
+  # Vector knowledge base — see specs/vector_kb.md. Chunk size targets
+  # the embedding model's recall sweet spot (256–512 tokens for dense
+  # retrieval). qwen3-embedding-0.6b emits 1024-dim vectors; changing
+  # `kb_embedding_dim` requires a full reindex (the SQLite-blob backend
+  # rejects mismatched rows on insert).
+  # Knowledge-scope (`/wiki`) chunking — long curated documents.
+  @kb_chunk_tokens_default 400
+  @kb_chunk_overlap_tokens_default 60
+
+  # `/wiki <url>` BFS crawl. v1 was single-page; v2 (#178) walks
+  # same-prefix pages up to a depth + page cap, indexing each. The
+  # caps are conservative defaults for typical doc sites; raise
+  # `learn_url_max_pages` for a deep API reference, lower
+  # `learn_url_max_depth` for a flat marketing site.
+  @learn_url_max_depth_default 5
+  @learn_url_max_pages_default 200
+  @learn_url_concurrency_default 1
+
+  # Memo-scope (`/memo`) chunking — much smaller. Users typically
+  # save 2-sentence facts (~30–40 tokens) and rarely exceed 20
+  # sentences (~300–400 tokens). At ~50 tokens / chunk, a typical
+  # 2-sentence memo stays as a single sharp chunk while longer
+  # memos split into ~3-sentence units. Sharper chunks → query
+  # vectors align tightly with the matching fact-bearing chunk
+  # → higher cosine scores → the 0.55 threshold becomes a clean
+  # signal of "actually about this topic". See specs/vector_kb.md.
+  @kb_memo_chunk_tokens_default 50
+  @kb_memo_chunk_overlap_tokens_default 10
+  @kb_top_n_default 8
+
+  # Maximum Marginal Relevance — diversification on retrieval.
+  # The vector store returns the top-`pool_size` candidates by raw
+  # cosine; we then MMR-pick the final `top_n` so near-duplicate
+  # chunks (e.g. identical boilerplate error blocks copied across
+  # many docs) drop out and the model sees diverse context.
+  # Lambda controls the balance — 1.0 = pure relevance (no
+  # diversification), 0.0 = pure novelty. 0.6 favours relevance
+  # while still penalising near-duplicates.
+  # See specs/vector_kb.md §retrieval.
+  @kb_mmr_pool_size_default 30
+  @kb_mmr_lambda_default 0.6
+
+  # Cosine-similarity floor for accepting a vector hit. Hits below
+  # this score are dropped before they reach Oracle / Assistant —
+  # prevents the model from forcing answers out of weak / unrelated
+  # chunks. With qwen3-embedding:0.6b the empirical separator
+  # between "actually about the topic" and noise sits around 0.55.
+  # Lower → more recall (and more false positives); raise → tighter
+  # precision. See specs/vector_kb.md.
+  @kb_score_threshold_default 0.55
+  @kb_embedding_dim_default 1024
+  @kb_embedding_batch_size_default 32
+
+  # Inline-text /wiki semantic-merge gate — a new body whose centroid
+  # is at-or-above this cosine score against an existing source merges
+  # into that source instead of creating a new one. High enough that
+  # distinct topics don't collapse, low enough that "same content with
+  # a typo fix / extra paragraph" merges.
+  @kb_text_merge_threshold_default 0.92
+
+  # Background relearn supervisor — caps simultaneous re-fetches.
+  @kb_relearn_concurrency_default 4
+
+  @doc """
+  Get the model string for a given agent role. Returns the default if
+  unset. Always in `<pool>::<model>` form (see specs/api_pools.md). Both
+  the per-role override stored in `admin_cloud_settings` and the
+  baked-in `@defaults` are expected to use that form post-migration —
+  any legacy `<provider>::<local|cloud>::<model>` entries are normalised
+  by `Dmhai.DB.Init.migrate_legacy_model_strings/0` on every boot.
+  """
   @spec model_for(String.t()) :: String.t()
   def model_for(role) when is_binary(role) do
     settings = load()
     val = String.trim(settings[role] || "")
-    plain = if val == "", do: @defaults[role] || "", else: val
-    to_routed(plain)
-  end
-
-  # Convert a plain model name (e.g. "gemini-3-flash-preview:cloud") to the
-  # routed format ("ollama::cloud::..." or "ollama::local::...").
-  # If the value already contains "::" it is assumed to be pre-formatted.
-  defp to_routed(model) do
-    if String.contains?(model, "::") do
-      model
-    else
-      pool = if String.ends_with?(model, "-cloud") or String.ends_with?(model, ":cloud"), do: "cloud", else: "local"
-      "ollama::#{pool}::#{model}"
-    end
+    if val == "", do: @defaults[role] || "", else: val
   end
 
   @doc "Whether to write verbatim LLM call traces to <session_root>/log_traces/<task_id>.log."
@@ -168,6 +244,7 @@ defmodule Dmhai.Agent.AgentSettings do
   def image_describer_model,  do: model_for("imageDescriberModel")
   def video_describer_model,  do: model_for("videoDescriberModel")
   def profile_extractor_model, do: model_for("profileExtractorModel")
+  def kb_embedding_model,      do: model_for("kbEmbeddingModel")
 
   @doc "Timeout in seconds applied to each bash command run inside spawn_task."
   @spec spawn_task_timeout_secs() :: pos_integer()
@@ -276,6 +353,17 @@ defmodule Dmhai.Agent.AgentSettings do
     do: int_setting("quotaExhaustedThrottleHours", @quota_exhausted_throttle_hours_default)
 
   @doc """
+  Outbound HTTP `receive_timeout` (ms) for both streaming and
+  non-streaming LLM calls. Belt-and-suspenders cap so a stalled
+  connection fails out rather than blocking forever. Default 300 s
+  to absorb cold-loads of large local Ollama models when `num_ctx`
+  forces a KV-cache reallocation.
+  """
+  @spec llm_receive_timeout_ms() :: pos_integer()
+  def llm_receive_timeout_ms,
+    do: int_setting("llmReceiveTimeoutMs", @llm_receive_timeout_ms_default)
+
+  @doc """
   Output-token ceiling (`num_predict`) applied to every assistant-mode
   LLM.stream call. A ceiling, not a reservation: unused headroom has
   no cost. Raise if long tool_calls (scripts, files) are getting cut
@@ -351,6 +439,75 @@ defmodule Dmhai.Agent.AgentSettings do
   @spec synthesis_fallback_chars() :: pos_integer()
   def synthesis_fallback_chars, do: int_setting("synthesisFallbackChars", @synthesis_fallback_chars_default)
 
+  @doc "Target chunk size (tokens) for `/wiki` (knowledge-scope) ingestion."
+  @spec kb_chunk_tokens() :: pos_integer()
+  def kb_chunk_tokens, do: int_setting("kbChunkTokens", @kb_chunk_tokens_default)
+
+  @doc "Overlap (tokens) between adjacent `/wiki` chunks."
+  @spec kb_chunk_overlap_tokens() :: pos_integer()
+  def kb_chunk_overlap_tokens, do: int_setting("kbChunkOverlapTokens", @kb_chunk_overlap_tokens_default)
+
+  @doc """
+  Target chunk size (tokens) for `/memo` (memo-scope) ingestion.
+  Much smaller than `kb_chunk_tokens` because memos are short
+  personal facts, not long documents — see the @kb_memo_chunk_*
+  comment block above.
+  """
+  @spec kb_memo_chunk_tokens() :: pos_integer()
+  def kb_memo_chunk_tokens, do: int_setting("kbMemoChunkTokens", @kb_memo_chunk_tokens_default)
+
+  @doc "Overlap (tokens) between adjacent `/memo` chunks."
+  @spec kb_memo_chunk_overlap_tokens() :: pos_integer()
+  def kb_memo_chunk_overlap_tokens, do: int_setting("kbMemoChunkOverlapTokens", @kb_memo_chunk_overlap_tokens_default)
+
+  @doc "Default top-N for retrieve_knowledge / retrieve_memo searches."
+  @spec kb_top_n() :: pos_integer()
+  def kb_top_n, do: int_setting("kbTopN", @kb_top_n_default)
+
+  @doc "Maximum BFS depth for `/wiki <url>` deep-crawl. Start URL is depth 0."
+  @spec learn_url_max_depth() :: pos_integer()
+  def learn_url_max_depth, do: int_setting("learnUrlMaxDepth", @learn_url_max_depth_default)
+
+  @doc "Maximum total pages indexed per `/wiki <url>` invocation."
+  @spec learn_url_max_pages() :: pos_integer()
+  def learn_url_max_pages, do: int_setting("learnUrlMaxPages", @learn_url_max_pages_default)
+
+  @doc "Parallel page fetches per crawl. Default 1 (strict sequential — one progress row at a time on the FE)."
+  @spec learn_url_concurrency() :: pos_integer()
+  def learn_url_concurrency, do: int_setting("learnUrlConcurrency", @learn_url_concurrency_default)
+
+  @doc """
+  Minimum cosine-similarity score for a hit to be returned.
+  Hits below this are dropped before they reach Oracle / Assistant
+  so the model never has to filter junk chunks itself.
+  """
+  @spec kb_score_threshold() :: float()
+  def kb_score_threshold, do: float_setting("kbScoreThreshold", @kb_score_threshold_default)
+
+  @doc "MMR candidate pool size — how many top-cosine hits get considered before MMR-picking the final `kb_top_n`."
+  @spec kb_mmr_pool_size() :: pos_integer()
+  def kb_mmr_pool_size, do: int_setting("kbMmrPoolSize", @kb_mmr_pool_size_default)
+
+  @doc "MMR diversity / relevance trade-off in [0.0, 1.0]. 1.0 = pure relevance, 0.0 = pure novelty."
+  @spec kb_mmr_lambda() :: float()
+  def kb_mmr_lambda, do: float_setting("kbMmrLambda", @kb_mmr_lambda_default)
+
+  @doc "Embedding vector dimension. Must match the embedding model's output. Changing this requires reindex."
+  @spec kb_embedding_dim() :: pos_integer()
+  def kb_embedding_dim, do: int_setting("kbEmbeddingDim", @kb_embedding_dim_default)
+
+  @doc "How many texts the embedder packs into a single /embeddings request."
+  @spec kb_embedding_batch_size() :: pos_integer()
+  def kb_embedding_batch_size, do: int_setting("kbEmbeddingBatchSize", @kb_embedding_batch_size_default)
+
+  @doc "Cosine threshold above which two inline-text sources merge into one. See specs/vector_kb.md."
+  @spec kb_text_merge_threshold() :: float()
+  def kb_text_merge_threshold, do: float_setting("kbTextMergeThreshold", @kb_text_merge_threshold_default)
+
+  @doc "Cap on concurrent background relearn jobs."
+  @spec kb_relearn_concurrency() :: pos_integer()
+  def kb_relearn_concurrency, do: int_setting("kbRelearnConcurrency", @kb_relearn_concurrency_default)
+
   @doc "User's chosen video detail level from admin settings. Returns 'low', 'medium', or 'high'."
   @spec video_detail() :: String.t()
   def video_detail do
@@ -361,13 +518,18 @@ defmodule Dmhai.Agent.AgentSettings do
     end
   end
 
-  @doc "Plain model names of all built-in system models (cloud only)."
+  @doc """
+  Canonical `<pool>::<model>` strings of all built-in system models in
+  the `ollama-cloud` pool. Used by the FE model picker to render the
+  baked-in cloud roster (operator-added pools/models extend this list
+  but aren't surfaced here).
+  """
   @spec system_model_names() :: [String.t()]
   def system_model_names do
     @defaults
     |> Map.values()
     |> Enum.uniq()
-    |> Enum.filter(fn m -> String.ends_with?(m, ":cloud") or String.ends_with?(m, "-cloud") end)
+    |> Enum.filter(fn m -> String.starts_with?(m, "ollama-cloud::") end)
   end
 
   @doc "Map of every model-role setting key → its baked-in default name. Exposed to the FE via /admin/settings."

@@ -162,8 +162,11 @@ defmodule Dmhai.Handlers.Media do
     result.rows != []
   end
 
-  # Cloud models use the "::cloud::" routing prefix.
-  defp cloud_model?(model), do: String.contains?(model, "::cloud::")
+  # Cloud models live in the `ollama-cloud` pool (post pool-redesign — see
+  # specs/api_pools.md). Operator-named pools that route to a different
+  # Ollama-cloud-compat backend should use a name that starts with
+  # "ollama-cloud" so this predicate keeps catching them.
+  defp cloud_model?(model), do: String.starts_with?(model, "ollama-cloud::")
 
   defp parse_base64_list(nil), do: []
   defp parse_base64_list(list) when is_list(list) do

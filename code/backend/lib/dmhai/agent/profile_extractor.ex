@@ -13,6 +13,7 @@ defmodule Dmhai.Agent.ProfileExtractor do
 
   import Ecto.Adapters.SQL, only: [query!: 3]
   alias Dmhai.{Repo, Agent.AgentSettings, Agent.LLM}
+  alias Dmhai.Commands.Parser, as: CommandParser
   require Logger
 
   @condense_threshold 50
@@ -24,71 +25,86 @@ defmodule Dmhai.Agent.ProfileExtractor do
   - `assistant_text` — the assistant's reply text
   - `user_id`        — DB user ID for loading/saving the profile
   """
-  @spec extract_and_merge(String.t(), String.t(), String.t()) :: :ok
+  @spec extract_and_merge(String.t(), String.t() | nil, String.t()) :: :ok
   def extract_and_merge(user_text, assistant_text, user_id) do
-    if user_text == "" or assistant_text == "" do
-      :ok
-    else
-      model = AgentSettings.profile_extractor_model()
-      existing = load_profile(user_id)
+    cond do
+      # Empty input on either side is a no-op. assistant_text is `nil`
+      # in assistant-mode chains (we don't have a single reply text) —
+      # the prompt below only consumes user_text, so nil is fine there.
+      user_text == "" or assistant_text == "" ->
+        :ok
 
-      already_known =
-        if existing != "", do: "Already known:\n#{existing}\n\n", else: ""
+      # Slash commands (`/memo`, `/wiki`) are administrative — they
+      # save / query KB content rather than the user describing
+      # themselves. Skip the LLM round-trip; nothing to learn.
+      CommandParser.parse(user_text) != :not_a_command ->
+        :ok
 
-      prompt =
-        "[USER MESSAGE]\n\"#{user_text}\"\n[END USER MESSAGE]\n\n" <>
-          already_known <>
-          "Task: Analyse the USER MESSAGE and output TWO sections.\n\n" <>
-          "[FACTS]\n" <>
-          "Explicit personal facts the user stated about themselves (name, job, family, hobbies declared, preferences stated, health, location, events).\n" <>
-          "Only extract from explicit self-descriptions: \"I am...\", \"I have...\", \"I like...\", \"I live in...\", etc.\n" <>
-          "One bullet per category, comma-separated values. e.g. \"- Name: Carl\", \"- Hobbies: hiking, reading\"\n" <>
-          "Never repeat a category key. Keep values short (a few words each).\n" <>
-          "Do not duplicate anything already in \"Already known\".\n" <>
-          "Write NONE if nothing qualifies.\n\n" <>
-          "[CANDIDATES]\n" <>
-          "Topics or subjects the user is asking about or showing curiosity in — even without explicit \"I like X\" statements.\n" <>
-          "Rules:\n" <>
-          "- Use the broadest, most general label possible: prefer \"gardening\" over \"indoor tomato cultivation\", \"blockchain\" over \"blockchain immutability\"\n" <>
-          "- 1–2 words maximum. No qualifiers, adjectives, or specifics.\n" <>
-          "- If the message covers multiple aspects of the same broad topic, output only ONE label for it.\n" <>
-          "Write NONE if nothing qualifies.\n\n" <>
-          "The user message may be in any language. Always write output in English. Plain text only, no markdown."
-
-      trace = %{origin: "system", path: "ProfileExtractor.extract", role: "ProfileExtractor", phase: "extract"}
-      case LLM.call(model, [%{role: "user", content: prompt}],
-             options: %{temperature: 0, num_predict: 200},
-             trace: trace
-           ) do
-        {:ok, reply} when is_binary(reply) and reply != "" ->
-          Logger.debug("[ProfileExtractor] extraction result=#{String.slice(reply, 0, 200)}")
-          new_lines = parse_facts(reply)
-          candidates = parse_candidates(reply)
-
-          if new_lines != [] do
-            merged = merge_facts(existing, new_lines)
-
-            if merged != existing do
-              all_lines = String.split(merged, "\n") |> Enum.filter(&String.starts_with?(&1, "-"))
-              final = if length(all_lines) >= @condense_threshold,
-                        do: condense(merged, model),
-                        else: merged
-
-              save_profile(user_id, final)
-              Logger.info("[ProfileExtractor] merged #{length(new_lines)} fact(s) user=#{user_id}")
-            end
-          end
-
-          if candidates != [] do
-            Dmhai.Handlers.Auth.track_facts_for_user(user_id, candidates)
-          end
-
-        _ ->
-          :ok
-      end
-
-      :ok
+      true ->
+        do_extract_and_merge(user_text, user_id)
     end
+  end
+
+  defp do_extract_and_merge(user_text, user_id) do
+    model = AgentSettings.profile_extractor_model()
+    existing = load_profile(user_id)
+
+    already_known =
+      if existing != "", do: "Already known:\n#{existing}\n\n", else: ""
+
+    prompt =
+      "[USER MESSAGE]\n\"#{user_text}\"\n[END USER MESSAGE]\n\n" <>
+        already_known <>
+        "Task: Analyse the USER MESSAGE and output TWO sections.\n\n" <>
+        "[FACTS]\n" <>
+        "Explicit personal facts the user stated about themselves (name, job, family, hobbies declared, preferences stated, health, location, events).\n" <>
+        "Only extract from explicit self-descriptions: \"I am...\", \"I have...\", \"I like...\", \"I live in...\", etc.\n" <>
+        "One bullet per category, comma-separated values. e.g. \"- Name: Carl\", \"- Hobbies: hiking, reading\"\n" <>
+        "Never repeat a category key. Keep values short (a few words each).\n" <>
+        "Do not duplicate anything already in \"Already known\".\n" <>
+        "Write NONE if nothing qualifies.\n\n" <>
+        "[CANDIDATES]\n" <>
+        "Topics or subjects the user is asking about or showing curiosity in — even without explicit \"I like X\" statements.\n" <>
+        "Rules:\n" <>
+        "- Use the broadest, most general label possible: prefer \"gardening\" over \"indoor tomato cultivation\", \"blockchain\" over \"blockchain immutability\"\n" <>
+        "- 1–2 words maximum. No qualifiers, adjectives, or specifics.\n" <>
+        "- If the message covers multiple aspects of the same broad topic, output only ONE label for it.\n" <>
+        "Write NONE if nothing qualifies.\n\n" <>
+        "The user message may be in any language. Always write output in English. Plain text only, no markdown."
+
+    trace = %{origin: "system", path: "ProfileExtractor.extract", role: "ProfileExtractor", phase: "extract"}
+    case LLM.call(model, [%{role: "user", content: prompt}],
+           options: %{temperature: 0, num_predict: 200},
+           trace: trace
+         ) do
+      {:ok, reply} when is_binary(reply) and reply != "" ->
+        Logger.debug("[ProfileExtractor] extraction result=#{String.slice(reply, 0, 200)}")
+        new_lines = parse_facts(reply)
+        candidates = parse_candidates(reply)
+
+        if new_lines != [] do
+          merged = merge_facts(existing, new_lines)
+
+          if merged != existing do
+            all_lines = String.split(merged, "\n") |> Enum.filter(&String.starts_with?(&1, "-"))
+            final = if length(all_lines) >= @condense_threshold,
+                      do: condense(merged, model),
+                      else: merged
+
+            save_profile(user_id, final)
+            Logger.info("[ProfileExtractor] merged #{length(new_lines)} fact(s) user=#{user_id}")
+          end
+        end
+
+        if candidates != [] do
+          Dmhai.Handlers.Auth.track_facts_for_user(user_id, candidates)
+        end
+
+      _ ->
+        :ok
+    end
+
+    :ok
   end
 
   # ─── Private ────────────────────────────────────────────────────────────────

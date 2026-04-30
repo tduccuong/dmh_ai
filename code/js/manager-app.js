@@ -24,13 +24,20 @@ UIManager.initializeApp = async function() {
         statusEl.classList.add('visible');
         setTimeout(function() { statusEl.classList.remove('visible'); statusEl.innerHTML = ''; }, 15000);
     }
-    const savedEndpoint = AppConfig.ollamaEndpoint;
-    OllamaAPI.setEndpoint(savedEndpoint);
-
     await this.loadPrefs();
     await Settings.load();
     if (!Auth.user || Auth.user.role !== 'admin') {
         await Settings.loadPublicLabels();
+    }
+    // OllamaAPI endpoint for browser-direct model browsing — derived
+    // from the `miner` pool's base_url (strip trailing /v1 so the
+    // legacy /api/* surface works). See specs/api_pools.md.
+    var minerPool = (Settings.pools || []).find(function(p) { return p.name === 'miner'; });
+    if (minerPool && minerPool.base_url) {
+        var bare = String(minerPool.base_url).replace(/\/+$/, '').replace(/\/v1$/, '');
+        OllamaAPI.setEndpoint(bare);
+    } else {
+        OllamaAPI.setEndpoint('http://127.0.0.1:11434');
     }
     await UserProfile.load();
 
@@ -96,16 +103,20 @@ UIManager.initModeSelector = function() {
     if (!menu) return;
     menu.innerHTML = '';
 
+    // Localized labels — show ONLY the current language's name. The
+    // pre-i18n version showed English + Vietnamese side by side in
+    // every locale, which read as a row of duplicate labels for
+    // anyone not bilingual.
     var modes = [
-        { value: 'confidant', label: 'Confidant', sublabel: 'Bạn Tâm Giao' },
-        { value: 'assistant', label: 'Assistant',  sublabel: 'Người Giúp Việc' }
+        { value: 'confidant', label: t('modeConfidant') },
+        { value: 'assistant', label: t('modeAssistant') }
     ];
 
     modes.forEach(function(m) {
         var el = document.createElement('div');
         el.className = 'model-dropdown-item mode-item' + (m.value === self._currentMode ? ' selected' : '');
         el.dataset.value = m.value;
-        el.innerHTML = '<span class="mode-item-icon">' + MODE_ICONS[m.value] + '</span><span class="mode-item-label">' + m.label + '</span><span class="mode-item-sub">' + m.sublabel + '</span>';
+        el.innerHTML = '<span class="mode-item-icon">' + MODE_ICONS[m.value] + '</span><span class="mode-item-label">' + m.label + '</span>';
         el.addEventListener('click', function() {
             self.switchMode(m.value);
             menu.classList.remove('open');
@@ -151,7 +162,7 @@ UIManager._updateModeLabel = function() {
     if (!label) return;
     var isAssistant = this._currentMode === 'assistant';
     if (iconEl) iconEl.innerHTML = MODE_ICONS[this._currentMode] || '';
-    label.textContent = isAssistant ? 'Assistant' : 'Confidant';
+    label.textContent = isAssistant ? t('modeAssistant') : t('modeConfidant');
     var menu = document.getElementById('mode-dropdown-menu');
     if (menu) {
         menu.querySelectorAll('.model-dropdown-item').forEach(function(el) {
@@ -384,6 +395,7 @@ UIManager.startProgressPolling = function() {
                   '/poll?msg_since=' + msgSince + '&prog_since=' + progSince;
         var isWorking = false;
         var streamBuffer = null;
+        var chainInFlight = false;
         var changed = false;
         try {
             var res = await apiFetch(url);
@@ -452,6 +464,7 @@ UIManager.startProgressPolling = function() {
 
                 isWorking = !!data.is_working;
                 streamBuffer = data.stream_buffer;
+                chainInFlight = !!data.chain_in_flight;
 
                 // Long-running tool surfacing — see manager-search.js
                 // pollTurnToCompletion for full rationale.
@@ -483,12 +496,18 @@ UIManager.startProgressPolling = function() {
         // no active streaming state — page reload mid-chain, silent
         // periodic pickup, or any BE-driven work the FE didn't
         // initiate. Sync the phrase to BE truth:
-        //   - is_working && stream_buffer → "streaming the answer..."
-        //   - is_working && !stream_buffer → "thinking..."
-        //   - !is_working                  → clear
-        // `_autoStatusActive` flag marks status-bar ownership so this
-        // path doesn't stomp on attachment/voice/iOS status writes.
-        self._syncAutoStatus(isWorking, streamBuffer);
+        //   - chain_in_flight && stream_buffer → "streaming the answer..."
+        //   - chain_in_flight && !stream_buffer → "thinking..."
+        //   - !chain_in_flight                  → clear
+        //
+        // The phrase gate is `chain_in_flight`, NOT `is_working`. The
+        // latter stays true for "soft" reasons (periodic task armed,
+        // unanswered user msg from a dead chain, orphaned pending
+        // progress rows) — surfacing those as "thinking..." misleads
+        // the user when nothing is actually thinking. Polling cadence
+        // still uses `is_working` (we keep tracking it for the
+        // setTimeout below).
+        self._syncAutoStatus(chainInFlight, streamBuffer);
 
         var nextMs = isWorking ? 500 : 5000;
         self._progressPoll = setTimeout(tick, nextMs);
@@ -568,40 +587,6 @@ UIManager.clearSession = async function() {
     }
 };
 
-UIManager.updateEndpoint = async function(url) {
-    var prevEndpoint = Settings._ollamaEndpoint;
-    // Write new endpoint to DB first so the backend proxy uses it when we test
-    Settings._ollamaEndpoint = url;
-    OllamaAPI.setEndpoint(url);
-    AppConfig.saveOllamaEndpoint(url);
-    await Settings._persist();
-    if (!url) {
-        return;
-    }
-    try {
-        await OllamaAPI.fetchModels();
-        UIManager._showOllamaUrlMsg('Successfully connected to the Ollama instance at ' + url + '.', false);
-    } catch (e) {
-        // Revert to previous endpoint
-        Settings._ollamaEndpoint = prevEndpoint;
-        OllamaAPI.setEndpoint(prevEndpoint);
-        AppConfig.saveOllamaEndpoint(prevEndpoint);
-        await Settings._persist();
-        document.getElementById('settings-ollama-url').value = prevEndpoint;
-        UIManager._showOllamaUrlMsg('There is no Ollama instance at ' + url + '. I auto-reverted the URL to the previous value. Please modify and save again.', true);
-    }
-};
-
-UIManager._showOllamaUrlMsg = function(text, isError) {
-    var el = document.getElementById('settings-ollama-url-msg');
-    if (!el) return;
-    el.textContent = text;
-    el.style.color = isError ? '#e05060' : '#60c080';
-    el.style.display = 'block';
-    clearTimeout(el._hideTimer);
-    el._hideTimer = setTimeout(function() { el.style.display = 'none'; }, isError ? 8000 : 5000);
-};
-
 UIManager.showTokenStats = async function(sessionId, sessionName) {
     try {
         const res = await apiFetch('/sessions/' + sessionId + '/token-stats');
@@ -671,21 +656,29 @@ UIManager.autoNameSession = async function(session) {
 };
 
 // Keep the input-area status bar ("Assistant is thinking..." /
-// "...streaming the answer...") coherent with BE's `is_working` flag
-// whenever the FE isn't already running `pollTurnToCompletion` (which
-// manages the phrase itself during user-initiated turns). Called from
-// `startProgressPolling`'s tick; idempotent.
+// "...streaming the answer...") coherent with the BE's
+// `chain_in_flight` flag whenever the FE isn't already running
+// `pollTurnToCompletion` (which manages the phrase itself during
+// user-initiated turns). Called from `startProgressPolling`'s tick;
+// idempotent.
+//
+// We gate on `chain_in_flight` (a chain loop is ACTUALLY iterating)
+// rather than `is_working` (which stays true for periodic-armed
+// sessions, unanswered user msgs from crashed chains, orphan
+// pending progress rows). Without that distinction, a session whose
+// chain died would show "thinking..." forever — even after force
+// reload, because the BE's flags persist.
 //
 // `_autoStatusActive` tracks ownership: only clear the status bar if
 // we were the ones who set it, so attachment / voice / iOS-hint
 // callers that set their own status aren't clobbered.
-UIManager._syncAutoStatus = function(isWorking, streamBuffer) {
+UIManager._syncAutoStatus = function(chainInFlight, streamBuffer) {
     if (!this.currentSession) return;
     var mode  = (this.currentSession.mode) || 'confidant';
     var icon  = (typeof MODE_ICONS !== 'undefined' && MODE_ICONS[mode]) || '';
-    var label = mode === 'assistant' ? 'Assistant' : 'Confidant';
+    var label = mode === 'assistant' ? t('modeAssistant') : t('modeConfidant');
 
-    if (isWorking) {
+    if (chainInFlight) {
         var phraseKey = streamBuffer ? 'answering' : 'thinking';
         this.setStatusHtml(icon + label + t(phraseKey));
         this._autoStatusActive = true;

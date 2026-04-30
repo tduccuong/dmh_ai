@@ -50,7 +50,7 @@ defmodule Dmhai.Agent.UserAgent do
   require Logger
 
   alias Dmhai.Agent.{AgentSettings, AssistantCommand, ConfidantCommand, ContextEngine,
-                     LLM, ProfileExtractor, StreamBuffer, Supervisor, Tasks,
+                     LLM, ProfileExtractor, StreamBuffer, ThinkingBuffer, Supervisor, Tasks,
                      TokenTracker, WebSearch}
   alias Dmhai.Web.Search, as: WebSearchEngine
   # WebSearch kept for synthesize_results used in build_web_context
@@ -782,8 +782,9 @@ defmodule Dmhai.Agent.UserAgent do
 
     # Stream collector: tokens from LLM.stream flow here, where they are
     # appended to the per-session stream_buffer column. FE polling reads
-    # the column and renders progressive text.
-    collector = spawn_stream_collector(session_id, user_id)
+    # the column and renders progressive text. Thinking tokens flow into
+    # the parallel thinking_buffer column on the same path.
+    collector = spawn_confidant_stream_collector(session_id, user_id)
 
     on_tokens = fn rx, tx -> TokenTracker.add_master(session_id, user_id, rx, tx) end
     trace     = %{origin: "confidant", path: "UserAgent.run_confidant", role: "ConfidantMaster", phase: "single-turn"}
@@ -797,9 +798,12 @@ defmodule Dmhai.Agent.UserAgent do
     case result do
       {:ok, full_text} when full_text != "" ->
         Dmhai.SysLog.log("[CONFIDANT] response(#{String.length(full_text)} chars): #{String.slice(full_text, 0, 300)}")
-        {:ok, _assistant_ts} =
-          append_session_message(session_id, user_id, %{role: "assistant", content: full_text})
+        thinking = ThinkingBuffer.read(session_id, user_id)
+        msg = %{role: "assistant", content: full_text}
+        msg = if thinking != "", do: Map.put(msg, :thinking, thinking), else: msg
+        {:ok, _assistant_ts} = append_session_message(session_id, user_id, msg)
         StreamBuffer.clear(session_id, user_id)
+        ThinkingBuffer.clear(session_id, user_id)
 
         Task.start(fn -> maybe_compact(session_id, user_id) end)
 
@@ -809,10 +813,12 @@ defmodule Dmhai.Agent.UserAgent do
 
       {:ok, ""} ->
         StreamBuffer.clear(session_id, user_id)
+        ThinkingBuffer.clear(session_id, user_id)
         Dmhai.SysLog.log("[CONFIDANT] empty response — no message persisted")
 
       {:error, reason} ->
         StreamBuffer.clear(session_id, user_id)
+        ThinkingBuffer.clear(session_id, user_id)
         Dmhai.SysLog.log("[CONFIDANT] ERROR: #{inspect(reason)}")
     end
   end
@@ -832,35 +838,84 @@ defmodule Dmhai.Agent.UserAgent do
     end
   end
 
-  # Loop process that accumulates {:chunk, token} messages from LLM.stream
-  # and periodically flushes to the sessions.stream_buffer column. The FE
-  # polls that column and renders the partial text in the streaming
-  # placeholder until the final message lands in session.messages.
-  defp spawn_stream_collector(session_id, user_id) do
-    spawn(fn -> stream_collector_loop(StreamBuffer.new(session_id, user_id)) end)
+  # ─── Assistant collector ──────────────────────────────────────────────
+  #
+  # Loop process that accumulates {:chunk, token} into the
+  # `stream_buffer` column AND {:thinking, token} into the
+  # `thinking_buffer` column. FE polls both for progressive answer +
+  # live thinking-of-thought rendering.
+  #
+  # Kept as a separate loop from the Confidant collector
+  # (`spawn_confidant_stream_collector`) so changes to one pipeline's
+  # streaming behavior never bleed into the other.
+  defp spawn_assistant_stream_collector(session_id, user_id) do
+    spawn(fn ->
+      assistant_stream_collector_loop(
+        StreamBuffer.new(session_id, user_id),
+        ThinkingBuffer.new(session_id, user_id)
+      )
+    end)
   end
 
-  defp stream_collector_loop(buf) do
+  defp assistant_stream_collector_loop(answer_buf, thinking_buf) do
     receive do
       {:chunk, token} when is_binary(token) ->
-        buf |> StreamBuffer.append(token) |> StreamBuffer.maybe_flush() |> stream_collector_loop()
+        new_answer = answer_buf |> StreamBuffer.append(token) |> StreamBuffer.maybe_flush()
+        assistant_stream_collector_loop(new_answer, thinking_buf)
 
-      {:thinking, _} ->
-        # Thinking text is not surfaced in the visible stream buffer —
-        # the FE renders thinking in a separate `<details>` block
-        # populated only after the final message lands. Drop silently.
-        stream_collector_loop(buf)
+      {:thinking, token} when is_binary(token) ->
+        new_thinking = thinking_buf |> ThinkingBuffer.append(token) |> ThinkingBuffer.maybe_flush()
+        assistant_stream_collector_loop(answer_buf, new_thinking)
 
       :flush_and_stop ->
-        StreamBuffer.flush(buf)
+        StreamBuffer.flush(answer_buf)
+        ThinkingBuffer.flush(thinking_buf)
         :ok
 
       _ ->
-        stream_collector_loop(buf)
+        assistant_stream_collector_loop(answer_buf, thinking_buf)
     after
-      # Safety valve: if the producer dies without sending :flush_and_stop
-      # we still commit whatever we have and exit.
-      120_000 -> StreamBuffer.flush(buf)
+      120_000 ->
+        StreamBuffer.flush(answer_buf)
+        ThinkingBuffer.flush(thinking_buf)
+    end
+  end
+
+  # ─── Confidant collector ──────────────────────────────────────────────
+  #
+  # Mirror of the Assistant collector, kept separate per the
+  # "Confidant and Assistant pipelines stay isolated" rule. Behavior is
+  # identical today but each can evolve independently.
+  defp spawn_confidant_stream_collector(session_id, user_id) do
+    spawn(fn ->
+      confidant_stream_collector_loop(
+        StreamBuffer.new(session_id, user_id),
+        ThinkingBuffer.new(session_id, user_id)
+      )
+    end)
+  end
+
+  defp confidant_stream_collector_loop(answer_buf, thinking_buf) do
+    receive do
+      {:chunk, token} when is_binary(token) ->
+        new_answer = answer_buf |> StreamBuffer.append(token) |> StreamBuffer.maybe_flush()
+        confidant_stream_collector_loop(new_answer, thinking_buf)
+
+      {:thinking, token} when is_binary(token) ->
+        new_thinking = thinking_buf |> ThinkingBuffer.append(token) |> ThinkingBuffer.maybe_flush()
+        confidant_stream_collector_loop(answer_buf, new_thinking)
+
+      :flush_and_stop ->
+        StreamBuffer.flush(answer_buf)
+        ThinkingBuffer.flush(thinking_buf)
+        :ok
+
+      _ ->
+        confidant_stream_collector_loop(answer_buf, thinking_buf)
+    after
+      120_000 ->
+        StreamBuffer.flush(answer_buf)
+        ThinkingBuffer.flush(thinking_buf)
     end
   end
 
@@ -1063,6 +1118,7 @@ defmodule Dmhai.Agent.UserAgent do
     # architecture.md §User-initiated chain cancellation.
     if anchor_task_cancelled?(ctx) do
       _ = StreamBuffer.clear(ctx.session_id, ctx.user_id)
+      _ = ThinkingBuffer.clear(ctx.session_id, ctx.user_id)
       progress_ctx = %{
         session_id: ctx.session_id,
         user_id:    ctx.user_id,
@@ -1096,7 +1152,7 @@ defmodule Dmhai.Agent.UserAgent do
       # (text) turn, tokens flow into sessions.stream_buffer in real time
       # so the FE polling loop renders the answer progressively as it's
       # generated, same UX as Confidant mode.
-      collector = spawn_stream_collector(ctx.session_id, ctx.user_id)
+      collector = spawn_assistant_stream_collector(ctx.session_id, ctx.user_id)
       # `num_predict` is a ceiling (no prepaid cost). Without it,
       # Ollama's default caps long tool_call generation — bash
       # scripts get truncated mid-string and the model loops
@@ -1136,6 +1192,7 @@ defmodule Dmhai.Agent.UserAgent do
           raw_narration  = StreamBuffer.read(ctx.session_id, ctx.user_id)
           clean_narration = Dmhai.Agent.TextSanitizer.strip_task_bookkeeping(raw_narration)
           StreamBuffer.clear(ctx.session_id, ctx.user_id)
+          ThinkingBuffer.clear(ctx.session_id, ctx.user_id)
 
           closes_chain? = Enum.any?(calls, fn c ->
             (get_in(c, ["function", "name"]) || "") in ~w(complete_task cancel_task pause_task)
@@ -1235,6 +1292,7 @@ defmodule Dmhai.Agent.UserAgent do
 
               Dmhai.SysLog.log("[ASSISTANT] turn=#{turn} rejected text='#{String.slice(text, 0, 80)}' — nudging for retry")
               StreamBuffer.clear(ctx.session_id, ctx.user_id)
+              ThinkingBuffer.clear(ctx.session_id, ctx.user_id)
 
               # Record telemetry + bump nudge counter for this non-tool issue.
               ctx = record_non_tool_issue(ctx, issue_atom)
@@ -1268,6 +1326,7 @@ defmodule Dmhai.Agent.UserAgent do
 
                   Dmhai.SysLog.log("[ASSISTANT] turn=#{turn} rejected fresh-attachment-miss — nudging for retry")
                   StreamBuffer.clear(ctx.session_id, ctx.user_id)
+                  ThinkingBuffer.clear(ctx.session_id, ctx.user_id)
                   ctx = record_non_tool_issue(ctx, issue_atom)
 
                   new_messages =
@@ -1292,13 +1351,23 @@ defmodule Dmhai.Agent.UserAgent do
                     Logger.info("[UserAgent] stripped task-bookkeeping (#{String.length(text) - String.length(clean_text)} chars) from assistant text at persistence")
                   end
                   Dmhai.SysLog.log("[ASSISTANT] turn=#{turn} text(#{String.length(clean_text)} chars)")
-                  final_msg = maybe_tag_task_num(%{role: "assistant", content: clean_text}, ctx)
+                  # Capture the streamed thinking text and pin it to
+                  # the persisted assistant message so the static
+                  # `<details>` block in `buildMessageEntryNode` has
+                  # the same content the user just saw streaming.
+                  thinking_text = ThinkingBuffer.read(ctx.session_id, ctx.user_id)
+                  base_msg = %{role: "assistant", content: clean_text}
+                  base_msg = if thinking_text != "",
+                                do: Map.put(base_msg, :thinking, thinking_text),
+                                else: base_msg
+                  final_msg = maybe_tag_task_num(base_msg, ctx)
                   {:ok, assistant_ts} =
                     append_session_message(ctx.session_id, ctx.user_id, final_msg)
                   # Stream buffer had the progressive text; clear it now that
                   # the permanent message is persisted, so the FE's streaming
                   # placeholder gives way to the real message on next poll.
                   StreamBuffer.clear(ctx.session_id, ctx.user_id)
+                  ThinkingBuffer.clear(ctx.session_id, ctx.user_id)
                   # Snapshot this chain's tool_call/tool_result messages
                   # into the session's rolling tool-history window so the
                   # NEXT chain's context builder can inject them back and
@@ -1342,11 +1411,13 @@ defmodule Dmhai.Agent.UserAgent do
         {:ok, ""} ->
           Dmhai.SysLog.log("[ASSISTANT] turn=#{turn} empty response — no message persisted")
           StreamBuffer.clear(ctx.session_id, ctx.user_id)
+          ThinkingBuffer.clear(ctx.session_id, ctx.user_id)
           {:chain_done, max_user_ts_in_messages(messages)}
 
         {:error, reason} ->
           Dmhai.SysLog.log("[ASSISTANT] turn=#{turn} ERROR: #{inspect(reason)}")
           StreamBuffer.clear(ctx.session_id, ctx.user_id)
+          ThinkingBuffer.clear(ctx.session_id, ctx.user_id)
 
           # Classify the error. Transient infra issues (API-key
           # exhaustion, rate-limits, provider 5xx, timeouts) are
@@ -1682,6 +1753,7 @@ defmodule Dmhai.Agent.UserAgent do
         user_msg = "Internal AI model error — we're investigating and working to fix. " <>
                      "Sorry for the inconvenience."
         StreamBuffer.clear(ctx.session_id, ctx.user_id)
+        ThinkingBuffer.clear(ctx.session_id, ctx.user_id)
         {:ok, _} = append_session_message(ctx.session_id, ctx.user_id,
                                           %{role: "assistant", content: user_msg})
         :aborted
@@ -1856,6 +1928,21 @@ defmodule Dmhai.Agent.UserAgent do
                 {:error, reason} ->
                   Dmhai.Agent.SessionProgress.mark_tool_done(row.id, duration_ms)
                   "Error: #{reason}"
+              end
+
+            # Soft post-execution nudges — Police inspects the call
+            # against `prior_acc` (per-call accumulator, INCLUDES
+            # sibling tool_msgs from this batch's earlier calls so
+            # intra-batch consecutive run_scripts also trigger) and
+            # may return an educational note that we prepend to the
+            # result. No `[[ISSUE:...]]` marker, no escalation
+            # counter — just an in-band hint the LLM reads on its
+            # next turn. Currently one rule: consecutive `run_script`
+            # → "fold remaining commands into ONE script next time".
+            content =
+              case Dmhai.Agent.Police.consecutive_run_script_advisory(name, prior_acc) do
+                nil       -> content
+                advisory  -> advisory <> content
               end
 
             %{role: "tool", content: content, tool_call_id: tool_call_id}
@@ -2187,11 +2274,17 @@ defmodule Dmhai.Agent.UserAgent do
     case Tasks.get(task_id) do
       %{task_spec: spec} when is_binary(spec) and spec != "" ->
         session_id = ctx.session_id
+        prev_assistant_msg = last_assistant_msg_for(session_id)
 
         task =
           Task.Supervisor.async_nolink(Dmhai.Agent.TaskSupervisor, fn ->
-            verdict = Dmhai.Agent.Oracle.classify(user_msg, spec)
+            verdict = Dmhai.Agent.Oracle.classify(user_msg, spec, prev_assistant_msg)
 
+            # Only :unrelated stashes a pending pivot — that signals
+            # "user is pivoting to a NEW task". :done means "user wants
+            # to close the active task with NO follow-up" (no auto-
+            # create-task should fire). See specs/architecture.md
+            # §Oracle DONE verdict.
             if verdict == :unrelated do
               Dmhai.Agent.PendingPivots.put(session_id, %{
                 user_msg: user_msg,
@@ -2209,6 +2302,40 @@ defmodule Dmhai.Agent.UserAgent do
     end
   end
   defp maybe_start_oracle(_, _, _), do: {nil, nil}
+
+  # Read the most recent assistant message from the session — Oracle's
+  # pivot classifier uses it to recognise "user is answering my prior
+  # clarifying question" as RELATED rather than misreading a terse
+  # reply (a status name, a "yes", an account number) as DONE/UNRELATED.
+  # Filtered to plain assistant text — we drop kind-tagged rows
+  # (`command_ack` from /wiki, /memo) since those aren't conversational.
+  # Returns nil when no usable prior assistant text exists.
+  defp last_assistant_msg_for(session_id) when is_binary(session_id) do
+    try do
+      %{rows: rows} = query!(Repo, "SELECT messages FROM sessions WHERE id=?", [session_id])
+
+      case rows do
+        [[json]] when is_binary(json) ->
+          msgs = Jason.decode!(json || "[]")
+
+          msgs
+          |> Enum.reverse()
+          |> Enum.find_value(fn m ->
+            cond do
+              m["role"] != "assistant" -> nil
+              m["kind"] in ["command_ack"] -> nil
+              not is_binary(m["content"]) or m["content"] == "" -> nil
+              true -> m["content"]
+            end
+          end)
+
+        _ ->
+          nil
+      end
+    rescue
+      _ -> nil
+    end
+  end
 
   defp coerce_task_num(n) when is_integer(n), do: n
   defp coerce_task_num(n) when is_binary(n) do

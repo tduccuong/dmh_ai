@@ -103,15 +103,32 @@ defmodule Dmhai.Agent.RunningTools do
     end
   end
 
-  @doc "True iff the given PID is alive inside the sandbox container."
+  @doc """
+  True iff the given PID is alive inside the sandbox container.
+  Wrapped in a Task with a 3 s timeout so a stuck docker daemon
+  surfaces as `false` (treated as "not alive" — the caller will
+  finalize / give up) rather than freezing the chain.
+
+  NOTE: callers that distinguish "exit file written" from "PID dead"
+  should consult the exit file FIRST. PID 1 in the sandbox is
+  `tail -f /dev/null` which doesn't reap children, so a clean-exit
+  shell becomes a zombie that `kill -0` keeps reporting as alive
+  forever. See `Dmhai.Tools.RunScript.script_finished?/2`.
+  """
   @spec alive?(integer()) :: boolean()
   def alive?(pid) when is_integer(pid) do
-    case System.cmd(
-           "docker",
-           ["exec", Sandbox.container_name(), "sh", "-c", "kill -0 #{pid} 2>/dev/null; echo $?"],
-           stderr_to_stdout: true
-         ) do
-      {output, _} -> String.trim(output) == "0"
+    task =
+      Task.async(fn ->
+        System.cmd(
+          "docker",
+          ["exec", Sandbox.container_name(), "sh", "-c", "kill -0 #{pid} 2>/dev/null; echo $?"],
+          stderr_to_stdout: true
+        )
+      end)
+
+    case Task.yield(task, 3_000) || Task.shutdown(task, :brutal_kill) do
+      {:ok, {output, _}} -> String.trim(output) == "0"
+      _                   -> false
     end
   rescue
     _ -> false

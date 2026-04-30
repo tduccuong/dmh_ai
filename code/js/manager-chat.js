@@ -579,6 +579,11 @@ function renderFormResponseSummary(formResponse) {
 function buildMessageEntryNode(msg, sessionId, renderSession, progressRows) {
     const div = document.createElement('div');
     div.className = 'message ' + msg.role;
+    // `kind="command"` / `kind="command_ack"` are BE-only markers
+    // (see specs/commands.md) — the runtime uses them to filter
+    // /memo (save path) and /wiki out of the LLM context. From the
+    // user's perspective those are ordinary chat messages, so we
+    // render them identically.
     var hdr = buildMsgHeaderEl(msg, renderSession);
     div.appendChild(hdr);
     var body = document.createElement('div');
@@ -878,15 +883,31 @@ UIManager.renderChat = function() {
     // the in-flight visual order matches the post-chain layout:
     //   user msg → assistant header → tool calls → (streaming body)
     // The diff loop only manages the permanent DOM in `container`.
+    //
+    // We only do this slice when a streaming placeholder will exist
+    // for this session — i.e., a chain is in flight (the placeholder
+    // is/will-be in the DOM) OR `_streamMap` has an entry queued for
+    // it. For background pipelines without a chain (the `/wiki` URL
+    // crawl emits per-page progress rows but never spins up a chain
+    // / streaming placeholder), leaving the slice on would orphan
+    // every row — they'd disappear from the live FE until a final
+    // assistant message claimed them on reload. Without the slice
+    // they render as flat entries inline, which is exactly what we
+    // want for crawl progress.
     var inflightProgress = [];
-    var splitAt = timeline.length;
-    for (var ti = timeline.length - 1; ti >= 0; ti--) {
-        if (timeline[ti].kind === 'progress') splitAt = ti;
-        else break;
-    }
-    if (splitAt < timeline.length) {
-        inflightProgress = timeline.slice(splitAt);
-        timeline = timeline.slice(0, splitAt);
+    var hasStreamingPlaceholder =
+        !!streamingMessage ||
+        !!(this._streamMap && this._streamMap.get(this.currentSession.id));
+    if (hasStreamingPlaceholder) {
+        var splitAt = timeline.length;
+        for (var ti = timeline.length - 1; ti >= 0; ti--) {
+            if (timeline[ti].kind === 'progress') splitAt = ti;
+            else break;
+        }
+        if (splitAt < timeline.length) {
+            inflightProgress = timeline.slice(splitAt);
+            timeline = timeline.slice(0, splitAt);
+        }
     }
 
     // Index existing DOM children by their stable entry key. Anything

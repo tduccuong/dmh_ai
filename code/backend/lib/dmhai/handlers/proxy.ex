@@ -120,61 +120,6 @@ defmodule Dmhai.Handlers.Proxy do
     end
   end
 
-  # GET /registry?q=...
-  def get_registry(conn) do
-    params = URI.decode_query(conn.query_string)
-    q = String.trim(params["q"] || "")
-
-    if q == "" do
-      json(conn, 200, %{models: []})
-    else
-      try do
-        search_url = "https://ollama.com/search?" <> URI.encode_query(%{q: q})
-
-        case Req.get(search_url,
-               headers: [{"User-Agent", @user_agent}, {"Accept", "text/html"}],
-               receive_timeout: 10_000,
-               retry: false,
-               finch: Dmhai.Finch
-             ) do
-          {:ok, %{status: 200, body: body}} ->
-            body_str = ensure_string(body)
-            model_names = extract_model_names(body_str)
-
-            cloud_results =
-              model_names
-              |> Enum.take(8)
-              |> Task.async_stream(
-                fn model_name ->
-                  get_cloud_tags(model_name)
-                end,
-                max_concurrency: 6,
-                timeout: 10_000
-              )
-              |> Enum.flat_map(fn
-                {:ok, tags} -> tags
-                _ -> []
-              end)
-
-            models = Enum.map(cloud_results, fn name -> %{name: name} end) |> Enum.take(20)
-            json(conn, 200, %{models: models})
-
-          {:ok, resp} ->
-            Logger.error("[REGISTRY] unexpected status: #{resp.status}")
-            json(conn, 500, %{error: "Registry fetch failed"})
-
-          {:error, reason} ->
-            Logger.error("[REGISTRY] ERROR: #{inspect(reason)}")
-            json(conn, 500, %{error: inspect(reason)})
-        end
-      rescue
-        e ->
-          Logger.error("[REGISTRY] ERROR: #{inspect(e)}")
-          json(conn, 500, %{error: inspect(e)})
-      end
-    end
-  end
-
   # GET /search?q=...&engine=...&lang=...&category=...
   def get_search(conn) do
     params = URI.decode_query(conn.query_string)
@@ -296,68 +241,6 @@ defmodule Dmhai.Handlers.Proxy do
     conn
   end
 
-  # POST /cloud-api/* (streaming, auth required)
-  def post_cloud_api(conn, _user, sub) do
-    cloud_key = get_req_header(conn, "x-cloud-key") |> List.first() |> then(&(if &1, do: String.trim(&1), else: ""))
-
-    if cloud_key == "" do
-      json(conn, 400, %{error: "Missing cloud API key"})
-    else
-      {:ok, body, conn} = read_body(conn, length: 100_000_000)
-
-      # First check for upstream errors before starting stream
-      # We need to peek at the response status; use streaming and detect error status
-      conn =
-        conn
-        |> put_resp_content_type("application/x-ndjson")
-        |> put_resp_header("x-accel-buffering", "no")
-        |> put_resp_header("cache-control", "no-cache")
-        |> send_chunked(200)
-
-      url = "https://ollama.com/api/#{sub}"
-
-      bytes_key = {__MODULE__, :bytes, self()}
-      Process.put(bytes_key, 0)
-
-      result =
-        Req.post(url,
-          body: body,
-          headers: [
-            {"authorization", "Bearer #{cloud_key}"},
-            {"content-type", "application/json"}
-          ],
-          receive_timeout: :infinity,
-          retry: false,
-          finch: Dmhai.Finch,
-          into: fn {:data, data}, {req, resp} ->
-            Process.put(bytes_key, Process.get(bytes_key) + byte_size(data))
-            case chunk(conn, data) do
-              {:ok, _conn} -> {:cont, {req, resp}}
-              {:error, _} -> {:halt, {req, resp}}
-            end
-          end
-        )
-
-      bytes_sent = Process.get(bytes_key)
-
-      case result do
-        {:error, reason} ->
-          Logger.error("[CLOUD-API] ERROR: #{inspect(reason)}")
-
-        {:ok, %{status: status}} when status >= 400 ->
-          Logger.error("[CLOUD-API] upstream error status=#{status} sub=#{sub} bytes_sent=#{bytes_sent}")
-
-        {:ok, %{status: status}} when bytes_sent == 0 ->
-          Logger.error("[CLOUD-API] upstream returned 0 bytes status=#{status} sub=#{sub} req_size=#{byte_size(body)}")
-
-        _ ->
-          :ok
-      end
-
-      conn
-    end
-  end
-
   # PUT /admin/settings (admin only)
   def put_admin_settings(conn, user) do
     if user.role != "admin" do
@@ -366,7 +249,11 @@ defmodule Dmhai.Handlers.Proxy do
       {:ok, body, conn} = read_body(conn)
       d = Jason.decode!(body || "{}")
 
-      allowed_keys = ~w(accounts cloudModels ollamaEndpoint compactTurns keepRecent condenseFacts modelLabels openaiKey googleKey anthropicKey confidantModel assistantModel compactorModel summarizerModel webSearchModel imageDescriberModel videoDescriberModel profileExtractorModel maxToolResultChars logTrace estimatedContextTokens masterCompactTurnThreshold masterCompactFraction minExtractedTextChars ocrPagesPerChunk ocrPageCap)
+      # `accounts` removed — accounts now live on the per-pool row
+      # (see specs/api_pools.md). Edits flow through /admin/pools/*.
+      # `ollamaEndpoint` removed — local Ollama URL is derived from
+      # the `miner` pool's base_url (also via /admin/pools/*).
+      allowed_keys = ~w(cloudModels compactTurns keepRecent condenseFacts modelLabels openaiKey googleKey anthropicKey confidantModel assistantModel compactorModel summarizerModel webSearchModel oracleModel imageDescriberModel videoDescriberModel profileExtractorModel kbEmbeddingModel maxToolResultChars logTrace estimatedContextTokens masterCompactTurnThreshold masterCompactFraction minExtractedTextChars ocrPagesPerChunk ocrPageCap)
       allowed = Map.take(d, allowed_keys)
 
       query!(Repo, "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
@@ -378,18 +265,23 @@ defmodule Dmhai.Handlers.Proxy do
 
   # Private helpers
 
+  # Local Ollama URL for browser-direct calls (`/local-api/*`, `/api/*`).
+  # Derived from the `miner` pool's base_url with the trailing `/v1`
+  # stripped — Ollama's native API surface is /api/*, not /v1/*. Falls
+  # back to localhost if the pool isn't configured.
   defp get_local_endpoint do
-    result = query!(Repo, "SELECT value FROM settings WHERE key=?", ["admin_cloud_settings"])
-
-    case result.rows do
-      [[v] | _] ->
-        data = Jason.decode!(v || "{}")
-        ep = String.trim(data["ollamaEndpoint"] || "") |> String.trim_trailing("/")
-        if ep == "", do: "http://127.0.0.1:11434", else: ep
+    case Dmhai.LLM.Pools.fetch("miner") do
+      {:ok, %{base_url: base}} ->
+        base
+        |> String.trim()
+        |> String.trim_trailing("/")
+        |> String.replace_suffix("/v1", "")
 
       _ ->
         "http://127.0.0.1:11434"
     end
+  rescue
+    _ -> "http://127.0.0.1:11434"
   end
 
   defp proxy_get(base_url, path, headers, opts) do
@@ -526,58 +418,6 @@ defmodule Dmhai.Handlers.Proxy do
         end
 
         ""
-    end
-  end
-
-  defp extract_model_names(body) do
-    regex = ~r/href=["'](?:https:\/\/ollama\.com)?\/library\/([\w][\w.\-]{0,60})["']/
-
-    Regex.scan(regex, body, capture: :all_but_first)
-    |> Enum.map(fn [name] -> name end)
-    |> Enum.uniq()
-  end
-
-  defp get_cloud_tags(model_name) do
-    try do
-      murl = "https://ollama.com/library/#{model_name}"
-
-      case Req.get(murl,
-             headers: [{"User-Agent", @user_agent}, {"Accept", "text/html"}],
-             receive_timeout: 10_000,
-             retry: false,
-             finch: Dmhai.Finch
-           ) do
-        {:ok, %{status: 200, body: body}} ->
-          mb = ensure_string(body)
-
-          # href="/library/model:tag" patterns that contain "cloud"
-          escaped = Regex.escape(model_name)
-          pattern = Regex.compile!("/library/" <> escaped <> ":(\\w[^\"'>\\s]{0,60})")
-
-          tags =
-            Regex.scan(pattern, mb, capture: :all_but_first)
-            |> Enum.map(fn [t] -> t end)
-            |> Enum.filter(&String.contains?(&1, "cloud"))
-            |> MapSet.new()
-
-          # Fallback: any quoted token matching *cloud*
-          tags =
-            if MapSet.size(tags) == 0 do
-              Regex.scan(~r/["']([a-z0-9][a-z0-9._\-]*cloud[a-z0-9._\-]*)["']/, mb, capture: :all_but_first)
-              |> Enum.map(fn [t] -> t end)
-              |> Enum.filter(fn t -> Regex.match?(~r/^[\w.\-]+$/, t) and String.length(t) <= 60 end)
-              |> MapSet.new()
-            else
-              tags
-            end
-
-          tags |> Enum.sort() |> Enum.map(fn t -> model_name <> ":" <> t end)
-
-        _ ->
-          []
-      end
-    rescue
-      _ -> []
     end
   end
 

@@ -34,6 +34,8 @@ defmodule Dmhai.Tools.ConnectMcp do
     """
     Attach an MCP server (JSON-RPC `initialize`/`tools/list`/`tools/call`) to the current task.
 
+    Pass `url` for ad-hoc servers, or `slug` to attach an admin-curated catalog entry (see specs/mcp.md §Phase E). The slug path skips the discovery preflight by reusing the auth_kind already classified at admin Enable time. Pass exactly one of url / slug.
+
     `auth_method` (default `"auto"`): `"auto"` (OAuth 2.1 + RFC 9728/8414 discovery), `"api_key"` (returns needs_setup form), `"oauth"` (manual, returns needs_setup form), `"none"` (no auth).
 
     Returns: `{status: "connected", alias, tools}` | `{status: "needs_auth", alias, auth_url}` | `{status: "needs_setup", alias, form}`. Last two are chain-terminating.
@@ -52,19 +54,22 @@ defmodule Dmhai.Tools.ConnectMcp do
         properties: %{
           url: %{
             type: "string",
-            description: "MCP server URL or service base URL."
+            description: "MCP server URL. Use this for ad-hoc connections — pass `slug` instead to use a catalog entry."
+          },
+          slug: %{
+            type: "string",
+            description: "Slug of an admin-curated catalog entry (must be enabled). Resolves to the row's mcp_url; auth_method defaults from the catalog's auth_kind."
           },
           alias: %{
             type: "string",
-            description: "Optional friendly label for this connection. Defaults to a slug derived from the URL."
+            description: "Optional friendly label for this connection. Defaults to the slug, or a label derived from the URL."
           },
           auth_method: %{
             type: "string",
             enum: ["auto", "api_key", "oauth", "none"],
-            description: "How the server authenticates clients. Defaults to 'auto'."
+            description: "How the server authenticates clients. Defaults to 'auto' (or the catalog's auth_kind when slug is given)."
           }
-        },
-        required: ["url"]
+        }
       }
     }
   end
@@ -74,15 +79,20 @@ defmodule Dmhai.Tools.ConnectMcp do
     user_id     = Map.get(ctx, :user_id)
     session_id  = Map.get(ctx, :session_id)
     anchor_n    = Map.get(ctx, :anchor_task_num)
-    url         = Map.get(args, "url")
+    slug        = Map.get(args, "slug")
+    raw_url     = Map.get(args, "url")
     alias_in    = Map.get(args, "alias")
-    auth_method = Map.get(args, "auth_method") || "auto"
+    auth_method_in = Map.get(args, "auth_method")
 
-    with :ok                      <- require_ctx(user_id, session_id),
+    # Slug → catalog lookup. Resolves to the row's `mcp_url` and
+    # defaults `auth_method` from `auth_kind` so the chat path
+    # walks straight into the right auth flow without re-probing.
+    with {:ok, url, auth_method} <- resolve_endpoint(slug, raw_url, auth_method_in),
+         :ok                      <- require_ctx(user_id, session_id),
          :ok                      <- validate_url(url),
          :ok                      <- validate_auth_method(auth_method),
          {:ok, anchor_task_id}    <- resolve_anchor(session_id, anchor_n) do
-      alias_ = alias_or_default(alias_in, url)
+      alias_ = alias_or_default(alias_in, slug || url)
 
       case already_authorized_and_attach(user_id, anchor_task_id, alias_) do
         {:ok, payload} ->
@@ -101,6 +111,34 @@ defmodule Dmhai.Tools.ConnectMcp do
 
   defp validate_auth_method(m) when m in ["auto", "api_key", "oauth", "none"], do: :ok
   defp validate_auth_method(other), do: {:error, "invalid auth_method: #{inspect(other)} (use auto | api_key | oauth | none)"}
+
+  # Resolve `(slug | url) + optional auth_method_in` to a concrete
+  # `{:ok, url, auth_method}` triple. Slug looks up the admin
+  # catalog; the row must exist AND be enabled. Auth method
+  # precedence: explicit arg > catalog's auth_kind > "auto".
+  defp resolve_endpoint(nil, nil, _),
+    do: {:error, "connect_mcp requires either `url` or `slug`"}
+
+  defp resolve_endpoint(slug, _url, auth_method_in) when is_binary(slug) and slug != "" do
+    case Dmhai.MCP.Catalog.get_by_slug(slug) do
+      nil ->
+        {:error, "unknown catalog slug: #{inspect(slug)}"}
+
+      %{enabled: false} ->
+        {:error, "catalog entry `#{slug}` is disabled — admin must Enable it first"}
+
+      %{mcp_url: url, auth_kind: kind} ->
+        method = auth_method_in || kind || "auto"
+        {:ok, url, method}
+    end
+  end
+
+  defp resolve_endpoint(_, url, auth_method_in) when is_binary(url) and url != "" do
+    {:ok, url, auth_method_in || "auto"}
+  end
+
+  defp resolve_endpoint(_, _, _),
+    do: {:error, "connect_mcp requires a non-empty `url` or `slug`"}
 
   defp resolve_anchor(session_id, n) when is_binary(session_id) and is_integer(n) do
     case Dmhai.Agent.Tasks.resolve_num(session_id, n) do
@@ -191,7 +229,7 @@ defmodule Dmhai.Tools.ConnectMcp do
   # it's OAuth-protected — we don't ASSUME OAuth from URL shape.
 
   defp connect_fresh(user_id, session_id, anchor_task_id, server_url, alias_) do
-    case probe_mcp(server_url) do
+    case Dmhai.MCP.Probe.classify(server_url) do
       :open ->
         no_auth_connect(user_id, anchor_task_id, alias_, server_url)
 
@@ -200,57 +238,6 @@ defmodule Dmhai.Tools.ConnectMcp do
 
       :not_mcp ->
         api_key_setup_form(anchor_task_id, server_url, alias_)
-    end
-  end
-
-  # Probe with an unauthed `initialize` and classify the response:
-  #   :open                  — 200 + valid MCP result.
-  #   {:gated, prm_url|nil}  — 401; PRM URL pulled from
-  #                            `WWW-Authenticate: resource_metadata=`
-  #                            when present, else nil (caller falls
-  #                            back to RFC 8615 well-known).
-  #   :not_mcp               — anything else; URL is not an MCP server.
-  defp probe_mcp(server_url) do
-    handshake_ctx = %{
-      server_url:         server_url,
-      canonical_resource: server_url,
-      auth:               %{type: "none"}
-    }
-
-    case MCPClient.initialize(handshake_ctx) do
-      {:ok, _info, sid} when is_binary(sid) and sid != "" ->
-        :open
-
-      {:error, {:rpc, _err}} ->
-        # Server understood our JSON-RPC but errored — still MCP,
-        # treat as gated and let the OAuth path try.
-        {:gated, nil}
-
-      {:error, {:status, 401, _body, headers}} ->
-        {:gated, parse_resource_metadata_hint(headers)}
-
-      _ ->
-        :not_mcp
-    end
-  end
-
-  # Pull the `resource_metadata=<URL>` parameter out of a
-  # `WWW-Authenticate` header per RFC 9728 §5.1. Tolerates quoted
-  # and unquoted forms, multiple challenge schemes, and extra
-  # whitespace. Returns nil when missing.
-  defp parse_resource_metadata_hint(headers) when is_list(headers) do
-    case Enum.find(headers, fn {k, _} -> k == "www-authenticate" end) do
-      nil -> nil
-      {_, value} when is_binary(value) -> extract_resource_metadata(value)
-      _ -> nil
-    end
-  end
-  defp parse_resource_metadata_hint(_), do: nil
-
-  defp extract_resource_metadata(value) do
-    case Regex.run(~r/resource_metadata\s*=\s*"?([^",\s]+)"?/i, value) do
-      [_, url] -> url
-      _        -> nil
     end
   end
 

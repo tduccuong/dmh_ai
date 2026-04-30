@@ -575,6 +575,106 @@ defmodule Itgr.SessionContextContract do
     end
   end
 
+  # ─── Consecutive-run_script soft nudge ───────────────────────────────────
+
+  describe "Police.consecutive_run_script_advisory/2" do
+    test "nil when prior history is empty" do
+      assert nil ==
+               Police.consecutive_run_script_advisory("run_script", [])
+    end
+
+    test "nil when current call is not run_script (gate scoped to run_script)" do
+      prior = [rs_msg("curl example.com")]
+
+      assert nil ==
+               Police.consecutive_run_script_advisory("web_search", prior)
+    end
+
+    test "nil when prior tool was not run_script" do
+      prior = [
+        %{"role" => "assistant", "tool_calls" => [
+          %{"id" => uid(),
+            "function" => %{"name" => "web_search", "arguments" => %{"query" => "x"}}}
+        ]}
+      ]
+
+      assert nil ==
+               Police.consecutive_run_script_advisory("run_script", prior)
+    end
+
+    test "returns advisory when prior tool was also run_script (consecutive case)" do
+      prior = [rs_msg("curl example.com/probe1")]
+
+      advisory = Police.consecutive_run_script_advisory("run_script", prior)
+      assert is_binary(advisory)
+      # The note frames this as an anti-pattern, names the cost
+      # (tool calling is expensive), and prescribes the recovery
+      # (chain ALL remaining commands into one script).
+      assert advisory =~ "RUNTIME GUIDANCE"
+      assert advisory =~ "2 consecutive `run_script`"
+      assert advisory =~ "ANTI-PATTERN"
+      assert advisory =~ "EXPENSIVE"
+      assert advisory =~ "SINGLE script"
+    end
+
+    test "advisory fires INTRA-BATCH (second run_script in the same assistant msg)" do
+      # execute_tools appends a per-call pseudo-message as it iterates,
+      # so within one batch [run_script, run_script] the second sees
+      # the first in prior_acc and the nudge fires.
+      prior = [rs_msg("curl example.com/probe1")]
+
+      assert is_binary(
+        Police.consecutive_run_script_advisory("run_script", prior)
+      )
+    end
+
+    test "mixed-batch: the LAST call in the last batch determines the gate" do
+      # Last batch was [create_task, run_script]. Current run_script
+      # nudge fires because the last tool-call in that batch was run_script.
+      prior = [
+        %{"role" => "assistant", "tool_calls" => [
+          %{"id" => uid(),
+            "function" => %{"name" => "create_task", "arguments" => %{}}},
+          %{"id" => uid(),
+            "function" => %{"name" => "run_script", "arguments" => %{"script" => "curl x"}}}
+        ]}
+      ]
+
+      assert is_binary(
+        Police.consecutive_run_script_advisory("run_script", prior)
+      )
+    end
+
+    test "alternating run_script → web_fetch → run_script does NOT nudge" do
+      # The encouraged pattern: do something with a different tool
+      # between run_scripts. Last call was web_fetch, so the next
+      # run_script is fresh, not consecutive.
+      prior = [
+        rs_msg("curl example.com/probe"),
+        %{"role" => "assistant", "tool_calls" => [
+          %{"id" => uid(),
+            "function" => %{"name" => "web_fetch",
+                            "arguments" => %{"url" => "https://docs.example.com/"}}}
+        ]}
+      ]
+
+      assert nil ==
+               Police.consecutive_run_script_advisory("run_script", prior)
+    end
+
+    test "ignores non-assistant messages between turns" do
+      prior = [
+        rs_msg("curl x"),
+        %{"role" => "tool", "content" => "stdout...", "tool_call_id" => uid()},
+        %{"role" => "user", "content" => "follow up"}
+      ]
+
+      assert is_binary(
+        Police.consecutive_run_script_advisory("run_script", prior)
+      )
+    end
+  end
+
   # ─── Single-periodic-per-session Police gate ─────────────────────────────
 
   describe "Police.check_no_duplicate_periodic_task_in_session/3" do

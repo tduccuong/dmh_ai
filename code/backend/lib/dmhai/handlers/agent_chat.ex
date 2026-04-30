@@ -131,31 +131,43 @@ defmodule Dmhai.Handlers.AgentChat do
           if content == "", do: paths, else: content <> "\n\n" <> paths
         end
 
-      message = %{role: "user", content: stored_content}
-      message = if client_msg_id, do: Map.put(message, :client_msg_id, client_msg_id), else: message
+      # Slash-command intercept (`/wiki`, `/memo`). Runs BEFORE the
+      # LLM dispatch, persists its own user + synthetic ack rows,
+      # returns immediately. See specs/commands.md.
+      #
+      # `user_ts` (the BE-stamped ts of the persisted user row) is
+      # echoed back so the FE can patch its optimistic local copy.
+      # Without it, the FE poll picks up the BE row as a "new"
+      # message that doesn't match anything via `(ts, role)` dedup
+      # → the user's line renders twice.
+      case Dmhai.Commands.dispatch(stored_content, session_id, user.id) do
+        {:handled, user_ts} ->
+          json(conn, 200, %{user_ts: user_ts, handled: true})
 
-      # Tag the incoming user message with the current anchor's
-      # task_num (if any). Persists alongside role / content / ts so
-      # the per-task archive can partition correctly when compaction
-      # fires. No anchor → no tag (pure-chat / pre-task-creation
-      # messages). See architecture.md §Per-message task tag.
-      message =
-        case Dmhai.Agent.Anchor.task_num_for(session_id) do
-          n when is_integer(n) -> Map.put(message, :task_num, n)
-          _                     -> message
-        end
+        :not_a_command ->
+          message = %{role: "user", content: stored_content}
+          message = if client_msg_id, do: Map.put(message, :client_msg_id, client_msg_id), else: message
 
-      case Dmhai.Agent.UserAgentMessages.append(session_id, user.id, message) do
-        {:ok, user_ts} ->
-          fire_and_forget(conn, user_ts, fn ->
-            Http.dispatch_assistant(user.id, session_id, content, self(),
-              attachment_names: attachment_names,
-              files:            files
-            )
-          end)
+          # Tag the incoming user message with the current anchor's
+          # task_num (if any). See architecture.md §Per-message task tag.
+          message =
+            case Dmhai.Agent.Anchor.task_num_for(session_id) do
+              n when is_integer(n) -> Map.put(message, :task_num, n)
+              _                     -> message
+            end
 
-        {:error, reason} ->
-          json(conn, 500, %{error: "Failed to persist message: #{inspect(reason)}"})
+          case Dmhai.Agent.UserAgentMessages.append(session_id, user.id, message) do
+            {:ok, user_ts} ->
+              fire_and_forget(conn, user_ts, fn ->
+                Http.dispatch_assistant(user.id, session_id, content, self(),
+                  attachment_names: attachment_names,
+                  files:            files
+                )
+              end)
+
+            {:error, reason} ->
+              json(conn, 500, %{error: "Failed to persist message: #{inspect(reason)}"})
+          end
       end
     end
   end

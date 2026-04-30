@@ -48,7 +48,18 @@ defmodule Dmhai.Tools.Registry do
     Dmhai.Tools.DeleteCreds,
     Dmhai.Tools.RequestInput,
     Dmhai.Tools.ConnectMcp,
-    Dmhai.Tools.ProvisionSshIdentity
+    Dmhai.Tools.ProvisionSshIdentity,
+    Dmhai.Tools.FetchWiki,
+    Dmhai.Tools.FetchMemo
+  ]
+
+  # Save tools — runtime-only (invoked by `/wiki` and `/memo` commands
+  # via VectorDB.ingest, NOT by the LLM). They're known to the
+  # dispatcher (see `all_local_tools/0`) so direct calls work, but
+  # never advertised in any LLM catalog. This eliminates the risk of
+  # a hallucinated write from the model. See specs/commands.md.
+  @save_only_tools [
+    Dmhai.Tools.SaveMemo
   ]
 
   # ── definitions ───────────────────────────────────────────────────────
@@ -62,12 +73,35 @@ defmodule Dmhai.Tools.Registry do
   current anchor task. `task_id` is the internal task UUID
   (`Dmhai.Agent.Tasks.resolve_num/2`); `nil` means no anchor task,
   in which case only built-ins are returned.
+
+  `fetch_wiki` is dropped from the returned list when the global
+  wiki has no chunks yet — saves the model from being tempted to
+  call it when there's nothing to look up, and saves the schema's
+  worth of tokens on every turn until the operator `/wiki`s
+  something.
   """
   @spec all_definitions(String.t() | nil, String.t() | nil) :: [map()]
-  def all_definitions(nil, _task_id), do: all_definitions()
+  def all_definitions(nil, _task_id), do: all_definitions() |> drop_empty_wiki()
 
   def all_definitions(user_id, task_id) when is_binary(user_id) do
-    all_definitions() ++ mcp_definitions(user_id, task_id)
+    (all_definitions() |> drop_empty_wiki()) ++ mcp_definitions(user_id, task_id)
+  end
+
+  defp drop_empty_wiki(defs) do
+    if wiki_empty?() do
+      Enum.reject(defs, fn d -> d.name == "fetch_wiki" end)
+    else
+      defs
+    end
+  end
+
+  defp wiki_empty? do
+    case Dmhai.VectorDB.count(:knowledge) do
+      {:ok, 0} -> true
+      _        -> false
+    end
+  rescue
+    _ -> false
   end
 
   defp mcp_definitions(user_id, task_id) do
@@ -88,6 +122,11 @@ defmodule Dmhai.Tools.Registry do
   @spec names() :: [String.t()]
   def names, do: Enum.map(@tools, & &1.name())
 
+  # Includes save-only tools — used by `known?` and `execute` so the
+  # runtime command path (`/wiki`, `/memo`) can dispatch SaveWiki /
+  # SaveMemo even though they're not in any LLM catalog.
+  defp all_local_tools, do: @tools ++ @save_only_tools
+
   @doc "Built-in plus MCP tool names attached to the given task."
   @spec names(String.t() | nil, String.t() | nil) :: [String.t()]
   def names(nil, _task_id), do: names()
@@ -98,9 +137,10 @@ defmodule Dmhai.Tools.Registry do
 
   # ── known? ────────────────────────────────────────────────────────────
 
-  @doc "True if `name` is a built-in tool."
+  @doc "True if `name` is a built-in OR memo tool."
   @spec known?(String.t()) :: boolean()
-  def known?(name) when is_binary(name), do: name in names()
+  def known?(name) when is_binary(name),
+    do: Enum.any?(all_local_tools(), &(&1.name() == name))
   def known?(_), do: false
 
   @doc "True if `name` is a built-in or attached to the given anchor task."
@@ -108,7 +148,9 @@ defmodule Dmhai.Tools.Registry do
   def known?(name, nil, _), do: known?(name)
 
   def known?(name, user_id, task_id) when is_binary(name) and is_binary(user_id) do
-    if name in names() do
+    # `known?/1` already checks built-ins + memo tools; this branch
+    # adds MCP tools attached to the current anchor task.
+    if known?(name) do
       true
     else
       Enum.any?(Dmhai.MCP.Registry.tools_for_task(user_id, task_id), &(&1.name == name))
@@ -125,7 +167,7 @@ defmodule Dmhai.Tools.Registry do
   """
   @spec definition_for(String.t()) :: map() | nil
   def definition_for(name) when is_binary(name) do
-    case Enum.find(@tools, &(&1.name() == name)) do
+    case Enum.find(all_local_tools(), &(&1.name() == name)) do
       nil  -> nil
       tool -> tool.definition()
     end
@@ -189,7 +231,7 @@ defmodule Dmhai.Tools.Registry do
       [alias_, tool_name] when alias_ != "" and tool_name != "" ->
         # Could collide with a built-in carrying a literal "." in its
         # name — none currently do, but defensively check first.
-        case Enum.find(@tools, &(&1.name() == name)) do
+        case Enum.find(all_local_tools(), &(&1.name() == name)) do
           nil ->
             user_id = Map.get(ctx, :user_id) || Map.get(ctx, "user_id")
             if is_binary(user_id) do
@@ -203,7 +245,7 @@ defmodule Dmhai.Tools.Registry do
         end
 
       _ ->
-        case Enum.find(@tools, &(&1.name() == name)) do
+        case Enum.find(all_local_tools(), &(&1.name() == name)) do
           nil  -> {:error, "Unknown tool: #{inspect(name)}"}
           tool -> tool.execute(args, ctx)
         end

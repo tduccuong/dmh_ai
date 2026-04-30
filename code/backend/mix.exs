@@ -29,7 +29,8 @@ defmodule Dmhai.MixProject do
       {:req_llm, "~> 1.9"},
       {:floki, "~> 0.36"},
       {:jason, "~> 1.4"},
-      {:hammer, "~> 6.1"}
+      {:hammer, "~> 6.1"},
+      {:sqlite_vec, "~> 0.1"}
     ]
   end
 end

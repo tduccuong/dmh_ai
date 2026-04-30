@@ -17,6 +17,7 @@ defmodule Dmhai.DB.Init do
     create_tables()
     migrate_columns()
     seed_admin()
+    seed_pools()
   end
 
   # Additive schema migrations — idempotent. Safe on fresh installs because
@@ -57,6 +58,12 @@ defmodule Dmhai.DB.Init do
     # "(Ns)" suffix on completed tool bubbles. See architecture.md
     # §Long-running tool execution.
     add_column_if_missing("session_progress", "duration_ms", "INTEGER")
+    # Streaming-time chain-of-thought buffer. Populated alongside
+    # `stream_buffer` while an LLM is generating; cleared at chain
+    # end. Lets the FE render a live `Thinking…` block during the
+    # streaming phase. See architecture.md §Polling-based delivery.
+    add_column_if_missing("sessions", "thinking_buffer", "TEXT")
+    add_column_if_missing("sessions", "thinking_buffer_ts", "INTEGER")
   end
 
   # SQLite 3.25+ supports `ALTER TABLE … RENAME COLUMN`. The rename
@@ -92,6 +99,8 @@ defmodule Dmhai.DB.Init do
       mode TEXT DEFAULT 'confidant',
       stream_buffer TEXT,                   -- partial final-answer tokens being streamed from the LLM; NULL when idle
       stream_buffer_ts INTEGER,             -- last stream_buffer update ts (ms); used by FE polling to detect change
+      thinking_buffer TEXT,                 -- partial chain-of-thought tokens streamed alongside stream_buffer; NULL when no thinking active. See architecture.md §Polling-based delivery.
+      thinking_buffer_ts INTEGER,           -- last thinking_buffer update ts (ms)
       tool_history TEXT DEFAULT NULL,       -- JSON: last-N-turn tool_call / tool_result messages for context retention
       created_at INTEGER,
       updated_at INTEGER DEFAULT 0
@@ -339,6 +348,34 @@ defmodule Dmhai.DB.Init do
     """)
     query!(Repo, "CREATE INDEX IF NOT EXISTS idx_task_services_user ON task_services (user_id, alias)")
 
+    # Admin-curated MCP catalog. Each row is a blessed service —
+    # admin sets up name + URL + optional metadata, clicks Enable to
+    # run a preflight probe (Dmhai.MCP.Probe) which classifies the
+    # service as :open / :gated / :not_mcp and persists auth_kind
+    # and any AS metadata harvested during the probe. The chat tool
+    # `connect_mcp(slug:)` reads this row and skips PRM/ASM
+    # discovery, walking users straight into auth.
+    query!(Repo, """
+    CREATE TABLE IF NOT EXISTS mcp_catalog (
+      id                INTEGER PRIMARY KEY AUTOINCREMENT,
+      slug              TEXT    NOT NULL UNIQUE,
+      name              TEXT    NOT NULL,
+      description       TEXT,
+      mcp_url           TEXT    NOT NULL,
+      icon_url          TEXT,
+      categories        TEXT,                          -- JSON array of strings
+      enabled           INTEGER NOT NULL DEFAULT 0,    -- 0/1
+      auth_kind         TEXT,                          -- 'none' | 'oauth' | 'api_key' | NULL
+      auth_metadata     TEXT,                          -- JSON object (PRM hint URL, AS endpoint, scopes…)
+      last_probe_status TEXT,                          -- 'open' | 'gated' | 'not_mcp' | 'error' | NULL
+      last_probe_error  TEXT,                          -- human-readable error from the probe attempt
+      last_probe_at     INTEGER,                       -- ms epoch
+      created_at        INTEGER NOT NULL,
+      updated_at        INTEGER NOT NULL
+    )
+    """)
+    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_mcp_catalog_enabled ON mcp_catalog (enabled)")
+
     query!(Repo, """
     CREATE TABLE IF NOT EXISTS model_behavior_stats (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -377,6 +414,386 @@ defmodule Dmhai.DB.Init do
 
     query!(Repo,
       "CREATE INDEX IF NOT EXISTS idx_task_turn_archive_task_ts ON task_turn_archive (task_id, original_ts)")
+
+    # Vector knowledge base — see specs/vector_kb.md.
+    #
+    #   kb_sources       — registry of every /wiki / /memo / save_memo
+    #                      ingest. Source-of-truth for relearn flows.
+    #                      `centroid` (averaged chunk embedding) gates
+    #                      semantic-merge for inline-text ingest.
+    #   kb_chunks_meta   — non-vector metadata for each chunk; rowid
+    #                      links 1:1 to the corresponding kb_vec_* row.
+    #   kb_vec_knowledge — vec0 virtual table holding the global vectors.
+    #   kb_vec_memo      — vec0 virtual table for per-user memos.
+    #   kb_seeds         — admin-curated URL list for one-click batch /wiki.
+    #   kb_relearn_jobs  — dedup table for the background re-fetch supervisor.
+    query!(Repo, """
+    CREATE TABLE IF NOT EXISTS kb_sources (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      scope        TEXT NOT NULL CHECK (scope IN ('knowledge', 'memo')),
+      user_id      TEXT,
+      source_kind  TEXT NOT NULL,
+      source_ref   TEXT NOT NULL,
+      title        TEXT,
+      raw_text     TEXT,
+      centroid     BLOB,
+      tags         TEXT,
+      indexed_at   INTEGER NOT NULL,
+      UNIQUE(scope, user_id, source_ref)
+    )
+    """)
+    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_kb_sources_scope ON kb_sources (scope, user_id)")
+
+    query!(Repo, """
+    CREATE TABLE IF NOT EXISTS kb_chunks_meta (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      scope        TEXT NOT NULL CHECK (scope IN ('knowledge', 'memo')),
+      user_id      TEXT,
+      source_id    INTEGER NOT NULL REFERENCES kb_sources(id) ON DELETE CASCADE,
+      chunk_idx    INTEGER NOT NULL,
+      chunk_text   TEXT NOT NULL,
+      indexed_at   INTEGER NOT NULL
+    )
+    """)
+    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_kb_chunks_meta_source ON kb_chunks_meta (source_id)")
+    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_kb_chunks_meta_scope ON kb_chunks_meta (scope, user_id)")
+
+    # vec0 virtual tables. Dimension is hard-coded; distance metric
+    # is cosine (semantic similarity, magnitude-invariant — see
+    # specs/vector_kb.md). Changing dim or metric means dropping +
+    # reindexing both tables; `migrate_vec_tables_to_cosine/0`
+    # handles the L2 → cosine migration on boot for existing dbs.
+    query!(Repo, "CREATE VIRTUAL TABLE IF NOT EXISTS kb_vec_knowledge USING vec0(embedding float[1024] distance_metric=cosine)")
+    query!(Repo, "CREATE VIRTUAL TABLE IF NOT EXISTS kb_vec_memo      USING vec0(embedding float[1024] distance_metric=cosine)")
+    migrate_vec_tables_to_cosine()
+
+    # FTS5 inverted index over chunk_text — feeds the BM25 leg of
+    # hybrid search (#182). Contentless table (text not duplicated;
+    # we already have it in `kb_chunks_meta`); rowid mirrors
+    # `kb_chunks_meta.id`. `contentless_delete=1` lets us issue
+    # plain `DELETE FROM kb_fts WHERE rowid=?` on chunk delete.
+    # Tokenizer `unicode61` handles diacritics + case-folding for
+    # multilingual content (Vietnamese / German / etc.) — the
+    # default tokenizer is ASCII-only and would index "đỏ" as
+    # something useless.
+    query!(Repo, """
+    CREATE VIRTUAL TABLE IF NOT EXISTS kb_fts USING fts5(
+      chunk_text,
+      content='',
+      contentless_delete=1,
+      tokenize='unicode61 remove_diacritics 2'
+    )
+    """)
+    migrate_fts5_backfill()
+
+    query!(Repo, """
+    CREATE TABLE IF NOT EXISTS kb_seeds (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      url           TEXT NOT NULL UNIQUE,
+      label         TEXT,
+      tags          TEXT,
+      last_run_at   INTEGER,
+      last_status   TEXT,
+      last_error    TEXT,
+      created_at    INTEGER NOT NULL
+    )
+    """)
+
+    query!(Repo, """
+    CREATE TABLE IF NOT EXISTS kb_relearn_jobs (
+      source_ref   TEXT PRIMARY KEY,
+      source_kind  TEXT NOT NULL,
+      enqueued_at  INTEGER NOT NULL
+    )
+    """)
+
+    # Pools — model-routing registry. See specs/api_pools.md.
+    # Replaces the legacy <provider>::<local|cloud>::<model> scheme. A
+    # pool bundles endpoint config + account rotation, addressed in
+    # canonical model strings as <pool>::<model>.
+    query!(Repo, """
+    CREATE TABLE IF NOT EXISTS pools (
+      id               INTEGER PRIMARY KEY AUTOINCREMENT,
+      name             TEXT NOT NULL UNIQUE,
+      provider         TEXT NOT NULL,           -- 'ollama' | 'openai' | …
+      base_url         TEXT NOT NULL,
+      strategy         TEXT NOT NULL DEFAULT 'least_used',
+      cooldown_seconds INTEGER NOT NULL DEFAULT 300,
+      num_ctx          INTEGER,                 -- per-pool Ollama options.num_ctx;
+                                                -- NULL = don't inject (server default applies)
+      accounts         TEXT NOT NULL DEFAULT '[]',
+                                                -- JSON array: [{name, api_key, throttled_until?, last_used_ts?}]
+      rr_cursor        INTEGER NOT NULL DEFAULT 0,
+                                                -- round-robin cursor (only used when strategy='round_robin')
+      created_ts       INTEGER NOT NULL,
+      updated_ts       INTEGER NOT NULL
+    )
+    """)
+
+    migrate_pools_drop_api_format()
+    migrate_pools_add_num_ctx()
+  end
+
+  # Add the `num_ctx` column to existing pools tables. Per-pool
+  # Ollama context-window override; NULL means don't inject (server
+  # default applies). See specs/api_pools.md. Idempotent: a no-op
+  # once the column is present.
+  defp migrate_pools_add_num_ctx do
+    sql =
+      case query!(Repo, "SELECT sql FROM sqlite_master WHERE type='table' AND name='pools'", []).rows do
+        [[s]] when is_binary(s) -> s
+        _ -> ""
+      end
+
+    if not String.contains?(sql, "num_ctx") do
+      Logger.info("[DB.Init] adding pools.num_ctx (per-pool Ollama context override)")
+      query!(Repo, "ALTER TABLE pools ADD COLUMN num_ctx INTEGER", [])
+    end
+  end
+
+  # Drop the legacy `api_format` column from existing pools tables.
+  # Provider-driven adapter dispatch (#185 phase 3) made it dead — the
+  # wire protocol is determined entirely by `provider`. Idempotent: a
+  # no-op once the column is gone. Requires SQLite 3.35+ (released
+  # 2021-03), guaranteed on every deployment we care about.
+  defp migrate_pools_drop_api_format do
+    sql =
+      case query!(Repo, "SELECT sql FROM sqlite_master WHERE type='table' AND name='pools'", []).rows do
+        [[s]] when is_binary(s) -> s
+        _ -> ""
+      end
+
+    if String.contains?(sql, "api_format") do
+      Logger.info("[DB.Init] dropping pools.api_format (provider-driven dispatch)")
+      query!(Repo, "ALTER TABLE pools DROP COLUMN api_format", [])
+    end
+  end
+
+  # Migrate any existing vec0 tables that were created without
+  # `distance_metric=cosine` (the prior default was L2). vec0's
+  # metric is fixed at table creation, so the only path is drop +
+  # recreate + re-embed every chunk. Detection: read the CREATE
+  # statement from sqlite_master and check whether it mentions
+  # cosine. Idempotent: a no-op once tables are on cosine.
+  #
+  # Re-embedding fires synchronously during boot — fine for the
+  # current corpus size (a few hundred memo chunks per user). If
+  # the corpus grows past that, move this to a background task.
+  defp migrate_vec_tables_to_cosine do
+    Enum.each([:knowledge, :memo], fn scope ->
+      vec_table =
+        case scope do
+          :knowledge -> "kb_vec_knowledge"
+          :memo      -> "kb_vec_memo"
+        end
+
+      sql =
+        case query!(Repo, "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", [vec_table]).rows do
+          [[s]] when is_binary(s) -> s
+          _                        -> ""
+        end
+
+      cond do
+        sql == "" ->
+          # Table was just freshly created with cosine — nothing to migrate.
+          :ok
+
+        String.contains?(sql, "distance_metric=cosine") ->
+          # Already on cosine.
+          :ok
+
+        true ->
+          Logger.info("[DB.Init] migrating #{vec_table} from L2 → cosine (re-embedding existing chunks)")
+          rebuild_vec_table_as_cosine(scope, vec_table)
+      end
+    end)
+  end
+
+  # Drop the old L2 vec0 table, recreate with cosine, then re-embed
+  # every chunk from `kb_chunks_meta` and re-insert with the same
+  # rowid. Per-batch embedder calls (size capped by AgentSettings)
+  # so a stale embedder pool doesn't compound the boot delay.
+  defp rebuild_vec_table_as_cosine(scope, vec_table) do
+    rows =
+      query!(Repo,
+        "SELECT id, chunk_text FROM kb_chunks_meta WHERE scope=? ORDER BY id ASC",
+        [Atom.to_string(scope)]).rows
+
+    query!(Repo, "DROP TABLE IF EXISTS #{vec_table}", [])
+
+    query!(Repo,
+      "CREATE VIRTUAL TABLE IF NOT EXISTS #{vec_table} USING vec0(embedding float[1024] distance_metric=cosine)", [])
+
+    case rows do
+      [] ->
+        Logger.info("[DB.Init] #{vec_table} migration: no chunks to re-embed")
+        :ok
+
+      _ ->
+        batch_size = Dmhai.Agent.AgentSettings.kb_embedding_batch_size()
+
+        rows
+        |> Enum.chunk_every(batch_size)
+        |> Enum.each(fn batch ->
+          texts = Enum.map(batch, fn [_id, text] -> text end)
+
+          case Dmhai.VectorDB.Embedder.embed_batch(texts) do
+            {:ok, vecs} ->
+              Enum.zip(batch, vecs)
+              |> Enum.each(fn {[id, _text], vec} ->
+                blob = encode_vector_le(vec)
+                query!(Repo, "INSERT INTO #{vec_table}(rowid, embedding) VALUES (?, ?)", [id, blob])
+              end)
+
+            {:error, reason} ->
+              Logger.error("[DB.Init] re-embed failed for #{vec_table}: #{inspect(reason)} — skipping #{length(batch)} chunks")
+          end
+        end)
+
+        Logger.info("[DB.Init] #{vec_table} migration: re-embedded #{length(rows)} chunks")
+    end
+  end
+
+  # Pack a list of floats into a vec0-compatible LE blob. Mirrors
+  # `Dmhai.VectorDB.SqliteVec.encode_vector/1`; duplicated here so
+  # the migration doesn't depend on an alias-loop with that module.
+  defp encode_vector_le(floats) do
+    Enum.reduce(floats, <<>>, fn f, acc -> acc <> <<f::little-float-32>> end)
+  end
+
+  # Backfill the FTS5 index from existing `kb_chunks_meta` rows.
+  # Idempotent: `INSERT OR IGNORE` skips any rowid already in the
+  # FTS5 table, so re-running on every boot is cheap (the dup-check
+  # is just an index probe per row). Boot-time cost on a fresh-from-
+  # migration database: one full scan; on subsequent boots: near-
+  # instant. The chunk-add path keeps FTS5 in sync going forward, so
+  # this is mainly for the v2 → hybrid upgrade path.
+  defp migrate_fts5_backfill do
+    %{rows: [[meta_count]]} = query!(Repo, "SELECT COUNT(*) FROM kb_chunks_meta", [])
+    %{rows: [[fts_count]]}  = query!(Repo, "SELECT COUNT(*) FROM kb_fts", [])
+
+    if meta_count > fts_count do
+      Logger.info("[DB.Init] FTS5 backfill: meta=#{meta_count} fts=#{fts_count} → backfilling missing")
+
+      query!(Repo, """
+      INSERT OR IGNORE INTO kb_fts(rowid, chunk_text)
+      SELECT id, chunk_text FROM kb_chunks_meta
+      """, [])
+
+      %{rows: [[after_count]]} = query!(Repo, "SELECT COUNT(*) FROM kb_fts", [])
+      Logger.info("[DB.Init] FTS5 backfill: now #{after_count} rows")
+    end
+
+    :ok
+  rescue
+    e ->
+      Logger.warning("[DB.Init] FTS5 backfill failed: #{Exception.message(e)}")
+      :ok
+  end
+
+  # Seed default pools on first boot. Importable from
+  # /home/ct/.dmhai/api_pool.json if present (operator-managed file with
+  # real account credentials). Otherwise inserts empty-account
+  # placeholder rows so the admin UI shows something to edit. Idempotent
+  # — re-run on every boot, but only inserts pools that don't already
+  # exist by name.
+  defp seed_pools do
+    existing = query!(Repo, "SELECT name FROM pools", []).rows |> List.flatten() |> MapSet.new()
+
+    seeds = load_pool_seeds()
+
+    now = System.os_time(:millisecond)
+
+    Enum.each(seeds, fn pool ->
+      if not MapSet.member?(existing, pool["name"]) do
+        query!(Repo, """
+        INSERT INTO pools (name, provider, base_url, strategy,
+                           cooldown_seconds, num_ctx, accounts, rr_cursor,
+                           created_ts, updated_ts)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+        """, [
+          pool["name"],
+          pool["provider"],
+          pool["base_url"],
+          pool["strategy"] || "least_used",
+          pool["cooldown_seconds"] || 300,
+          pool["num_ctx"],
+          Jason.encode!(pool["accounts"] || []),
+          now, now
+        ])
+        Logger.info("[DB.Init] seeded pool: #{pool["name"]}")
+      end
+    end)
+  end
+
+  # Look for an operator-managed pool seed file. Path order:
+  #   1. $DMHAI_POOL_SEED  — explicit override
+  #   2. /home/ct/.dmhai/api_pool.json — host bind-mounted into the container
+  #   3. ./temp/api_pool.json — repo-local copy used in dev
+  # Falls back to a built-in placeholder set if none of those exist.
+  defp load_pool_seeds do
+    candidate_paths = [
+      System.get_env("DMHAI_POOL_SEED"),
+      "/home/ct/.dmhai/api_pool.json",
+      "/data/api_pool.json",
+      "temp/api_pool.json"
+    ]
+    |> Enum.reject(&is_nil/1)
+
+    case Enum.find(candidate_paths, &File.exists?/1) do
+      nil ->
+        default_pool_seeds()
+
+      path ->
+        try do
+          %{"pools" => pools} = path |> File.read!() |> Jason.decode!()
+          # Translate api_pool.json's account `api_key` field to our schema
+          # (already aligned), but keep both shapes accepted.
+          Enum.map(pools, fn p ->
+            accounts =
+              (p["accounts"] || [])
+              |> Enum.map(fn a ->
+                %{
+                  "name"    => a["name"] || a["api_key"] || "unknown",
+                  "api_key" => a["api_key"] || a["apiKey"] || a["key"] || ""
+                }
+              end)
+
+            Map.put(p, "accounts", accounts)
+          end)
+        rescue
+          e ->
+            Logger.warning("[DB.Init] pool seed file #{path} unreadable (#{Exception.message(e)}); using defaults")
+            default_pool_seeds()
+        end
+    end
+  end
+
+  defp default_pool_seeds do
+    [
+      %{
+        "name" => "ollama-cloud",
+        "provider" => "ollama",
+        "base_url" => "https://ollama.com/v1",
+        "strategy" => "least_used",
+        "cooldown_seconds" => 300,
+        "accounts" => []
+      },
+      %{
+        "name" => "miner",
+        "provider" => "ollama",
+        "base_url" => "http://192.168.178.49:11434/v1",
+        "num_ctx" => 16384,
+        "accounts" => [%{"name" => "local", "api_key" => "sk-local"}]
+      },
+      %{
+        "name" => "sagemaker",
+        "provider" => "ollama",
+        "base_url" => "http://localhost:11434/v1",
+        "num_ctx" => 16384,
+        "accounts" => [%{"name" => "local", "api_key" => "sk-local"}]
+      }
+    ]
   end
 
   defp seed_admin do

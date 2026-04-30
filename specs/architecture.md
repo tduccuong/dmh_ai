@@ -295,7 +295,8 @@ GET /sessions/:id/poll?msg_since=<ts>&prog_since=<id>
       "tool_call_id":    "...",
       "progress_row_id": 12345,
       "started_at_ms":   1234567890
-    } | null
+    } | null,
+    "thinking_buffer": "<partial chain-of-thought tokens>" | null
   }
 ```
 
@@ -319,6 +320,20 @@ GET /sessions/:id/poll?msg_since=<ts>&prog_since=<id>
   without this, an intermediate text turn (e.g. *"I'll check the
   docs..."*) would prematurely flip the FE to "chain done" and trailing
   progress rows from the next turn would have nowhere to nest.
+- `thinking_buffer`: partial chain-of-thought tokens being streamed
+  alongside `stream_buffer` (and into the parallel `sessions.thinking_buffer`
+  column). The FE renders these in a `<details>` block above the
+  answer body — collapsed by default with a CSS spinner in the
+  summary. When `stream_buffer` becomes non-null while
+  `thinking_buffer` is also non-null, the FE detects the transition,
+  strips the spinner, and auto-collapses the block if the user had
+  expanded it. The persisted assistant message carries `msg.thinking`
+  with the same content; the static block in
+  `buildMessageEntryNode` takes over once the placeholder is torn
+  down. Each pipeline (Confidant / Assistant) owns its own collector
+  loop (`spawn_confidant_stream_collector` / `spawn_assistant_stream_collector`)
+  that flushes thinking tokens via `Dmhai.Agent.ThinkingBuffer`.
+
 - `running_tool_call`: present (non-null) while a long-running tool is
   executing. Currently only `run_script` populates this — see
   §Long-running tool execution. Carries `tool_call_id`,
@@ -411,6 +426,46 @@ exits.
 5. On exit: reads the log file, computes `duration_ms = now_ms -
    started_at_ms`, deregisters the ETS entry, returns
    `{:ok, output}` (or `{:error, "exit N: ..."}` on non-zero).
+   **Done-signal**: presence of `<run_id>.exit` is the primary
+   "finished" check, NOT `kill -0 <pid>`. The wrapper writes the
+   exit file ONLY after the script returns, so its appearance is
+   authoritative regardless of PID state. The PID check is a
+   secondary fallback for crashes that didn't write the exit code.
+   Reason: the sandbox's PID 1 is `tail -f /dev/null`, which never
+   reaps children. An orphaned wrapper shell becomes a zombie, and
+   `kill -0 <zombie_pid>` returns 0 (success — "alive") forever —
+   hanging the chain if used as the only signal.
+
+   **Hang-guard layers** (defence in depth — none alone is sufficient):
+   - **Per-`docker exec` timeouts**: every `System.cmd("docker", …)`
+     in `RunScript` and `RunningTools.alive?` is wrapped in a
+     `Task.yield` with an explicit cap (3 s for liveness probes,
+     5 s for the launcher, 10 s for the drain). A stuck docker
+     daemon surfaces as `:timeout` / `false` — never a hang.
+   - **`max_runtime_ms` cap** on the user script (default 6 h,
+     configurable). Past this the runtime kills the PID
+     (TERM → 2 s grace → KILL) and returns an error.
+   - **Hard hang-guard ceiling** on the poll loop itself:
+     `max_runtime_ms + 60 s` grace. If the loop somehow keeps
+     spinning past max_runtime + grace (e.g. docker daemon stuck so
+     the kill itself fails), we bail unconditionally with
+     `"chain unwedged forcibly"`. This is the last-resort safety
+     net so the chain CANNOT wedge indefinitely under any failure
+     mode.
+
+   **Failure shapes the model can see** in the tool result:
+   - Normal exit, code 0 → `{:ok, output}`
+   - Normal exit, non-zero → `{:error, "exit N: ..."}`
+   - Wrapper killed before recording exit (SIGTERM/SIGKILL, OOM,
+     container restart) → `{:error, "run_script process died
+     without recording an exit code (likely killed by …). Partial
+     output: …"}`
+   - max_runtime exceeded → `{:error, "run_script exceeded max
+     runtime of Ns. Last output: …"}`
+   - Hard ceiling hit → `{:error, "run_script poll loop exceeded
+     the hard hang-guard ceiling …"}`
+   - Docker daemon stuck → `{:error, "<phase> timed out after Nms
+     — docker daemon may be stuck"}`
 6. Hard cap: `AgentSettings.run_script_max_runtime_ms` (default
    `21_600_000` = 6h). On overrun the runtime kills the process
    (`kill -TERM`, then `kill -KILL` after a 2 s grace) and returns
@@ -2422,8 +2477,12 @@ compression.** Both `do_call_request/5` and `do_stream_request/6` in
   decoded cleanly; multi-packet text responses stalled mid-decode for
   minutes). curl works fine because it doesn't send Accept-Encoding
   by default; the server returns plain text and nothing to decode.
-- Bound `receive_timeout` at 120 s as a floor so any future unknown
-  stall fails out rather than blocks forever.
+- Bound `receive_timeout` at `AgentSettings.llm_receive_timeout_ms`
+  (default 300 s, configurable) so any future unknown stall fails out
+  rather than blocks forever. Default sized to absorb cold-loads of
+  large local Ollama models when `num_ctx` triggers a KV-cache
+  reallocation — the prior 120 s was too tight for 24B-class models
+  on consumer GPUs.
 
 ### Why
 
@@ -2447,9 +2506,12 @@ at risk. The fix is to close the connection after each Ollama call.
 
 ### Belt-and-suspenders
 
-`receive_timeout: 120_000` (2 min) caps any individual LLM HTTP call
-— if something else ever silently hangs at the network level, we
-error out rather than blocking forever.
+`receive_timeout: AgentSettings.llm_receive_timeout_ms()` (default 5 min)
+caps any individual LLM HTTP call — if something else ever silently
+hangs at the network level, we error out rather than blocking forever.
+Operator-tunable via the `llmReceiveTimeoutMs` setting; raise on slow
+hardware that cold-loads large models, lower on fast cloud-only fleets
+that should fail loudly when an upstream misbehaves.
 
 **Transport-error classification.** `Req.TransportError` /
 `Mint.TransportError` / any error with `reason` in `[:timeout,

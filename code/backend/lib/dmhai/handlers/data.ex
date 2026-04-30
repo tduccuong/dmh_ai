@@ -10,7 +10,7 @@ defmodule Dmhai.Handlers.Data do
   require Logger
 
   # Dedicated model for session naming; fast, cheap, 1M context.
-  @namer_model "ollama::cloud::gemini-3-flash-preview:cloud"
+  @namer_model "ollama-cloud::gemini-3-flash-preview:cloud"
 
   @image_exts ~w(.png .jpg .jpeg .gif .webp .bmp)
   @video_exts ~w(.mp4 .webm .mov .avi .mkv .m4v .3gp .ogv)
@@ -181,11 +181,11 @@ defmodule Dmhai.Handlers.Data do
   def poll_session(conn, user, session_id) do
     result =
       query!(Repo,
-             "SELECT messages, stream_buffer FROM sessions WHERE id=? AND user_id=?",
+             "SELECT messages, stream_buffer, thinking_buffer FROM sessions WHERE id=? AND user_id=?",
              [session_id, user.id])
 
     case result.rows do
-      [[msgs_json, stream_buffer]] ->
+      [[msgs_json, stream_buffer, thinking_buffer]] ->
         conn = fetch_query_params(conn)
 
         msg_since =
@@ -240,6 +240,31 @@ defmodule Dmhai.Handlers.Data do
           %{"role" => "user"} -> true
           _                    -> false
         end
+        # Orphan-cleanup: a `session_progress` row stays `pending`
+        # only while a tool is actively running. If the chain isn't
+        # iterating any more (chain_in_flight=false) AND a pending
+        # row is older than 30 s AND it isn't backed by a live
+        # `RunningTools` entry, the chain almost certainly died and
+        # the row is stale. Auto-flip to `done` with an
+        # `[orphan-cleanup]` marker so:
+        #   • the FE's spinner on that row stops spinning
+        #   • `has_pending_progress?` stops keeping `is_working` true
+        # Without this, a one-time chain crash leaves a stuck
+        # spinner + perpetual "thinking..." status across reloads.
+        chain_in_flight? = Dmhai.Agent.ChainInFlight.in_flight?(session_id)
+        bg_pipeline_active? = Dmhai.Agent.BackgroundPipelines.active?(session_id)
+
+        # Skip cleanup while a chain is iterating OR a background
+        # pipeline (e.g. /wiki URL crawl) is registered. Each
+        # crawl-emitted row stays pending much longer than the
+        # 30-s threshold while the cloud embedder works through
+        # the page's chunks — without this guard, the sweeper
+        # would tag every legitimate in-flight row with
+        # `[orphan-cleanup]`.
+        if not chain_in_flight? and not bg_pipeline_active? do
+          Dmhai.Agent.SessionProgress.cleanup_stale_pending(session_id, 30_000)
+        end
+
         has_pending_progress? = Dmhai.Agent.SessionProgress.has_pending?(session_id)
         is_working =
           is_binary(stream_buffer)
@@ -265,8 +290,9 @@ defmodule Dmhai.Handlers.Data do
           messages:          new_msgs,
           progress:          progress,
           stream_buffer:     stream_buffer,
+          thinking_buffer:   thinking_buffer,
           is_working:        is_working,
-          chain_in_flight:   Dmhai.Agent.ChainInFlight.in_flight?(session_id),
+          chain_in_flight:   chain_in_flight?,
           running_tool_call: running_tool_call
         })
 

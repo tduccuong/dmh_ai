@@ -10,6 +10,20 @@ defmodule Dmhai.Tools.RunScript do
 
   @max_output 50_000
 
+  # Absolute hang guard. Whatever max_runtime the operator set, we
+  # will NEVER stay in the poll loop past `max_runtime + this`. The
+  # extra grace lets the kill-and-drain dance complete even on a
+  # slow / partially-stuck docker daemon. Past this, we bail
+  # unconditionally with an error so the chain can't wedge.
+  @poll_loop_grace_ms 60_000
+
+  # Per-docker-exec timeouts. Each `System.cmd("docker", ...)` is
+  # wrapped in a Task with these caps so a stuck docker daemon
+  # surfaces as a clean error rather than freezing the chain.
+  @docker_exec_timeout_short 3_000   # liveness probes / signal sends
+  @docker_exec_timeout_medium 5_000  # launcher / cleanup
+  @docker_exec_timeout_long 10_000   # drain (reads log file)
+
   @impl true
   def name, do: "run_script"
 
@@ -113,12 +127,8 @@ defmodule Dmhai.Tools.RunScript do
     echo $!
     """
 
-    case System.cmd(
-           "docker",
-           ["exec", Sandbox.container_name(), "sh", "-c", launcher],
-           stderr_to_stdout: true
-         ) do
-      {output, 0} ->
+    case docker_exec(launcher, @docker_exec_timeout_medium) do
+      {:ok, output, 0} ->
         pid_line =
           output
           |> String.trim()
@@ -130,20 +140,62 @@ defmodule Dmhai.Tools.RunScript do
           :error   -> {:error, "could not parse PID from launcher output: #{inspect(output)}"}
         end
 
-      {output, code} ->
+      {:ok, output, code} ->
         {:error, "launcher failed (exit #{code}): #{String.slice(output, 0, 400)}"}
+
+      :timeout ->
+        {:error, "launcher timed out after #{@docker_exec_timeout_medium}ms — docker daemon may be stuck"}
+
+      {:error, reason} ->
+        {:error, "launcher failed: #{inspect(reason)}"}
     end
   end
 
-  # Tight poll loop. Sleep `poll_ms`, check `kill -0 pid`, drain on
-  # death. Max-runtime cap: if elapsed > `max_runtime_ms`, kill and
-  # return an error.
+  # Wrap `System.cmd("docker", ["exec", ...])` in a Task with a hard
+  # timeout. Without this, a stuck docker daemon would freeze the
+  # caller indefinitely — every code path in this module funnels
+  # through here so a single bad daemon can't wedge the chain.
+  #
+  # Returns:
+  #   {:ok, output, exit_code}   on completion
+  #   :timeout                    when the docker exec didn't return
+  #                               within `timeout_ms`
+  #   {:error, reason}            for raised exceptions
+  defp docker_exec(shell_cmd, timeout_ms) do
+    task =
+      Task.async(fn ->
+        System.cmd(
+          "docker",
+          ["exec", Sandbox.container_name(), "sh", "-c", shell_cmd],
+          stderr_to_stdout: true
+        )
+      end)
+
+    case Task.yield(task, timeout_ms) || Task.shutdown(task, :brutal_kill) do
+      {:ok, {output, code}} -> {:ok, output, code}
+      nil -> :timeout
+      {:exit, reason} -> {:error, reason}
+    end
+  rescue
+    e -> {:error, Exception.message(e)}
+  end
+
+  # Tight poll loop. Primary done-signal is the exit file's presence
+  # — the wrapper writes it ONLY after the user script exits, so its
+  # appearance means we're finished regardless of PID state. We can't
+  # rely on `kill -0 <pid>` alone because the sandbox's PID 1 is
+  # `tail -f /dev/null`, which doesn't reap children: an orphaned
+  # wrapper shell becomes a zombie and `kill -0` keeps returning 0
+  # (success — "alive") for the zombie's PID forever, hanging the
+  # chain. Secondary signal (PID dead AND no exit file) catches
+  # crashes that didn't get to write the exit code.
   defp poll_loop(pid, run_id, started_at_ms, poll_ms, max_runtime_ms) do
     Process.sleep(poll_ms)
     elapsed = System.system_time(:millisecond) - started_at_ms
+    hard_ceiling = max_runtime_ms + @poll_loop_grace_ms
 
     cond do
-      not RunningTools.alive?(pid) ->
+      script_finished?(run_id, pid) ->
         finalize(pid, run_id, started_at_ms)
 
       elapsed > max_runtime_ms ->
@@ -158,8 +210,41 @@ defmodule Dmhai.Tools.RunScript do
          "run_script exceeded max runtime of #{div(max_runtime_ms, 1000)}s. Last output: " <>
            String.slice(partial, 0, 1_000)}
 
+      elapsed > hard_ceiling ->
+        # Belt-and-suspenders: even if `script_finished?` keeps
+        # returning false (docker daemon stuck, exit file lookup
+        # failing, etc.) and the max_runtime kill failed to free us,
+        # the hard ceiling guarantees the chain unwedges. Past this
+        # we give up without further docker calls.
+        {:error,
+         "run_script poll loop exceeded the hard hang-guard ceiling " <>
+           "(max_runtime + #{div(@poll_loop_grace_ms, 1000)}s grace) — chain unwedged forcibly"}
+
       true ->
         poll_loop(pid, run_id, started_at_ms, poll_ms, max_runtime_ms)
+    end
+  end
+
+  # True when either the wrapper wrote `<run_id>.exit` (script
+  # finished and recorded its exit code) OR the spawned PID isn't
+  # alive AND no exit file (script crashed without recording).
+  # Avoids hanging on PID 1's failure to reap zombies inside the
+  # sandbox.
+  defp script_finished?(run_id, pid) do
+    if exit_file_exists?(run_id) do
+      true
+    else
+      not RunningTools.alive?(pid)
+    end
+  end
+
+  defp exit_file_exists?(run_id) do
+    case docker_exec(
+           "test -f /tmp/_dmh_runs/#{run_id}.exit && echo yes || echo no",
+           @docker_exec_timeout_short
+         ) do
+      {:ok, output, _} -> String.trim(output) == "yes"
+      _ -> false
     end
   end
 
@@ -172,22 +257,36 @@ defmodule Dmhai.Tools.RunScript do
         "cat /tmp/_dmh_runs/#{run_id}.exit 2>/dev/null; " <>
         "rm -f /tmp/_dmh_runs/#{run_id}.sh /tmp/_dmh_runs/#{run_id}.log /tmp/_dmh_runs/#{run_id}.exit"
 
-    case System.cmd(
-           "docker",
-           ["exec", Sandbox.container_name(), "sh", "-c", drain_cmd],
-           stderr_to_stdout: true
-         ) do
-      {output, 0} ->
+    case docker_exec(drain_cmd, @docker_exec_timeout_long) do
+      {:ok, output, 0} ->
         {body, exit_code} = parse_drained(output)
 
         cond do
-          exit_code == 0 -> {:ok, body}
-          exit_code == nil -> {:error, "process exited but no exit code recorded: #{String.slice(body, 0, @max_output)}"}
-          true -> {:error, "exit #{exit_code}: #{String.slice(body, 0, @max_output)}"}
+          exit_code == 0 ->
+            {:ok, body}
+
+          exit_code == nil ->
+            # No exit code file → wrapper was killed (SIGTERM/SIGKILL,
+            # OOM, container restart) before it could record. The model
+            # gets a clear error so it can decide retry vs surface.
+            {:error,
+             "run_script process died without recording an exit code " <>
+               "(likely killed by SIGTERM/SIGKILL — OOM, container restart, or " <>
+               "external signal). Partial output: " <>
+               String.slice(body, 0, @max_output)}
+
+          true ->
+            {:error, "exit #{exit_code}: #{String.slice(body, 0, @max_output)}"}
         end
 
-      {output, _} ->
+      {:ok, output, _} ->
         {:error, "drain failed: #{String.slice(output, 0, 400)}"}
+
+      :timeout ->
+        {:error, "drain timed out after #{@docker_exec_timeout_long}ms — docker daemon may be stuck"}
+
+      {:error, reason} ->
+        {:error, "drain failed: #{inspect(reason)}"}
     end
   end
 
@@ -209,11 +308,7 @@ defmodule Dmhai.Tools.RunScript do
   end
 
   defp kill_pid(pid, signal) when is_integer(pid) and signal in ["TERM", "KILL"] do
-    System.cmd(
-      "docker",
-      ["exec", Sandbox.container_name(), "sh", "-c", "kill -#{signal} #{pid}"],
-      stderr_to_stdout: true
-    )
+    _ = docker_exec("kill -#{signal} #{pid}", @docker_exec_timeout_short)
 
     :ok
   rescue
@@ -221,24 +316,19 @@ defmodule Dmhai.Tools.RunScript do
   end
 
   defp drain_log_only(run_id) do
-    case System.cmd(
-           "docker",
-           ["exec", Sandbox.container_name(), "sh", "-c",
-            "tail -c #{@max_output} /tmp/_dmh_runs/#{run_id}.log 2>/dev/null"],
-           stderr_to_stdout: true
+    case docker_exec(
+           "tail -c #{@max_output} /tmp/_dmh_runs/#{run_id}.log 2>/dev/null",
+           @docker_exec_timeout_long
          ) do
-      {output, _} -> output
+      {:ok, output, _} -> output
+      _                -> ""
     end
-  rescue
-    _ -> ""
   end
 
   defp cleanup_run_files(run_id) do
-    System.cmd(
-      "docker",
-      ["exec", Sandbox.container_name(), "sh", "-c",
-       "rm -f /tmp/_dmh_runs/#{run_id}.sh /tmp/_dmh_runs/#{run_id}.log /tmp/_dmh_runs/#{run_id}.exit"],
-      stderr_to_stdout: true
+    _ = docker_exec(
+      "rm -f /tmp/_dmh_runs/#{run_id}.sh /tmp/_dmh_runs/#{run_id}.log /tmp/_dmh_runs/#{run_id}.exit",
+      @docker_exec_timeout_short
     )
 
     :ok

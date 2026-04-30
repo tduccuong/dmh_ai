@@ -48,6 +48,69 @@ defmodule Itgr.OraclePivot do
       assert Oracle.classify("hi", "Search HF for sentiment models") == :knowledge
     end
 
+    test "DONE verdict maps to :done" do
+      T.stub_llm_call(fn _model, _msgs, _opts -> {:ok, "DONE"} end)
+      assert Oracle.classify("ko can, dong nhiem vu lai", "Tạo quy trình tự động trong Bitrix24") == :done
+      assert Oracle.classify("stop, that's all", "long-running task") == :done
+    end
+
+    test "passes prev_assistant_msg through to the prompt as conversational context" do
+      # Pin the contract: the third arg ends up in the prompt under the
+      # "Assistant's last reply" header so a real Oracle can see that
+      # the user is answering a question. We don't assert the verdict
+      # here (model picks that); we assert the prompt shape.
+      seen_user_content = :counters.new(1, [])
+      received = :ets.new(:oracle_prompt_capture, [:public, :set])
+
+      T.stub_llm_call(fn _model, msgs, _opts ->
+        :counters.add(seen_user_content, 1, 1)
+        user_content =
+          msgs
+          |> Enum.find(fn m -> Map.get(m, :role) == "user" end)
+          |> case do
+            %{content: c} -> c
+            _             -> ""
+          end
+
+        :ets.insert(received, {:prompt, user_content})
+        {:ok, "RELATED"}
+      end)
+
+      assert Oracle.classify(
+               "switch to EXECUTING",
+               "Set up Bitrix24 automation: move new Deal to Negotiation",
+               "You don't have a 'Negotiation' stage. Pick one of: NEW, EXECUTING, WON, LOSE, or shall I create a new one?"
+             ) == :related
+
+      [{:prompt, prompt}] = :ets.lookup(received, :prompt)
+      assert prompt =~ "Assistant's last reply"
+      assert prompt =~ "Pick one of: NEW, EXECUTING"
+      assert prompt =~ "switch to EXECUTING"
+    end
+
+    test "nil prev_assistant_msg keeps the original 2-arg shape" do
+      received = :ets.new(:oracle_prompt_capture_nil, [:public, :set])
+
+      T.stub_llm_call(fn _model, msgs, _opts ->
+        user_content =
+          msgs
+          |> Enum.find(fn m -> Map.get(m, :role) == "user" end)
+          |> case do
+            %{content: c} -> c
+            _             -> ""
+          end
+
+        :ets.insert(received, {:prompt, user_content})
+        {:ok, "UNRELATED"}
+      end)
+
+      assert Oracle.classify("why is the sky blue", "Bitrix24 automation") == :unrelated
+      assert Oracle.classify("why is the sky blue", "Bitrix24 automation", nil) == :unrelated
+
+      [{:prompt, prompt}] = :ets.lookup(received, :prompt)
+      refute prompt =~ "Assistant's last reply"
+    end
+
     test "tolerates lowercase / mixed case" do
       T.stub_llm_call(fn _model, _msgs, _opts -> {:ok, "knowledge"} end)
       assert Oracle.classify("hello", "anything") == :knowledge
@@ -199,6 +262,20 @@ defmodule Itgr.OraclePivot do
         assert Police.check_pivot(name, %{"task_num" => 1}, ctx) == :ok,
                "expected #{name} to pass on :unrelated"
       end
+    end
+
+    test ":done routes the same as :unrelated for tool gating" do
+      # User asked to close the active task. Model is allowed close-out
+      # tools; everything else gets rejected.
+      ctx = ctx_with_cached(:done, 9)
+
+      for name <- ~w(pause_task cancel_task complete_task pickup_task fetch_task request_input) do
+        assert Police.check_pivot(name, %{"task_num" => 1}, ctx) == :ok,
+               "expected #{name} to pass on :done"
+      end
+
+      assert {:rejected, {:pivot_unrelated, _}} =
+               Police.check_pivot("web_search", %{"query" => "x"}, ctx)
     end
 
     test ":knowledge → reject for ALL tools (no exemptions)" do

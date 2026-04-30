@@ -35,12 +35,12 @@ UIManager.sendMessage = async function() {
     this.isStreaming = true;   // set early to prevent double-send during awaits
     this.updateSendBtn();
     function modeRole(session) {
-        return (session && session.mode === 'assistant') ? 'Assistant' : 'Confidant';
+        return (session && session.mode === 'assistant') ? t('modeAssistant') : t('modeConfidant');
     }
     function modeRoleHtml(session) {
         var mode = (session && session.mode) || 'confidant';
         var icon = (typeof MODE_ICONS !== 'undefined' && MODE_ICONS[mode]) || '';
-        var label = mode === 'assistant' ? 'Assistant' : 'Confidant';
+        var label = mode === 'assistant' ? t('modeAssistant') : t('modeConfidant');
         return icon + label;
     }
     // Cancel any in-flight naming call so it doesn't interfere
@@ -207,10 +207,20 @@ UIManager.sendMessage = async function() {
             self.renderChat();
         }
 
-        // Auto-name fires on the first assistant reply (len=2) and every
-        // 4 turns thereafter (len=10, 18, …). `length - 2` because each
-        // turn appends exactly TWO messages (user + assistant).
-        if ((sessionAtSend.messages.length - 2) % 8 === 0) {
+        // Auto-name triggers:
+        //   1. session still has its default "New chat" title AND at
+        //      least one assistant reply has landed → first-rename.
+        //   2. every 8 user turns thereafter → periodic refresh.
+        // The old "(length - 2) % 8 === 0" formula assumed each turn
+        // appends exactly 2 messages (user + assistant). That holds
+        // for Confidant but breaks for Assistant, where a single
+        // chain produces user + N assistants (tool-call narrations,
+        // intermediates, final text). Counting USER turns instead
+        // gives a stable modulo regardless of mode.
+        var defaultNames = ['New chat', 'New session', t('newChat')];
+        var hasDefaultName = defaultNames.indexOf(sessionAtSend.name) !== -1;
+        var userTurns = (sessionAtSend.messages || []).filter(function(m) { return m.role === 'user'; }).length;
+        if (hasDefaultName || (userTurns > 0 && userTurns % 8 === 0)) {
             self.autoNameSession(sessionAtSend);
         }
     }
@@ -557,6 +567,11 @@ UIManager.pollTurnToCompletion = function(sessionAtSend, onComplete, onError, ab
             // Streaming buffer → rendered in the streaming placeholder div.
             self._updateStreamPlaceholder(sessionAtSend, data.stream_buffer);
 
+            // Thinking buffer → rendered as a `<details>` block above the
+            // answer. Pass stream_buffer so the function can detect the
+            // thinking-done transition (strip spinner + auto-collapse).
+            self._updateThinkingPlaceholder(sessionAtSend, data.thinking_buffer, data.stream_buffer);
+
             // Long-running tool surfacing (see specs/architecture.md
             // §Long-running tool execution). The BE ships
             // {tool_call_id, progress_row_id, started_at_ms} while a
@@ -658,6 +673,85 @@ UIManager.pollTurnToCompletion = function(sessionAtSend, onComplete, onError, ab
     tick();
 };
 
+// Render the sessions.thinking_buffer value (live chain-of-thought
+// tokens being streamed by the LLM) inside a `<details>` block
+// inserted between the message header and the streaming-body answer
+// area. Three states (transitions tracked on the stream entry):
+//
+//   1. `thinkingBuffer` non-null, no `streamBuffer` yet → thinking
+//      phase. Block is rendered with a CSS spinner in the title.
+//      Default collapsed; user can click to expand and watch live.
+//   2. `thinkingBuffer` still non-null, `streamBuffer` now non-null
+//      → thinking is finished (model started emitting the answer).
+//      Strip the spinner. If user expanded the block, auto-collapse.
+//   3. `streamBuffer` cleared at chain end → the placeholder is torn
+//      down by `renderChat`; the persisted message's static
+//      `<details>` block (built by `buildMessageEntryNode`) takes
+//      over with the same content.
+UIManager._updateThinkingPlaceholder = function(sessionAtSend, thinkingBuffer, streamBuffer) {
+    if (!this._streamMap) return;
+    var entry = this._streamMap.get(sessionAtSend.id);
+    if (!entry) return;
+    if (this.currentSession && this.currentSession.id !== sessionAtSend.id) return;
+    if (!thinkingBuffer) return;
+
+    var streamingBody = document.getElementById('streaming-body');
+    if (!streamingBody) return;
+    var msgEl = streamingBody.closest('.message.assistant');
+    if (!msgEl) return;
+
+    // Lazy-create the <details> block on first thinking token.
+    var block = msgEl.querySelector('.think-block.streaming');
+    if (!block) {
+        block = document.createElement('details');
+        block.className = 'think-block streaming';
+        block.setAttribute('data-streaming', '1');
+
+        var summary = document.createElement('summary');
+
+        var spinner = document.createElement('span');
+        spinner.className = 'think-spinner';
+        summary.appendChild(spinner);
+
+        var titleSpan = document.createElement('span');
+        titleSpan.className = 'think-title';
+        titleSpan.textContent = t('thinkingOutLoud');
+        summary.appendChild(titleSpan);
+
+        var arrow = document.createElement('span');
+        arrow.className = 'think-arrow';
+        arrow.textContent = '\u25ba';
+        summary.appendChild(arrow);
+
+        block.appendChild(summary);
+
+        var body = document.createElement('div');
+        body.className = 'think-body';
+        block.appendChild(body);
+
+        block.addEventListener('toggle', function() {
+            var arr = block.querySelector('.think-arrow');
+            if (arr) arr.textContent = block.open ? '\u25b2' : '\u25ba';
+        });
+
+        // Insert between header and streaming-body.
+        msgEl.insertBefore(block, streamingBody);
+    }
+
+    var bodyEl = block.querySelector('.think-body');
+    if (bodyEl && bodyEl.textContent !== thinkingBuffer) {
+        bodyEl.textContent = thinkingBuffer;
+    }
+
+    // Transition: thinking just finished (answer started streaming).
+    // Strip the spinner. If the user expanded the block while
+    // thinking was active, auto-collapse it now per the spec.
+    if (streamBuffer && block.getAttribute('data-streaming') === '1') {
+        block.removeAttribute('data-streaming');
+        if (block.open) block.open = false;
+    }
+};
+
 // Render the sessions.stream_buffer value (partial final-answer text
 // currently being generated by the LLM) inside the streaming placeholder.
 // Called once per poll tick with the current buffer value (or null).
@@ -675,7 +769,7 @@ UIManager._updateStreamPlaceholder = function(sessionAtSend, streamBuffer) {
         entry.hasContentFlag = true;
         var mode = (sessionAtSend && sessionAtSend.mode) || 'confidant';
         var icon = (typeof MODE_ICONS !== 'undefined' && MODE_ICONS[mode]) || '';
-        var label = mode === 'assistant' ? 'Assistant' : 'Confidant';
+        var label = mode === 'assistant' ? t('modeAssistant') : t('modeConfidant');
         this.setStatusHtml(icon + label + t('answering'));
     }
 

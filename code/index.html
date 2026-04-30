@@ -125,6 +125,14 @@
                         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8" y1="21" x2="16" y2="21"/></svg>
                         Built user profiles
                     </button>
+                    <button class="user-dropdown-item" id="user-wiki-seeds-btn" style="display:none">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+                        <span id="user-wiki-seeds-label">Wiki Seeds</span>
+                    </button>
+                    <button class="user-dropdown-item" id="user-mcp-catalog-btn" style="display:none">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+                        <span id="user-mcp-catalog-label">MCP Catalog</span>
+                    </button>
                     <div class="user-dropdown-sep"></div>
                     <button class="user-dropdown-item" id="user-signout-btn">
                         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
@@ -290,6 +298,9 @@
 <script src="/js/manager-chat.js" defer></script>
 <script src="/js/manager-search.js" defer></script>
 <script src="/js/manager-tasks.js" defer></script>
+<script src="/js/manager-seeds.js" defer></script>
+<script src="/js/import-dialog.js" defer></script>
+<script src="/js/manager-catalog.js" defer></script>
 <script>if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');</script>
     <div class="settings-overlay" id="settings-overlay">
         <div class="settings-modal">
@@ -298,36 +309,20 @@
                 <button class="settings-close-btn" id="settings-close-btn">✕</button>
             </div>
             <div class="settings-body">
-                <!-- Page: Models -->
+                <!-- Page: API Pools -->
                 <div class="settings-page active" id="page-model">
-                    <!-- Section 1: Ollama Accounts -->
                     <div class="settings-section">
                         <div class="settings-section-title">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-                            Ollama Accounts
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+                            API Pools
                         </div>
                         <div class="settings-subsection">
-                            <div id="cloud-accounts-list" class="settings-list"></div>
+                            <div id="pools-list" class="pools-list"></div>
                             <div class="settings-add-row">
-                                <input id="cloud-acct-name" class="settings-input" placeholder="Account name">
-                                <input id="cloud-acct-key" class="settings-input" type="password" placeholder="API key" style="flex:2">
-                                <button class="settings-add-btn" id="cloud-acct-add-btn">+ Add</button>
+                                <button class="settings-add-btn" id="pools-add-btn">+ Add pool</button>
+                                <button class="settings-add-btn" id="pools-import-btn">Import…</button>
                             </div>
-                            <div id="cloud-acct-error" class="settings-msg" style="display:none;color:#e05060;"></div>
-                        </div>
-                    </div>
-                    <!-- Section 2: Ollama Local Endpoint -->
-                    <div class="settings-section">
-                        <div class="settings-section-title">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-                            Ollama Local Endpoint
-                        </div>
-                        <div class="settings-subsection">
-                            <div class="settings-add-row">
-                                <input id="settings-ollama-url" class="settings-input" placeholder="localhost or 192.168.1.10" style="flex:3">
-                                <button class="settings-add-btn" id="settings-ollama-url-save">Save</button>
-                            </div>
-                            <div id="settings-ollama-url-msg" class="settings-msg" style="display:none;"></div>
+                            <div id="pools-error" class="settings-msg" style="display:none;color:#e05060;"></div>
                         </div>
                     </div>
                 </div>
@@ -400,6 +395,19 @@
                     </div>
                     <div class="settings-section">
                         <div class="settings-section-title">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/><path d="M9 21h6"/></svg>
+                            Oracle
+                        </div>
+                        <div class="settings-subsection">
+                            <div class="role-picker-current" id="oracle-model-current"></div>
+                            <div class="settings-search-wrap">
+                                <input id="oracle-model-search" class="settings-input" placeholder="Search model name...">
+                                <div class="settings-suggestions" id="oracle-model-suggestions"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="settings-section">
+                        <div class="settings-section-title">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
                             Context Compactor
                         </div>
@@ -435,6 +443,65 @@
                                 <input id="profileExtractor-model-search" class="settings-input" placeholder="Search model name...">
                                 <div class="settings-suggestions" id="profileExtractor-model-suggestions"></div>
                             </div>
+                        </div>
+                    </div>
+                    <div class="settings-section">
+                        <div class="settings-section-title">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+                            Vector Embedding
+                        </div>
+                        <div class="settings-subsection">
+                            <div class="role-picker-current" id="kbEmbedding-model-current"></div>
+                            <div class="settings-search-wrap">
+                                <input id="kbEmbedding-model-search" class="settings-input" placeholder="Search model name...">
+                                <div class="settings-suggestions" id="kbEmbedding-model-suggestions"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <!-- Page: MCP Catalog -->
+                <div class="settings-page" id="page-mcp-catalog">
+                    <div class="settings-section">
+                        <div class="settings-section-title">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+                            MCP Catalog
+                        </div>
+                        <div class="settings-subsection">
+                            <div id="mcp-catalog-list" class="mcp-catalog-list"></div>
+                            <div class="settings-add-row mcp-catalog-add-row">
+                                <input id="mcp-catalog-add-slug" class="settings-input" placeholder="slug (e.g. github)">
+                                <input id="mcp-catalog-add-name" class="settings-input" placeholder="Name (e.g. GitHub)">
+                            </div>
+                            <div class="settings-add-row mcp-catalog-add-row">
+                                <input id="mcp-catalog-add-url"  class="settings-input" placeholder="https://example.com/mcp">
+                                <input id="mcp-catalog-add-desc" class="settings-input" placeholder="Description (optional)">
+                            </div>
+                            <div class="settings-add-row">
+                                <button class="settings-add-btn" id="mcp-catalog-add-btn">+ Add</button>
+                                <button class="settings-add-btn" id="mcp-catalog-import-btn">Import…</button>
+                            </div>
+                            <div id="mcp-catalog-error" class="settings-msg" style="display:none;color:#e05060;"></div>
+                        </div>
+                    </div>
+                </div>
+                <!-- Page: Wiki Seeds -->
+                <div class="settings-page" id="page-wiki-seeds">
+                    <div class="settings-section">
+                        <div class="settings-section-title">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+                            Wiki Seeds
+                        </div>
+                        <div class="settings-subsection">
+                            <div id="wiki-seeds-list" class="wiki-seeds-list"></div>
+                            <div class="settings-add-row wiki-seeds-add-row">
+                                <input id="wiki-seeds-add-url"   class="settings-input" placeholder="https://example.com/docs">
+                                <input id="wiki-seeds-add-label" class="settings-input" placeholder="Label (optional)">
+                                <button class="settings-add-btn" id="wiki-seeds-add-btn">+ Add</button>
+                            </div>
+                            <div class="settings-add-row">
+                                <button class="settings-add-btn" id="wiki-seeds-run-all-btn">Run all</button>
+                            </div>
+                            <div id="wiki-seeds-error" class="settings-msg" style="display:none;color:#e05060;"></div>
                         </div>
                     </div>
                 </div>
@@ -502,6 +569,31 @@
                             <button class="settings-add-btn settings-add-btn-danger" id="settings-profile-clear-btn">Clear memory</button>
                         </div>
                     </div>
+                </div>
+            </div>
+        </div>
+        <!-- Sub-modal: Add Pool form. Stacked above the settings modal. -->
+        <div class="pool-form-overlay" id="pool-form-overlay">
+            <div class="pool-form-modal">
+                <div class="pool-form-title">Add API Pool</div>
+                <div class="pool-form-fields">
+                    <div class="pool-field"><label>Name</label><input id="pool-form-name" placeholder="e.g. ollama-cloud, miner"></div>
+                    <div class="pool-field"><label>Provider</label><input id="pool-form-provider" value="ollama"></div>
+                    <div class="pool-field" style="grid-column: 1 / -1;"><label>Base URL</label><input id="pool-form-base-url" placeholder="https://example.com/v1"></div>
+                    <div class="pool-field"><label>Strategy</label>
+                        <select id="pool-form-strategy">
+                            <option value="least_used" selected>least_used</option>
+                            <option value="round_robin">round_robin</option>
+                            <option value="random">random</option>
+                        </select>
+                    </div>
+                    <div class="pool-field"><label>Cooldown (s)</label><input id="pool-form-cooldown" type="number" value="300"></div>
+                    <div class="pool-field"><label>num_ctx <span style="opacity:.6">(Ollama only)</span></label><input id="pool-form-num-ctx" type="number" placeholder="blank = server default"></div>
+                </div>
+                <div id="pool-form-error" class="settings-msg" style="display:none;color:#e05060;margin-top:10px;"></div>
+                <div class="pool-form-actions">
+                    <button class="pool-btn" id="pool-form-cancel">Cancel</button>
+                    <button class="pool-btn pool-btn-primary" id="pool-form-create">Create</button>
                 </div>
             </div>
         </div>

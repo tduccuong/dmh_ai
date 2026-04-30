@@ -9,6 +9,9 @@ config :dmhai, Dmhai.Repo,
   database: "/data/db/chat.db",
   pool_size: 5
 
+# load_extensions for sqlite-vec is set in runtime.exs because
+# `SqliteVec.path/0` isn't loaded until deps are compiled.
+
 config :dmhai, ecto_repos: [Dmhai.Repo]
 
 config :dmhai, :worker,

@@ -25,7 +25,10 @@ defmodule Dmhai.Application do
       {Registry, keys: :unique, name: Dmhai.Agent.Registry},
       Dmhai.Agent.Supervisor,
       {Task.Supervisor, name: Dmhai.Agent.TaskSupervisor},
-      Dmhai.Agent.TaskRuntime
+      Dmhai.Agent.TaskRuntime,
+      # Background re-fetch of stale KB sources triggered by every
+      # fetch_wiki call. See specs/vector_kb.md §Auto-relearn.
+      Dmhai.VectorDB.Relearn
     ] ++
       (if Application.get_env(:dmhai, :start_http, true) do
         [{Bandit, plug: Dmhai.Router, scheme: :http, ip: {0, 0, 0, 0}, port: 8080}]
@@ -53,6 +56,7 @@ defmodule Dmhai.Application do
         Dmhai.DomainBlocker.load_from_db()
         Dmhai.Agent.PendingPivots.init()
         Dmhai.Agent.ChainInFlight.init()
+        Dmhai.Agent.BackgroundPipelines.init()
         Dmhai.Agent.RunningTools.init()
         attach_finch_telemetry()
         Logger.info("Sessions API on :3000")

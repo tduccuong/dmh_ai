@@ -49,7 +49,7 @@ defmodule Itgr.ModelBehaviorStats do
     set_telemetry(true)
 
     role = "assistant"
-    model = "ollama::cloud::gpt-oss:120b-cloud-test-#{T.uid()}"
+    model = "ollama-cloud::gpt-oss:120b-cloud-test-#{T.uid()}"
 
     :ok = ModelBehaviorStats.record(role, model, "tool_call_schema", "create_task")
 
@@ -66,7 +66,7 @@ defmodule Itgr.ModelBehaviorStats do
     set_telemetry(true)
 
     role = "assistant"
-    model = "ollama::cloud::nemotron-3-nano:30b-cloud-test-#{T.uid()}"
+    model = "ollama-cloud::nemotron-3-nano:30b-cloud-test-#{T.uid()}"
 
     :ok = ModelBehaviorStats.record(role, model, "task_discipline", "web_search")
 
@@ -91,7 +91,7 @@ defmodule Itgr.ModelBehaviorStats do
     set_telemetry(true)
 
     role = "assistant"
-    model = "ollama::cloud::gpt-oss:120b-cloud-test-#{T.uid()}"
+    model = "ollama-cloud::gpt-oss:120b-cloud-test-#{T.uid()}"
 
     :ok = ModelBehaviorStats.record(role, model, "tool_call_schema", "create_task")
     :ok = ModelBehaviorStats.record(role, model, "tool_call_schema", "complete_task")
@@ -104,7 +104,7 @@ defmodule Itgr.ModelBehaviorStats do
     set_telemetry(true)
 
     role = "assistant"
-    model = "ollama::cloud::gemini-3-flash-preview:cloud-test-#{T.uid()}"
+    model = "ollama-cloud::gemini-3-flash-preview:cloud-test-#{T.uid()}"
 
     :ok = ModelBehaviorStats.record(role, model, "tool_call_schema", "create_task")
     :ok = ModelBehaviorStats.record(role, model, "task_discipline",  "create_task")
@@ -116,7 +116,7 @@ defmodule Itgr.ModelBehaviorStats do
   test "different role creates a separate counter row" do
     set_telemetry(true)
 
-    model = "ollama::cloud::same-model-test-#{T.uid()}"
+    model = "ollama-cloud::same-model-test-#{T.uid()}"
 
     :ok = ModelBehaviorStats.record("assistant", model, "fresh_attachments_unread", "")
     :ok = ModelBehaviorStats.record("confidant", model, "fresh_attachments_unread", "")
@@ -131,7 +131,7 @@ defmodule Itgr.ModelBehaviorStats do
     set_telemetry(true)
 
     role = "assistant"
-    model = "ollama::cloud::some-model-test-#{T.uid()}"
+    model = "ollama-cloud::some-model-test-#{T.uid()}"
 
     :ok = ModelBehaviorStats.record(role, model, "assistant_text_bookkeeping", "")
 
@@ -142,7 +142,7 @@ defmodule Itgr.ModelBehaviorStats do
     set_telemetry(true)
 
     role = "assistant"
-    model = "ollama::cloud::some-model-test-#{T.uid()}"
+    model = "ollama-cloud::some-model-test-#{T.uid()}"
 
     :ok = ModelBehaviorStats.record(role, model, :tool_call_schema, "create_task")
 
@@ -155,7 +155,7 @@ defmodule Itgr.ModelBehaviorStats do
     set_telemetry(false)
 
     role = "assistant"
-    model = "ollama::cloud::disabled-telemetry-test-#{T.uid()}"
+    model = "ollama-cloud::disabled-telemetry-test-#{T.uid()}"
 
     :ok = ModelBehaviorStats.record(role, model, "tool_call_schema", "create_task")
 
@@ -169,8 +169,8 @@ defmodule Itgr.ModelBehaviorStats do
     set_telemetry(true)
 
     tag = T.uid()
-    model_high = "ollama::cloud::high-count-#{tag}"
-    model_low  = "ollama::cloud::low-count-#{tag}"
+    model_high = "ollama-cloud::high-count-#{tag}"
+    model_low  = "ollama-cloud::low-count-#{tag}"
 
     Enum.each(1..3, fn _ ->
       :ok = ModelBehaviorStats.record("assistant", model_high, "tool_call_schema", "create_task")

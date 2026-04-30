@@ -48,6 +48,18 @@ function applyLanguage() {
     document.getElementById('about-source-line').innerHTML = '<strong style="color:#c8b8e8;">' + t('aboutSourceLabel') + '</strong> <a href="https://github.com/tduccuong/dmh_ai" target="_blank" rel="noopener noreferrer" style="color:#b098d8;">GitHub Repository</a>';
     document.getElementById('about-commercial-line').innerHTML = '<strong style="color:#c8b8e8;">' + t('aboutCommercialLabel') + '</strong> ' + t('aboutCommercialBody');
     document.getElementById('about-close').textContent = t('aboutClose');
+
+    // Mode dropdown — items + the closed-trigger label both carry
+    // localized text. The dropdown is built once at init from the
+    // boot-time language; without this rebuild a runtime language
+    // switch leaves stale strings until full reload.
+    if (typeof UIManager !== 'undefined') {
+        if (typeof UIManager.initModeSelector === 'function') {
+            UIManager.initModeSelector();
+        } else if (typeof UIManager._updateModeLabel === 'function') {
+            UIManager._updateModeLabel();
+        }
+    }
 }
 
 function setCpwError(msg) {
@@ -537,6 +549,14 @@ const UIManager = {
             document.getElementById('user-dropdown').classList.remove('open');
             SettingsModal.open('page-conversation');
         });
+        document.getElementById('user-wiki-seeds-btn').addEventListener('click', function() {
+            document.getElementById('user-dropdown').classList.remove('open');
+            SettingsModal.open('page-wiki-seeds');
+        });
+        document.getElementById('user-mcp-catalog-btn').addEventListener('click', function() {
+            document.getElementById('user-dropdown').classList.remove('open');
+            SettingsModal.open('page-mcp-catalog');
+        });
 
         // Manage users close
         document.getElementById('mgr-close').addEventListener('click', function() {
@@ -569,6 +589,8 @@ const UIManager = {
             document.getElementById('user-settings-btn').style.display = isAdmin ? '' : 'none';
             document.getElementById('user-ai-settings-btn').style.display = isAdmin ? '' : 'none';
             document.getElementById('user-conv-settings-btn').style.display = isAdmin ? '' : 'none';
+            document.getElementById('user-wiki-seeds-btn').style.display = isAdmin ? '' : 'none';
+            document.getElementById('user-mcp-catalog-btn').style.display = isAdmin ? '' : 'none';
             document.getElementById('user-settings-sep').style.display = isAdmin ? '' : 'none';
         }
         this.updatePwWarning();

@@ -1017,6 +1017,19 @@ defmodule Dmhai.Agent.Police do
         else
           reject_unrelated(name, ctx)
         end
+
+      :done ->
+        # User asked to close the active task. Same exempt list as
+        # :unrelated (model is allowed to call cancel/pause/complete/
+        # request_input/etc.), but the upstream maybe_start_oracle
+        # branch on :done does NOT stash PendingPivots — so the
+        # auto-create-task hook stays silent. See specs/architecture.md
+        # §Oracle DONE verdict.
+        if MapSet.member?(@pivot_unrelated_exempt, name) do
+          :ok
+        else
+          reject_unrelated(name, ctx)
+        end
     end
   end
   def check_pivot(_, _, _), do: :ok
@@ -1038,7 +1051,7 @@ defmodule Dmhai.Agent.Police do
   defp await_oracle(nil), do: :related
   defp await_oracle(%Task{} = task) do
     case Task.yield(task, @oracle_await_ms) || Task.shutdown(task, :brutal_kill) do
-      {:ok, v} when v in [:related, :unrelated, :knowledge, :error] -> v
+      {:ok, v} when v in [:related, :unrelated, :knowledge, :done, :error] -> v
       _ -> :error
     end
   end
@@ -1260,6 +1273,50 @@ defmodule Dmhai.Agent.Police do
   end
 
   def check_run_script_probe_budget(_, _, _), do: :ok
+
+  @doc """
+  Soft post-execution nudge: when the assistant fires `run_script`
+  back-to-back with the previous tool call also being `run_script`,
+  return an educational note that the runtime prepends to the tool
+  result. The script still runs and the model still gets its output
+  — the note teaches it to compose remaining commands into ONE script
+  next time.
+
+  Distinct from `check_run_script_probe_budget` (hard rejection at
+  N total calls) and `check_no_consecutive_web_search` (hard rejection
+  on consecutive web_search). Here the friction is too low to justify
+  blocking — the legitimate probe-then-compose pattern (see system
+  prompt §Working with external APIs) IS two consecutive `run_script`s
+  — but we still want to push back when the second one is just another
+  single-curl that should have been folded into the first.
+
+  Returns `nil` (no nudge) or a binary advisory the caller prepends
+  to the tool result content. No `[[ISSUE:...]]` marker — this isn't
+  a violation and shouldn't count toward the 3-strike escalation or
+  show up in `ModelBehaviorStats`.
+  """
+  @spec consecutive_run_script_advisory(String.t(), [map()]) :: String.t() | nil
+  def consecutive_run_script_advisory("run_script", prior_messages)
+      when is_list(prior_messages) do
+    case last_tool_call_name(prior_messages) do
+      "run_script" ->
+        Logger.info("[Police] NUDGE consecutive_run_script")
+        Dmhai.SysLog.log("[POLICE] NUDGE consecutive_run_script")
+
+        "[NOTE — RUNTIME GUIDANCE]\n" <>
+          "You have called 2 consecutive `run_script`s, each with very thin " <>
+          "content. This is ANTI-PATTERN because tool calling is very " <>
+          "EXPENSIVE. If your next tool call is `run_script` again, you " <>
+          "MUST chain ALL your remaining commands in that SINGLE script. " <>
+          "Think and plan carefully.\n" <>
+          "[END NOTE]\n\n"
+
+      _ ->
+        nil
+    end
+  end
+
+  def consecutive_run_script_advisory(_, _), do: nil
 
   # Count assistant tool_calls named "run_script" across the prior-messages
   # accumulator. Both atom-key and string-key shapes accepted (the chain

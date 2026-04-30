@@ -108,11 +108,12 @@ defmodule Dmhai.Web.Fetcher do
             {:cmp, vendor, %{state | cmp: vendor}}
 
           :clean ->
-            {title, text} = extract(body, final_url)
+            extractor    = Keyword.get(state.opts, :extractor, :general)
+            {title, text} = extract(body, final_url, extractor)
             if byte_size(text) == 0 do
               {:error, :empty_content, state}
             else
-              {:ok, build_result(url, final_url, title, text, state)}
+              {:ok, build_result(url, final_url, title, text, body, state)}
             end
         end
 
@@ -124,8 +125,14 @@ defmodule Dmhai.Web.Fetcher do
     end
   end
 
-  defp extract(body, source_url) do
-    case ReaderExtractor.extract(body, source_url) do
+  defp extract(body, source_url, extractor) do
+    extracted =
+      case extractor do
+        :kb -> ReaderExtractor.extract_for_kb(body, source_url)
+        _   -> ReaderExtractor.extract(body, source_url)
+      end
+
+    case extracted do
       %{title: title, text: text} when is_binary(text) and byte_size(text) > 0 ->
         {title, text}
 
@@ -135,7 +142,7 @@ defmodule Dmhai.Web.Fetcher do
     end
   end
 
-  defp build_result(origin_url, final_url, title, text, state) do
+  defp build_result(origin_url, final_url, title, text, raw_body, state) do
     truncated? = String.length(text) > state.max_chars
     text       = if truncated?, do: String.slice(text, 0, state.max_chars), else: text
 
@@ -148,7 +155,7 @@ defmodule Dmhai.Web.Fetcher do
         true                                            -> :amp_or_mirror
       end
 
-    %{
+    base = %{
       url:        state.original_url,
       final_url:  final_url,
       title:      title,
@@ -158,6 +165,16 @@ defmodule Dmhai.Web.Fetcher do
       cmp:        state.cmp,
       tried:      Enum.reverse(state.tried)
     }
+
+    # `:include_html` exposes the raw body so callers (the URL crawl
+    # pipeline) can re-parse for outbound links without a second
+    # fetch. Off by default — keeps the result map small for the
+    # common single-page chat use.
+    if Keyword.get(state.opts, :include_html, false) do
+      Map.put(base, :html, raw_body)
+    else
+      base
+    end
   end
 
   # ── Jina reader — last-resort fallback after all URL variants fail ──────────

@@ -93,11 +93,15 @@ const I18n = {
             profileCondenseLabel: 'Condense after facts',
             convSettings: 'Conversation Settings',
             aiModelSettings: 'AI Model Settings',
+            wikiSeedsAdmin: 'Wiki Seeds',
+            mcpCatalogAdmin: 'MCP Catalog',
             multimediaSection: 'Multimedia', videoDetailLabel: 'Video analysis depth',
             videoDetailLow: 'Low (4 frames)', videoDetailMedium: 'Medium (8 frames)', videoDetailHigh: 'High (12 frames)',
             processingVideo: 'Processing video, may take a while…', analyzingVideo: 'Analyzing video, may take a while…',
             processingImage: 'Processing image, may take a while…', analyzingImage: 'Analyzing photo, may take a while…',
             thinkingOutLoud: 'Thinking…',
+            modeConfidant: 'Confidant',
+            modeAssistant: 'Assistant',
         },
         vi: {
             retry: 'Thử lại', clear: 'Xóa', send: 'Gửi', cancel: 'Hủy', ok: 'OK', stopGen: 'Dừng', onTask: 'trên task',
@@ -147,11 +151,15 @@ const I18n = {
             profileCondenseLabel: 'Cô đọng sau số sự kiện',
             convSettings: 'Cài đặt hội thoại',
             aiModelSettings: 'Cài đặt mô hình AI',
+            wikiSeedsAdmin: 'Hạt giống Wiki',
+            mcpCatalogAdmin: 'Danh mục MCP',
             multimediaSection: 'Đa phương tiện', videoDetailLabel: 'Độ chi tiết phân tích video',
             videoDetailLow: 'Thấp (4 khung)', videoDetailMedium: 'Trung bình (8 khung)', videoDetailHigh: 'Cao (12 khung)',
             processingVideo: 'Đang xử lý video, có thể mất một lúc…', analyzingVideo: 'Đang phân tích video, có thể mất một lúc…',
             processingImage: 'Đang xử lý ảnh, có thể mất một lúc…', analyzingImage: 'Đang phân tích ảnh, có thể mất một lúc…',
             thinkingOutLoud: 'Suy nghĩ…',
+            modeConfidant: 'Bạn Tâm Giao',
+            modeAssistant: 'Người Giúp Việc',
         },
         de: {
             retry: 'Wiederholen', clear: 'Löschen', send: 'Senden', cancel: 'Abbrechen', ok: 'OK', stopGen: 'Stopp', onTask: 'bei Aufgabe',
@@ -201,11 +209,15 @@ const I18n = {
             profileCondenseLabel: 'Verdichten nach Fakten',
             convSettings: 'Gesprächseinstellungen',
             aiModelSettings: 'KI-Modell-Einstellungen',
+            wikiSeedsAdmin: 'Wiki-Quellen',
+            mcpCatalogAdmin: 'MCP-Katalog',
             multimediaSection: 'Multimedia', videoDetailLabel: 'Videoanalyse-Tiefe',
             videoDetailLow: 'Niedrig (4 Frames)', videoDetailMedium: 'Mittel (8 Frames)', videoDetailHigh: 'Hoch (12 Frames)',
             processingVideo: 'Video wird verarbeitet, das kann einen Moment dauern…', analyzingVideo: 'Video wird analysiert, das kann einen Moment dauern…',
             processingImage: 'Bild wird verarbeitet, das kann einen Moment dauern…', analyzingImage: 'Foto wird analysiert, das kann einen Moment dauern…',
             thinkingOutLoud: 'Denken…',
+            modeConfidant: 'Vertrauter',
+            modeAssistant: 'Assistent',
         },
         es: {
             retry: 'Reintentar', clear: 'Limpiar', send: 'Enviar', cancel: 'Cancelar', ok: 'OK', stopGen: 'Detener', onTask: 'en la tarea',
@@ -255,11 +267,15 @@ const I18n = {
             profileCondenseLabel: 'Condensar después de hechos',
             convSettings: 'Configuración de conversación',
             aiModelSettings: 'Configuración de modelos IA',
+            wikiSeedsAdmin: 'Semillas de Wiki',
+            mcpCatalogAdmin: 'Catálogo MCP',
             multimediaSection: 'Multimedia', videoDetailLabel: 'Profundidad de análisis de vídeo',
             videoDetailLow: 'Baja (4 fotogramas)', videoDetailMedium: 'Media (8 fotogramas)', videoDetailHigh: 'Alta (12 fotogramas)',
             processingVideo: 'Procesando vídeo, puede tardar un momento…', analyzingVideo: 'Analizando vídeo, puede tardar un momento…',
             processingImage: 'Procesando imagen, puede tardar un momento…', analyzingImage: 'Analizando foto, puede tardar un momento…',
             thinkingOutLoud: 'Pensando…',
+            modeConfidant: 'Confidente',
+            modeAssistant: 'Asistente',
         },
         fr: {
             retry: 'Réessayer', clear: 'Effacer', send: 'Envoyer', cancel: 'Annuler', ok: 'OK', stopGen: 'Arrêter', onTask: 'sur la tâche',
@@ -309,11 +325,15 @@ const I18n = {
             profileCondenseLabel: 'Condenser après faits',
             convSettings: 'Paramètres de conversation',
             aiModelSettings: 'Paramètres des modèles IA',
+            wikiSeedsAdmin: 'Sources Wiki',
+            mcpCatalogAdmin: 'Catalogue MCP',
             multimediaSection: 'Multimédia', videoDetailLabel: 'Profondeur d\'analyse vidéo',
             videoDetailLow: 'Faible (4 images)', videoDetailMedium: 'Moyen (8 images)', videoDetailHigh: 'Élevé (12 images)',
             processingVideo: 'Traitement de la vidéo, cela peut prendre un moment…', analyzingVideo: 'Analyse de la vidéo, cela peut prendre un moment…',
             processingImage: 'Traitement de l\'image, cela peut prendre un moment…', analyzingImage: 'Analyse de la photo, cela peut prendre un moment…',
             thinkingOutLoud: 'Réflexion…',
+            modeConfidant: 'Confident',
+            modeAssistant: 'Assistant',
         }
     },
     t: function(key) { return (this._strings[this._lang] || this._strings.en)[key] || this._strings.en[key] || key; },
@@ -480,11 +500,6 @@ const AppConfig = {
     saveSearxng: function(url) {
         if (url) localStorage.setItem('searxng-url', url);
         else localStorage.removeItem('searxng-url');
-    },
-    get ollamaEndpoint() { return localStorage.getItem('ollama-endpoint') || ''; },
-    saveOllamaEndpoint: function(url) {
-        if (url) localStorage.setItem('ollama-endpoint', url);
-        else localStorage.removeItem('ollama-endpoint');
     }
 };
 

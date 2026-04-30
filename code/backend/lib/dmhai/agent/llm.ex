@@ -9,21 +9,19 @@ defmodule Dmhai.Agent.LLM do
 
   ## Model string format
 
-      "<provider>::<pool>::<model>"
+      "<pool>::<model>"
 
-  | provider  | pool  | Endpoint                              | Auth                             |
-  |-----------|-------|---------------------------------------|----------------------------------|
-  | ollama    | cloud | https://ollama.com/api/chat           | Bearer from accounts pool        |
-  | ollama    | local | ollamaEndpoint/api/chat               | none                             |
-  | openai    | any   | https://api.openai.com/v1/chat/...    | Bearer openaiKey                 |
-  | google    | any   | Google Gemini (TODO)                  | googleKey                        |
-  | anthropic | any   | Anthropic (TODO)                      | anthropicKey                     |
+  Where `<pool>` matches a row in the `pools` table (see
+  `Dmhai.LLM.Pools`) and `<model>` is whatever the upstream provider
+  expects. Resolution looks up the pool, runs account rotation, and
+  returns a struct with the resolved base_url + api_key. Adding a new
+  endpoint is a row insert, not a code change. See `specs/api_pools.md`.
 
   ### Examples
 
-      "ollama::cloud::gemini-3-flash-preview:cloud"
-      "ollama::local::llama3.2:3b"
-      "openai::default::gpt-4o"
+      "ollama-cloud::gemini-3-flash-preview:cloud"
+      "miner::llama3.2:3b"
+      "miner::qwen3-embedding:0.6b"
 
   ## Entry points
 
@@ -32,13 +30,31 @@ defmodule Dmhai.Agent.LLM do
   - `call/3`   — non-streaming; returns `{:ok, text}` or `{:ok, {:tool_calls, calls}}`.
   """
 
-  import Ecto.Adapters.SQL, only: [query!: 3]
-  alias Dmhai.Repo
   alias Dmhai.Agent.AgentSettings
   alias Dmhai.Agent.LogTrace
+  alias Dmhai.LLM.{Pools, AccountRotation}
   require Logger
 
-  @ollama_cloud_url "https://ollama.com/api/chat"
+  # ─── Wire-protocol adapter dispatch ────────────────────────────────────────
+  #
+  # The adapter encapsulates everything that differs between wire
+  # protocols: endpoint URL, request body shape, response parsing,
+  # streaming line parser, and post-stream consolidation. The rest
+  # (account rotation, retry-on-throttle, transport timing,
+  # thinking-tag extraction, message sanitisation) stays here.
+  #
+  # Dispatch is provider-driven: Ollama pools use `/api/chat` (native
+  # NDJSON, honours `options.num_ctx`); everything else goes through
+  # the OpenAI-shape `/v1/chat/completions` endpoint. Adding a new
+  # wire protocol is a new clause + a new adapter module.
+  defp adapter_for(%{provider: "ollama"}), do: Dmhai.LLM.Adapters.Ollama
+  defp adapter_for(_), do: Dmhai.LLM.Adapters.OpenAI
+
+  # Transient-error retry budget for a single account before rotation
+  # kicks in. Three retries with @server_error_delay_ms backoff = ~6s
+  # total before we mark the account throttled and pick the next one.
+  @server_error_retries 3
+  @server_error_delay_ms 2_000
 
   # ─── Public API ────────────────────────────────────────────────────────────
 
@@ -58,25 +74,27 @@ defmodule Dmhai.Agent.LLM do
       Logger.info("[LLM] stream #{model_str} msgs=#{length(messages)} tools=#{length(tools)}")
       Dmhai.SysLog.log("[LLM] stream model=#{model_str} msgs=#{length(messages)} tools=#{length(tools)}\n  #{log_messages(messages)}")
 
-      result = case String.split(model_str, "::", parts: 3) do
-        ["ollama", "cloud", model_name] ->
-          settings = load_settings()
-          {active, throttled} = partition_accounts(settings["accounts"] || [])
-          sanitized = sanitize_ollama_messages(messages, model_name)
-          body = build_body(model_name, sanitized, tools, true, llm_options)
-          do_cloud_stream(Enum.shuffle(active) ++ Enum.shuffle(throttled), model_name, body, reply_pid, model_str, on_tokens)
+      result =
+        case Pools.resolve(model_str) do
+          {:ok, resolved} ->
+            adapter = adapter_for(resolved)
+            sanitized =
+              sanitize_messages(resolved.provider, messages, resolved.model)
+              |> adapter.normalize_messages()
+            options = inject_pool_options(resolved, llm_options)
+            body = adapter.build_body(resolved.model, sanitized, tools, true, options)
+            do_pool_stream(resolved, adapter, body, reply_pid, model_str, on_tokens)
 
-        ["ollama", _pool, model_name] ->
-          {url, headers, _} = resolve(model_str)
-          sanitized = sanitize_ollama_messages(messages, model_name)
-          body = build_body(model_name, sanitized, tools, true, llm_options)
-          do_stream_request(url, headers, body, reply_pid, model_str, on_tokens)
+          {:error, :all_throttled, retry_ms} ->
+            Logger.error("[LLM] all accounts throttled in pool, retry in #{retry_ms}ms #{model_str}")
+            {:error, :rate_limited}
 
-        _ ->
-          {url, headers, model_name} = resolve(model_str)
-          body = build_body(model_name, messages, tools, true, llm_options)
-          do_stream_request(url, headers, body, reply_pid, model_str, on_tokens)
-      end
+          {:error, :unknown_pool} ->
+            {:error, "unknown pool in model string: #{inspect(model_str)}"}
+
+          {:error, :invalid_format} ->
+            {:error, "invalid model format: #{inspect(model_str)} (expected <pool>::<model>)"}
+        end
 
       maybe_trace(trace, model_str, messages, tools, result)
       result
@@ -98,98 +116,172 @@ defmodule Dmhai.Agent.LLM do
       Logger.info("[LLM] call #{model_str} msgs=#{length(messages)} tools=#{length(tools)}")
       Dmhai.SysLog.log("[LLM] call model=#{model_str} msgs=#{length(messages)} tools=#{length(tools)}\n  #{log_messages(messages)}")
 
-      result = case String.split(model_str, "::", parts: 3) do
-        ["ollama", "cloud", model_name] ->
-          settings = load_settings()
-          {active, throttled} = partition_accounts(settings["accounts"] || [])
-          sanitized = sanitize_ollama_messages(messages, model_name)
-          body = build_body(model_name, sanitized, tools, false, llm_options)
-          do_cloud_call(Enum.shuffle(active) ++ Enum.shuffle(throttled), model_name, body, model_str, on_tokens)
+      result =
+        case Pools.resolve(model_str) do
+          {:ok, resolved} ->
+            adapter = adapter_for(resolved)
+            sanitized =
+              sanitize_messages(resolved.provider, messages, resolved.model)
+              |> adapter.normalize_messages()
+            options = inject_pool_options(resolved, llm_options)
+            body = adapter.build_body(resolved.model, sanitized, tools, false, options)
+            do_pool_call(resolved, adapter, body, model_str, on_tokens)
 
-        ["ollama", _pool, model_name] ->
-          {url, headers, _} = resolve(model_str)
-          sanitized = sanitize_ollama_messages(messages, model_name)
-          body = build_body(model_name, sanitized, tools, false, llm_options)
-          do_call_request(url, headers, body, model_str, on_tokens)
+          {:error, :all_throttled, retry_ms} ->
+            Logger.error("[LLM] all accounts throttled in pool, retry in #{retry_ms}ms #{model_str}")
+            {:error, :rate_limited}
 
-        _ ->
-          {url, headers, model_name} = resolve(model_str)
-          body = build_body(model_name, messages, tools, false, llm_options)
-          do_call_request(url, headers, body, model_str, on_tokens)
-      end
+          {:error, :unknown_pool} ->
+            {:error, "unknown pool in model string: #{inspect(model_str)}"}
+
+          {:error, :invalid_format} ->
+            {:error, "invalid model format: #{inspect(model_str)} (expected <pool>::<model>)"}
+        end
 
       maybe_trace(trace, model_str, messages, tools, result)
       result
     end
   end
 
-  # ─── Resolution ────────────────────────────────────────────────────────────
+  # ─── Pool-driven request helpers ────────────────────────────────────────────
 
-  # Returns {url, headers, model_name}.
-  defp resolve(model_str) do
-    case String.split(model_str, "::", parts: 3) do
-      [provider, pool, model] when provider != "" and pool != "" and model != "" ->
-        settings = load_settings()
-        endpoint(provider, pool, model, settings)
+  defp auth_headers(%{api_key: key}) when is_binary(key) and key != "",
+    do: [{"authorization", "Bearer " <> key}]
 
-      _ ->
-        raise ArgumentError,
-              "Invalid model format: #{inspect(model_str)}. Expected \"provider::pool::model\"."
+  defp auth_headers(_), do: []
+
+  # Streaming wrapper with per-account fallback. On rate-limit / quota
+  # exhaust against the chosen account, marks it throttled (persisted via
+  # AccountRotation) and resolves a fresh account from the same pool.
+  defp do_pool_stream(resolved, adapter, body, reply_pid, model_str, on_tokens, retries \\ @server_error_retries) do
+    url     = adapter.chat_endpoint_url(resolved)
+    headers = auth_headers(resolved)
+
+    case do_stream_request(url, headers, body, reply_pid, model_str, on_tokens, adapter) do
+      {:error, :quota_exhausted} ->
+        hours = AgentSettings.quota_exhausted_throttle_hours()
+        until = System.os_time(:millisecond) + :timer.hours(hours)
+        Logger.warning("[LLM] account #{resolved.account_name} weekly quota exhausted, throttling #{hours}h")
+        AccountRotation.mark_throttled(resolved.pool_name, resolved.account_name, until)
+        retry_after_rotation(model_str, body, reply_pid, on_tokens, :stream)
+
+      {:error, {:rate_limited, ms}} ->
+        until = System.os_time(:millisecond) + ms
+        Logger.warning("[LLM] account #{resolved.account_name} rate-limited (Retry-After=#{div(ms, 1000)}s)")
+        AccountRotation.mark_throttled(resolved.pool_name, resolved.account_name, until)
+        retry_after_rotation(model_str, body, reply_pid, on_tokens, :stream)
+
+      {:error, :rate_limited} ->
+        secs = AgentSettings.rate_limit_throttle_secs()
+        until = System.os_time(:millisecond) + :timer.seconds(secs)
+        Logger.warning("[LLM] account #{resolved.account_name} rate-limited (no Retry-After), throttling #{secs}s")
+        AccountRotation.mark_throttled(resolved.pool_name, resolved.account_name, until)
+        retry_after_rotation(model_str, body, reply_pid, on_tokens, :stream)
+
+      {:error, :server_error} when retries > 0 ->
+        Logger.warning("[LLM] transient server error, retrying in #{@server_error_delay_ms}ms (#{retries} left) #{model_str}")
+        Process.sleep(@server_error_delay_ms)
+        do_pool_stream(resolved, adapter, body, reply_pid, model_str, on_tokens, retries - 1)
+
+      {:error, :server_error} ->
+        Logger.error("[LLM] server error persists after retries, account=#{resolved.account_name} #{model_str}")
+        retry_after_rotation(model_str, body, reply_pid, on_tokens, :stream)
+
+      other ->
+        other
     end
   end
 
-  defp endpoint("ollama", "cloud", model, settings) do
-    key = pick_pool_key(settings)
-    headers = if key != "", do: [{"authorization", "Bearer #{key}"}], else: []
-    {@ollama_cloud_url, headers, model}
+  # Non-streaming counterpart.
+  defp do_pool_call(resolved, adapter, body, model_str, on_tokens, retries \\ @server_error_retries) do
+    url     = adapter.chat_endpoint_url(resolved)
+    headers = auth_headers(resolved)
+
+    case do_call_request(url, headers, body, model_str, on_tokens, adapter) do
+      {:error, :quota_exhausted} ->
+        hours = AgentSettings.quota_exhausted_throttle_hours()
+        until = System.os_time(:millisecond) + :timer.hours(hours)
+        Logger.warning("[LLM] account #{resolved.account_name} weekly quota exhausted, throttling #{hours}h")
+        AccountRotation.mark_throttled(resolved.pool_name, resolved.account_name, until)
+        retry_after_rotation(model_str, body, nil, on_tokens, :call)
+
+      {:error, {:rate_limited, ms}} ->
+        until = System.os_time(:millisecond) + ms
+        Logger.warning("[LLM] account #{resolved.account_name} rate-limited (Retry-After=#{div(ms, 1000)}s)")
+        AccountRotation.mark_throttled(resolved.pool_name, resolved.account_name, until)
+        retry_after_rotation(model_str, body, nil, on_tokens, :call)
+
+      {:error, :rate_limited} ->
+        secs = AgentSettings.rate_limit_throttle_secs()
+        until = System.os_time(:millisecond) + :timer.seconds(secs)
+        Logger.warning("[LLM] account #{resolved.account_name} rate-limited (no Retry-After), throttling #{secs}s")
+        AccountRotation.mark_throttled(resolved.pool_name, resolved.account_name, until)
+        retry_after_rotation(model_str, body, nil, on_tokens, :call)
+
+      {:error, :server_error} when retries > 0 ->
+        Logger.warning("[LLM] transient server error, retrying in #{@server_error_delay_ms}ms (#{retries} left) #{model_str}")
+        Process.sleep(@server_error_delay_ms)
+        do_pool_call(resolved, adapter, body, model_str, on_tokens, retries - 1)
+
+      {:error, :server_error} ->
+        Logger.error("[LLM] server error persists after retries, account=#{resolved.account_name} #{model_str}")
+        retry_after_rotation(model_str, body, nil, on_tokens, :call)
+
+      other ->
+        other
+    end
   end
 
-  defp endpoint("ollama", _pool, model, settings) do
-    ep = String.trim(settings["ollamaEndpoint"] || "") |> String.trim_trailing("/")
-    ep = if ep == "", do: "http://127.0.0.1:11434", else: ep
-    {ep <> "/api/chat", [], model}
-  end
+  # After the chosen account got throttled or persistently 5xx'd, resolve
+  # the same model_str again — Pools.resolve picks the next-best account
+  # from the same pool. When every account is throttled we propagate the
+  # error up honestly (no silent failover to a different pool).
+  defp retry_after_rotation(model_str, body, reply_pid, on_tokens, mode) do
+    case Pools.resolve(model_str) do
+      {:ok, fresh} ->
+        adapter = adapter_for(fresh)
+        case mode do
+          :stream -> do_pool_stream(fresh, adapter, body, reply_pid, model_str, on_tokens)
+          :call   -> do_pool_call(fresh, adapter, body, model_str, on_tokens)
+        end
 
-  defp endpoint("openai", _pool, model, settings) do
-    key = String.trim(settings["openaiKey"] || "")
-    {"https://api.openai.com/v1/chat/completions",
-     [{"authorization", "Bearer #{key}"}, {"content-type", "application/json"}], model}
-  end
+      {:error, :all_throttled, _ms} ->
+        {:error, "all_keys_exhausted"}
 
-  defp endpoint(provider, pool, model, _settings) do
-    raise ArgumentError,
-          "Unsupported provider/pool: #{provider}::#{pool} (model: #{model}). " <>
-            "Supported: ollama::cloud, ollama::local, openai::*"
+      err ->
+        err
+    end
   end
 
   # ─── Body / response ───────────────────────────────────────────────────────
 
-  defp build_body(model, messages, tools, stream, options) do
-    base = %{model: model, messages: messages, stream: stream}
-
-    base =
-      if tools != [] do
-        wrapped = Enum.map(tools, fn t -> %{type: "function", function: t} end)
-        Map.put(base, :tools, wrapped)
-      else
-        base
-      end
-
-    if map_size(options) > 0, do: Map.put(base, :options, options), else: base
+  # Inject pool-level options into the per-call options map. Right
+  # now that's just `num_ctx`, which only matters for the Ollama
+  # adapter — other providers ignore the field. Caller-supplied
+  # `:num_ctx` (rare but legal, e.g. a one-off long-context request)
+  # always wins; pool-level only fills the blank.
+  defp inject_pool_options(%{provider: "ollama", num_ctx: ctx}, options)
+       when is_integer(ctx) and ctx > 0 and is_map(options) do
+    if Map.has_key?(options, :num_ctx) or Map.has_key?(options, "num_ctx") do
+      options
+    else
+      Map.put(options, :num_ctx, ctx)
+    end
   end
 
-  defp parse_response(body, model_str, on_tokens) when is_map(body) do
-    tx = body["prompt_eval_count"] || 0
-    rx = body["eval_count"] || 0
+  defp inject_pool_options(_resolved, options), do: options
+
+  defp parse_response(body, model_str, on_tokens, adapter) when is_map(body) do
+    {tx, rx, msg} = adapter.extract_message(body)
     if on_tokens && (rx > 0 or tx > 0), do: on_tokens.(rx, tx)
-    msg = body["message"] || %{}
-    tool_calls = msg["tool_calls"]
+
+    tool_calls  = msg["tool_calls"]
     raw_content = msg["content"] || ""
 
     # Unified thinking extraction: prefer dedicated field (Gemini), fall back to
     # stripping <think>...</think> from content (Qwen3 and others).
     {thinking, content} =
-      case msg["thinking"] do
+      case msg["thinking"] || msg["reasoning_content"] do
         t when is_binary(t) and t != "" -> {t, raw_content}
         _ -> extract_think_tags(raw_content)
       end
@@ -209,7 +301,7 @@ defmodule Dmhai.Agent.LLM do
     end
   end
 
-  defp parse_response(body, _model_str, _on_tokens) do
+  defp parse_response(body, _model_str, _on_tokens, _adapter) do
     {:error, "Unexpected response: #{inspect(body, limit: 200)}"}
   end
 
@@ -223,9 +315,12 @@ defmodule Dmhai.Agent.LLM do
     {if(thinking == "", do: nil, else: thinking), clean}
   end
 
+  @doc false
   # Split a streaming content token into {think_part, content_part} by tracking
   # whether we're currently inside a <think>...</think> block across tokens.
-  defp split_think_token(token, think_key, in_think_key) do
+  # Public (with @doc false) so wire-protocol adapters can reuse the same
+  # state machine without re-implementing it. Not part of the stable API.
+  def split_think_token(token, think_key, in_think_key) do
     combined = Process.get(think_key) <> token
     in_think = Process.get(in_think_key)
 
@@ -294,13 +389,15 @@ defmodule Dmhai.Agent.LLM do
   # resolves the 400 while preserving model reasoning quality.
   # Only Gemini models (hosted via Ollama) have the thought_signature limitation.
   # Other models (Mistral, LLaMA, etc.) handle tool_call history natively — leave them unchanged.
-  defp sanitize_ollama_messages(messages, model_name) do
+  defp sanitize_messages("ollama", messages, model_name) do
     if String.contains?(String.downcase(model_name), "gemini") do
       do_sanitize_gemini_messages(messages)
     else
       messages
     end
   end
+
+  defp sanitize_messages(_provider, messages, _model_name), do: messages
 
   defp do_sanitize_gemini_messages(messages) do
     # Build a map from tool_call_id → full call, so the tool result message
@@ -359,54 +456,7 @@ defmodule Dmhai.Agent.LLM do
 
   # ─── Helpers ───────────────────────────────────────────────────────────────
 
-  # ─── Ollama cloud: streaming with per-key fallback ─────────────────────────
-
-  @server_error_retries 3
-  @server_error_delay_ms 2_000
-
-  defp do_cloud_stream([], _model_name, _body, _reply_pid, model_str, _on_tokens) do
-    Logger.error("[LLM] all cloud accounts exhausted #{model_str}")
-    {:error, "all_keys_exhausted"}
-  end
-
-  defp do_cloud_stream([account | rest], model_name, body, reply_pid, model_str, on_tokens, retries \\ @server_error_retries) do
-    key = (account["apiKey"] || account["key"] || "") |> String.trim()
-    headers = if key != "", do: [{"authorization", "Bearer #{key}"}], else: []
-
-    case do_stream_request(@ollama_cloud_url, headers, body, reply_pid, model_str, on_tokens) do
-      {:error, :quota_exhausted} ->
-        hours = AgentSettings.quota_exhausted_throttle_hours()
-        Logger.warning("[LLM] account #{account["name"]} weekly quota exhausted, throttling #{hours}h")
-        mark_account_throttled(account, :timer.hours(hours))
-        do_cloud_stream(rest, model_name, body, reply_pid, model_str, on_tokens)
-
-      {:error, {:rate_limited, ms}} ->
-        # Retry-After header honoured — throttle exactly as requested.
-        Logger.warning("[LLM] account #{account["name"]} rate-limited (Retry-After=#{div(ms, 1000)}s)")
-        mark_account_throttled(account, ms)
-        do_cloud_stream(rest, model_name, body, reply_pid, model_str, on_tokens)
-
-      {:error, :rate_limited} ->
-        secs = AgentSettings.rate_limit_throttle_secs()
-        Logger.warning("[LLM] account #{account["name"]} rate-limited (no Retry-After), throttling #{secs}s")
-        mark_account_throttled(account, :timer.seconds(secs))
-        do_cloud_stream(rest, model_name, body, reply_pid, model_str, on_tokens)
-
-      {:error, :server_error} when retries > 0 ->
-        Logger.warning("[LLM] transient server error, retrying in #{@server_error_delay_ms}ms (#{retries} left) #{model_str}")
-        Process.sleep(@server_error_delay_ms)
-        do_cloud_stream([account | rest], model_name, body, reply_pid, model_str, on_tokens, retries - 1)
-
-      {:error, :server_error} ->
-        Logger.error("[LLM] server error persists after retries, skipping account #{account["name"]} #{model_str}")
-        do_cloud_stream(rest, model_name, body, reply_pid, model_str, on_tokens)
-
-      other ->
-        other
-    end
-  end
-
-  defp do_stream_request(url, headers, body, reply_pid, model_str, on_tokens) do
+  defp do_stream_request(url, headers, body, reply_pid, model_str, on_tokens, adapter) do
     text_key    = {__MODULE__, :text,       self()}
     calls_key   = {__MODULE__, :calls,      self()}
     buf_key     = {__MODULE__, :buf,        self()}
@@ -415,6 +465,7 @@ defmodule Dmhai.Agent.LLM do
     in_think_key = {__MODULE__, :in_think,  self()}
     chunks_key  = {__MODULE__, :chunks,     self()}
     first_byte_key = {__MODULE__, :first_byte, self()}
+    tc_acc_key  = {__MODULE__, :tc_acc,     self()}
 
     Process.put(text_key,     "")
     Process.put(calls_key,    [])
@@ -422,6 +473,7 @@ defmodule Dmhai.Agent.LLM do
     Process.put(think_key,    "")
     Process.put(in_think_key, false)
     Process.put(chunks_key,   0)
+    Process.put(tc_acc_key,   %{})
     Process.delete(err_key)
     Process.delete(first_byte_key)
 
@@ -442,7 +494,7 @@ defmodule Dmhai.Agent.LLM do
         json: body,
         headers: headers_no_reuse,
         compressed: false,
-        receive_timeout: 120_000,
+        receive_timeout: AgentSettings.llm_receive_timeout_ms(),
         retry: false,
         finch: Dmhai.Finch,
         into: fn {:data, data}, {req, resp} ->
@@ -461,60 +513,36 @@ defmodule Dmhai.Agent.LLM do
           {complete, [leftover]} = Enum.split(lines, length(lines) - 1)
           Process.put(buf_key, leftover)
 
+          ctx = %{
+            text_key: text_key, calls_key: calls_key, err_key: err_key,
+            think_key: think_key, in_think_key: in_think_key,
+            tc_acc_key: tc_acc_key,
+            reply_pid: reply_pid, on_tokens: on_tokens
+          }
+
           halt? =
             Enum.reduce_while(complete, false, fn line, _ ->
               line = String.trim(line)
-              if line == "" do
-                {:cont, false}
-              else
-                case Jason.decode(line) do
-                  {:ok, %{"message" => %{"content" => token}}}
-                  when is_binary(token) and token != "" ->
-                    {think_tok, content_tok} = split_think_token(token, think_key, in_think_key)
-                    if think_tok != "" do
-                      Logger.debug("[LLM] thinking token len=#{String.length(think_tok)}")
-                      send(reply_pid, {:thinking, think_tok})
-                    end
-                    if content_tok != "" do
-                      Process.put(text_key, Process.get(text_key) <> content_tok)
-                      send(reply_pid, {:chunk, content_tok})
-                    end
-                    {:cont, false}
-
-                  {:ok, %{"message" => %{"thinking" => token}}}
-                  when is_binary(token) and token != "" ->
-                    Logger.debug("[LLM] thinking token len=#{String.length(token)}")
-                    send(reply_pid, {:thinking, token})
-                    {:cont, false}
-
-                  {:ok, %{"message" => %{"tool_calls" => calls}}}
-                  when is_list(calls) and calls != [] ->
-                    Process.put(calls_key, calls)
-                    {:cont, false}
-
-                  {:ok, %{"error" => err}} ->
-                    Logger.error("[LLM] model error: #{err}")
-                    Process.put(err_key, err)
-                    {:halt, true}
-
-                  {:ok, decoded} ->
-                    if decoded["done"] do
-                      tx = decoded["prompt_eval_count"] || 0
-                      rx = decoded["eval_count"] || 0
-                      if on_tokens && (rx > 0 or tx > 0), do: on_tokens.(rx, tx)
-                    end
-                    Logger.debug("[LLM] unmatched line keys=#{inspect(Map.keys(decoded))}")
-                    {:cont, false}
-
-                  {:error, _} ->
-                    {:cont, false}
-                end
+              cond do
+                line == "" -> {:cont, false}
+                true       -> adapter.handle_stream_line(line, ctx)
               end
             end)
 
           if halt?, do: {:halt, {req, resp}}, else: {:cont, {req, resp}}
         end
       )
+
+    # Post-stream consolidation. OpenAI fragments tool_calls across
+    # chunks and needs the accumulator collapsed into a list; Ollama-
+    # native delivers complete tool_call objects per line and is a
+    # no-op. Adapter decides.
+    adapter.finalize_stream(%{
+      text_key: text_key, calls_key: calls_key, err_key: err_key,
+      think_key: think_key, in_think_key: in_think_key,
+      tc_acc_key: tc_acc_key,
+      reply_pid: reply_pid, on_tokens: on_tokens
+    })
 
     stream_err   = Process.get(err_key)
     full_text    = Process.get(text_key)
@@ -523,6 +551,7 @@ defmodule Dmhai.Agent.LLM do
     first_byte   = Process.get(first_byte_key)
     Process.delete(text_key)
     Process.delete(calls_key)
+    Process.delete(tc_acc_key)
     Process.delete(buf_key)
     Process.delete(err_key)
     Process.delete(chunks_key)
@@ -553,6 +582,15 @@ defmodule Dmhai.Agent.LLM do
 
           looks_like_rate_limit?(err_text) ->
             {:error, :rate_limited}
+
+          # Transient server-side overload — Ollama Cloud sometimes
+          # ships these as inline NDJSON errors on a 200-OK stream
+          # (the connection was already established when the upstream
+          # model lookup hit overload). Map to :server_error so the
+          # do_pool_stream retry-then-rotate logic kicks in, same as
+          # for an HTTP 5xx response.
+          looks_like_server_error?(err_text) ->
+            {:error, :server_error}
 
           true ->
             {:error, "stream error: #{err_text}"}
@@ -586,50 +624,7 @@ defmodule Dmhai.Agent.LLM do
     end
   end
 
-  # ─── Ollama cloud: non-streaming with per-key fallback ──────────────────────
-
-  defp do_cloud_call([], _model_name, _body, model_str, _on_tokens) do
-    Logger.error("[LLM] all cloud accounts exhausted #{model_str}")
-    {:error, "all_keys_exhausted"}
-  end
-
-  defp do_cloud_call([account | rest], model_name, body, model_str, on_tokens, retries \\ @server_error_retries) do
-    key = (account["apiKey"] || account["key"] || "") |> String.trim()
-    headers = if key != "", do: [{"authorization", "Bearer #{key}"}], else: []
-
-    case do_call_request(@ollama_cloud_url, headers, body, model_str, on_tokens) do
-      {:error, :quota_exhausted} ->
-        hours = AgentSettings.quota_exhausted_throttle_hours()
-        Logger.warning("[LLM] account #{account["name"]} weekly quota exhausted, throttling #{hours}h")
-        mark_account_throttled(account, :timer.hours(hours))
-        do_cloud_call(rest, model_name, body, model_str, on_tokens)
-
-      {:error, {:rate_limited, ms}} ->
-        Logger.warning("[LLM] account #{account["name"]} rate-limited (Retry-After=#{div(ms, 1000)}s)")
-        mark_account_throttled(account, ms)
-        do_cloud_call(rest, model_name, body, model_str, on_tokens)
-
-      {:error, :rate_limited} ->
-        secs = AgentSettings.rate_limit_throttle_secs()
-        Logger.warning("[LLM] account #{account["name"]} rate-limited (no Retry-After), throttling #{secs}s")
-        mark_account_throttled(account, :timer.seconds(secs))
-        do_cloud_call(rest, model_name, body, model_str, on_tokens)
-
-      {:error, :server_error} when retries > 0 ->
-        Logger.warning("[LLM] transient server error, retrying in #{@server_error_delay_ms}ms (#{retries} left) #{model_str}")
-        Process.sleep(@server_error_delay_ms)
-        do_cloud_call([account | rest], model_name, body, model_str, on_tokens, retries - 1)
-
-      {:error, :server_error} ->
-        Logger.error("[LLM] server error persists after retries, skipping account #{account["name"]} #{model_str}")
-        do_cloud_call(rest, model_name, body, model_str, on_tokens)
-
-      other ->
-        other
-    end
-  end
-
-  defp do_call_request(url, headers, body, model_str, on_tokens) do
+  defp do_call_request(url, headers, body, model_str, on_tokens, adapter) when is_atom(adapter) do
     # ── HTTP-path instrumentation (diagnostics for outbound call hangs) ──
     # Wraps Req.post with monotonic-time stamps around every boundary so we
     # can see exactly where a slow call is spending its time:
@@ -652,8 +647,9 @@ defmodule Dmhai.Agent.LLM do
     # returns a gzipped response whose incremental decoding stalls on
     # long text generations (short tool-call responses fit in one packet
     # and always decoded cleanly; only multi-packet text responses
-    # triggered the hang). receive_timeout floors total wait at 120 s so
-    # unknown future stalls still fail out rather than block forever.
+    # triggered the hang). receive_timeout caps any individual call
+    # via `AgentSettings.llm_receive_timeout_ms` so unknown future
+    # stalls still fail out rather than block forever.
     # See specs/architecture.md §Outbound HTTP for LLM calls.
     headers_no_reuse = [{"connection", "close"} | headers]
 
@@ -662,7 +658,7 @@ defmodule Dmhai.Agent.LLM do
         json: body,
         headers: headers_no_reuse,
         compressed: false,
-        receive_timeout: 120_000,
+        receive_timeout: AgentSettings.llm_receive_timeout_ms(),
         retry: false,
         finch: Dmhai.Finch
       )
@@ -679,7 +675,7 @@ defmodule Dmhai.Agent.LLM do
             _                              -> 0
           end
         Logger.info("[LLM:http req=#{req_id}] call OK status=200 network_ms=#{elapsed1} resp_bytes=#{resp_size}")
-        result = parse_response(resp_body, model_str, on_tokens)
+        result = parse_response(resp_body, model_str, on_tokens, adapter)
         t2 = System.monotonic_time(:millisecond)
         Logger.info("[LLM:http req=#{req_id}] call DONE parse_ms=#{t2 - t1} total_ms=#{t2 - t0}")
         result
@@ -774,52 +770,24 @@ defmodule Dmhai.Agent.LLM do
   end
   defp looks_like_rate_limit?(_), do: false
 
-  # Split accounts into {active, throttled} based on throttledUntil epoch-ms field.
-  # Throttled accounts go to the back of the queue as last-resort fallback.
-  defp partition_accounts(accounts) do
-    now = System.os_time(:millisecond)
-    Enum.split_with(accounts, fn acc ->
-      throttled_until = acc["throttledUntil"]
-      is_nil(throttled_until) or throttled_until <= now
-    end)
+  # Transient server-overload markers that arrive as inline NDJSON
+  # errors. Distinct from rate-limit markers — these mean "upstream
+  # is fine, just try again", not "this account hit a quota".
+  @server_error_markers [
+    "overloaded", "service unavailable", "temporarily unavailable",
+    "internal server error", "internal error",
+    "retry shortly", "try again shortly",
+    "503", "502", "504"
+  ]
+
+  # Public for testability — the markers list is the load-bearing
+  # piece, separate test in itgr_llm_classifier.exs.
+  @doc false
+  def looks_like_server_error?(text) when is_binary(text) do
+    lower = String.downcase(text)
+    Enum.any?(@server_error_markers, &String.contains?(lower, &1))
   end
-
-  # Persist throttledUntil on the matching account in admin_cloud_settings.
-  defp mark_account_throttled(account, duration_ms) do
-    name = account["name"] || account["apiKey"] || "unknown"
-    failed_until = System.os_time(:millisecond) + duration_ms
-
-    try do
-      settings = load_settings()
-      updated_accounts =
-        Enum.map(settings["accounts"] || [], fn acc ->
-          if (acc["name"] || acc["apiKey"]) == name,
-            do: Map.put(acc, "throttledUntil", failed_until),
-            else: acc
-        end)
-
-      save_settings(Map.put(settings, "accounts", updated_accounts))
-      Logger.info("[LLM] account #{name} throttled until #{failed_until}")
-    rescue
-      e -> Logger.error("[LLM] mark_account_throttled failed: #{Exception.message(e)}")
-    end
-  end
-
-  defp save_settings(settings) do
-    query!(Repo, "UPDATE settings SET value=? WHERE key=?",
-           [Jason.encode!(settings), "admin_cloud_settings"])
-  end
-
-  defp pick_pool_key(settings) do
-    accounts = settings["accounts"] || []
-
-    case accounts do
-      [] -> ""
-      list ->
-        account = Enum.random(list)
-        (account["apiKey"] || account["key"] || "") |> String.trim()
-    end
-  end
+  def looks_like_server_error?(_), do: false
 
   defp generate_id, do: :crypto.strong_rand_bytes(6) |> Base.url_encode64(padding: false)
 
@@ -850,16 +818,4 @@ defmodule Dmhai.Agent.LLM do
     end
   end
 
-  defp load_settings do
-    try do
-      result = query!(Repo, "SELECT value FROM settings WHERE key=?", ["admin_cloud_settings"])
-
-      case result.rows do
-        [[v] | _] -> Jason.decode!(v || "{}")
-        _ -> %{}
-      end
-    rescue
-      _ -> %{}
-    end
-  end
 end

@@ -29,13 +29,14 @@ defmodule TestLLM.Runner do
   import Ecto.Adapters.SQL, only: [query!: 3]
 
   # Devstral family is the workhorse — listed first so the default
-  # full sweep covers them before everything else.
+  # full sweep covers them before everything else. Canonical
+  # `<pool>::<model>` form per specs/api_pools.md.
   @target_models [
-    "devstral-small-2:24b-cloud",
-    "devstral-2:123b-cloud",
-    "gemma4:31b-cloud",
-    "minimax-m2.5:cloud",
-    "glm-4.6:cloud"
+    "ollama-cloud::devstral-small-2:24b-cloud",
+    "ollama-cloud::devstral-2:123b-cloud",
+    "ollama-cloud::gemma4:31b-cloud",
+    "ollama-cloud::minimax-m2.5:cloud",
+    "ollama-cloud::glm-4.6:cloud"
   ]
 
   @prompt_path_default "test/llm/sysprompt_v2_5.md"
@@ -983,6 +984,7 @@ defmodule TestLLM.Runner do
       check_chain_error(trace),
       check_chain_includes_tool(expect[:includes_tool], all_tool_names),
       check_chain_includes_all(expect[:includes_tools_all], all_tool_names),
+      check_chain_includes_any(expect[:includes_tools_any], all_tool_names),
       check_chain_includes_none(expect[:includes_tools_none], all_tool_names),
       check_chain_final(expect[:final], trace.final),
       check_chain_text(expect[:text_contains], trace),
@@ -1005,6 +1007,13 @@ defmodule TestLLM.Runner do
       []      -> nil
       missing -> "missing tools: #{inspect(missing)}"
     end
+  end
+
+  defp check_chain_includes_any(nil, _), do: nil
+  defp check_chain_includes_any(any_of, names) do
+    if Enum.any?(any_of, &(&1 in names)),
+      do: nil,
+      else: "expected at least one of #{inspect(any_of)} in chain, got #{inspect(names)}"
   end
 
   defp check_chain_includes_none(nil, _), do: nil
@@ -1220,16 +1229,10 @@ defmodule TestLLM.Runner do
     |> Enum.sum()
   end
 
-  defp route(model) do
-    if String.contains?(model, "::") do
-      model
-    else
-      pool = if String.ends_with?(model, "-cloud") or String.ends_with?(model, ":cloud"),
-              do: "cloud", else: "local"
-
-      "ollama::#{pool}::#{model}"
-    end
-  end
+  # Models in @target_models (and PROBE_MODELS overrides) are expected
+  # in canonical `<pool>::<model>` form. `route/1` is a thin pass-through
+  # for clarity at the call site.
+  defp route(model), do: model
 
   # ─── Report writer ──────────────────────────────────────────────────────
 
@@ -1270,7 +1273,7 @@ defmodule TestLLM.Runner do
         "\n\n## Details\n\n" <>
         Enum.map_join(results, "\n\n---\n\n", &render_detail/1)
 
-    safe = String.replace(model_name, [":", "/"], "_")
+    safe = String.replace(model_name, [":", "/", "::"], "_")
     path = Path.join(@reports_dir, "#{safe}.md")
     File.write!(path, md)
     IO.puts("Report: #{path}")
@@ -2271,6 +2274,94 @@ defmodule TestLLM.Runner do
               end
             end
           }
+        }
+      },
+
+      # 37. Probe-failure recovery — model must research, not substitute.
+      #     Mid-chain state: model called run_script with a curl that
+      #     returned `ERROR_METHOD_NOT_FOUND`. The chain continues.
+      #     Per the prompt's `<external_apis>` "research, not substitute"
+      #     rule, the next move MUST be web_fetch / web_search (read
+      #     docs) — not another mutation run_script that one-shots a
+      #     reduced version of the ask, and not a plain-text "done"
+      #     declaration.
+      %{
+        id: 37,
+        name: "chain_probe_failure_research_not_substitute",
+        description: """
+        Mid-chain probe failure → assert recovery sequence:
+
+          Setup
+            - User asks for a permanent automation feature on a
+              hypothetical REST API.
+            - Prior tool turns: model called run_script with a curl
+              that hit the API; tool result returned the
+              `ERROR_METHOD_NOT_FOUND` JSON shape.
+
+          Expected chain
+            - Next emission MUST include web_fetch or web_search
+              (research path) — read docs for an alternative method
+              before deciding.
+            - MUST NOT include a follow-up run_script (no premature
+              retry without docs first).
+            - May end in plain text honestly surfacing the gap if
+              research already confirms unavailability — but plain
+              text without prior research is the failure mode.
+
+          Pass criteria
+            * chain includes `web_fetch` OR `web_search`
+            * chain does NOT include `run_script`
+            * chain does NOT end in `:plain_text` final without
+              having called a research tool first
+        """,
+        setup: fn session_id, user_id, _mocks ->
+          tid = insert_task(user_id, session_id,
+            task_title: "Set up automation",
+            task_spec:  "create a permanent automation rule via the platform's REST API")
+
+          append_user(session_id, user_id,
+            "Set up an automation: when a new record is added in my CRM, " <>
+              "automatically move it to the 'Negotiation' stage and create a " <>
+              "follow-up task. Use the REST API at https://example.test/rest/v1/.")
+
+          # Mid-chain: model already probed the most-likely method and
+          # got back a clean "method not found" error. The chain
+          # picks up from here.
+          mid = [
+            %{
+              role: "assistant",
+              content: "",
+              tool_calls: [%{
+                "id" => "call_probe_001",
+                "type" => "function",
+                "function" => %{
+                  "name" => "run_script",
+                  "arguments" => %{
+                    "script" =>
+                      "curl -X POST 'https://example.test/rest/v1/automation.create' " <>
+                        "-H 'Content-Type: application/json' " <>
+                        "-d '{\"trigger\":\"on_new_record\",\"entity\":\"crm_record\"}'"
+                  }
+                }
+              }]
+            },
+            %{
+              role: "tool",
+              tool_call_id: "call_probe_001",
+              content: "{\"error\":\"ERROR_METHOD_NOT_FOUND\",\"error_description\":\"Method not found!\"}"
+            }
+          ]
+
+          _ = tid
+          %{anchor_task_num: 1, mid_chain: mid}
+        end,
+        expect: %{
+          kind: :chain,
+          max_turns: 4,
+          # Research is mandatory — at least one of these must appear.
+          includes_tools_any: ["web_fetch", "web_search"],
+          # No further mutation before research lands.
+          includes_tools_none: ["run_script"]
         }
       },
 

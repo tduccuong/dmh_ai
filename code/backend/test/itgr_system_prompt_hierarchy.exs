@@ -11,21 +11,10 @@ defmodule Itgr.SystemPromptHierarchy do
 
   alias Dmhai.Agent.SystemPrompt
 
-  # Extract heading depths (# count) in document order from a markdown string.
-  defp heading_depths(text) do
-    ~r/^(#+)\s/m
-    |> Regex.scan(text, capture: :all_but_first)
-    |> List.flatten()
-    |> Enum.map(&String.length/1)
-  end
-
-  # A hierarchy is coherent when no transition skips a level going DEEPER.
-  # Going shallower (any amount) is fine. h2→h3 ok, h2→h4 not ok, h4→h2 ok.
-  defp coherent?(depths) do
-    depths
-    |> Enum.chunk_every(2, 1, :discard)
-    |> Enum.all?(fn [a, b] -> b <= a + 1 end)
-  end
+  # The pre-v2.5 prompts used markdown headings; this file historically
+  # asserted heading-depth coherence. v2.5 switched both Assistant and
+  # Confidant to XML tags, so the heading helpers are gone — sections
+  # below assert tag presence + ordering instead.
 
   # ─── Assistant (v2.5 — XML-tag structure) ───────────────────────────────
   #
@@ -135,15 +124,45 @@ defmodule Itgr.SystemPromptHierarchy do
            "Recently-extracted check must appear BEFORE Gist-level branch"
   end
 
-  # ─── Confidant ────────────────────────────────────────────────────────────
+  # ─── Confidant (v2.5 — XML-tag structure mirroring Assistant) ──────────
 
-  test "confidant: heading hierarchy is coherent" do
+  @confidant_canonical_tags [
+    "system_purpose",
+    "voice",
+    "formatting",
+    "hard_constraints",
+    "language"
+  ]
+
+  test "confidant: canonical XML section openers are present and in order" do
     prompt = SystemPrompt.generate_confidant([])
-    assert coherent?(heading_depths(prompt))
+
+    indices =
+      Enum.map(@confidant_canonical_tags, fn tag ->
+        opener = "<#{tag}>\n"
+        idx = :binary.match(prompt, opener)
+        refute idx == :nomatch, "missing section opener: #{opener}"
+        elem(idx, 0)
+      end)
+
+    assert indices == Enum.sort(indices),
+           "tag order drifted: #{inspect(@confidant_canonical_tags)} → #{inspect(indices)}"
   end
 
-  test "confidant: extra sections (image/video/profile) don't break hierarchy" do
-    prompt =
+  test "confidant: every canonical section opener has a matching closer" do
+    prompt = SystemPrompt.generate_confidant([])
+
+    Enum.each(@confidant_canonical_tags, fn tag ->
+      assert String.contains?(prompt, "</#{tag}>"),
+             "section <#{tag}> has no closing </#{tag}>"
+    end)
+  end
+
+  test "confidant: extra sections (image/video/profile) append cleanly" do
+    base =
+      SystemPrompt.generate_confidant([])
+
+    enriched =
       SystemPrompt.generate_confidant(
         profile: "Bob",
         has_video: true,
@@ -151,6 +170,14 @@ defmodule Itgr.SystemPromptHierarchy do
         video_descriptions: [%{name: "b.mp4", description: "a demo"}]
       )
 
-    assert coherent?(heading_depths(prompt))
+    # Enrichment must not strip any canonical tag and must grow the
+    # prompt (image/video description rows + profile section append
+    # after the base body).
+    assert byte_size(enriched) > byte_size(base)
+
+    Enum.each(@confidant_canonical_tags, fn tag ->
+      assert String.contains?(enriched, "<#{tag}>\n"),
+             "enriched prompt lost section <#{tag}>"
+    end)
   end
 end

@@ -737,7 +737,14 @@ defmodule Dmhai.Agent.ContextEngine do
   defp build_core(session_data, images, files, web_context) do
     # Exclude archived messages (previous periodic-task cycles) — visible in FE
     # but not relevant to the LLM's context.
-    messages = (session_data["messages"] || []) |> Enum.reject(&(&1["_archived"] == true))
+    # Also exclude `kind: "command"` (user's `/wiki …` text) and
+    # `kind: "command_ack"` (runtime's synthetic ack) — the runtime
+    # handled them entirely; they're audit log, not conversation.
+    # See specs/commands.md.
+    messages =
+      (session_data["messages"] || [])
+      |> Enum.reject(&(&1["_archived"] == true))
+      |> Enum.reject(fn m -> m["kind"] in ["command", "command_ack"] end)
     ctx      = session_data["context"] || %{}
     summary  = ctx["summary"]
     cutoff   = ctx["summary_up_to_index"] || -1

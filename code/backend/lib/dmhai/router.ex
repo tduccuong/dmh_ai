@@ -7,6 +7,9 @@ defmodule Dmhai.Router do
   use Plug.Router
   import Plug.Conn
   alias Dmhai.AuthPlug
+  alias Dmhai.Handlers.AdminMcpCatalog
+  alias Dmhai.Handlers.AdminPools
+  alias Dmhai.Handlers.AdminSeeds
   alias Dmhai.Handlers.Auth
   alias Dmhai.Handlers.Data
   alias Dmhai.Handlers.Media
@@ -56,11 +59,6 @@ defmodule Dmhai.Router do
   get "/api/*glob" do
     sub = Enum.join(glob, "/")
     Proxy.get_local_api(conn, sub)
-  end
-
-  # GET /registry — no auth required
-  get "/registry" do
-    Proxy.get_registry(conn)
   end
 
   # GET /search — no auth required
@@ -137,6 +135,134 @@ defmodule Dmhai.Router do
   get "/admin/settings" do
     with {:ok, conn, user} <- check_auth(conn) do
       Proxy.get_admin_settings(conn, user)
+    end
+  end
+
+  get "/admin/pools" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      AdminPools.list(conn, user)
+    end
+  end
+
+  get "/admin/pools/models" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      AdminPools.list_models(conn, user)
+    end
+  end
+
+  post "/admin/pools" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      AdminPools.create(conn, user)
+    end
+  end
+
+  post "/admin/pools/probe" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      AdminPools.probe(conn, user)
+    end
+  end
+
+  put "/admin/pools/:id" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      AdminPools.update(conn, user, id)
+    end
+  end
+
+  delete "/admin/pools/:id" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      AdminPools.delete(conn, user, id)
+    end
+  end
+
+  post "/admin/pools/:id/accounts" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      AdminPools.add_account(conn, user, id)
+    end
+  end
+
+  delete "/admin/pools/:id/accounts/:account_name" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      AdminPools.remove_account(conn, user, id, account_name)
+    end
+  end
+
+  get "/admin/wiki-seeds" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      AdminSeeds.list(conn, user)
+    end
+  end
+
+  post "/admin/wiki-seeds" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      AdminSeeds.create(conn, user)
+    end
+  end
+
+  delete "/admin/wiki-seeds/:id" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      AdminSeeds.delete(conn, user, id)
+    end
+  end
+
+  post "/admin/wiki-seeds/:id/run" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      AdminSeeds.run_one(conn, user, id)
+    end
+  end
+
+  post "/admin/wiki-seeds/run-all" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      AdminSeeds.run_all(conn, user)
+    end
+  end
+
+  # ── MCP Catalog (specs/mcp.md §Phase E) ───────────────────────────────
+
+  get "/admin/mcp-catalog" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      AdminMcpCatalog.list(conn, user)
+    end
+  end
+
+  post "/admin/mcp-catalog" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      AdminMcpCatalog.create(conn, user)
+    end
+  end
+
+  put "/admin/mcp-catalog/:id" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      AdminMcpCatalog.update(conn, user, id)
+    end
+  end
+
+  delete "/admin/mcp-catalog/:id" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      AdminMcpCatalog.delete(conn, user, id)
+    end
+  end
+
+  post "/admin/mcp-catalog/:id/enable" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      AdminMcpCatalog.enable(conn, user, id)
+    end
+  end
+
+  post "/admin/mcp-catalog/:id/disable" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      AdminMcpCatalog.disable(conn, user, id)
+    end
+  end
+
+  post "/admin/mcp-catalog/import" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      AdminMcpCatalog.import_many(conn, user)
+    end
+  end
+
+  post "/admin/pools/import" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      AdminPools.import_many(conn, user)
     end
   end
 
@@ -340,13 +466,6 @@ defmodule Dmhai.Router do
   post "/assets" do
     with {:ok, conn, user} <- check_auth(conn) do
       Data.post_asset(conn, user)
-    end
-  end
-
-  post "/cloud-api/*glob" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      sub = Enum.join(glob, "/")
-      Proxy.post_cloud_api(conn, user, sub)
     end
   end
 
