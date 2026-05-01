@@ -540,3 +540,39 @@ function getModelDisplayName(model) {
     if (rec) return rec.label;
     return normalizeModelLabel(model);
 }
+
+// Redact passwords, keystore paths, and SSH key paths from a
+// progress-row label string. PURE UI VIEW — applied at render-time
+// only. The unredacted text remains in session_progress.label on the
+// BE (so `fetch_task` returns full fidelity to the LLM) and in
+// session.messages tool_call args.
+//
+// Patterns covered:
+//   - sshpass -p '<pwd>'      (single/double-quote/bare)
+//   - --password=<val>, --password <val>
+//   - SOMETHING_PASSWORD=, _PASSWD=, _TOKEN=, _SECRET=, _API_KEY=, _PWD= env-var assignments
+//   - /data/user_assets/<email>/_keystore/<…> paths
+//   - ~/.ssh/<file> and /.ssh/<file> heuristic
+//
+// Does NOT redact:
+//   - bare `-p <val>` (collides with port / preserve flags)
+//   - generic high-entropy strings (over-redacts UUIDs, hashes)
+//   - URL path tokens (out of scope for now)
+function redactProgressLabel(text) {
+    if (!text || typeof text !== 'string') return text;
+
+    return text
+        // sshpass -p 'pwd' / "pwd" / pwd
+        .replace(/(\bsshpass\s+-p\s*)(['"]?)([^\s'"]+)\2/g, '$1$2***$2')
+        // --password=val
+        .replace(/(--password)=(['"]?)([^\s'"]+)\2/g, '$1=$2***$2')
+        // --password val (separated by space)
+        .replace(/(--password\s+)(['"]?)([^\s'"]+)\2/g, '$1$2***$2')
+        // ENV-style secret assignments: anything ending PASSWORD/PASSWD/TOKEN/SECRET/API_KEY/PWD
+        .replace(/\b([A-Z][A-Z0-9_]*(?:PASSWORD|PASSWD|TOKEN|SECRET|API_KEY|PWD))=(['"]?)([^\s'"]+)\2/g,
+                 '$1=$2***$2')
+        // Keystore paths: /data/user_assets/<email>/_keystore/<...>
+        .replace(/\/data\/user_assets\/[^\s'"\/]+\/_keystore\/[^\s'"]+/g, '<keystore>')
+        // SSH key paths: ~/.ssh/<file> or /.ssh/<file>
+        .replace(/(\.ssh\/)([\w.-]+)/g, '$1<key>');
+}

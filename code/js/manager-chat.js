@@ -89,12 +89,16 @@ var _subLabelsInterval = null;
 // shape (see `Dmhai.Agent.ProgressLabel`), and the CSS on
 // `.progress-label` handles truncation from the right edge on narrow
 // viewports — the `content` part is where the ellipsis lands. We keep
-// the full raw text on `title=` so hover on desktop surfaces the
-// untruncated form, which is especially useful for long URLs in
-// WebFetch / SearXNG sub-labels.
+// the redacted text on `title=` too so the hover tooltip never reveals
+// secrets that the visible textContent hides.
+//
+// Redaction is FE-only — the BE persists the raw label so `fetch_task`
+// can return full-fidelity activity to the LLM. See `redactProgressLabel`
+// in core.js for the patterns.
 function writeProgressLabel(label, raw, _kind) {
-    label.textContent = raw;
-    label.title = raw;
+    var safe = redactProgressLabel(raw || '');
+    label.textContent = safe;
+    label.title = safe;
 }
 
 // Walk every pending tool row that carries sub_labels and refresh its
