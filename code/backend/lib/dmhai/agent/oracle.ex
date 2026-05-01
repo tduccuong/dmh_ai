@@ -25,10 +25,8 @@ defmodule Dmhai.Agent.Oracle do
   never blocks legitimate work.
 
   Also exposes `localize/2` — a small helper to express a runtime
-  ack template in the user's language. Used by `/memo` (rare error /
-  empty-result paths; the common save-success ack is folded into
-  `Dmhai.Commands.Memo.classify/1` to avoid an extra round-trip) and
-  by `/wiki` pipelines for their accepted/final acks.
+  ack template in the user's language. Used by `/memo` (success and
+  error acks) and by `/wiki` pipelines (accepted / final acks).
 
   Model role: `oracleModel` (configurable via AgentSettings; default
   ministral-3:14b-cloud — small, fast, cheap).

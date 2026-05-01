@@ -2767,7 +2767,7 @@ All calls go through `Dmhai.Agent.LLM`. Model strings: `<provider>::<pool>::<mod
 
 ```
 "ollama::local::llama3.2:3b"
-"ollama::cloud::gemini-3-flash-preview:cloud"
+"ollama::cloud::gemma4:31b-cloud"
 "openai::default::gpt-4o"
 "anthropic::default::claude-3-5-sonnet"
 ```
@@ -2778,14 +2778,14 @@ Models ending in `:cloud` / `-cloud` auto-route to cloud pool. Cloud keys manage
 
 | Role | Default |
 |------|---------|
-| Confidant | `gemini-3-flash-preview:cloud` |
+| Confidant | `gemma4:31b-cloud` |
 | Assistant (session loop) | `gpt-oss:120b-cloud` |
-| Context Compactor | `gemini-3-flash-preview:cloud` |
-| Progress Summariser (on-demand) | `gemini-3-flash-preview:cloud` |
+| Context Compactor | `gemma4:31b-cloud` |
+| Progress Summariser (on-demand) | `gemma4:31b-cloud` |
 | Web Search Detector | `ministral-3:14b-cloud` |
-| Image Describer | `gemini-3-flash-preview:cloud` |
-| Video Describer | `gemini-3-flash-preview:cloud` |
-| Profile Extractor | `gemini-3-flash-preview:cloud` |
+| Image Describer | `gemma4:31b-cloud` |
+| Video Describer | `gemma4:31b-cloud` |
+| Profile Extractor | `gemma4:31b-cloud` |
 
 ### Other Settings (admin-configurable)
 

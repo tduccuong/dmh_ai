@@ -152,20 +152,36 @@ defmodule Itgr.ConfidantFlow do
 
   # ─── Error paths ─────────────────────────────────────────────────────────
 
-  test "confidant: LLM stream error leaves no assistant message persisted" do
+  test "confidant: LLM stream error persists a localized error placeholder" do
+    # When the Confidant LLM hard-errors, the runtime appends a short
+    # localized apology so session.messages never ends with role=user
+    # (otherwise the chain hook's mode-blind fallback would loop
+    # forever — see git history for the bug). The placeholder is
+    # produced by Oracle.localize/2; the test stub for that call
+    # echoes its "Message to express:" payload back verbatim so we
+    # can assert on the template literal.
     user_id = uid(); sid = uid()
     insert_session(sid, user_id, "confidant",
       [%{"role" => "user", "content" => "hi"}])
 
-    T.stub_llm_call(fn _model, _msgs, _opts -> {:ok, "NO"} end)
+    # Default __llm_call_stub__ from the suite setup echoes localize's
+    # message-to-express verbatim (see setup/0 — the "translate a short
+    # runtime message" branch). We just need __llm_stream_stub__ to
+    # error and the stream collector to drain.
     T.stub_llm_stream(fn _model, _msgs, _reply_pid, _opts -> {:error, "upstream timeout"} end)
 
     :ok = UserAgent.dispatch_confidant(user_id, chat_cmd(sid, "hi"))
-    # Settle the async task
     Process.sleep(@settle_ms)
 
     msgs = session_messages(sid, user_id)
-    refute Enum.any?(msgs, fn m -> m["role"] == "assistant" end)
+    assistant_msgs = Enum.filter(msgs, fn m -> m["role"] == "assistant" end)
+
+    assert length(assistant_msgs) == 1,
+           "expected exactly one assistant placeholder, got #{length(assistant_msgs)}"
+
+    [%{"content" => content}] = assistant_msgs
+    assert content =~ "couldn't reach the model"
+
     assert session_stream_buffer(sid, user_id) == nil
   end
 

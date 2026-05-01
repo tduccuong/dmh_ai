@@ -19,8 +19,8 @@ defmodule Itgr.Pools do
   describe "parse/1" do
     test "splits on the first ::, model can carry colons" do
       assert {:ok, "miner", "qwen3-embedding:0.6b"} = Pools.parse("miner::qwen3-embedding:0.6b")
-      assert {:ok, "ollama-cloud", "gemini-3-flash-preview:cloud"} =
-               Pools.parse("ollama-cloud::gemini-3-flash-preview:cloud")
+      assert {:ok, "ollama-cloud", "gemma4:31b-cloud"} =
+               Pools.parse("ollama-cloud::gemma4:31b-cloud")
     end
 
     test "rejects strings without a separator" do

@@ -18,15 +18,15 @@ defmodule Dmhai.Agent.AgentSettings do
   # accounts; admin must add their cloud accounts via System Settings →
   # API Pools before these models can be used).
   @defaults %{
-    "confidantModel"         => "ollama-cloud::gemini-3-flash-preview:cloud",
+    "confidantModel"         => "ollama-cloud::gemma4:31b-cloud",
     "assistantModel"         => "ollama-cloud::gemma4:31b-cloud",
-    "compactorModel"         => "ollama-cloud::gemini-3-flash-preview:cloud",
-    "summarizerModel"        => "ollama-cloud::gemini-3-flash-preview:cloud",
+    "compactorModel"         => "ollama-cloud::gemma4:31b-cloud",
+    "summarizerModel"        => "ollama-cloud::gemma4:31b-cloud",
     "webSearchModel"         => "ollama-cloud::ministral-3:14b-cloud",
     "oracleModel"            => "ollama-cloud::ministral-3:14b-cloud",
-    "imageDescriberModel"    => "ollama-cloud::gemini-3-flash-preview:cloud",
-    "videoDescriberModel"    => "ollama-cloud::gemini-3-flash-preview:cloud",
-    "profileExtractorModel"  => "ollama-cloud::gemini-3-flash-preview:cloud",
+    "imageDescriberModel"    => "ollama-cloud::gemma4:31b-cloud",
+    "videoDescriberModel"    => "ollama-cloud::gemma4:31b-cloud",
+    "profileExtractorModel"  => "ollama-cloud::gemma4:31b-cloud",
     # Embedding model used by the vector KB pipeline (see specs/vector_kb.md).
     "kbEmbeddingModel"       => "miner::qwen3-embedding:0.6b"
   }
@@ -199,6 +199,14 @@ defmodule Dmhai.Agent.AgentSettings do
   @kb_score_threshold_default 0.55
   @kb_embedding_dim_default 1024
   @kb_embedding_batch_size_default 32
+
+  # Cap on memo hits attached to the `[memo context]` block in
+  # Confidant's auto-retrieve pre-step. The score threshold already
+  # filters out weak hits; this is a safety against a user whose
+  # memo store has many similar entries (e.g. twenty bank-related
+  # notes) so the prompt doesn't bloat. See specs/commands.md
+  # §Confidant memo auto-retrieve.
+  @memo_context_top_k_default 5
 
   # Inline-text /wiki semantic-merge gate — a new body whose centroid
   # is at-or-above this cosine score against an existing source merges
@@ -483,6 +491,16 @@ defmodule Dmhai.Agent.AgentSettings do
   """
   @spec kb_score_threshold() :: float()
   def kb_score_threshold, do: float_setting("kbScoreThreshold", @kb_score_threshold_default)
+
+  @doc """
+  Cap on memo hits included in the `[memo context]` block injected
+  into Confidant prompts (auto-retrieve pre-step). The score
+  threshold already drops weak hits; this is a safety against
+  many-similar-entry memo stores bloating the prompt.
+  """
+  @spec memo_context_top_k() :: pos_integer()
+  def memo_context_top_k,
+    do: int_setting("memoContextTopK", @memo_context_top_k_default)
 
   @doc "MMR candidate pool size — how many top-cosine hits get considered before MMR-picking the final `kb_top_n`."
   @spec kb_mmr_pool_size() :: pos_integer()

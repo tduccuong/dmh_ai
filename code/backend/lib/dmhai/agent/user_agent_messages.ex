@@ -83,59 +83,6 @@ defmodule Dmhai.Agent.UserAgentMessages do
   end
 
   @doc """
-  Update the `kind` tag of an existing message identified by `ts`.
-  Pass `nil` for `kind` to remove the key entirely; pass a string to
-  set/overwrite it. Used by the `/memo` async path: messages are
-  persisted with `kind="command"` synchronously (safe default — they
-  stay out of the LLM context if the background task crashes), then
-  the kind is stripped after Oracle classifies the input as QUERY so
-  the legitimate Q&A pair flows into the next assistant turn.
-
-  Returns `:ok` on success, `{:error, reason}` if the session or
-  message can't be found.
-  """
-  @spec update_kind(String.t(), String.t(), integer(), String.t() | nil) ::
-          :ok | {:error, term()}
-  def update_kind(session_id, user_id, ts, kind)
-      when is_integer(ts) and (is_binary(kind) or is_nil(kind)) do
-    try do
-      result = query!(Repo, "SELECT messages FROM sessions WHERE id=? AND user_id=?",
-                      [session_id, user_id])
-
-      case result.rows do
-        [[msgs_json]] ->
-          msgs = Jason.decode!(msgs_json || "[]")
-
-          {updated, hit?} =
-            Enum.map_reduce(msgs, false, fn m, acc ->
-              if m["ts"] == ts do
-                new_msg = if is_nil(kind), do: Map.delete(m, "kind"), else: Map.put(m, "kind", kind)
-                {new_msg, true}
-              else
-                {m, acc}
-              end
-            end)
-
-          if hit? do
-            now = System.os_time(:millisecond)
-            query!(Repo, "UPDATE sessions SET messages=?, updated_at=? WHERE id=?",
-                   [Jason.encode!(updated), now, session_id])
-            :ok
-          else
-            {:error, :message_not_found}
-          end
-
-        _ ->
-          {:error, :session_not_found}
-      end
-    rescue
-      e ->
-        Logger.error("[UserAgentMessages] update_kind failed: #{Exception.message(e)}")
-        {:error, :exception}
-    end
-  end
-
-  @doc """
   Return user-role messages in `session.messages` whose `ts` is strictly
   greater than `after_ts`. Used by `session_turn_loop` to splice newly-
   arrived user messages into the live chain's LLM context on the next

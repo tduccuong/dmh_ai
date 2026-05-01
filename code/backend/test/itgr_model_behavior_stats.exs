@@ -104,7 +104,7 @@ defmodule Itgr.ModelBehaviorStats do
     set_telemetry(true)
 
     role = "assistant"
-    model = "ollama-cloud::gemini-3-flash-preview:cloud-test-#{T.uid()}"
+    model = "ollama-cloud::gemma4:31b-cloud-test-#{T.uid()}"
 
     :ok = ModelBehaviorStats.record(role, model, "tool_call_schema", "create_task")
     :ok = ModelBehaviorStats.record(role, model, "task_discipline",  "create_task")

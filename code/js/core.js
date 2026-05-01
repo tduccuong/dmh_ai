@@ -505,7 +505,7 @@ const AppConfig = {
 
 function getRecommendedCloudModels() {
     return [
-        { name: 'gemini-3-flash-preview:cloud',   label: t('recWordsmith') },
+        { name: 'gemma4:31b-cloud',               label: t('recWordsmith') },
         { name: 'ministral-3:14b-cloud',          label: t('recQuickAnswer') },
         { name: 'qwen3.5:cloud',                  label: t('recDeepThinker') },
     ];

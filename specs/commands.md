@@ -6,10 +6,13 @@ Two prefixes the runtime detects on user messages, **fully runtime-handled** —
 
 - `/wiki <text | url | file_path | folder_path>` — write-only.
   Runtime runs the ingest pipeline against the **global wiki** and emits a synthetic ack.
-- `/memo <input>` — read OR write against the user's **per-user memo store**.
-  Runtime Oracle-classifies the argument as SAVE or QUERY, then routes:
-  - SAVE  → vector-ingest the text; ack as a synthetic assistant message.
-  - QUERY → fetch hits, dispatch Oracle to compile a natural-language answer; surface as a regular assistant message that **does** flow into the next LLM turn's context.
+- `/memo <content>` — write-only against the user's **per-user memo store**.
+  Runtime vector-ingests the content; emits a localized synthetic ack.
+
+Both slash commands are **verbs that store**. Querying / retrieving stored content is conversational — the user just asks naturally, and the model retrieves:
+
+- **Assistant**: `fetch_memo` is in the LLM tool catalog. The assistant calls it on its own when a question matches stored memo content.
+- **Confidant**: no tool loop. Retrieval runs as an automatic pre-step before the LLM call — see `## Confidant memo auto-retrieve` below.
 
 Storage and retrieval are owned by `specs/vector_kb.md`. Pool resolution for the embedding/Oracle models is owned by `specs/api_pools.md`.
 
@@ -19,9 +22,9 @@ Storage and retrieval are owned by `specs/vector_kb.md`. Pool resolution for the
 - Slash-command parser at the chat HTTP entry.
 - Source pipelines for `/wiki`: text inline, file, URL crawl, folder scan.
 - Sync-ack flow for light sources; async background flow for heavy ones.
-- Oracle classifier on every `/memo` invocation (SAVE vs QUERY).
+- `/memo` save pipeline: vector-ingest + localized ack via `Oracle.localize/2`.
 - `kind` column on persisted messages + `ContextEngine` filtering.
-- Failure UX (extraction error, broken URL, permission denied folder, classify timeout).
+- Failure UX (extraction error, broken URL, permission denied folder).
 
 **Out of scope:**
 - Authenticated URL crawls (Confluence behind SSO etc.) — v2.
@@ -32,7 +35,7 @@ Storage and retrieval are owned by `specs/vector_kb.md`. Pool resolution for the
 
 ## Command parser
 
-Triggered in `Dmhai.Handlers.AgentChat.handle_assistant_chat/4` (`handlers/agent_chat.ex:140`) — after attachment-path rewriting, before `UserAgentMessages.append/2`.
+Triggered in BOTH `Dmhai.Handlers.AgentChat.handle_assistant_chat/4` AND `handle_confidant_chat/4` — after the entry-point bookkeeping, before persistence + dispatch to the user-agent loop. The runtime command itself (`Commands.Memo.run/4`, the `/wiki` pipelines) is mode-agnostic — only the handler-level intercept needs to live in both routes.
 
 ```elixir
 case Dmhai.Commands.dispatch(stored_content, session_id, user.id) do
@@ -51,11 +54,11 @@ Parse rules (`Dmhai.Commands.Parser.parse/1`):
 - Empty `<arg>` → handled by the runtime: a usage-hint command_ack, no LLM round-trip.
 - A leading `/` followed by anything else (`/foo`, `/help`) → treat as a regular message and continue down the agent path. We don't reserve `/` globally.
 
-## /memo — the smart command
+## /memo — write-only save
 
-`Dmhai.Commands.Memo.run/4` is the single entry point. **The classify + ingest/fetch/digest chain runs asynchronously** under `Dmhai.Agent.TaskSupervisor`. The HTTP request thread persists the user message synchronously (so `user_ts` can return for FE optimistic-render dedup) and returns immediately; the ack or answer lands later via the existing `/poll` channel. This avoids a 2–5 s blocking request whenever Oracle is in the loop.
+`Dmhai.Commands.Memo.run/4` is the single entry point. **Vector ingest + localize-ack runs asynchronously** under `Dmhai.Agent.TaskSupervisor`. The HTTP request thread persists the user message synchronously (so `user_ts` can return for FE optimistic-render dedup) and returns immediately; the ack lands later via the existing `/poll` channel. This avoids a 1–3 s blocking request while embedding + Oracle.localize run.
 
-Safety default: the user message is always persisted with `kind="command"` first. If the background task crashes mid-classify, the worst case is a "stuck" command-tagged message in scrollback — never an unanswered query message in the LLM's context. After classify succeeds, the QUERY branch strips the kind tag via `UserAgentMessages.update_kind/4` so the legitimate Q&A pair flows into the next assistant turn.
+Safety default: the user message is always persisted with `kind="command"`. If the background task crashes mid-ingest, the worst case is a "stuck" command-tagged message in scrollback — never an unanswered message in the LLM's context.
 
 ```elixir
 def run(arg, original_content, session_id, user_id) do
@@ -63,40 +66,55 @@ def run(arg, original_content, session_id, user_id) do
 
   if arg == "" do
     Commands.append_command_pair(session_id, user_id, original_content,
-      "Usage: `/memo <fact to save | question to look up>`")
+      "Usage: `/memo <content to save>`")
   else
-    case classify(arg) do
-      :query -> run_query(arg, original_content, session_id, user_id)
-      _      -> run_save(arg, original_content, session_id, user_id)
-    end
+    {:ok, user_ts} = persist_user_command(session_id, user_id, original_content)
+
+    Task.Supervisor.start_child(Dmhai.Agent.TaskSupervisor, fn ->
+      run_save(arg, session_id, user_id)
+    end)
+
+    {:handled, user_ts}
   end
 end
 ```
 
-### Oracle classifier
+No classifier — every `/memo <X>` saves `X` verbatim. Querying happens conversationally:
 
-`Memo.classify/1` runs a single Oracle round-trip and returns `{:save, save_ack} | {:query, nil}`. The Oracle prompt asks for a two-line output for SAVE (verdict + a localized one-sentence acknowledgement in the user's language) and a one-line output for QUERY. Folding the localized save-success ack into the classify call means the **save common path costs ONE Oracle round-trip total**, not two.
+- **Assistant**: model calls `fetch_memo` from its tool catalog when a question matches stored memo content. No `/memo` prefix needed for lookups.
+- **Confidant**: an automatic memo-retrieval pre-step attaches matching memos as a `[memo context]` block before each turn (see `## Confidant memo auto-retrieve` below). No `/memo` prefix needed for lookups.
 
-| Input | Verdict | Line 2 |
+Trade-off: a user typing `/memo what is my bank?` will literally save the question string as a memo. The slash command is a *verb*, not a *mode*.
+
+### Save path
+
+```elixir
+defp run_save(text, session_id, user_id) do
+  attrs = %{scope: :memo, user_id: user_id, source_kind: "text",
+            source_ref: sha256(text), title: nil}
+
+  ack = case VectorDB.ingest(attrs, text) do
+    {:ok, _info}     -> Oracle.localize("Saved.", text)
+    {:error, reason} -> Oracle.localize("Couldn't save: #{inspect(reason)}", text)
+  end
+
+  Commands.append_command_ack(session_id, user_id, ack)
+end
+```
+
+Persisted messages (both filtered from LLM context):
+
+| Role | Content | kind |
 |---|---|---|
-| "my bank is NorthWest Trust"      | SAVE  | `Saved.`             |
-| "ngân hàng của tôi là Vietcombank" | SAVE  | `Đã lưu.`            |
-| "I prefer green tea"              | SAVE  | `Saved.`             |
-| "what's my bank?"                 | QUERY | (none)              |
-| "ngân hàng của tôi là gì?"        | QUERY | (none)              |
-| "do I have any notes about Q3?"   | QUERY | (none)              |
+| user      | `/memo my bank is NorthWest Trust` | `command`     |
+| assistant | `Saved.` (or `Đã lưu.` if user wrote in VN) | `command_ack` |
 
-Verdict parsing is forgiving — first uppercase token of line 1, after a `\W+` split. Line 2 is taken verbatim (with wrapping quotes stripped). Any error / unparseable verdict → `{:save, "Saved."}` (conservative fallback: keep the input, default English ack).
+### Localizing acks via `Oracle.localize/2`
 
-Model: `oracleModel` (configurable in `AgentSettings`; default `ministral-3:14b-cloud` — small, fast, cheap).
+`Dmhai.Agent.Oracle.localize/2` is a generic helper that takes a meaning + a user-input language signal and returns the meaning expressed in the user's language (or English on weak/unclear signal). Used by:
 
-### Localizing the rare-path acks
-
-The classify call covers save success. The remaining ack sites pay one extra Oracle round-trip via `Dmhai.Agent.Oracle.localize/2` — a generic helper that takes a meaning + a user-input language signal and returns the meaning expressed in the user's language (or English on weak/unclear signal):
-
-- `/memo` save **error** path — localizes `"Couldn't save: <reason>"` against the input text.
-- `/memo` query **empty hits** — localizes `"I don't have any saved memo matching <q>"` against the query.
-- `/memo` query **infra error** — localizes `"Couldn't search memos: <reason>"` against the query.
+- `/memo` save success — localizes `"Saved."` against the input text.
+- `/memo` save error path — localizes `"Couldn't save: <reason>"` against the input text.
 - `/memo` empty arg → uses English usage hint verbatim (no input → no language signal).
 - `/wiki` text pipeline — localizes `WikiAck.final_ack/1` against the body.
 - `/wiki` file pipeline — localizes against the extracted body.
@@ -106,63 +124,100 @@ The classify call covers save success. The remaining ack sites pay one extra Ora
 
 Localize is soft-failing: any Oracle error returns the input message verbatim, so a flaky classifier never strands the user with no ack.
 
-### Save path
+## Confidant memo auto-retrieve
 
-```elixir
-defp run_save(text, original_content, session_id, user_id) do
-  attrs = %{scope: :memo, user_id: user_id, source_kind: "text",
-            source_ref: sha256(text), title: nil}
+Confidant runs no tools, so the model can't call `fetch_memo` on its own. To make memos work for natural-language follow-ups in Confidant ("what is John's birthday?", "and his email?"), the runtime auto-retrieves relevant memos as a pre-step before every Confidant LLM call and attaches them as a `[memo context]` block in the prompt. Assistant does NOT auto-retrieve — it relies on the model's own decision to call `fetch_memo`.
 
-  ack = case VectorDB.ingest(attrs, text) do
-    {:ok, _info}     -> "Saved."
-    {:error, reason} -> "Couldn't save: #{inspect(reason)}"
-  end
+### Pipeline
 
-  Commands.append_command_pair(session_id, user_id, original_content, ack)
-end
+```
+user msg arrives
+   ↓
+embed_text = concat(prior_user_turns[-2..], current_msg)
+   ↓
+Embedder.embed(embed_text)
+   ↓
+VectorDB.search(:memo, embed_text, vec, top_k, {:user, user_id})
+   ↓
+filter score ≥ kb_score_threshold; cap at memo_context_top_k
+   ├─ zero hits        → EMPTY-state [memo context] block (telling the
+   │                     model "we checked, nothing relevant — answer
+   │                     honestly if it's a personal-fact question")
+   └─ ≥1 hits          → POPULATED [memo context] block (bulleted hits
+                         + language rule)
+   ↓
+ContextEngine.build_confidant_messages(memo_context: block)
+   ↓
+Confidant LLM
 ```
 
-Persisted messages (both filtered from LLM context):
+The block is **always attached** when retrieval ran successfully (regardless of hit count). Only an embed/search RPC failure suppresses the block entirely (graceful degradation). This is what makes Confidant honest: when no memo matches the question, the model receives an explicit "we searched and found nothing" signal and tells the user truthfully, instead of falling back to hallucinated general knowledge framed as personal fact.
 
-| Role | Content | kind |
-|---|---|---|
-| user      | `/memo my bank is NorthWest Trust` | `command`     |
-| assistant | `Saved.`                            | `command_ack` |
+### Block format — two states
 
-### Query path
+**Found state:**
 
-```elixir
-defp run_query(q, original_content, session_id, user_id) do
-  case fetch_hits(q, user_id) do
-    {:ok, []} ->
-      persist_query_pair(session_id, user_id, original_content,
-        "I don't have any saved memo matching `#{q}`.")
+```
+[memo context]
+The user previously saved these personal notes. Use any that are relevant to the question; ignore the rest. The notes may be in a different language than the user's question — translate any facts you cite. Reply in the user's question language, NOT the notes' language.
 
-    {:ok, hits} ->
-      answer = compile_answer(q, hits)   # one Oracle round-trip
-      persist_query_pair(session_id, user_id, original_content, answer)
-
-    {:error, reason} ->
-      # Search infra failure — falls back to a kind-tagged ack so
-      # the apology doesn't pollute LLM context.
-      Commands.append_command_pair(session_id, user_id, original_content,
-        "Couldn't search memos: #{inspect(reason)}")
-  end
-end
+- <chunk_text>
+- <chunk_text>
+[/memo context]
 ```
 
-Persisted messages (both **kept in** LLM context — no `kind` tag):
+**Empty state:**
 
-| Role | Content |
+```
+[memo context]
+We checked the user's saved memos for this question. Nothing relevant found.
+
+How to use this signal:
+- IF the user's message itself references their memo store (e.g. words like "memo", "saved", phrases like "search memo …", "find in memo …", "look up memo …", "do I have a memo on …", "memo about …", "memo contains …"): you MUST tell the user honestly that no saved memo matches their question. Do NOT substitute general knowledge, do NOT invent.
+- OTHERWISE (the user is asking a normal question or chatting and never mentioned the memo store): ignore this block entirely and answer per your usual system-prompt instructions.
+[/memo context]
+```
+
+The empty-state wording is **anchored on a lexical trigger in the user's input**, not on the model classifying whether the question is personal-fact-flavored. This avoids the gate problem `Oracle.memo_keywords` had — the model only changes behavior when the user explicitly invoked memo, which is unambiguous from the message text.
+
+The retrieval and `WebSearchEngine.search` run in parallel (`Task.async`) so total pre-step latency is `max(t_memo, t_websearch)` rather than the sum.
+
+### Why no LLM gate
+
+An earlier design used an Oracle classifier (`memo_keywords/2`) to decide whether to retrieve at all, with the goal of skipping embed+search on chitchat. In practice the gate failed in the **cross-session case**: a question like "who eats chicken?" in a fresh session got classified `NONE` because Oracle's only signal is the user's text + recent same-session turns — it has no view of what's actually saved in the memo store. The user's answer ("my wife eats chicken") was sitting in the memo store, but a fresh session never retrieved it.
+
+The fix is to remove the gate and **always** embed + search. The score threshold (`kb_score_threshold`, default 0.55) is the real filter; chitchat embeddings score low against personal-fact memos and get dropped naturally. Cost analysis:
+
+| Step | Latency |
 |---|---|
-| user      | `/memo what is my bank?`                        |
-| assistant | `Your bank is NorthWest Trust.` (Oracle digest) |
+| Embed (qwen3-0.6b) | ~30 ms |
+| `VectorDB.search` | ~10 ms |
+| Total per turn | ~40 ms |
+| Old Oracle gate per turn | 250–500 ms |
 
-The query path exposes the Q&A pair to the next assistant turn so the LLM:
-- knows the user already asked about the memo and got an answer,
-- can answer follow-ups ("can you elaborate?") from context without re-fetching.
+The simpler design is also faster on average. Pronoun resolution falls out implicitly because the embed input concatenates the last 1–2 prior user turns with the current message — embedding co-occurrence carries over, no rewrite step needed.
 
-The Oracle digest is one round-trip with a system prompt asking for *one short natural answer*, plain text, in the user's language. On Oracle failure: fallback to a templated chunk listing — at least the user gets something instead of silence.
+### Persistence and prompt wrapping
+
+The block is **prepended to the current user message** at build time (mirrors how `[web context]` is wrapped today in `build_current_msg/4`). The wrap is build-time only — `session.messages` stores the user message as the user typed it, with no wrap. Each turn rebuilds fresh against a fresh embed + search; **no accumulation**.
+
+The language rule in the FOUND-state preamble is load-bearing: vec0 cosine retrieval is multilingual via `qwen3-embedding`, so a Vietnamese question can hit an English memo. Without the rule, weak Confidant models echo the memo's language back to the user instead of translating.
+
+### Settings
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `memo_context_top_k`  | `5` | Max hits attached to the `[memo context]` block per turn. |
+| `kb_score_threshold`  | `0.55` | Existing — drops weak hits before ranking. Shared with `fetch_memo` and the Assistant retrieval pipeline. |
+
+### Persistence invariant
+
+The `[memo context]` block lives ONLY in the in-flight prompt sent to the Confidant LLM. It is NEVER:
+- written to `session.messages`,
+- echoed back to the FE,
+- visible to the next turn's history scan.
+
+This is what makes the "fresh each turn, never accumulates" property hold. The pattern is identical to how `web_context` and `profile` work today.
 
 ## /wiki — write-only ingest
 
@@ -209,9 +264,9 @@ Async ack — `WikiAck.accepted_ack/1` — initial:
 
 | Kind | Role | Meaning | In LLM context? |
 |---|---|---|---|
-| (absent)            | user / assistant | Regular chat (incl. **/memo query path**). | yes |
-| `command`           | user             | The original `/wiki …` text or **/memo save** text. | **no** |
-| `command_ack`       | assistant        | Runtime-synthesised ack for `/wiki` and `/memo` save path. | **no** |
+| (absent)            | user / assistant | Regular chat. | yes |
+| `command`           | user             | The original `/wiki …` or `/memo …` text. | **no** |
+| `command_ack`       | assistant        | Runtime-synthesised ack for `/wiki` and `/memo`. | **no** |
 | `service_connected` | user             | (existing) MCP attach receipt. | no (already filtered) |
 | `form_response`     | user             | (existing) request_input synthesis. | yes (already passed through) |
 

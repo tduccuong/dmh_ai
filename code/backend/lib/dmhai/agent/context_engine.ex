@@ -63,6 +63,10 @@ defmodule Dmhai.Agent.ContextEngine do
     - `:image_descriptions` — list of %{name, description} from the image_descriptions table
     - `:video_descriptions` — list of %{name, description} from the video_descriptions table
     - `:web_context`        — formatted web search results
+    - `:memo_context`       — formatted `[memo context]` block (Format 2);
+                              prepended to the current user message at build
+                              time, NEVER persisted to session.messages.
+                              See specs/commands.md §Confidant memo auto-retrieve.
   """
   @spec build_confidant_messages(map(), keyword()) :: [map()]
   def build_confidant_messages(session_data, opts \\ []) do
@@ -73,6 +77,7 @@ defmodule Dmhai.Agent.ContextEngine do
     image_descriptions = Keyword.get(opts, :image_descriptions, [])
     video_descriptions = Keyword.get(opts, :video_descriptions, [])
     web_context        = Keyword.get(opts, :web_context)
+    memo_context       = Keyword.get(opts, :memo_context)
 
     system_msg = %{role: "system",
                    content: SystemPrompt.generate_confidant(
@@ -83,7 +88,7 @@ defmodule Dmhai.Agent.ContextEngine do
                    )}
 
     {prefix, history_llm, relevant_msgs, last_msgs} =
-      build_core(session_data, images, files, web_context)
+      build_core(session_data, images, files, web_context, memo_context)
 
     [system_msg] ++ prefix ++ history_llm ++ relevant_msgs ++ last_msgs
   end
@@ -114,7 +119,7 @@ defmodule Dmhai.Agent.ContextEngine do
                    content: SystemPrompt.generate_assistant(profile: profile)}
 
     {prefix, history_llm, relevant_msgs, last_msgs} =
-      build_core(session_data, [], files, nil)
+      build_core(session_data, [], files, nil, nil)
 
     # Re-inject the last N turns' tool_call / tool_result messages right
     # before their matching final-assistant text in history. Lets the
@@ -733,8 +738,9 @@ defmodule Dmhai.Agent.ContextEngine do
 
   # Shared message assembly used by both pipelines:
   # summary prefix + history + keyword snippets + current message.
-  # web_context is nil for the Assistant path (no inline web search in master).
-  defp build_core(session_data, images, files, web_context) do
+  # `web_context` and `memo_context` are nil for the Assistant path
+  # (no inline web search, no auto-retrieve memo).
+  defp build_core(session_data, images, files, web_context, memo_context) do
     # Exclude archived messages (previous periodic-task cycles) — visible in FE
     # but not relevant to the LLM's context.
     # Also exclude `kind: "command"` (user's `/wiki …` text) and
@@ -770,11 +776,11 @@ defmodule Dmhai.Agent.ContextEngine do
       end
 
     # Split recent history so we can inject relevant snippets just before the
-    # last (current) user message. Web context is merged INTO the last user
-    # message (replacing it).
+    # last (current) user message. Web context and memo context are merged
+    # INTO the last user message (replacing it).
     {history, last_msgs} =
       case Enum.split(recent, -1) do
-        {h, [last]} -> {h, [build_current_msg(last, images, files, web_context)]}
+        {h, [last]} -> {h, [build_current_msg(last, images, files, web_context, memo_context)]}
         {h, []}     -> {h, []}
       end
 
@@ -784,11 +790,15 @@ defmodule Dmhai.Agent.ContextEngine do
   end
 
   # Build the last (current) user message, injecting images, file content,
-  # and optionally web search results.
-  # When web_context is present, the message is replaced with the original
-  # frontend framing format:
+  # web search results, and the memo auto-retrieve block.
+  # When web_context is present, the message body is replaced with the
+  # frontend-style framing:
   #   "User request: ...\n\nWeb search results (retrieved DATE):\n...\n\nUsing the..."
-  defp build_current_msg(msg, images, files, web_context) do
+  # When memo_context is present, the Format-2 `[memo context]` block is
+  # PREPENDED to whatever body resulted (web-framed or plain). Build-time
+  # only — never persisted; see specs/commands.md §Confidant memo
+  # auto-retrieve.
+  defp build_current_msg(msg, images, files, web_context, memo_context) do
     base = msg["content"] || msg[:content] || ""
 
     file_block =
@@ -796,7 +806,7 @@ defmodule Dmhai.Agent.ContextEngine do
         "[File: #{f["name"]}]\n```\n#{f["content"]}\n```"
       end)
 
-    content =
+    body =
       if is_binary(web_context) and web_context != "" do
         today = Date.to_string(Date.utc_today())
 
@@ -814,6 +824,13 @@ defmodule Dmhai.Agent.ContextEngine do
         [base, file_block]
         |> Enum.reject(&(&1 == ""))
         |> Enum.join("\n\n")
+      end
+
+    content =
+      if is_binary(memo_context) and memo_context != "" do
+        memo_context <> "\n\n" <> body
+      else
+        body
       end
 
     llm_msg = %{role: "user", content: content}

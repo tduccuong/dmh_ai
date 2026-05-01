@@ -24,8 +24,9 @@ defmodule Itgr.Commands do
 
     # Default LLM stub for the suite — branches on the system prompt
     # so the wiki/memo paths exercising Oracle don't hit the network.
-    # Individual tests override `__llm_call_stub__` for stricter
-    # assertions (e.g. forcing QUERY classification).
+    # The only Oracle entry these tests touch is `localize/2`; the
+    # stub echoes the "Message to express:" payload verbatim so the
+    # runtime path proceeds without a real translation call.
     Application.put_env(:dmhai, :__llm_call_stub__, fn _model, msgs, _opts ->
       sys =
         case Enum.find(msgs, fn m -> Map.get(m, :role) == "system" end) do
@@ -34,10 +35,7 @@ defmodule Itgr.Commands do
         end
 
       cond do
-        String.contains?(sys, "translate or rephrase") ->
-          # localize call — echo the message-to-express verbatim. The
-          # stub doesn't actually translate; it just lets the call
-          # complete so the runtime path proceeds.
+        String.contains?(sys, "translate a short runtime message") ->
           user =
             case Enum.find(msgs, fn m -> Map.get(m, :role) == "user" end) do
               %{content: c} -> c
@@ -51,14 +49,6 @@ defmodule Itgr.Commands do
             end
 
           {:ok, msg}
-
-        String.contains?(sys, "classify a one-line user input") ->
-          # classify call — default to SAVE with a canned ack. Tests
-          # that want QUERY override this stub.
-          {:ok, "SAVE\nSaved."}
-
-        String.contains?(sys, "saved memos") ->
-          {:ok, "stubbed digest answer"}
 
         true ->
           {:ok, ""}
@@ -158,88 +148,44 @@ defmodule Itgr.Commands do
       assert Jason.decode!(messages_json) == []
     end
 
-    test "/memo (save path) — async; kind tags filter from LLM context, ack uses Oracle's localized line",
+    test "/memo (save) — async; user msg + localized ack both kind-tagged",
          %{sid: sid, uid: uid} do
-      # Classify replies with SAVE + a localized ack on line 2.
-      # The dispatch returns immediately after persisting the user
-      # message; the ack lands when the background Task completes.
-      Application.put_env(:dmhai, :__llm_call_stub__, fn _model, _msgs, _opts ->
-        {:ok, "SAVE\nĐã lưu vào bộ nhớ."}
-      end)
+      # Default suite stub echoes the localize "Message to express"
+      # payload verbatim, so the ack lands as the templated "Saved."
+      # without a real translation call. user_ts returns synchronously;
+      # the ack appears once the background Task.Supervisor child
+      # finishes the ingest + localize.
+      assert {:handled, user_ts} =
+               Commands.dispatch("/memo ngân hàng của tôi là Vietcombank", sid, uid)
 
-      assert {:handled, user_ts} = Commands.dispatch("/memo ngân hàng của tôi là Vietcombank", sid, uid)
-
-      # User message persisted synchronously (so user_ts can return);
-      # ack lands asynchronously — poll until the count hits 2.
       msgs = wait_for_message_count(sid, 2)
       [user_msg, ack_msg] = msgs
 
-      assert user_msg["kind"] == "command"
-      assert user_msg["ts"]   == user_ts
-      assert ack_msg["kind"]  == "command_ack"
-      assert ack_msg["content"] == "Đã lưu vào bộ nhớ."
+      assert user_msg["kind"]    == "command"
+      assert user_msg["role"]    == "user"
+      assert user_msg["ts"]      == user_ts
+      assert user_msg["content"] == "/memo ngân hàng của tôi là Vietcombank"
+
+      assert ack_msg["kind"]    == "command_ack"
+      assert ack_msg["role"]    == "assistant"
+      assert ack_msg["content"] == "Saved."
     end
 
-    test "/memo (query path) — async; user msg has kind stripped, answer persisted plainly",
+    test "/memo (save) — question-shaped input is stored verbatim, no classifier branch",
          %{sid: sid, uid: uid} do
-      # Branching stub: classify call → return SAVE for the seed,
-      # QUERY for the lookup. Digest → composed answer. All other
-      # calls fall back to "" so a misroute fails loudly.
-      Application.put_env(:dmhai, :__llm_call_stub__, fn _model, msgs, _opts ->
-        sys =
-          case Enum.find(msgs, fn m -> Map.get(m, :role) == "system" end) do
-            %{content: c} -> c
-            _             -> ""
-          end
+      # Confirms the new semantics: `/memo` is always a save command.
+      # An input that looks like a question gets stored as-is — there
+      # is no classify-then-route. Querying happens via fetch_memo
+      # (Assistant) or the auto-retrieve pre-step (#186, Confidant).
+      assert {:handled, _} = Commands.dispatch("/memo what is my bank?", sid, uid)
 
-        user_msg =
-          case Enum.find(msgs, fn m -> Map.get(m, :role) == "user" end) do
-            %{content: c} -> c
-            _             -> ""
-          end
+      msgs = wait_for_message_count(sid, 2)
+      [user_msg, ack_msg] = msgs
 
-        cond do
-          String.contains?(sys, "classify a one-line user input") ->
-            # Distinguish save seed from query: presence of "?" or
-            # interrogative cue → QUERY; otherwise SAVE.
-            if String.contains?(user_msg, "?") or String.starts_with?(String.downcase(user_msg), "what") do
-              {:ok, "QUERY"}
-            else
-              {:ok, "SAVE\nSaved."}
-            end
-
-          String.contains?(sys, "saved memos") ->
-            {:ok, "Your X is 42."}
-
-          true ->
-            {:ok, ""}
-        end
-      end)
-
-      # Seed: classify → SAVE → ingest → ack. Wait for the pair.
-      assert {:handled, _seed_user_ts} = Commands.dispatch("/memo my X is 42", sid, uid)
-      _ = wait_for_message_count(sid, 2)
-
-      # Query: classify → QUERY → fetch → digest → answer. Wait
-      # until both new messages have landed (4 total).
-      assert {:handled, query_user_ts} = Commands.dispatch("/memo what is my X?", sid, uid)
-      msgs = wait_for_message_count(sid, 4)
-
-      # Save path: 2 kind-tagged messages.
-      [save_user, save_ack | rest] = msgs
-      assert save_user["kind"] == "command"
-      assert save_ack["kind"]  == "command_ack"
-
-      # Query path: 2 plain messages, NO kind tag — they belong in
-      # the next turn's LLM context. The user-message kind was
-      # stripped in `do_async/4` after classify returned QUERY.
-      [query_user, query_answer] = rest
-      refute Map.has_key?(query_user, "kind")
-      refute Map.has_key?(query_answer, "kind")
-      assert query_user["ts"]       == query_user_ts
-      assert query_user["role"]     == "user"
-      assert query_answer["role"]   == "assistant"
-      assert query_answer["content"] =~ "42"
+      # Both messages are kind-tagged — neither flows into LLM context.
+      assert user_msg["kind"] == "command"
+      assert ack_msg["kind"]  == "command_ack"
+      assert ack_msg["content"] == "Saved."
     end
 
     test "empty /wiki arg returns usage hint", %{sid: sid, uid: uid} do

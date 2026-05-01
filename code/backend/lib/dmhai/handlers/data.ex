@@ -10,7 +10,7 @@ defmodule Dmhai.Handlers.Data do
   require Logger
 
   # Dedicated model for session naming; fast, cheap, 1M context.
-  @namer_model "ollama-cloud::gemini-3-flash-preview:cloud"
+  @namer_model "ollama-cloud::gemma4:31b-cloud"
 
   @image_exts ~w(.png .jpg .jpeg .gif .webp .bmp)
   @video_exts ~w(.mp4 .webm .mov .avi .mkv .m4v .3gp .ogv)

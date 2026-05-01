@@ -12,16 +12,14 @@ defmodule Dmhai.Commands do
 
     * `/wiki <text|url|file|folder>` — save into the global wiki.
       Runtime runs the ingest pipeline; ack as `kind="command_ack"`.
-      No LLM round-trip.
+      No LLM round-trip on the assistant model.
 
-    * `/memo <input>` — save OR query the user's memo store. Runtime
-      Oracle-classifies the argument as SAVE or QUERY:
-        - SAVE → vector-ingest, ack `kind="command_ack"` (filtered
-          from LLM context, so the assistant doesn't relitigate it
-          on the next turn).
-        - QUERY → fetch hits, Oracle compiles a natural-language
-          answer; user msg + answer persist WITHOUT kind tags so
-          they flow into LLM context for follow-ups.
+    * `/memo <content>` — save into the user's memo store. Runtime
+      vector-ingests the content, persists `kind="command"` /
+      `kind="command_ack"` pair (both filtered from LLM context).
+      Querying memos is conversational — the assistant uses
+      `fetch_memo` from its tool catalog; Confidant runs an
+      automatic retrieval pre-step (task #186).
   """
 
   alias Dmhai.Agent.{Oracle, UserAgentMessages}

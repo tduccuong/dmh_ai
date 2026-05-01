@@ -19,7 +19,7 @@ defmodule Dmhai.Agent.LLM do
 
   ### Examples
 
-      "ollama-cloud::gemini-3-flash-preview:cloud"
+      "ollama-cloud::gemma4:31b-cloud"
       "miner::llama3.2:3b"
       "miner::qwen3-embedding:0.6b"
 

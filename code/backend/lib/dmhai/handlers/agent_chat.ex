@@ -186,23 +186,33 @@ defmodule Dmhai.Handlers.AgentChat do
     if not has_payload do
       json(conn, 400, %{error: "Missing content"})
     else
-      # BE-owned writes (CLAUDE.md rule #9). Store text only — image base64
-      # payloads flow through the current request and feed the LLM inline;
-      # they are not persisted on the stored message.
-      case Dmhai.Agent.UserAgentMessages.append(session_id, user.id,
-              %{role: "user", content: content}) do
-        {:ok, user_ts} ->
-          fire_and_forget(conn, user_ts, fn ->
-            Http.dispatch_confidant(user.id, session_id, content, self(),
-              images:      images,
-              image_names: image_names,
-              files:       files,
-              has_video:   has_video
-            )
-          end)
+      # Slash-command intercept (`/wiki`, `/memo`). Same dispatch as the
+      # Assistant route — Memo runtime is mode-agnostic. Runs BEFORE the
+      # LLM dispatch, persists its own user + synthetic ack rows, returns
+      # immediately. See specs/commands.md §Command parser.
+      case Dmhai.Commands.dispatch(content, session_id, user.id) do
+        {:handled, user_ts} ->
+          json(conn, 200, %{user_ts: user_ts, handled: true})
 
-        {:error, reason} ->
-          json(conn, 500, %{error: "Failed to persist message: #{inspect(reason)}"})
+        :not_a_command ->
+          # BE-owned writes (CLAUDE.md rule #9). Store text only — image base64
+          # payloads flow through the current request and feed the LLM inline;
+          # they are not persisted on the stored message.
+          case Dmhai.Agent.UserAgentMessages.append(session_id, user.id,
+                  %{role: "user", content: content}) do
+            {:ok, user_ts} ->
+              fire_and_forget(conn, user_ts, fn ->
+                Http.dispatch_confidant(user.id, session_id, content, self(),
+                  images:      images,
+                  image_names: image_names,
+                  files:       files,
+                  has_video:   has_video
+                )
+              end)
+
+            {:error, reason} ->
+              json(conn, 500, %{error: "Failed to persist message: #{inspect(reason)}"})
+          end
       end
     end
   end

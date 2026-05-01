@@ -50,9 +50,11 @@ defmodule Dmhai.Agent.UserAgent do
   require Logger
 
   alias Dmhai.Agent.{AgentSettings, AssistantCommand, ConfidantCommand, ContextEngine,
-                     LLM, ProfileExtractor, StreamBuffer, ThinkingBuffer, Supervisor, Tasks,
-                     TokenTracker, WebSearch}
+                     LLM, Oracle, ProfileExtractor, StreamBuffer, ThinkingBuffer,
+                     Supervisor, Tasks, TokenTracker, WebSearch}
   alias Dmhai.Web.Search, as: WebSearchEngine
+  alias Dmhai.VectorDB
+  alias Dmhai.VectorDB.Embedder
   # WebSearch kept for synthesize_results used in build_web_context
   alias Dmhai.Repo
   import Ecto.Adapters.SQL, only: [query!: 3]
@@ -194,32 +196,50 @@ defmodule Dmhai.Agent.UserAgent do
   #
   # `result` shape:
   #   * `{:chain_done, watermark_ts}` — Assistant session_chain_loop
-  #   * anything else — Confidant path; fall back to
-  #     `has_unanswered_user_msg?` (last-entry check), sufficient
-  #     because Confidant has no mid-chain semantics.
+  #     (every terminal branch — success, error, empty — returns this)
+  #   * anything else — Confidant path; only `:ok`-like returns reach
+  #     here on the error branch. The mode-aware match below skips
+  #     auto-resume entirely for Confidant.
+  #
+  # The 5-tuple `{ref, pid, reply_pid, session_id, mode}` carries the
+  # dispatched mode forward so the hook never has to guess. Auto-resume
+  # is an Assistant-only concept — Confidant is single-turn and there
+  # is no chain to fold a queued message into.
   @impl true
-  def handle_info({ref, result}, %{current_task: {ref, _task_pid, _reply_pid, session_id}} = state) do
+  def handle_info({ref, result}, %{current_task: {ref, _task_pid, _reply_pid, session_id, mode}} = state) do
     Process.demonitor(ref, [:flush])
     state = %{state | current_task: nil}
 
-    has_newer_user_msg? =
-      case result do
-        {:chain_done, watermark_ts} when is_integer(watermark_ts) ->
-          Dmhai.Agent.UserAgentMessages.user_msgs_since(session_id, watermark_ts) != []
+    case mode do
+      "assistant" ->
+        has_newer_user_msg? =
+          case result do
+            {:chain_done, watermark_ts} when is_integer(watermark_ts) ->
+              Dmhai.Agent.UserAgentMessages.user_msgs_since(session_id, watermark_ts) != []
 
-        _ ->
-          Dmhai.Agent.UserAgentMessages.has_unanswered_user_msg?(session_id)
-      end
+            _ ->
+              # Defensive fallback for unexpected return shapes from a
+              # mode="assistant" task (silent turn etc). Last-message
+              # check is correct here because the mode gate above
+              # guarantees we're in Assistant territory.
+              Dmhai.Agent.UserAgentMessages.has_unanswered_user_msg?(session_id)
+          end
 
-    cond do
-      has_newer_user_msg? ->
-        send(self(), {:auto_resume_assistant, session_id})
-        {:noreply, state, @idle_timeout}
+        if has_newer_user_msg? do
+          send(self(), {:auto_resume_assistant, session_id})
+        else
+          maybe_trigger_next_due(session_id)
+        end
 
-      true ->
-        maybe_trigger_next_due(session_id)
-        {:noreply, state, @idle_timeout}
+      _ ->
+        # Confidant or any future non-Assistant mode: no auto-resume
+        # semantics. Persisting a reply (or an error placeholder, see
+        # `run_confidant`'s `{:error, _}` arm) is the pipeline's own
+        # responsibility; the chain hook never retries on its behalf.
+        :ok
     end
+
+    {:noreply, state, @idle_timeout}
   end
 
   # Stray {ref, _result} from tasks we no longer track — swallow.
@@ -229,13 +249,14 @@ defmodule Dmhai.Agent.UserAgent do
   end
 
   # Inline task crashed. Before clearing state, also check the user-msg
-  # queue so a crash mid-chain doesn't strand queued follow-ups.
-  def handle_info({:DOWN, ref, :task, _pid, reason}, %{current_task: {ref, _task_pid, reply_pid, session_id}} = state) do
-    Logger.error("[UserAgent] inline task crashed user=#{state.user_id} reason=#{inspect(reason)}")
+  # queue — but only for Assistant; Confidant has no auto-resume.
+  def handle_info({:DOWN, ref, :task, _pid, reason}, %{current_task: {ref, _task_pid, reply_pid, session_id, mode}} = state) do
+    Logger.error("[UserAgent] inline task crashed mode=#{mode} user=#{state.user_id} reason=#{inspect(reason)}")
     send(reply_pid, {:error, "Internal error — please try again"})
     state = %{state | current_task: nil}
 
-    if Dmhai.Agent.UserAgentMessages.has_unanswered_user_msg?(session_id) do
+    if mode == "assistant" and
+         Dmhai.Agent.UserAgentMessages.has_unanswered_user_msg?(session_id) do
       send(self(), {:auto_resume_assistant, session_id})
     end
 
@@ -388,9 +409,12 @@ defmodule Dmhai.Agent.UserAgent do
     # reply_pid has no purpose in fire-and-forget / polling architecture;
     # we still carry a dummy value in the state tuple for structural
     # consistency with user-initiated turns (see :handle_info({ref, _})).
+    # Mode is hard-coded "assistant" — silent turns are scheduler-driven
+    # task pickups, which only exist for Assistant-mode sessions
+    # (start_silent_turn skips non-assistant sessions explicitly).
     dummy_pid = spawn(fn -> :ok end)
     {:noreply,
-     %{state | current_task: {spawned.ref, spawned.pid, dummy_pid, session_id}},
+     %{state | current_task: {spawned.ref, spawned.pid, dummy_pid, session_id, "assistant"}},
      @idle_timeout}
   end
 
@@ -733,7 +757,7 @@ defmodule Dmhai.Agent.UserAgent do
           end)
 
         {:ok,
-         %{state | current_task: {task.ref, task.pid, reply_pid, command.session_id}}}
+         %{state | current_task: {task.ref, task.pid, reply_pid, command.session_id, required_mode}}}
     end
   end
 
@@ -745,18 +769,36 @@ defmodule Dmhai.Agent.UserAgent do
     user_id = state.user_id
     model   = AgentSettings.confidant_model()
 
-    web_context =
+    # Run the two pre-step retrievals (web search + memo auto-retrieve)
+    # in PARALLEL so total wall time is max(t_web, t_memo) rather than
+    # the sum. Both bail to nil when their gating logic decides nothing
+    # to fetch (web: WebSearchEngine.search returns :no_search; memo:
+    # Oracle.memo_keywords returns "" or vector search produces no
+    # above-threshold hits). See specs/commands.md §Confidant memo
+    # auto-retrieve.
+    {web_context, memo_context} =
       if command.content != "" do
         user_msgs = extract_user_messages(session_data)
-        # `reply_pid: nil` — web-search status lines (🔍, 📄) no longer go
-        # over the wire; the FE sees the web-search's final context as
-        # part of the LLM's answer and as session_progress rows elsewhere.
-        case WebSearchEngine.search(command.content, user_msgs, :confidant, reply_pid: nil) do
-          :no_search -> nil
-          result     -> build_web_context(command.content, result, nil)
-        end
+
+        web_task =
+          Task.async(fn ->
+            # `reply_pid: nil` — web-search status lines (🔍, 📄) no
+            # longer go over the wire; the FE sees the final context
+            # as part of the LLM's answer and as session_progress rows.
+            case WebSearchEngine.search(command.content, user_msgs, :confidant, reply_pid: nil) do
+              :no_search -> nil
+              result     -> build_web_context(command.content, result, nil)
+            end
+          end)
+
+        memo_task =
+          Task.async(fn ->
+            build_memo_context(command.content, user_msgs, user_id)
+          end)
+
+        {Task.await(web_task, 30_000), Task.await(memo_task, 30_000)}
       else
-        nil
+        {nil, nil}
       end
 
     profile            = load_user_profile(user_id)
@@ -774,10 +816,11 @@ defmodule Dmhai.Agent.UserAgent do
         files:              command.files,
         image_descriptions: image_descriptions,
         video_descriptions: video_descriptions,
-        web_context:        web_context
+        web_context:        web_context,
+        memo_context:       memo_context
       )
 
-    Dmhai.SysLog.log("[CONFIDANT] user=#{user_id} session=#{session_id} msg=#{String.slice(command.content, 0, 200)} web_search=#{web_context != nil}")
+    Dmhai.SysLog.log("[CONFIDANT] user=#{user_id} session=#{session_id} msg=#{String.slice(command.content, 0, 200)} web_search=#{web_context != nil} memo_context=#{memo_context != nil}")
     Dmhai.SysLog.log("[CONFIDANT] sending #{length(llm_messages)} msgs to model=#{model}\n  #{log_llm_messages(llm_messages)}")
 
     # Stream collector: tokens from LLM.stream flow here, where they are
@@ -820,6 +863,21 @@ defmodule Dmhai.Agent.UserAgent do
         StreamBuffer.clear(session_id, user_id)
         ThinkingBuffer.clear(session_id, user_id)
         Dmhai.SysLog.log("[CONFIDANT] ERROR: #{inspect(reason)}")
+
+        # Persist a localized error placeholder so session.messages
+        # doesn't end with role="user". Without this the chain hook's
+        # last-message check (pre-A' was the trigger) would loop, and
+        # the user would see no feedback at all. Distinct from the
+        # Assistant chain's richer error handling at session_chain_loop
+        # `{:error, _}` arm — Confidant has no chain semantics, no
+        # task_num to tag, no system-error vs generic classification.
+        # A short Oracle-localized apology is enough.
+        ack = Oracle.localize(
+          "Sorry — couldn't reach the model. Please try again.",
+          command.content
+        )
+
+        append_session_message(session_id, user_id, %{role: "assistant", content: ack})
     end
   end
 
@@ -2448,6 +2506,105 @@ defmodule Dmhai.Agent.UserAgent do
     |> Enum.filter(fn m -> m["role"] == "user" end)
     |> Enum.take(-10)
     |> Enum.map(fn m -> String.slice(m["content"] || "", 0, 300) end)
+  end
+
+  # Confidant memo auto-retrieve. Always embeds + searches — no LLM
+  # gate. The score threshold (`kb_score_threshold`, default 0.55)
+  # acts as the filter. See specs/commands.md §Confidant memo
+  # auto-retrieve.
+  #
+  # Pronoun resolution falls out implicitly: the embed input
+  # concatenates the last 1–2 prior user turns with the current
+  # message, so "and his email?" embeds with the prior "what's
+  # John's birthday?" in scope.
+  #
+  # `recent_user_msgs` is `extract_user_messages/1`'s output — last
+  # ~10 user turns INCLUDING the current. We drop the last entry
+  # (already in `current_content`) and take up to 2 prior.
+  #
+  # Returns:
+  #   * a populated `[memo context]` block on hits-above-threshold,
+  #   * an empty-state `[memo context]` block (telling the model
+  #     honestly "we checked, nothing found") on zero hits or no
+  #     hits above threshold,
+  #   * `nil` ONLY on retrieval infrastructure error (embed/search
+  #     RPC failure). The model then proceeds without any block,
+  #     matching pre-feature behavior.
+  defp build_memo_context(current_content, recent_user_msgs, user_id) do
+    prior =
+      recent_user_msgs
+      |> Enum.drop(-1)
+      |> Enum.take(-2)
+
+    embed_text = (prior ++ [current_content]) |> Enum.join("\n") |> String.trim()
+
+    case Embedder.embed(embed_text) do
+      {:ok, vec} ->
+        top_k = AgentSettings.memo_context_top_k()
+
+        case VectorDB.search(:memo, embed_text, vec, top_k, {:user, user_id}) do
+          {:ok, raw_hits} ->
+            threshold = AgentSettings.kb_score_threshold()
+            hits      = Enum.filter(raw_hits, fn h -> (h.score || 0.0) >= threshold end)
+
+            score_summary =
+              raw_hits
+              |> Enum.map(fn h ->
+                s = if is_number(h.score), do: Float.round(h.score, 3), else: h.score
+                "#{s}|#{String.slice(h.chunk_text || "", 0, 40) |> String.replace("\n", " ")}"
+              end)
+              |> Enum.join("; ")
+
+            Logger.info("[Memo auto] embed=#{inspect(String.slice(embed_text, 0, 80))} raw=#{length(raw_hits)} kept=#{length(hits)} threshold=#{threshold} hits=[#{score_summary}]")
+
+            format_memo_context_block(hits)
+
+          {:error, reason} ->
+            Logger.warning("[Memo auto] search failed: #{inspect(reason, limit: 80)}")
+            nil
+        end
+
+      {:error, reason} ->
+        Logger.warning("[Memo auto] embed failed: #{inspect(reason, limit: 80)}")
+        nil
+    end
+  end
+
+  # `[memo context]` block — two states. See specs/commands.md.
+  #
+  # FOUND state: bullets of hit chunk_text + language rule (cosine
+  # retrieval is multilingual via qwen3-embedding so a VN question
+  # can hit an EN memo; without the rule weak models echo the memo's
+  # language back).
+  #
+  # EMPTY state: lexical-trigger rule. The model is told to fall
+  # back to "honest no memo" ONLY when the user's message itself
+  # references the memo store (words like "memo", "search memo",
+  # "find in memo", "memo about", etc.). For everything else, the
+  # block is a no-op signal — the model answers per its usual
+  # system-prompt rules. This avoids putting a "is this a personal
+  # question?" classification burden on the model, which is exactly
+  # the gate problem the Oracle.memo_keywords removal escaped.
+  defp format_memo_context_block([]) do
+    "[memo context]\n" <>
+      "We checked the user's saved memos for this question. Nothing relevant found.\n\n" <>
+      "How to use this signal:\n" <>
+      "- IF the user's message itself references their memo store (e.g. words like \"memo\", \"saved\", phrases like \"search memo …\", \"find in memo …\", \"look up memo …\", \"do I have a memo on …\", \"memo about …\", \"memo contains …\"): you MUST tell the user honestly that no saved memo matches their question. Do NOT substitute general knowledge, do NOT invent.\n" <>
+      "- OTHERWISE (the user is asking a normal question or chatting and never mentioned the memo store): ignore this block entirely and answer per your usual system-prompt instructions.\n" <>
+      "[/memo context]"
+  end
+
+  defp format_memo_context_block(hits) do
+    bullets =
+      hits
+      |> Enum.map_join("\n", fn h ->
+        "- " <> String.replace(h.chunk_text || "", "\n", " ")
+      end)
+
+    "[memo context]\n" <>
+      "The user previously saved these personal notes. Use any that are relevant to the question; ignore the rest. The notes may be in a different language than the user's question — translate any facts you cite. Reply in the user's question language, NOT the notes' language.\n\n" <>
+      bullets <>
+      "\n[/memo context]"
   end
 
   defp build_web_context(_content, %{snippets: [], pages: []}, _reply_pid), do: nil
