@@ -759,7 +759,29 @@ UIManager._updateStreamPlaceholder = function(sessionAtSend, streamBuffer) {
     if (!this._streamMap) return;
     var entry = this._streamMap.get(sessionAtSend.id);
     if (!entry) return;
-    if (!streamBuffer) return;
+
+    if (!streamBuffer) {
+        // Mid-chain transition: the prior turn's narration was just
+        // persisted as a real assistant bubble in session.messages, and
+        // BE cleared stream_buffer. The next turn hasn't streamed any
+        // answer text yet — it may be thinking, executing tools, or
+        // simply between LLM calls. Without this branch the
+        // streaming-body div would retain the prior turn's narration
+        // text as a "ghost" beneath the thinking block until the next
+        // turn's first content chunk overwrites it. Reset the entry's
+        // content state and blank the body. The placeholder ELEMENT
+        // stays — chain is still in flight; tear-down happens via
+        // renderChat once chain_in_flight flips false.
+        if (entry.hasContentFlag) {
+            entry.content = '';
+            entry.hasContentFlag = false;
+            if (this.currentSession && this.currentSession.id === sessionAtSend.id) {
+                var activeBody = document.getElementById('streaming-body');
+                if (activeBody) activeBody.innerHTML = '';
+            }
+        }
+        return;
+    }
 
     // First non-empty stream_buffer means the LLM just produced its
     // first word of the final answer. Flip the status indicator from
