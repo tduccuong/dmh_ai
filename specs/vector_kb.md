@@ -20,7 +20,7 @@ runtime command); retrieval and storage shape live here.
 
 **In scope:**
 - sqlite-vec virtual table for vector storage + native KNN search.
-- `Dmhai.VectorDB.Backend` behaviour (one production impl: `SqliteVec`;
+- `DmhAi.VectorDB.Backend` behaviour (one production impl: `SqliteVec`;
   one test impl: `Memory`).
 - Storage layout for global + user-scoped chunks.
 - Embedding pipeline using `miner::qwen3-embedding:0.6b` (1024-dim).
@@ -64,14 +64,14 @@ Why this choice:
   rows.
 - **Fits the homelab/personal-deploy posture** of this project.
 
-The `Dmhai.VectorDB.Backend` behaviour exists for testability — a
+The `DmhAi.VectorDB.Backend` behaviour exists for testability — a
 `Memory` implementation backs unit tests so the suite doesn't need
 sqlite-vec loaded.
 
 ## Module layout
 
 ```
-lib/dmhai/
+lib/dmh_ai/
   vector_db/
     backend.ex          # behaviour
     sqlite_vec.ex       # production impl — vec0 virtual tables
@@ -195,7 +195,7 @@ CREATE TABLE kb_relearn_jobs (
 
 `INSERT OR IGNORE` keyed on `source_ref` → concurrent fetches of the
 same source enqueue once. Row is deleted on completion (success OR
-failure). Bounded concurrency in the supervisor (`Dmhai.VectorDB.Relearn`).
+failure). Bounded concurrency in the supervisor (`DmhAi.VectorDB.Relearn`).
 
 ## Chunking
 
@@ -352,7 +352,7 @@ runtime enqueues a relearn job for each unique hit `source_ref`:
 
 1. `INSERT OR IGNORE INTO kb_relearn_jobs (source_ref, ...)` — concurrent
    users hitting the same source enqueue once.
-2. `Dmhai.VectorDB.Relearn` (DynamicSupervisor) picks up jobs from the
+2. `DmhAi.VectorDB.Relearn` (DynamicSupervisor) picks up jobs from the
    table; concurrency capped at `kb_relearn_concurrency` (default 4).
 3. For each job: re-fetch the source (URL: re-crawl that single page;
    file: re-extract; folder-member: re-extract that file) and re-run
@@ -425,7 +425,7 @@ seed CRUD + Run UI.
 ## Backend swap path
 
 If sqlite-vec ever proves a scale ceiling (e.g. >10M chunks), the
-`Dmhai.VectorDB.Backend` behaviour means a swap to LanceDB or any
+`DmhAi.VectorDB.Backend` behaviour means a swap to LanceDB or any
 other vector DB is contained: implement the four-method behaviour,
 flip `:vector_db_backend` config. `kb_sources.raw_text` keeps a
 re-buildable corpus, so the migration only pays the embedding-recompute

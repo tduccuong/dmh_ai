@@ -86,7 +86,7 @@ var _subLabelsInterval = null;
 
 // Write the label's text. Plain textContent + CSS ellipsis; no fancy
 // span-splitting. Labels from the BE are now in `ToolName: content`
-// shape (see `Dmhai.Agent.ProgressLabel`), and the CSS on
+// shape (see `DmhAi.Agent.ProgressLabel`), and the CSS on
 // `.progress-label` handles truncation from the right edge on narrow
 // viewports — the `content` part is where the ellipsis lands. We keep
 // the redacted text on `title=` too so the hover tooltip never reveals

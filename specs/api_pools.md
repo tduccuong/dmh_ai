@@ -19,7 +19,7 @@ a code change.
 ## What's in / out
 
 **In scope:**
-- `pools` table + `Dmhai.LLM.Pools` module that owns reads + cache.
+- `pools` table + `DmhAi.LLM.Pools` module that owns reads + cache.
 - `<pool>::<model>` canonical name format used in DB rows, settings JSON,
   test runner `@target_models`, FE model picker.
 - Pool-scoped account rotation (replaces the global rotation in `llm.ex`).
@@ -112,16 +112,16 @@ the row.
 
 ## Wire-protocol adapters
 
-`Dmhai.Agent.LLM` is wire-protocol-agnostic — every per-protocol concern
+`DmhAi.Agent.LLM` is wire-protocol-agnostic — every per-protocol concern
 (endpoint URL, request body shape, outbound message normalisation,
 response parsing, streaming line parser, post-stream consolidation)
-is delegated to a `Dmhai.LLM.Adapter` behaviour. `Dmhai.Agent.LLM.adapter_for/1`
+is delegated to a `DmhAi.LLM.Adapter` behaviour. `DmhAi.Agent.LLM.adapter_for/1`
 maps the resolved pool's `provider` field to one of:
 
 | `provider`     | adapter                          | wire format        |
 |----------------|----------------------------------|--------------------|
-| `ollama`       | `Dmhai.LLM.Adapters.Ollama`      | `/api/chat` NDJSON |
-| anything else  | `Dmhai.LLM.Adapters.OpenAI`      | `/v1` SSE          |
+| `ollama`       | `DmhAi.LLM.Adapters.Ollama`      | `/api/chat` NDJSON |
+| anything else  | `DmhAi.LLM.Adapters.OpenAI`      | `/v1` SSE          |
 
 Adding a new wire protocol is a new adapter module + one clause in
 `adapter_for/1`. Account rotation, retry-on-throttle, transport timing,
@@ -153,7 +153,7 @@ upstream server's own default applies.
 | ollama-cloud | leave NULL (cloud loads models with their own large context already) |
 
 For non-Ollama providers the value is ignored — only
-`Dmhai.LLM.Adapters.Ollama` reads it. Operators should normally
+`DmhAi.LLM.Adapters.Ollama` reads it. Operators should normally
 leave it blank for OpenAI/Anthropic/Google pools.
 
 There is **no global default fallback** in the runtime. A blank
@@ -218,20 +218,24 @@ Auth: existing admin guard on `/admin/*` routes applies.
 
 ## Defaults seed
 
-On first boot, if `pools` is empty, seed from the existing `temp/api_pool.json`
-shape:
+On first boot, if `pools` is empty, seed from an operator-managed
+`pools.json` if present (lookup order in `DmhAi.DB.Init.load_pool_seeds/0`:
+`$DMHAI_POOL_SEED` → `/data/pools.json` → `temp/pools.json`). When no file
+is found, only one placeholder pool is inserted:
 
-| name | provider | base_url |
-|---|---|---|
-| `ollama-cloud` | ollama | `https://ollama.com/v1` |
-| `miner` | ollama | `http://192.168.178.49:11434/v1` |
-| `sagemaker` | ollama | `http://localhost:11434/v1` |
+| name | provider | base_url | accounts |
+|---|---|---|---|
+| `ollama-cloud` | ollama | `https://ollama.com/v1` | `[]` |
+
+`ollama-cloud` ships with zero accounts so the admin UI has a row to fill
+in; no other pool is seeded by default to avoid leaking operator-specific
+network topology into a fresh install.
 
 The `/v1` suffix on Ollama base URLs is harmless — the Ollama adapter
 strips it before appending `/api/chat`. Operators may write either form.
 
-Accounts come from the JSON file. The seed runs once; subsequent edits via
-the UI are authoritative.
+Accounts come from the JSON file when present. The seed runs once;
+subsequent edits via the UI are authoritative.
 
 ## Migration
 
@@ -258,13 +262,13 @@ migration boot is a bug.
 
 The rename + parser change ripples through:
 
-- `lib/dmhai/agent/agent_settings.ex` — drop `to_routed/1`, return raw
+- `lib/dmh_ai/agent/agent_settings.ex` — drop `to_routed/1`, return raw
   model strings; defaults map updated to `<pool>::<model>` form.
-- `lib/dmhai/agent/llm.ex:61–110` — replace three-part split with
+- `lib/dmh_ai/agent/llm.ex:61–110` — replace three-part split with
   `Pools.resolve/1`; remove provider/pool branching; endpoint config comes
   from the resolved pool.
-- `lib/dmhai/agent/llm.ex:64,104,779,813–822` — account picking/partitioning
-  moves into `Dmhai.LLM.AccountRotation` (new module), keyed on pool_name.
+- `lib/dmh_ai/agent/llm.ex:64,104,779,813–822` — account picking/partitioning
+  moves into `DmhAi.LLM.AccountRotation` (new module), keyed on pool_name.
 - `test/llm/run_scenarios.exs:33–39` — `@target_models` rewritten to
   `<pool>::<model>` form.
 - `js/admin-settings.js` (new section: API Pools CRUD).
@@ -274,7 +278,7 @@ The rename + parser change ripples through:
 ## Module layout
 
 ```
-lib/dmhai/
+lib/dmh_ai/
   llm/
     pools.ex             # pools table CRUD + cache + resolve/1
     account_rotation.ex  # pick/mark_throttled, strategy implementations

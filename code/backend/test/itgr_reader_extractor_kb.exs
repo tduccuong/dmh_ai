@@ -4,7 +4,7 @@
 defmodule Itgr.ReaderExtractorKB do
   use ExUnit.Case, async: true
 
-  alias Dmhai.Web.ReaderExtractor
+  alias DmhAi.Web.ReaderExtractor
 
   @article_body """
   This is the first paragraph of the article. It contains substantive content
@@ -165,7 +165,7 @@ defmodule Itgr.ReaderExtractorKB do
     test "explicit :kb extractor strips cookie banners; default keeps them" do
       # Direct call to the private extract logic isn't possible — exercise via
       # ReaderExtractor which is the only branch the opt routes between. The
-      # routing itself is one cond/case in lib/dmhai/web/fetcher.ex:128 — its
+      # routing itself is one cond/case in lib/dmh_ai/web/fetcher.ex:128 — its
       # correctness is covered by the same extractor tests below.
       article_body = String.duplicate(
         "Substantive article content here. The density scorer needs enough words to qualify this node. ",
@@ -179,8 +179,8 @@ defmodule Itgr.ReaderExtractorKB do
       </article></body></html>
       """
 
-      with_banner = Dmhai.Web.ReaderExtractor.extract(html)
-      without_banner = Dmhai.Web.ReaderExtractor.extract_for_kb(html)
+      with_banner = DmhAi.Web.ReaderExtractor.extract(html)
+      without_banner = DmhAi.Web.ReaderExtractor.extract_for_kb(html)
 
       assert with_banner.text =~ "cookies"
       assert without_banner.text =~ "Substantive article content"

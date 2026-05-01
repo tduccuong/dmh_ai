@@ -1,5 +1,5 @@
 # Integration tests for the OAuth-manual finalization path
-# (`Dmhai.Handlers.Data.finalize_oauth_setup/4`), the last piece of
+# (`DmhAi.Handlers.Data.finalize_oauth_setup/4`), the last piece of
 # Phase B (#149).
 #
 # Covers:
@@ -21,9 +21,9 @@
 defmodule Itgr.OauthManualSetup do
   use ExUnit.Case, async: false
 
-  alias Dmhai.Auth.{Credentials, OAuth2}
-  alias Dmhai.Handlers.Data
-  alias Dmhai.Repo
+  alias DmhAi.Auth.{Credentials, OAuth2}
+  alias DmhAi.Handlers.Data
+  alias DmhAi.Repo
   import Ecto.Adapters.SQL, only: [query!: 3]
 
   defp seed_user(user_id) do
@@ -45,7 +45,7 @@ defmodule Itgr.OauthManualSetup do
   end
 
   defp seed_anchor_task(user_id, sid) do
-    Dmhai.Agent.Tasks.insert(
+    DmhAi.Agent.Tasks.insert(
       user_id: user_id,
       session_id: sid,
       task_title: "connect bitrix24",

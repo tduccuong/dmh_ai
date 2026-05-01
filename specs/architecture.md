@@ -90,56 +90,56 @@ Application
  ├── SysLog                      (GenServer — structured trace log)
  ├── DomainBlocker               (scanner/abuse blocklist)
  ├── Finch                       (HTTP client pool — LLM + web-fetch)
- ├── Registry  (Dmhai.Agent.Registry) — UserAgent lookups
- ├── Dmhai.Agent.Supervisor      (DynamicSupervisor for UserAgents)
- ├── Task.Supervisor  (Dmhai.Agent.TaskSupervisor)          — inline session turns
- ├── Dmhai.Agent.TaskRuntime      (GenServer — periodic scheduler only)
+ ├── Registry  (DmhAi.Agent.Registry) — UserAgent lookups
+ ├── DmhAi.Agent.Supervisor      (DynamicSupervisor for UserAgents)
+ ├── Task.Supervisor  (DmhAi.Agent.TaskSupervisor)          — inline session turns
+ ├── DmhAi.Agent.TaskRuntime      (GenServer — periodic scheduler only)
  ├── Bandit HTTP  :8080          (optional)
  └── Bandit HTTPS :8443          (optional; requires /app/ssl/cert.pem)
-      └── Dmhai.Router (Plug.Router)
+      └── DmhAi.Router (Plug.Router)
 ```
 
 After the supervisor tree starts, `application.ex` runs three sequential steps:
-1. `Dmhai.StartupCheck.run/0` — checks docker socket, sandbox container running + exec,
+1. `DmhAi.StartupCheck.run/0` — checks docker socket, sandbox container running + exec,
    data-path writability (FATAL), and Ollama reachability + internet from sandbox (WARN).
    Raises on any FATAL failure so the process exits immediately with a clear error.
-2. `Dmhai.DB.Init.run/0` — DB schema migrations.
-3. `Dmhai.DomainBlocker.load_from_db/0` — loads abuse blocklist into ETS.
+2. `DmhAi.DB.Init.run/0` — DB schema migrations.
+3. `DmhAi.DomainBlocker.load_from_db/0` — loads abuse blocklist into ETS.
 
 ---
 
 ## Module Namespaces
 
 ```
-Dmhai.Agent.*     — agent runtime: UserAgent, TaskRuntime (periodic
+DmhAi.Agent.*     — agent runtime: UserAgent, TaskRuntime (periodic
                     scheduler), Tasks, SessionProgress, ContextEngine, LLM,
                     Police (path-safety only), AgentSettings, TokenTracker,
                     ProfileExtractor, WebSearch, SystemPrompt,
                     UserAgentMessages (shared session-message writer)
 
-Dmhai.Tools.*     — assistant-callable tools: RunScript, ReadFile, WriteFile,
+DmhAi.Tools.*     — assistant-callable tools: RunScript, ReadFile, WriteFile,
                     WebFetch, WebSearch, Calculator,
                     ExtractContent, SpawnTask,
                     CreateTask, UpdateTask, Registry
 
-Dmhai.Web.*       — web-fetch subsystem (see §Web Fetch):
+DmhAi.Web.*       — web-fetch subsystem (see §Web Fetch):
                     CmpDetector, ConsentSeeder, ReaderExtractor,
                     Fallback, Fetcher
 
-Dmhai.Util.*      — cross-concern helpers: Html (text extraction),
+DmhAi.Util.*      — cross-concern helpers: Html (text extraction),
                     Url (parse/normalise/variants), Path (session-scoped path
                     resolution + traversal defence)
 
-Dmhai.Constants   — single source of truth for filesystem paths
+DmhAi.Constants   — single source of truth for filesystem paths
                     (assets_dir, session_root, session_data_dir,
                     session_workspace_dir, sanitize)
 
-Dmhai.I18n        — plain-dict translation module (en/vi/es/fr/ja)
+DmhAi.I18n        — plain-dict translation module (en/vi/es/fr/ja)
 
-Dmhai.Handlers.*  — HTTP request handlers
-Dmhai.Plugs.*     — Plug pipelines
-Dmhai.Schemas.*   — Ecto schemas
-Dmhai.Adapters.*  — external integrations (Telegram etc.)
+DmhAi.Handlers.*  — HTTP request handlers
+DmhAi.Plugs.*     — Plug pipelines
+DmhAi.Schemas.*   — Ecto schemas
+DmhAi.Adapters.*  — external integrations (Telegram etc.)
 ```
 
 ---
@@ -313,7 +313,7 @@ GET /sessions/:id/poll?msg_since=<ts>&prog_since=<id>
   `stream_buffer` is non-null. Drives the FE polling cadence.
 - `chain_in_flight`: `true` while `UserAgent.session_chain_loop` is
   iterating for this session — set on chain entry, cleared on chain
-  exit (`Dmhai.Agent.ChainInFlight` ETS table). Lets the FE distinguish
+  exit (`DmhAi.Agent.ChainInFlight` ETS table). Lets the FE distinguish
   *"intermediate text turn just landed"* from *"chain has truly ended"*.
   `pollTurnToCompletion` only tears down the streaming placeholder
   when `sawAssistantMessage && !stream_buffer && !chain_in_flight` —
@@ -332,7 +332,7 @@ GET /sessions/:id/poll?msg_since=<ts>&prog_since=<id>
   `buildMessageEntryNode` takes over once the placeholder is torn
   down. Each pipeline (Confidant / Assistant) owns its own collector
   loop (`spawn_confidant_stream_collector` / `spawn_assistant_stream_collector`)
-  that flushes thinking tokens via `Dmhai.Agent.ThinkingBuffer`.
+  that flushes thinking tokens via `DmhAi.Agent.ThinkingBuffer`.
 
 - `running_tool_call`: present (non-null) while a long-running tool is
   executing. Currently only `run_script` populates this — see
@@ -405,7 +405,7 @@ exits.
 
 ### Mechanism (BE)
 
-`Dmhai.Tools.RunScript.execute/2`:
+`DmhAi.Tools.RunScript.execute/2`:
 
 1. Writes the script body to a temp file under the session workspace
    (`/tmp/_dmh_run_<tool_call_id>`), via the same base64-shebang trick
@@ -417,8 +417,8 @@ exits.
    echo $!
    ```
 3. Registers `{session_id, tool_call_id} → {started_at_ms,
-   script_preview, pid, log_path}` in `Dmhai.Agent.RunningTools` (ETS
-   table `:dmhai_running_tools`). `script_preview` is the first
+   script_preview, pid, log_path}` in `DmhAi.Agent.RunningTools` (ETS
+   table `:dmh_ai_running_tools`). `script_preview` is the first
    non-empty line of the script, trimmed.
 4. Enters a poll loop sleeping `AgentSettings.tool_run_poll_interval_ms`
    (default `2000`, configurable). Each tick checks `kill -0 <pid>`
@@ -477,7 +477,7 @@ construction).
 
 ### `/poll` surfacing
 
-`Dmhai.Handlers.Data.poll_session/3` does a single ETS lookup
+`DmhAi.Handlers.Data.poll_session/3` does a single ETS lookup
 (`RunningTools.lookup(session_id)`) and adds the result to the poll
 response. Single-tool-at-a-time (tool calls within one assistant
 message execute sequentially via `Enum.flat_map_reduce/3`), so the
@@ -674,7 +674,7 @@ compactor LLM (`AgentSettings.compactor_model()`, NOT hardcoded) and writes
 context is preserved. Old messages are retained in the DB and remain
 available for keyword retrieval.
 
-**Tool-result retention (`Dmhai.Agent.ToolHistory`)** — orthogonal to
+**Tool-result retention (`DmhAi.Agent.ToolHistory`)** — orthogonal to
 compaction. Retains the last N turns' raw `tool_call` / `tool_result`
 message pairs in the `sessions.tool_history` JSON column so the next
 turn can inject them back into the LLM input — the model answers
@@ -1675,7 +1675,7 @@ Execution tools:
 `write_file`, `calculator`, `spawn_task`, `get_date`.
 
 Creds tools (per-user persistent credential store; see
-`Dmhai.Agent.Credentials`). Three primitives form the unified base
+`DmhAi.Agent.Credentials`). Three primitives form the unified base
 for any credential kind — passwords, SSH keys, API keys, OAuth2
 access + refresh tokens, anything future provider-specific helpers
 choose to persist.
@@ -1791,7 +1791,7 @@ The pending-input lookup is done by scanning `session.messages` for the assistan
 
 ---
 
-## Scheduler — `Dmhai.Agent.TaskRuntime`
+## Scheduler — `DmhAi.Agent.TaskRuntime`
 
 A single named GenServer. Its only job is to arm timers for periodic task
 pickups and, on fire, nudge the session to wake up. It does not track
@@ -1809,7 +1809,7 @@ handle_info({:pickup_due, task_id}):
   session_pid = UserSupervisor.ensure_session_started(task.user_id, task.session_id)
   send(session_pid, {:task_due, task_id})
 
-boot rehydrate (Dmhai.Agent.TaskRuntime.rehydrate/0):
+boot rehydrate (DmhAi.Agent.TaskRuntime.rehydrate/0):
   for task in tasks where status="pending" AND task_type="periodic"
       AND time_to_pickup IS NOT NULL:
     schedule_pickup(task_id, task.time_to_pickup)
@@ -2001,7 +2001,7 @@ see #95 for the scheduled-push variant.
 ## Boot rehydration
 
 ```
-Dmhai.Agent.TaskRuntime.rehydrate/0 (called 500 ms after app start):
+DmhAi.Agent.TaskRuntime.rehydrate/0 (called 500 ms after app start):
   1. Any PERIODIC task with status="ongoing" → revert to "pending".
      Periodic tasks' ongoing state is inherently tied to a running
      cycle; if the BEAM died mid-cycle, the cycle is lost and the
@@ -2019,7 +2019,7 @@ Dmhai.Agent.TaskRuntime.rehydrate/0 (called 500 ms after app start):
      session immediately (next user interaction will handle it).
 ```
 
-Disabled in `:test` env via `:dmhai, :enable_task_rehydrate, false`.
+Disabled in `:test` env via `:dmh_ai, :enable_task_rehydrate, false`.
 
 Crash survival is trivial under this model: `tasks` + `session_progress`
 + `sessions.messages` + `task_turn_archive` are the truth. The assistant
@@ -2071,7 +2071,7 @@ Checks:
      self-correction.
 
 2. **Tool-name validity** — the tool_call's `function.name` must match
-   a tool registered in `Dmhai.Tools.Registry`. Guards against model
+   a tool registered in `DmhAi.Tools.Registry`. Guards against model
    output malformation where the model emits a garbled or hallucinated
    name (e.g. ~1000-char blobs — entire JSON argument payloads
    concatenated with natural-language reply — passed as the `name`
@@ -2110,7 +2110,7 @@ Checks:
    "extract_content"` entries and collecting the `path` arguments.
 
 5. **Path safety** — `check_tool_calls/3` validates any `path`
-   argument resolves inside `session_root` via `Dmhai.Util.Path.resolve/2`.
+   argument resolves inside `session_root` via `DmhAi.Util.Path.resolve/2`.
    `run_script` scans for `rm` / `rmdir` / `cp -r` that target paths
    outside `workspace_dir`.
 
@@ -2142,7 +2142,7 @@ Checks:
    rejects a `web_search` call when the IMMEDIATELY-PRIOR tool call in
    this chain was also `web_search`. Rationale: one `web_search` already
    fans out 2-3 parallel queries in the BE (see
-   `Dmhai.Web.Search.generate_queries`), so back-to-back web_searches
+   `DmhAi.Web.Search.generate_queries`), so back-to-back web_searches
    are wasted effort. Intra-batch AND inter-turn covered via the same
    pseudo-message threading as rule #6. Alternating patterns are
    allowed (`web_search` → `run_script` → `web_search`) — the gate only
@@ -2217,7 +2217,7 @@ runtime safety net for when this guidance doesn't stick.
 
 10. **Oracle-backed pivot / knowledge gate** — `check_pivot/3` reads
     a verdict from the **Oracle**, an independent classifier
-    (`Dmhai.Agent.Oracle`, default model role `oracleModel` →
+    (`DmhAi.Agent.Oracle`, default model role `oracleModel` →
     `ministral-3:14b-cloud`). The Oracle compares the chain-start
     user message against the active anchor's `task_spec` and
     returns one of `:related`, `:unrelated`, `:knowledge`, or
@@ -2263,7 +2263,7 @@ runtime safety net for when this guidance doesn't stick.
 
     **Auto-create-task on confirmed pivot**: when the gate fires
     `:unrelated`, it stashes a record in
-    `Dmhai.Agent.PendingPivots` (ETS, keyed by `session_id`,
+    `DmhAi.Agent.PendingPivots` (ETS, keyed by `session_id`,
     30-minute TTL): `%{user_msg: <chain-start text>,
     anchor_task_num: N}`. After the model emits a successful
     `pause_task` or `cancel_task` (success detected by `"ok": true`
@@ -2355,7 +2355,7 @@ clutter the chat" can pass `hidden: true` at append time.
 
 ---
 
-## Rate limiting (`Dmhai.Plugs.RateLimit`)
+## Rate limiting (`DmhAi.Plugs.RateLimit`)
 
 Hammer-backed sliding window, one bucket per (key, tier). The key is
 **the authenticated user** whenever the request carries a valid bearer
@@ -2459,13 +2459,13 @@ All 50 users active simultaneously:
 ## Outbound HTTP for LLM calls
 
 Outbound HTTP from the app goes through one shared Finch pool
-(`Dmhai.Finch`, size 10, `conn_max_idle_time: 30_000`). Most callers
+(`DmhAi.Finch`, size 10, `conn_max_idle_time: 30_000`). Most callers
 (SearXNG, Jina reader, Telegram, `/assets` proxy) benefit from
 connection reuse — same hosts, steady traffic, no observed issues.
 
 **LLM calls specifically opt OUT of connection reuse AND response
 compression.** Both `do_call_request/5` and `do_stream_request/6` in
-`lib/dmhai/agent/llm.ex`:
+`lib/dmh_ai/agent/llm.ex`:
 
 - Add a `Connection: close` header on every outbound request so Finch
   terminates the TCP/TLS session after the response (no pool reuse).
@@ -2537,7 +2537,7 @@ zombie-connection hangs against that specific host.
 
 ## Filesystem Layout
 
-All paths are derived from `Dmhai.Constants` — the single source of truth. Emails are used as-is; session ids and task ids are sanitised via `Constants.sanitize/1` (alphanumerics + dash + underscore only).
+All paths are derived from `DmhAi.Constants` — the single source of truth. Emails are used as-is; session ids and task ids are sanitised via `Constants.sanitize/1` (alphanumerics + dash + underscore only).
 
 ```
 /data/user_assets/<email>/<session_id>/
@@ -2552,7 +2552,7 @@ One `data/` and one `workspace/` per session — no per-task subdir, no per-orig
 
 Both are kept on the tasks row for bookkeeping but are effectively always `"assistant"` — Confidant sessions don't create tasks. All tasks in a session share `<session_root>/workspace/`. Columns are retained for future polymorphic use.
 
-### `Dmhai.Constants` Helpers
+### `DmhAi.Constants` Helpers
 
 ```elixir
 Constants.assets_dir()                             # "/data/user_assets"
@@ -2582,7 +2582,7 @@ Tools receive this ctx and use `session_root` / `data_dir` /
 `workspace_dir` for path resolution. `task_id` is nil during
 direct-response turns and set to the actively-worked task otherwise.
 
-### Tool Path Resolution — `Dmhai.Util.Path.resolve/2`
+### Tool Path Resolution — `DmhAi.Util.Path.resolve/2`
 
 | Input path prefix | Resolves under |
 |-------------------|----------------|
@@ -2718,7 +2718,7 @@ calls to file" checkbox. Persisted in `admin_cloud_settings.logTrace`
 
 ## Web Fetch (CMP-aware)
 
-`Dmhai.Tools.WebFetch` is a thin wrapper over `Dmhai.Web.Fetcher`. Used in the Confidant pipeline (web search synthesis) and as the `web_fetch` worker tool in the Assistant pipeline.
+`DmhAi.Tools.WebFetch` is a thin wrapper over `DmhAi.Web.Fetcher`. Used in the Confidant pipeline (web search synthesis) and as the `web_fetch` worker tool in the Assistant pipeline.
 
 ```
 Web.Fetcher          ← orchestrator
@@ -2763,7 +2763,7 @@ Empirical hit rate (from real-site tests): BBC / NYT / Guardian / Wikipedia dire
 
 ## LLM Routing
 
-All calls go through `Dmhai.Agent.LLM`. Model strings: `<provider>::<pool>::<model>`:
+All calls go through `DmhAi.Agent.LLM`. Model strings: `<provider>::<pool>::<model>`:
 
 ```
 "ollama::local::llama3.2:3b"
@@ -2823,7 +2823,7 @@ progress summariser — a separate LLM call on a smaller model — can be
 told explicitly which language to write its one-line update in. That's
 the only downstream consumer of the stored field.
 
-**Runtime-generated labels** use the `Dmhai.I18n` module — a plain-dict lookup with interpolation:
+**Runtime-generated labels** use the `DmhAi.I18n` module — a plain-dict lookup with interpolation:
 
 ```
 I18n.t("blocked_label", task.language, %{reason: "..."})
@@ -2919,7 +2919,7 @@ settings              — admin settings KV store
 blocked_domains       — scanner/abuse domain blocklist
 ```
 
-The DB schema is consolidated — no `ALTER TABLE` migration chain. Wipe `~/.dmhai/` to re-init from scratch after schema changes.
+The DB schema is consolidated — no `ALTER TABLE` migration chain. Wipe `~/.dmh_ai/` to re-init from scratch after schema changes.
 
 ---
 

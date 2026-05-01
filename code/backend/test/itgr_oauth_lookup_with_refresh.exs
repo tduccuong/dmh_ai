@@ -21,9 +21,9 @@
 defmodule Itgr.OauthLookupWithRefresh do
   use ExUnit.Case, async: false
 
-  alias Dmhai.Auth.{Credentials, OAuth2}
-  alias Dmhai.MCP.Registry
-  alias Dmhai.Repo
+  alias DmhAi.Auth.{Credentials, OAuth2}
+  alias DmhAi.MCP.Registry
+  alias DmhAi.Repo
   import Ecto.Adapters.SQL, only: [query!: 3]
 
   defp uid, do: T.uid()

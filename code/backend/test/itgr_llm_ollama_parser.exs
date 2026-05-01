@@ -4,7 +4,7 @@
 defmodule Itgr.LLMOllamaParser do
   use ExUnit.Case, async: false
 
-  alias Dmhai.LLM.Adapters.Ollama
+  alias DmhAi.LLM.Adapters.Ollama
 
   describe "chat_endpoint_url/1" do
     test "appends /api/chat to a bare host" do

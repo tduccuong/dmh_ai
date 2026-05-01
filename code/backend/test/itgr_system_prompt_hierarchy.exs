@@ -9,7 +9,7 @@
 defmodule Itgr.SystemPromptHierarchy do
   use ExUnit.Case, async: true
 
-  alias Dmhai.Agent.SystemPrompt
+  alias DmhAi.Agent.SystemPrompt
 
   # The pre-v2.5 prompts used markdown headings; this file historically
   # asserted heading-depth coherence. v2.5 switched both Assistant and

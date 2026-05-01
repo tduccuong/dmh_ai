@@ -35,10 +35,10 @@ Storage and retrieval are owned by `specs/vector_kb.md`. Pool resolution for the
 
 ## Command parser
 
-Triggered in BOTH `Dmhai.Handlers.AgentChat.handle_assistant_chat/4` AND `handle_confidant_chat/4` — after the entry-point bookkeeping, before persistence + dispatch to the user-agent loop. The runtime command itself (`Commands.Memo.run/4`, the `/wiki` pipelines) is mode-agnostic — only the handler-level intercept needs to live in both routes.
+Triggered in BOTH `DmhAi.Handlers.AgentChat.handle_assistant_chat/4` AND `handle_confidant_chat/4` — after the entry-point bookkeeping, before persistence + dispatch to the user-agent loop. The runtime command itself (`Commands.Memo.run/4`, the `/wiki` pipelines) is mode-agnostic — only the handler-level intercept needs to live in both routes.
 
 ```elixir
-case Dmhai.Commands.dispatch(stored_content, session_id, user.id) do
+case DmhAi.Commands.dispatch(stored_content, session_id, user.id) do
   {:handled, ack_ts} ->
     json(conn, 200, %{ts: ack_ts, handled: true})
     # Returns immediately; the agent loop is never invoked.
@@ -48,7 +48,7 @@ case Dmhai.Commands.dispatch(stored_content, session_id, user.id) do
 end
 ```
 
-Parse rules (`Dmhai.Commands.Parser.parse/1`):
+Parse rules (`DmhAi.Commands.Parser.parse/1`):
 
 - Match `/wiki <arg>` or `/memo <arg>` at the **start** of the (left-trimmed) message, case-sensitive. Trailing arguments after the first whitespace make up `<arg>` verbatim — no further parsing (preserves URLs with query strings, paths with spaces).
 - Empty `<arg>` → handled by the runtime: a usage-hint command_ack, no LLM round-trip.
@@ -56,7 +56,7 @@ Parse rules (`Dmhai.Commands.Parser.parse/1`):
 
 ## /memo — write-only save
 
-`Dmhai.Commands.Memo.run/4` is the single entry point. **Vector ingest + localize-ack runs asynchronously** under `Dmhai.Agent.TaskSupervisor`. The HTTP request thread persists the user message synchronously (so `user_ts` can return for FE optimistic-render dedup) and returns immediately; the ack lands later via the existing `/poll` channel. This avoids a 1–3 s blocking request while embedding + Oracle.localize run.
+`DmhAi.Commands.Memo.run/4` is the single entry point. **Vector ingest + localize-ack runs asynchronously** under `DmhAi.Agent.TaskSupervisor`. The HTTP request thread persists the user message synchronously (so `user_ts` can return for FE optimistic-render dedup) and returns immediately; the ack lands later via the existing `/poll` channel. This avoids a 1–3 s blocking request while embedding + Oracle.localize run.
 
 Safety default: the user message is always persisted with `kind="command"`. If the background task crashes mid-ingest, the worst case is a "stuck" command-tagged message in scrollback — never an unanswered message in the LLM's context.
 
@@ -70,7 +70,7 @@ def run(arg, original_content, session_id, user_id) do
   else
     {:ok, user_ts} = persist_user_command(session_id, user_id, original_content)
 
-    Task.Supervisor.start_child(Dmhai.Agent.TaskSupervisor, fn ->
+    Task.Supervisor.start_child(DmhAi.Agent.TaskSupervisor, fn ->
       run_save(arg, session_id, user_id)
     end)
 
@@ -111,7 +111,7 @@ Persisted messages (both filtered from LLM context):
 
 ### Localizing acks via `Oracle.localize/2`
 
-`Dmhai.Agent.Oracle.localize/2` is a generic helper that takes a meaning + a user-input language signal and returns the meaning expressed in the user's language (or English on weak/unclear signal). Used by:
+`DmhAi.Agent.Oracle.localize/2` is a generic helper that takes a meaning + a user-input language signal and returns the meaning expressed in the user's language (or English on weak/unclear signal). Used by:
 
 - `/memo` save success — localizes `"Saved."` against the input text.
 - `/memo` save error path — localizes `"Couldn't save: <reason>"` against the input text.
@@ -221,7 +221,7 @@ This is what makes the "fresh each turn, never accumulates" property hold. The p
 
 ## /wiki — write-only ingest
 
-The wiki path is unchanged from earlier specs. Source classification (URL → folder → file → text) and sync-vs-async dispatch live in `Dmhai.Commands.Pipelines.{URL,Folder,File,Text}`. All four pipelines persist `kind="command"` / `kind="command_ack"` pairs via `Commands.append_command_pair/4` so they're invisible to the LLM context engine.
+The wiki path is unchanged from earlier specs. Source classification (URL → folder → file → text) and sync-vs-async dispatch live in `DmhAi.Commands.Pipelines.{URL,Folder,File,Text}`. All four pipelines persist `kind="command"` / `kind="command_ack"` pairs via `Commands.append_command_pair/4` so they're invisible to the LLM context engine.
 
 ### Source classification
 
@@ -270,7 +270,7 @@ Async ack — `WikiAck.accepted_ack/1` — initial:
 | `service_connected` | user             | (existing) MCP attach receipt. | no (already filtered) |
 | `form_response`     | user             | (existing) request_input synthesis. | yes (already passed through) |
 
-Filter step in `Dmhai.Agent.ContextEngine.build_core/4`:
+Filter step in `DmhAi.Agent.ContextEngine.build_core/4`:
 
 ```elixir
 messages

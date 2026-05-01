@@ -27,10 +27,10 @@
 defmodule Itgr.OpenMcp do
   use ExUnit.Case, async: false
 
-  alias Dmhai.Auth.Credentials
-  alias Dmhai.MCP.{Client, Registry}
-  alias Dmhai.Repo
-  alias Dmhai.Tools.ConnectMcp
+  alias DmhAi.Auth.Credentials
+  alias DmhAi.MCP.{Client, Registry}
+  alias DmhAi.Repo
+  alias DmhAi.Tools.ConnectMcp
   import Ecto.Adapters.SQL, only: [query!: 3]
 
   defp uid, do: T.uid()
@@ -54,13 +54,13 @@ defmodule Itgr.OpenMcp do
   end
 
   defp seed_anchor_task(user_id, sid) do
-    Dmhai.Agent.Tasks.insert(
+    DmhAi.Agent.Tasks.insert(
       user_id: user_id,
       session_id: sid,
       task_title: "open mcp test",
       task_spec: "open mcp test"
     )
-    |> tap(&Dmhai.Agent.Tasks.mark_ongoing/1)
+    |> tap(&DmhAi.Agent.Tasks.mark_ongoing/1)
   end
 
   setup do
@@ -69,9 +69,9 @@ defmodule Itgr.OpenMcp do
     seed_user(user_id)
     seed_session(sid, user_id)
     anchor_task_id = seed_anchor_task(user_id, sid)
-    anchor_task_num = Dmhai.Agent.Tasks.get(anchor_task_id).task_num
+    anchor_task_num = DmhAi.Agent.Tasks.get(anchor_task_id).task_num
 
-    on_exit(fn -> Application.delete_env(:dmhai, :__mcp_transport_stub__) end)
+    on_exit(fn -> Application.delete_env(:dmh_ai, :__mcp_transport_stub__) end)
 
     {:ok,
      user_id: user_id,
@@ -274,15 +274,15 @@ defmodule Itgr.OpenMcp do
       # already_authorized_and_attach branch (build_handshake_ctx now
       # has a none_mcp clause). Re-handshake against the same stub.
       anchor_task_id_2 =
-        Dmhai.Agent.Tasks.insert(
+        DmhAi.Agent.Tasks.insert(
           user_id:    c.user_id,
           session_id: c.sid,
           task_title: "second task",
           task_spec:  "x"
         )
 
-      Dmhai.Agent.Tasks.mark_ongoing(anchor_task_id_2)
-      anchor_n2 = Dmhai.Agent.Tasks.get(anchor_task_id_2).task_num
+      DmhAi.Agent.Tasks.mark_ongoing(anchor_task_id_2)
+      anchor_n2 = DmhAi.Agent.Tasks.get(anchor_task_id_2).task_num
 
       ctx2 = %{user_id: c.user_id, session_id: c.sid, anchor_task_num: anchor_n2}
 

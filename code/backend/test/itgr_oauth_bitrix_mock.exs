@@ -24,9 +24,9 @@ defmodule Itgr.OauthBitrixMock do
   @moduletag :network
   @moduletag timeout: 30_000
 
-  alias Dmhai.Auth.{Credentials, OAuth2}
-  alias Dmhai.Handlers.Data
-  alias Dmhai.Repo
+  alias DmhAi.Auth.{Credentials, OAuth2}
+  alias DmhAi.Handlers.Data
+  alias DmhAi.Repo
   import Ecto.Adapters.SQL, only: [query!: 3]
 
   @mock_binary Path.expand("../../../mock_mcp/server", __DIR__)
@@ -116,7 +116,7 @@ defmodule Itgr.OauthBitrixMock do
   end
 
   defp seed_anchor_task(user_id, sid) do
-    Dmhai.Agent.Tasks.insert(
+    DmhAi.Agent.Tasks.insert(
       user_id: user_id,
       session_id: sid,
       task_title: "bitrix mock test",

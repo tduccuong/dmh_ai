@@ -547,7 +547,7 @@ Pass: **35/35**
        `redirect: false`. Mock 302s to the runtime's
        configured redirect_uri with `?code=…&state=…`.
     5. Test parses code+state from the Location header,
-       calls Dmhai.Auth.OAuth2.complete_flow(state, code).
+       calls DmhAi.Auth.OAuth2.complete_flow(state, code).
     6. Test replicates the production finalize_connection
        body — saves creds, runs MCP handshake to populate
        tools list, registers the service, attaches to anchor.

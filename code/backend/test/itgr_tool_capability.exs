@@ -7,7 +7,7 @@
 # Requires the production DB so credentials are available.
 #
 # Run with:
-#   DB_PATH=~/.dmhai/db/chat.db MIX_ENV=test mix test test/itgr_tool_capability.exs
+#   DB_PATH=~/.dmh_ai/db/chat.db MIX_ENV=test mix test test/itgr_tool_capability.exs
 
 defmodule Itgr.ToolCapability do
   use ExUnit.Case, async: false
@@ -18,7 +18,7 @@ defmodule Itgr.ToolCapability do
   @moduletag :network
   @moduletag timeout: 120_000
 
-  alias Dmhai.Agent.{AgentSettings, LLM}
+  alias DmhAi.Agent.{AgentSettings, LLM}
 
   # A minimal tool schema whose sole purpose is to force a tool-call response.
   # The description is an imperative so the model is unlikely to ignore it.

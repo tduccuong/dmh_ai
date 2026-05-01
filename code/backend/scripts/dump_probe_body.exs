@@ -2,14 +2,14 @@
 # Ollama Cloud, so we can curl it directly without booting the app twice.
 #
 # Run with:
-#   DB_PATH=~/.dmhai/db/chat.db mix run scripts/dump_probe_body.exs
+#   DB_PATH=~/.dmh_ai/db/chat.db mix run scripts/dump_probe_body.exs
 #
 # Outputs:
 #   /tmp/probe_body.json   — full body (messages + tools + model placeholder)
 #   /tmp/probe_token       — Bearer token (one line, no newline)
 
-alias Dmhai.Agent.{AgentSettings, ContextEngine}
-alias Dmhai.Tools.Registry, as: ToolsRegistry
+alias DmhAi.Agent.{AgentSettings, ContextEngine}
+alias DmhAi.Tools.Registry, as: ToolsRegistry
 
 user_msg =
   System.get_env("PROBE_MSG") ||
@@ -43,7 +43,7 @@ body = %{
 
 _ = AgentSettings  # silence alias-unused warning
 settings_row =
-  Dmhai.Repo
+  DmhAi.Repo
   |> Ecto.Adapters.SQL.query!("SELECT value FROM settings WHERE key=?", ["admin_cloud_settings"])
 
 settings =

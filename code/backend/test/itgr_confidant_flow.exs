@@ -10,7 +10,7 @@
 defmodule Itgr.ConfidantFlow do
   use ExUnit.Case, async: false
 
-  alias Dmhai.Agent.{ConfidantCommand, UserAgent}
+  alias DmhAi.Agent.{ConfidantCommand, UserAgent}
   import Ecto.Adapters.SQL, only: [query!: 3]
 
   @settle_ms 800
@@ -19,13 +19,13 @@ defmodule Itgr.ConfidantFlow do
 
   defp insert_session(session_id, user_id, mode, messages) do
     now = System.os_time(:millisecond)
-    query!(Dmhai.Repo,
+    query!(DmhAi.Repo,
       "INSERT INTO sessions (id, user_id, mode, messages, created_at, updated_at) VALUES (?,?,?,?,?,?)",
       [session_id, user_id, mode, Jason.encode!(messages), now, now])
   end
 
   defp session_messages(session_id, user_id) do
-    r = query!(Dmhai.Repo,
+    r = query!(DmhAi.Repo,
       "SELECT messages FROM sessions WHERE id=? AND user_id=?",
       [session_id, user_id])
     case r.rows do
@@ -35,7 +35,7 @@ defmodule Itgr.ConfidantFlow do
   end
 
   defp session_stream_buffer(session_id, user_id) do
-    r = query!(Dmhai.Repo,
+    r = query!(DmhAi.Repo,
       "SELECT stream_buffer FROM sessions WHERE id=? AND user_id=?",
       [session_id, user_id])
     case r.rows do

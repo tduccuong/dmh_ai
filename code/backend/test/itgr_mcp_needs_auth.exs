@@ -18,8 +18,8 @@
 defmodule Itgr.McpNeedsAuth do
   use ExUnit.Case, async: false
 
-  alias Dmhai.MCP.Registry
-  alias Dmhai.Repo
+  alias DmhAi.MCP.Registry
+  alias DmhAi.Repo
   import Ecto.Adapters.SQL, only: [query!: 3]
 
   defp uid, do: T.uid()

@@ -4,7 +4,7 @@
 defmodule Itgr.Chunker do
   use ExUnit.Case, async: true
 
-  alias Dmhai.VectorDB.Chunker
+  alias DmhAi.VectorDB.Chunker
 
   describe "split/2" do
     test "blank input returns empty list" do

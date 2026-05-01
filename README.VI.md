@@ -82,15 +82,15 @@ curl -fsSL https://get.docker.com | sh
 **Linux / macOS:**
 ```bash
 ./build.sh        # build Docker image và tạo dist/
-./install.sh      # cài vào ~/.dmhai/ và đăng ký lệnh dmhai
-dmhai start       # khởi động ứng dụng
+./install.sh      # cài vào ~/.dmh_ai/ và đăng ký lệnh dmh_ai
+dmh_ai start       # khởi động ứng dụng
 ```
 
 **Windows** — mở Command Prompt và chạy:
 ```
 build.bat
 install.bat
-dmhai start
+dmh_ai start
 ```
 
 Mở [http://localhost:8080](http://localhost:8080) trong trình duyệt.
@@ -98,17 +98,17 @@ Mở [http://localhost:8080](http://localhost:8080) trong trình duyệt.
 ### Quản lý ứng dụng
 
 ```bash
-dmhai start      # khởi động
-dmhai stop       # dừng
-dmhai restart    # khởi động lại (tự nhận bản build mới)
-dmhai status     # xem trạng thái container
+dmh_ai start      # khởi động
+dmh_ai stop       # dừng
+dmh_ai restart    # khởi động lại (tự nhận bản build mới)
+dmh_ai status     # xem trạng thái container
 ```
 
 Sau khi cập nhật code, build lại và cài lại:
 ```bash
 ./build.sh --no-export   # build lại image, không xuất tar (nhanh hơn)
 ./install.sh             # cập nhật cấu hình đã cài; giữ nguyên toàn bộ dữ liệu
-dmhai restart
+dmh_ai restart
 ```
 
 Trên Windows, dùng `build.bat` và `install.bat` thay thế.
@@ -119,7 +119,7 @@ Lần đầu khởi chạy, DMH-AI tạo tài khoản admin mặc định:
 
 | Tên đăng nhập | Mật khẩu |
 |---|---|
-| `admin` | `dmhai` |
+| `admin` | `dmh_ai` |
 
 Đăng nhập xong, **đổi mật khẩu ngay**: nhấn biểu tượng người dùng (góc trên phải) → **Đổi mật khẩu**.
 
@@ -215,14 +215,14 @@ Bạn không cần làm gì khác — chỉ cần hỏi. Truy vấn tìm kiếm 
 
 ## Dữ liệu của bạn
 
-Sau khi chạy `install.sh`, toàn bộ dữ liệu được lưu trong `~/.dmhai/`:
+Sau khi chạy `install.sh`, toàn bộ dữ liệu được lưu trong `~/.dmh_ai/`:
 
-- `~/.dmhai/db/` — lịch sử chat (cơ sở dữ liệu SQLite)
-- `~/.dmhai/user_assets/` — tệp đã tải lên, theo phiên
-- `~/.dmhai/system_logs/system.log` — nhật ký tìm kiếm web và hệ thống
+- `~/.dmh_ai/db/` — lịch sử chat (cơ sở dữ liệu SQLite)
+- `~/.dmh_ai/user_assets/` — tệp đã tải lên, theo phiên
+- `~/.dmh_ai/system_logs/system.log` — nhật ký tìm kiếm web và hệ thống
 
-Chạy lại `install.sh` là an toàn — không bao giờ ghi đè dữ liệu hiện có. Mỗi tệp chỉ được copy từ `dist/` nếu chưa tồn tại trong `~/.dmhai/`.
+Chạy lại `install.sh` là an toàn — không bao giờ ghi đè dữ liệu hiện có. Mỗi tệp chỉ được copy từ `dist/` nếu chưa tồn tại trong `~/.dmh_ai/`.
 
-Để sao lưu hoặc chuyển DMH-AI sang máy khác, sao chép thư mục `~/.dmhai/` và chạy `install.sh` trên máy mới.
+Để sao lưu hoặc chuyển DMH-AI sang máy khác, sao chép thư mục `~/.dmh_ai/` và chạy `install.sh` trên máy mới.
 
 Để thêm người dùng: biểu tượng người dùng → **Quản lý người dùng**.

@@ -44,7 +44,7 @@ defmodule Itgr.McpHuggingFace do
     # We don't reach into the private fn; if fetch_prm/1 returns
     # `{:ok, _}` against HF, the URL math was right.
     test "splits authority from path correctly for HF" do
-      {:ok, prm} = Dmhai.Auth.Discovery.fetch_prm(@hf_mcp_url)
+      {:ok, prm} = DmhAi.Auth.Discovery.fetch_prm(@hf_mcp_url)
       # The fact that we got `{:ok, _}` proves the constructor
       # produced the right URL — HF only serves PRM at the
       # spec-compliant location.
@@ -58,7 +58,7 @@ defmodule Itgr.McpHuggingFace do
     @describetag :network
 
     test "fetches and parses HuggingFace PRM" do
-      assert {:ok, prm} = Dmhai.Auth.Discovery.fetch_prm(@hf_mcp_url)
+      assert {:ok, prm} = DmhAi.Auth.Discovery.fetch_prm(@hf_mcp_url)
 
       # Mandatory fields per RFC 9728.
       assert is_list(prm.authorization_servers)
@@ -78,10 +78,10 @@ defmodule Itgr.McpHuggingFace do
     @describetag :network
 
     test "fetches and parses HuggingFace's authorization server metadata" do
-      {:ok, prm} = Dmhai.Auth.Discovery.fetch_prm(@hf_mcp_url)
+      {:ok, prm} = DmhAi.Auth.Discovery.fetch_prm(@hf_mcp_url)
       [as_url | _] = prm.authorization_servers
 
-      assert {:ok, asm} = Dmhai.Auth.Discovery.fetch_asm(as_url)
+      assert {:ok, asm} = DmhAi.Auth.Discovery.fetch_asm(as_url)
 
       # Mandatory endpoints.
       assert is_binary(asm.authorization_endpoint)
@@ -122,7 +122,7 @@ defmodule Itgr.McpHuggingFace do
         "params"  => %{
           "protocolVersion" => "2025-06-18",
           "capabilities"    => %{},
-          "clientInfo"      => %{"name" => "dmhai-itgr-test", "version" => "0.0.0"}
+          "clientInfo"      => %{"name" => "dmh_ai-itgr-test", "version" => "0.0.0"}
         }
       }
 
@@ -219,7 +219,7 @@ defmodule Itgr.McpHuggingFace do
     @describetag :network
 
     test "the resource URL in PRM is the canonical resource indicator" do
-      {:ok, prm} = Dmhai.Auth.Discovery.fetch_prm(@hf_mcp_url)
+      {:ok, prm} = DmhAi.Auth.Discovery.fetch_prm(@hf_mcp_url)
       # `prm.resource` is what we'd pass as `resource=` on the
       # authorization request (RFC 8707) so the issued token is
       # audience-bound to this MCP server. Spot-check that it's a

@@ -11,7 +11,7 @@ defmodule Itgr.LLMLiveReplay do
   @moduletag :network
   @moduletag timeout: 120_000
 
-  alias Dmhai.Agent.LLM
+  alias DmhAi.Agent.LLM
 
   test "OpenAI SSE parser populates content/tool_calls for the captured trace" do
     # Replay the 3-message context from /tmp/replay_messages.json,
@@ -98,7 +98,7 @@ defmodule Itgr.LLMLiveReplay do
     ]
 
     receiver = self()
-    result = Dmhai.Agent.LLM.stream(
+    result = DmhAi.Agent.LLM.stream(
       "ollama-cloud::devstral-small-2:24b-cloud",
       messages,
       receiver,

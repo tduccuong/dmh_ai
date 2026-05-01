@@ -4,7 +4,7 @@
 defmodule Itgr.LLMClassifier do
   use ExUnit.Case, async: true
 
-  alias Dmhai.Agent.LLM
+  alias DmhAi.Agent.LLM
 
   describe "looks_like_server_error?/1" do
     test "matches transient overload markers" do

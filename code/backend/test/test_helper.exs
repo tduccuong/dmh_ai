@@ -38,19 +38,19 @@ defmodule T do
   # `fun` receives (model_str, messages, opts) and returns
   # {:ok, text} | {:ok, {:tool_calls, calls}} | {:error, reason}.
   def stub_llm_call(fun) when is_function(fun, 3) do
-    Application.put_env(:dmhai, :__llm_call_stub__, fun)
-    ExUnit.Callbacks.on_exit(fn -> Application.delete_env(:dmhai, :__llm_call_stub__) end)
+    Application.put_env(:dmh_ai, :__llm_call_stub__, fun)
+    ExUnit.Callbacks.on_exit(fn -> Application.delete_env(:dmh_ai, :__llm_call_stub__) end)
   end
 
   # Install a streaming LLM stub for the duration of a test.
   # `fun` receives (model_str, messages, reply_pid, opts) and returns
   # {:ok, text} | {:ok, {:tool_calls, calls}} | {:error, reason}.
   def stub_llm_stream(fun) when is_function(fun, 4) do
-    Application.put_env(:dmhai, :__llm_stream_stub__, fun)
-    ExUnit.Callbacks.on_exit(fn -> Application.delete_env(:dmhai, :__llm_stream_stub__) end)
+    Application.put_env(:dmh_ai, :__llm_stream_stub__, fun)
+    ExUnit.Callbacks.on_exit(fn -> Application.delete_env(:dmh_ai, :__llm_stream_stub__) end)
   end
 
-  # Install a stub for `Dmhai.MCP.Transport.request/3`. `fun` receives
+  # Install a stub for `DmhAi.MCP.Transport.request/3`. `fun` receives
   # (server_url, %{method, body, headers, auth, session_id}) and must
   # return one of:
   #   {:ok, body :: map(), %{session_id: String.t() | nil}}
@@ -59,8 +59,8 @@ defmodule T do
   # Used by tests that drive the discovery cascade or per-tool calls
   # without spinning up a real MCP server.
   def stub_mcp_transport(fun) when is_function(fun, 2) do
-    Application.put_env(:dmhai, :__mcp_transport_stub__, fun)
-    ExUnit.Callbacks.on_exit(fn -> Application.delete_env(:dmhai, :__mcp_transport_stub__) end)
+    Application.put_env(:dmh_ai, :__mcp_transport_stub__, fun)
+    ExUnit.Callbacks.on_exit(fn -> Application.delete_env(:dmh_ai, :__mcp_transport_stub__) end)
   end
 
   # Build a normalised tool-call list (as returned by LLM.normalize_tool_calls).

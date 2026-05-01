@@ -4,7 +4,7 @@
 defmodule Itgr.LLMOpenAIParser do
   use ExUnit.Case, async: false
 
-  alias Dmhai.Agent.LLM
+  alias DmhAi.Agent.LLM
 
   # The streaming parser is private; we drive it indirectly via
   # `:__llm_stream_stub__` for tests that need the FULL stack. Pure
@@ -31,7 +31,7 @@ defmodule Itgr.LLMOpenAIParser do
         "usage" => %{"prompt_tokens" => 10, "completion_tokens" => 5}
       }
 
-      Application.put_env(:dmhai, :__llm_call_stub__, fn _model, _msgs, _opts ->
+      Application.put_env(:dmh_ai, :__llm_call_stub__, fn _model, _msgs, _opts ->
         # Bypass parse_response entirely by returning the synthesised result
         # directly. This stub exists for higher-level tests; the OpenAI
         # parser is exercised separately via the streaming integration test.
@@ -44,13 +44,13 @@ defmodule Itgr.LLMOpenAIParser do
         end
       end)
 
-      on_exit(fn -> Application.delete_env(:dmhai, :__llm_call_stub__) end)
+      on_exit(fn -> Application.delete_env(:dmh_ai, :__llm_call_stub__) end)
 
       assert {:ok, "Hello from OpenAI shape"} = LLM.call("ollama-cloud::devstral-small-2:24b-cloud", [])
     end
   end
 
-  # The stream parser is per-adapter (Dmhai.LLM.Adapter.handle_stream_line/2).
+  # The stream parser is per-adapter (DmhAi.LLM.Adapter.handle_stream_line/2).
   # Adapters.OpenAI's accumulator is the most fragile piece — partial
   # `function.arguments` strings concatenate across chunks. We assert
   # the contract here without spinning up a Bandit-mocked endpoint.
@@ -60,7 +60,7 @@ defmodule Itgr.LLMOpenAIParser do
       # so we simulate with the same data structures the parser uses.
       # We're really testing the contract: same sequence of deltas across
       # chunks must produce one full tool_call list with concatenated args.
-      tc_acc_key = {Dmhai.Agent.LLM, :tc_acc, self()}
+      tc_acc_key = {DmhAi.Agent.LLM, :tc_acc, self()}
       Process.put(tc_acc_key, %{})
 
       ctx = %{tc_acc_key: tc_acc_key}
@@ -160,12 +160,12 @@ defmodule Itgr.LLMOpenAIParser do
         %{role: "tool", content: "ok", tool_call_id: "call_xyz"}
       ]
 
-      [_user, assistant, _tool] = Dmhai.LLM.Adapters.OpenAI.normalize_messages(messages)
+      [_user, assistant, _tool] = DmhAi.LLM.Adapters.OpenAI.normalize_messages(messages)
       args = get_in(assistant, [:tool_calls, Access.at(0), "function", "arguments"])
       assert is_binary(args)
       assert Jason.decode!(args) == %{"task_title" => "Demo", "task_type" => "one_off"}
 
-      [_, ollama_asst, _] = Dmhai.LLM.Adapters.Ollama.normalize_messages(messages)
+      [_, ollama_asst, _] = DmhAi.LLM.Adapters.Ollama.normalize_messages(messages)
       args2 = get_in(ollama_asst, [:tool_calls, Access.at(0), "function", "arguments"])
       assert is_map(args2)
     end

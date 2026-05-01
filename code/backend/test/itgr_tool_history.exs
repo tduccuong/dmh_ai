@@ -9,8 +9,8 @@
 defmodule Itgr.ToolHistory do
   use ExUnit.Case, async: false
 
-  alias Dmhai.Agent.ToolHistory
-  alias Dmhai.Repo
+  alias DmhAi.Agent.ToolHistory
+  alias DmhAi.Repo
   import Ecto.Adapters.SQL, only: [query!: 3]
 
   defp uid, do: T.uid()
@@ -99,7 +99,7 @@ defmodule Itgr.ToolHistory do
     sid = uid(); uid_ = uid()
     insert_session(sid, uid_)
 
-    n = Dmhai.Agent.AgentSettings.tool_result_retention_turns()
+    n = DmhAi.Agent.AgentSettings.tool_result_retention_turns()
 
     # Write N+2 entries; oldest two should be evicted by the turn cap.
     for i <- 1..(n + 2) do
@@ -123,7 +123,7 @@ defmodule Itgr.ToolHistory do
 
     # Construct messages that alone exceed half the byte budget so two of
     # them can't both fit. Uses a printable ASCII blob for deterministic size.
-    half_cap = div(Dmhai.Agent.AgentSettings.tool_result_retention_bytes(), 2)
+    half_cap = div(DmhAi.Agent.AgentSettings.tool_result_retention_bytes(), 2)
     big_payload = String.duplicate("x", half_cap + 200)
 
     for i <- 1..3 do
@@ -316,7 +316,7 @@ defmodule Itgr.ToolHistory do
   # ─── flush_for_task ──────────────────────────────────────────────────────
 
   describe "flush_for_task/2" do
-    alias Dmhai.Agent.{Tasks, TaskTurnArchive}
+    alias DmhAi.Agent.{Tasks, TaskTurnArchive}
 
     defp insert_task(sid, uid_) do
       Tasks.insert(%{
@@ -399,7 +399,7 @@ defmodule Itgr.ToolHistory do
   # ─── Tasks.mark_done / mark_cancelled wire-through ──────────────────────
 
   describe "task close → flush integration" do
-    alias Dmhai.Agent.{Tasks, TaskTurnArchive}
+    alias DmhAi.Agent.{Tasks, TaskTurnArchive}
 
     test "mark_done flushes the task's tool_history into the archive" do
       sid = uid(); uid_ = uid()

@@ -5,11 +5,11 @@ import Config
 if config_env() != :test do
   db_path = System.get_env("DB_PATH", "/data/db/chat.db")
 
-  config :dmhai, Dmhai.Repo,
+  config :dmh_ai, DmhAi.Repo,
     database: db_path,
     pool_size: 5,
     load_extensions: [SqliteVec.path()]
 else
   # Tests still need the extension loaded so vec0 virtual tables work.
-  config :dmhai, Dmhai.Repo, load_extensions: [SqliteVec.path()]
+  config :dmh_ai, DmhAi.Repo, load_extensions: [SqliteVec.path()]
 end

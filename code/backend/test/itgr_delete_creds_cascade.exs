@@ -19,10 +19,10 @@
 defmodule Itgr.DeleteCredsCascade do
   use ExUnit.Case, async: false
 
-  alias Dmhai.Auth.Credentials
-  alias Dmhai.MCP.Registry
-  alias Dmhai.Tools.DeleteCreds
-  alias Dmhai.Repo
+  alias DmhAi.Auth.Credentials
+  alias DmhAi.MCP.Registry
+  alias DmhAi.Tools.DeleteCreds
+  alias DmhAi.Repo
   import Ecto.Adapters.SQL, only: [query!: 3]
 
   defp uid, do: T.uid()

@@ -1,13 +1,13 @@
 # Cheap-tier coverage for the Oracle / pivot / knowledge gate stack:
 #
-#   1. `Dmhai.Agent.Oracle.classify/2`     — verdict parsing against
+#   1. `DmhAi.Agent.Oracle.classify/2`     — verdict parsing against
 #      stubbed LLM responses.
-#   2. `Dmhai.Agent.PendingPivots`         — ETS round-trip + TTL.
-#   3. `Dmhai.Agent.Police.check_pivot/3`  — gate routing per verdict,
+#   2. `DmhAi.Agent.PendingPivots`         — ETS round-trip + TTL.
+#   3. `DmhAi.Agent.Police.check_pivot/3`  — gate routing per verdict,
 #      exempt list, soft-fail on `:error`, per-chain verdict cache.
 #
 # What's NOT covered here (medium-effort, deferred): the in-chain
-# auto-create-task hook in `Dmhai.Agent.UserAgent.execute_tools/3` —
+# auto-create-task hook in `DmhAi.Agent.UserAgent.execute_tools/3` —
 # its trigger predicates (`pause_or_cancel_succeeded?`) and the
 # synthesized `create_task` round-trip live behind private helpers
 # inside the chain runner. Cheapest way to catch a regression there
@@ -23,7 +23,7 @@
 defmodule Itgr.OraclePivot do
   use ExUnit.Case, async: false
 
-  alias Dmhai.Agent.{Oracle, PendingPivots, Police}
+  alias DmhAi.Agent.{Oracle, PendingPivots, Police}
 
   # ─── Oracle.classify/2 ──────────────────────────────────────────────────
 
@@ -203,11 +203,11 @@ defmodule Itgr.OraclePivot do
       # Manually plant a row whose ts is older than the 30-min TTL.
       stale_ts = System.os_time(:millisecond) - 31 * 60 * 1000
       stale_entry = %{user_msg: "old ask", anchor_task_num: 1, ts: stale_ts}
-      :ets.insert(:dmhai_pending_pivots, {sid, stale_entry})
+      :ets.insert(:dmh_ai_pending_pivots, {sid, stale_entry})
 
       assert PendingPivots.get(sid) == nil
       # And the stale row should have been cleaned up as a side effect.
-      assert :ets.lookup(:dmhai_pending_pivots, sid) == []
+      assert :ets.lookup(:dmh_ai_pending_pivots, sid) == []
     end
   end
 
@@ -217,7 +217,7 @@ defmodule Itgr.OraclePivot do
     setup do
       # Each test runs in its own process; clear any cached verdict
       # left by a sibling test that ran in the same VM.
-      Process.delete(:dmhai_oracle_verdict_cached)
+      Process.delete(:dmh_ai_oracle_verdict_cached)
       :ok
     end
 
@@ -228,7 +228,7 @@ defmodule Itgr.OraclePivot do
     # other verdicts we plant the cache directly — Police's gate
     # reads from the cache before touching the task.
     defp ctx_with_cached(verdict, anchor_num \\ 1) do
-      Process.put(:dmhai_oracle_verdict_cached, {:resolved, verdict})
+      Process.put(:dmh_ai_oracle_verdict_cached, {:resolved, verdict})
       %{anchor_task_num: anchor_num, session_id: "s_" <> T.uid()}
     end
 
@@ -293,7 +293,7 @@ defmodule Itgr.OraclePivot do
     end
 
     test "no oracle_task in ctx → :related fallback (gate skipped)" do
-      Process.delete(:dmhai_oracle_verdict_cached)
+      Process.delete(:dmh_ai_oracle_verdict_cached)
       ctx = %{anchor_task_num: 1, session_id: "s_" <> T.uid()}
       # Without an oracle_task and no cached verdict, await_oracle/1
       # returns :related (no anchor case from Oracle's perspective).
@@ -311,7 +311,7 @@ defmodule Itgr.OraclePivot do
       # every call — so flipping the cache flips the gate. This test
       # documents that current behavior; if we ever move to a per-
       # ctx-private cache, flip the assertion.
-      Process.put(:dmhai_oracle_verdict_cached, {:resolved, :unrelated})
+      Process.put(:dmh_ai_oracle_verdict_cached, {:resolved, :unrelated})
       assert {:rejected, _} = Police.check_pivot("web_search", %{}, ctx)
     end
 
@@ -325,7 +325,7 @@ defmodule Itgr.OraclePivot do
   # ─── Auto-create-task trigger predicates ────────────────────────────────
 
   describe "UserAgent.pause_or_cancel_succeeded?/1" do
-    alias Dmhai.Agent.UserAgent
+    alias DmhAi.Agent.UserAgent
 
     test "true on a normal pause/cancel success payload" do
       assert UserAgent.pause_or_cancel_succeeded?(~s({\n  "ok": true,\n  "task_num": 1\n}))
@@ -362,7 +362,7 @@ defmodule Itgr.OraclePivot do
   end
 
   describe "UserAgent.derive_task_title/1" do
-    alias Dmhai.Agent.UserAgent
+    alias DmhAi.Agent.UserAgent
 
     test "takes the first line, trimmed" do
       assert UserAgent.derive_task_title("  why is the stock market soaring?  \nfollow-up\n") ==
@@ -388,8 +388,8 @@ defmodule Itgr.OraclePivot do
   # ─── End-to-end wiring: maybe_auto_create_task/3 ────────────────────────
 
   describe "UserAgent.maybe_auto_create_task/3 — happy path wiring" do
-    alias Dmhai.Agent.{PendingPivots, Tasks, UserAgent}
-    alias Dmhai.Repo
+    alias DmhAi.Agent.{PendingPivots, Tasks, UserAgent}
+    alias DmhAi.Repo
     import Ecto.Adapters.SQL, only: [query!: 3]
 
     defp seed_session(sid, user_id) do
@@ -419,7 +419,7 @@ defmodule Itgr.OraclePivot do
 
       # Reset process-dict cache so Police.check_pivot doesn't read a
       # stale verdict from a sibling test.
-      Process.delete(:dmhai_oracle_verdict_cached)
+      Process.delete(:dmh_ai_oracle_verdict_cached)
 
       on_exit(fn -> PendingPivots.clear(sid) end)
 
@@ -492,7 +492,7 @@ defmodule Itgr.OraclePivot do
       # 6. Cached Oracle verdict forced to :related so subsequent
       #    Police gate calls in this chain pass through (anchor moved,
       #    old verdict is stale).
-      assert Process.get(:dmhai_oracle_verdict_cached) == {:resolved, :related}
+      assert Process.get(:dmh_ai_oracle_verdict_cached) == {:resolved, :related}
     end
 
     test "cancel_task success with pending pivot fires the same auto-create path", ctx do

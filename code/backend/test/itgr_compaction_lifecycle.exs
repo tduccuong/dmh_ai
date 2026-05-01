@@ -17,8 +17,8 @@
 defmodule Itgr.CompactionLifecycle do
   use ExUnit.Case, async: false
 
-  alias Dmhai.Agent.{ContextEngine, Tasks, TaskTurnArchive}
-  alias Dmhai.Repo
+  alias DmhAi.Agent.{ContextEngine, Tasks, TaskTurnArchive}
+  alias DmhAi.Repo
   import Ecto.Adapters.SQL, only: [query!: 3]
 
   # ─── Sim — action DSL, chain templates, conversation builder ─────────────

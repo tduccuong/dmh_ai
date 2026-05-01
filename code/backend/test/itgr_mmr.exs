@@ -4,7 +4,7 @@
 defmodule Itgr.MMR do
   use ExUnit.Case, async: true
 
-  alias Dmhai.VectorDB.MMR
+  alias DmhAi.VectorDB.MMR
 
   defp hit(text, score), do: %{chunk_text: text, score: score}
 

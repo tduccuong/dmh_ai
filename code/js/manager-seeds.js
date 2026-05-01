@@ -3,7 +3,7 @@
 
 // Wiki Seeds admin UI. Mirrors PoolsAdmin's structure (load → render →
 // per-row controls → reload). Backed by /admin/wiki-seeds (see
-// lib/dmhai/handlers/admin_seeds.ex). Admin-only — the dropdown
+// lib/dmh_ai/handlers/admin_seeds.ex). Admin-only — the dropdown
 // entry and modal page are gated by user.role === 'admin' in
 // main.js.
 

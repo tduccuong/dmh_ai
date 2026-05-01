@@ -19,7 +19,7 @@ defmodule Itgr.OidcFallback do
   @moduletag :network
   @moduletag timeout: 30_000
 
-  alias Dmhai.Auth.Discovery
+  alias DmhAi.Auth.Discovery
 
   describe "OIDC fallback for fetch_asm/1" do
     test "Google's accounts.google.com — RFC 8414 404 → OIDC succeeds" do

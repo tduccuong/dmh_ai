@@ -20,8 +20,8 @@
 defmodule Itgr.PollPeriodicDelivery do
   use ExUnit.Case, async: false
 
-  alias Dmhai.Agent.Tasks
-  alias Dmhai.Repo
+  alias DmhAi.Agent.Tasks
+  alias DmhAi.Repo
   import Ecto.Adapters.SQL, only: [query!: 3]
 
   defp uid, do: T.uid()

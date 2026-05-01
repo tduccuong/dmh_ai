@@ -17,7 +17,7 @@ Visually the chat reads as the same sentence appearing twice — once finished a
 
 **Latency to surface.** Was masked before #185 (provider-driven adapter). Pre-#185 the OpenAI-compat `/v1` shim silently truncated `options.num_ctx` to 4096 tokens; system prompt + most-recent turn fit, older narrations got cut, model couldn't echo what it didn't see. Post-#185 the Ollama adapter routes to native `/api/chat` which honours `options.num_ctx` (default 16384). Full chain history now reaches the model — including its own prior narrations.
 
-**Root cause.** `lib/dmhai/agent/user_agent.ex:1287` builds the per-turn in-memory `assistant_msg` carrying the narration as `content`:
+**Root cause.** `lib/dmh_ai/agent/user_agent.ex:1287` builds the per-turn in-memory `assistant_msg` carrying the narration as `content`:
 
 ```elixir
 assistant_msg = %{role: "assistant", content: clean_narration, tool_calls: tagged_calls}
@@ -62,7 +62,7 @@ For strong models (devstral-2 / gemma4-31b) the empirical probe shows no regress
 **Workaround for users.** None. The echo wastes streaming time but doesn't break correctness — once the echo finishes, the model's actual new contribution streams through.
 
 **Files involved (when revisiting):**
-- `lib/dmhai/agent/user_agent.ex:1287` — Path 1 fix site.
-- `lib/dmhai/agent/user_agent.ex:1278` — persisted `narration_msg` (untouched).
-- `lib/dmhai/agent/context_engine.ex` `build_core/5` — Path 2 fix site (kind filter).
+- `lib/dmh_ai/agent/user_agent.ex:1287` — Path 1 fix site.
+- `lib/dmh_ai/agent/user_agent.ex:1278` — persisted `narration_msg` (untouched).
+- `lib/dmh_ai/agent/context_engine.ex` `build_core/5` — Path 2 fix site (kind filter).
 - `specs/commands.md` — kind table updated when Path 2 ships.

@@ -4,9 +4,9 @@
 defmodule Itgr.AssetsLayout do
   use ExUnit.Case, async: true
 
-  alias Dmhai.Constants
-  alias Dmhai.Util.Path, as: SafePath
-  alias Dmhai.Agent.{Tasks, Police}
+  alias DmhAi.Constants
+  alias DmhAi.Util.Path, as: SafePath
+  alias DmhAi.Agent.{Tasks, Police}
 
   defp uid, do: T.uid()
 

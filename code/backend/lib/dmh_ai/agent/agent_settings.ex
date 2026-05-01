@@ -1,0 +1,615 @@
+# Copyright (c) 2026 Cuong Truong
+# This project is licensed under the AGPL v3.
+# See the LICENSE file in the repository root for full details.
+# For commercial inquiries, contact: tduccuong@gmail.com
+
+defmodule DmhAi.Agent.AgentSettings do
+  @moduledoc """
+  Reads per-agent model configuration from admin_cloud_settings.
+  Falls back to sensible defaults so the system works out of the box.
+  """
+
+  alias DmhAi.Repo
+  import Ecto.Adapters.SQL, only: [query!: 3]
+
+  # Defaults use the canonical `<pool>::<model>` format. See
+  # specs/api_pools.md. The `ollama-cloud` pool is seeded on first boot
+  # from the operator's pool seed file (defaults to placeholder zero
+  # accounts; admin must add their cloud accounts via System Settings →
+  # API Pools before these models can be used).
+  @defaults %{
+    "confidantModel"         => "ollama-cloud::gemma4:31b-cloud",
+    "assistantModel"         => "ollama-cloud::gemma4:31b-cloud",
+    "compactorModel"         => "ollama-cloud::gemma4:31b-cloud",
+    "summarizerModel"        => "ollama-cloud::gemma4:31b-cloud",
+    "webSearchModel"         => "ollama-cloud::ministral-3:14b-cloud",
+    "oracleModel"            => "ollama-cloud::ministral-3:14b-cloud",
+    "imageDescriberModel"    => "ollama-cloud::gemma4:31b-cloud",
+    "videoDescriberModel"    => "ollama-cloud::gemma4:31b-cloud",
+    "profileExtractorModel"  => "ollama-cloud::gemma4:31b-cloud",
+    # Embedding model used by the vector KB pipeline (see specs/vector_kb.md).
+    "kbEmbeddingModel"       => "miner::qwen3-embedding:0.6b"
+  }
+
+  @log_trace_default false
+  @model_behavior_telemetry_enabled_default true
+
+  @spawn_task_timeout_secs_default 30
+  @max_tool_result_chars_default 8_000
+  @master_compact_turn_threshold_default 50
+  @master_compact_fraction_default 0.45
+  @max_assistant_turns_per_chain_default 50
+
+  # Cap on the number of `run_script` calls per single chain. The
+  # (N+1)th run_script is rejected by Police's run_script_probe_budget
+  # gate with a nudge that teaches the model to compose the rest into
+  # ONE more script OR ask the user the specific question probes can't
+  # answer. Default 5: leaves room for genuinely complex API
+  # discovery (probe stages → probe methods → probe fields → execute
+  # → verify) while still surfacing scope walls and missing entities
+  # to the user fast. See architecture.md §Police gate #11.
+  @run_script_probe_budget_default 5
+
+  # Long-running tool execution (see architecture.md
+  # §Long-running tool execution). Every `run_script` invocation is
+  # wrapped in nohup, registered in `DmhAi.Agent.RunningTools`, and
+  # the runtime polls process status every `tool_run_poll_interval_ms`.
+  # Anything still running after `run_script_max_runtime_ms` is
+  # killed and returns `{:error, "max_runtime exceeded after Ns"}`.
+  @tool_run_poll_interval_ms_default 2_000
+  @run_script_max_runtime_ms_default 21_600_000
+
+  # Estimated usable context window (in tokens) of the assistant LLM.
+  # Used by ContextEngine.should_compact? to derive the char-based
+  # compaction trigger. Conservative floor across cloud models (many
+  # sit at ~128 k, some larger). Operators can tune via the
+  # `estimatedContextTokens` setting.
+  @estimated_context_tokens_default 64_000
+
+  # Document extraction
+  @min_extracted_text_chars_default 50
+  @ocr_pages_per_chunk_default 8
+  @ocr_page_cap_default 16
+
+  # Tool-result retention — number of recent turns whose tool_call /
+  # tool_result message pairs stay in the Assistant's context on the
+  # next turn, so follow-up questions can be answered without re-
+  # extracting. Bounded independently by a byte budget so a chain of
+  # heavy OCRs can't balloon context.
+  @tool_result_retention_turns_default 5
+  @tool_result_retention_bytes_default 120_000
+
+  # Per-task archive sliding window. Caps `task_turn_archive` to the
+  # last N rows OR B bytes per task, whichever is tighter. Oldest
+  # rows beyond either cap are dropped at append time. No LLM
+  # summarisation of archived content — sliding-window eviction only.
+  # See architecture.md §Task state continuity across chains.
+  @task_archive_row_cap_default 60
+  @task_archive_byte_cap_default 120_000
+
+  # LLM-account rotation throttle durations. Applied by
+  # `DmhAi.Agent.LLM` when an account hits a rate-limit (HTTP 429 or
+  # stream-inline RL error) or has its quota exhausted (Ollama's
+  # weekly cap). Rate-limit defaults to 60 s — matches the typical
+  # upstream rolling-window RL and keeps a burst from locking the
+  # whole account pool. Quota default is 168 h (7 days) to match
+  # Ollama's weekly reset cadence. The 429 handler also parses the
+  # `Retry-After` header and, when present, uses it in preference to
+  # this default (see `parse_retry_after_ms/1`).
+  @rate_limit_throttle_secs_default 60
+  @quota_exhausted_throttle_hours_default 168
+
+  # Outbound HTTP receive_timeout for LLM calls (both streaming and
+  # non-streaming). Belt-and-suspenders cap so a stalled connection
+  # fails out rather than blocking forever; not the primary defence
+  # against hangs (that's `Connection: close` + `compressed: false`
+  # in lib/dmh_ai/agent/llm.ex). Default 300 s accommodates cold-loads
+  # of large local Ollama models when `num_ctx` forces a KV-cache
+  # reallocation — the prior 120 s was too tight for 24B-class
+  # models on consumer GPUs (see specs/api_pools.md §num_ctx).
+  # Bump higher if your hardware reloads slower; lower if you'd
+  # rather fail fast on misbehaving cloud endpoints.
+  @llm_receive_timeout_ms_default 300_000
+
+  # Output-token ceiling (num_predict) passed to every assistant-mode
+  # LLM.stream call. `num_predict` is a ceiling, NOT a prepaid budget
+  # — unused headroom has no cost. Set far above any practical
+  # tool_call or reply size (long bash scripts easily run to ~1 000
+  # tokens) while still bounding a runaway model that never emits EOS.
+  @llm_num_predict_assistant_default 16_384
+
+  # Time-to-live (seconds) for a `request_input` form. After this,
+  # the BE rejects late submissions and the FE renders the form as
+  # expired. The chain that emitted the form stays paused — user can
+  # re-ask in a new chain.
+  @request_input_ttl_secs_default 600
+
+  # OAuth2 pending-state TTL (seconds). State token mints when a
+  # `connect_mcp` flow starts; expires N seconds later. Callbacks
+  # past expiry are rejected.
+  @oauth_state_ttl_secs_default 600
+
+  # Base URL the BE uses to construct OAuth2 redirect URIs. Combined
+  # with a state token to form `<base>/oauth/callback/<state>`. Must
+  # match the redirect URI the provider's OAuth App / authorization
+  # server allows (or its prefix, when the provider accepts a prefix).
+  @oauth_redirect_base_url_default "http://localhost:8080"
+
+  # Web / HTTP defaults
+  @http_user_agent_default "Mozilla/5.0 (compatible; DMH-AI/1.0)"
+  @searxng_url_default "http://127.0.0.1:8888"
+  @jina_base_url_default "https://r.jina.ai/"
+  @web_search_max_fetch_pages_default 6
+  @web_search_fetch_content_budget_default 18_000
+  @web_search_direct_timeout_ms_default 6_000
+  @web_search_jina_timeout_ms_default 7_000
+  @web_search_total_timeout_ms_default 20_000
+  @synthesis_threshold_default 45_000
+  @synthesis_fallback_chars_default 8_000
+
+  # Vector knowledge base — see specs/vector_kb.md. Chunk size targets
+  # the embedding model's recall sweet spot (256–512 tokens for dense
+  # retrieval). qwen3-embedding-0.6b emits 1024-dim vectors; changing
+  # `kb_embedding_dim` requires a full reindex (the SQLite-blob backend
+  # rejects mismatched rows on insert).
+  # Knowledge-scope (`/wiki`) chunking — long curated documents.
+  @kb_chunk_tokens_default 400
+  @kb_chunk_overlap_tokens_default 60
+
+  # `/wiki <url>` BFS crawl. v1 was single-page; v2 (#178) walks
+  # same-prefix pages up to a depth + page cap, indexing each. The
+  # caps are conservative defaults for typical doc sites; raise
+  # `learn_url_max_pages` for a deep API reference, lower
+  # `learn_url_max_depth` for a flat marketing site.
+  @learn_url_max_depth_default 5
+  @learn_url_max_pages_default 200
+  @learn_url_concurrency_default 1
+
+  # Memo-scope (`/memo`) chunking — much smaller. Users typically
+  # save 2-sentence facts (~30–40 tokens) and rarely exceed 20
+  # sentences (~300–400 tokens). At ~50 tokens / chunk, a typical
+  # 2-sentence memo stays as a single sharp chunk while longer
+  # memos split into ~3-sentence units. Sharper chunks → query
+  # vectors align tightly with the matching fact-bearing chunk
+  # → higher cosine scores → the 0.55 threshold becomes a clean
+  # signal of "actually about this topic". See specs/vector_kb.md.
+  @kb_memo_chunk_tokens_default 50
+  @kb_memo_chunk_overlap_tokens_default 10
+  @kb_top_n_default 8
+
+  # Maximum Marginal Relevance — diversification on retrieval.
+  # The vector store returns the top-`pool_size` candidates by raw
+  # cosine; we then MMR-pick the final `top_n` so near-duplicate
+  # chunks (e.g. identical boilerplate error blocks copied across
+  # many docs) drop out and the model sees diverse context.
+  # Lambda controls the balance — 1.0 = pure relevance (no
+  # diversification), 0.0 = pure novelty. 0.6 favours relevance
+  # while still penalising near-duplicates.
+  # See specs/vector_kb.md §retrieval.
+  @kb_mmr_pool_size_default 30
+  @kb_mmr_lambda_default 0.6
+
+  # Cosine-similarity floor for accepting a vector hit. Hits below
+  # this score are dropped before they reach Oracle / Assistant —
+  # prevents the model from forcing answers out of weak / unrelated
+  # chunks. With qwen3-embedding:0.6b the empirical separator
+  # between "actually about the topic" and noise sits around 0.55.
+  # Lower → more recall (and more false positives); raise → tighter
+  # precision. See specs/vector_kb.md.
+  @kb_score_threshold_default 0.55
+  @kb_embedding_dim_default 1024
+  @kb_embedding_batch_size_default 32
+
+  # Cap on memo hits attached to the `[memo context]` block in
+  # Confidant's auto-retrieve pre-step. The score threshold already
+  # filters out weak hits; this is a safety against a user whose
+  # memo store has many similar entries (e.g. twenty bank-related
+  # notes) so the prompt doesn't bloat. See specs/commands.md
+  # §Confidant memo auto-retrieve.
+  @memo_context_top_k_default 5
+
+  # Inline-text /wiki semantic-merge gate — a new body whose centroid
+  # is at-or-above this cosine score against an existing source merges
+  # into that source instead of creating a new one. High enough that
+  # distinct topics don't collapse, low enough that "same content with
+  # a typo fix / extra paragraph" merges.
+  @kb_text_merge_threshold_default 0.92
+
+  # Background relearn supervisor — caps simultaneous re-fetches.
+  @kb_relearn_concurrency_default 4
+
+  @doc """
+  Get the model string for a given agent role. Returns the default if
+  unset. Always in `<pool>::<model>` form (see specs/api_pools.md). Both
+  the per-role override stored in `admin_cloud_settings` and the
+  baked-in `@defaults` are expected to use that form post-migration —
+  any legacy `<provider>::<local|cloud>::<model>` entries are normalised
+  by `DmhAi.DB.Init.migrate_legacy_model_strings/0` on every boot.
+  """
+  @spec model_for(String.t()) :: String.t()
+  def model_for(role) when is_binary(role) do
+    settings = load()
+    val = String.trim(settings[role] || "")
+    if val == "", do: @defaults[role] || "", else: val
+  end
+
+  @doc "Whether to write verbatim LLM call traces to <session_root>/log_traces/<task_id>.log."
+  @spec log_trace() :: boolean()
+  def log_trace, do: bool_setting("logTrace", @log_trace_default)
+
+  @doc "Whether to record model misbehavior occurrences to model_behavior_stats for the admin UI."
+  @spec model_behavior_telemetry_enabled() :: boolean()
+  def model_behavior_telemetry_enabled,
+    do: bool_setting("modelBehaviorTelemetryEnabled", @model_behavior_telemetry_enabled_default)
+
+  @doc "Shortcut accessors."
+  def confidant_model,          do: model_for("confidantModel")
+  def assistant_model,          do: model_for("assistantModel")
+  def compactor_model,        do: model_for("compactorModel")
+  def summarizer_model,       do: model_for("summarizerModel")
+  def web_search_model,       do: model_for("webSearchModel")
+  def oracle_model,           do: model_for("oracleModel")
+  def image_describer_model,  do: model_for("imageDescriberModel")
+  def video_describer_model,  do: model_for("videoDescriberModel")
+  def profile_extractor_model, do: model_for("profileExtractorModel")
+  def kb_embedding_model,      do: model_for("kbEmbeddingModel")
+
+  @doc "Timeout in seconds applied to each bash command run inside spawn_task."
+  @spec spawn_task_timeout_secs() :: pos_integer()
+  def spawn_task_timeout_secs, do: int_setting("spawnTaskTimeoutSecs", @spawn_task_timeout_secs_default)
+
+  @doc "Hard character limit for tool results fed back to the assistant. Larger results are truncated."
+  @spec max_tool_result_chars() :: pos_integer()
+  def max_tool_result_chars, do: int_setting("maxToolResultChars", @max_tool_result_chars_default)
+
+  @doc "Session compaction: compact after this many recent turns."
+  @spec master_compact_turn_threshold() :: pos_integer()
+  def master_compact_turn_threshold, do: int_setting("masterCompactTurnThreshold", @master_compact_turn_threshold_default)
+
+  @doc "Session compaction: compact when recent chars exceed this fraction of estimated context budget."
+  @spec master_compact_fraction() :: float()
+  def master_compact_fraction, do: float_setting("masterCompactFraction", @master_compact_fraction_default)
+
+  @doc """
+  Per-chain safety cap on the number of turns (LLM roundtrips) before the
+  chain aborts with a carry-on message. Terminology: one **turn** is one
+  LLM call + its tool execution; one **chain** is the sequence of turns
+  until the assistant emits user-facing text. See architecture.md
+  §Assistant Mode.
+  """
+  @spec max_assistant_turns_per_chain() :: pos_integer()
+  def max_assistant_turns_per_chain, do: int_setting("maxAssistantTurnsPerChain", @max_assistant_turns_per_chain_default)
+
+  @spec run_script_probe_budget() :: pos_integer()
+  def run_script_probe_budget, do: int_setting("runScriptProbeBudget", @run_script_probe_budget_default)
+
+  @doc "Runtime poll cadence (ms) for in-flight `run_script` processes."
+  @spec tool_run_poll_interval_ms() :: pos_integer()
+  def tool_run_poll_interval_ms,
+    do: int_setting("toolRunPollIntervalMs", @tool_run_poll_interval_ms_default)
+
+  @doc "Hard upper bound (ms) on a single `run_script` invocation. Past this the runtime kills the PID."
+  @spec run_script_max_runtime_ms() :: pos_integer()
+  def run_script_max_runtime_ms,
+    do: int_setting("runScriptMaxRuntimeMs", @run_script_max_runtime_ms_default)
+
+  @doc "Minimum post-trim char count for an `extract_content` result to count as 'meaningful' (not blank/scanned)."
+  @spec min_extracted_text_chars() :: pos_integer()
+  def min_extracted_text_chars, do: int_setting("minExtractedTextChars", @min_extracted_text_chars_default)
+
+  @doc "How many rendered PDF pages to send per vision-LLM OCR call."
+  @spec ocr_pages_per_chunk() :: pos_integer()
+  def ocr_pages_per_chunk, do: int_setting("ocrPagesPerChunk", @ocr_pages_per_chunk_default)
+
+  @doc "Hard cap on PDF page count for OCR. Above this, extract_content fails with a nudge to split the file."
+  @spec ocr_page_cap() :: pos_integer()
+  def ocr_page_cap, do: int_setting("ocrPageCap", @ocr_page_cap_default)
+
+  @doc "Estimated usable context-window size (in tokens) of the assistant LLM."
+  @spec estimated_context_tokens() :: pos_integer()
+  def estimated_context_tokens,
+    do: int_setting("estimatedContextTokens", @estimated_context_tokens_default)
+
+  @doc "Number of recent turns whose tool_call / tool_result messages are retained in context."
+  @spec tool_result_retention_turns() :: pos_integer()
+  def tool_result_retention_turns,
+    do: int_setting("toolResultRetentionTurns", @tool_result_retention_turns_default)
+
+  @doc "Upper byte budget for retained tool messages. When exceeded, oldest-first eviction trims to fit."
+  @spec tool_result_retention_bytes() :: pos_integer()
+  def tool_result_retention_bytes,
+    do: int_setting("toolResultRetentionBytes", @tool_result_retention_bytes_default)
+
+  @doc """
+  Per-task archive row cap. Each `task_turn_archive` grouping is
+  trimmed to this many rows at append time; oldest beyond the cap are
+  dropped. Row = one persisted message (user OR assistant OR tool),
+  so ~30 user+assistant pairs fit in the default 60.
+  """
+  @spec task_archive_row_cap() :: pos_integer()
+  def task_archive_row_cap,
+    do: int_setting("taskArchiveRowCap", @task_archive_row_cap_default)
+
+  @doc """
+  Per-task archive byte budget. Measured over the `content` column
+  sum. Applied alongside `task_archive_row_cap` — oldest rows are
+  dropped until BOTH caps are satisfied. A single heavy message (e.g.
+  pasted 80 KB paragraph) shrinks the effective window further.
+  """
+  @spec task_archive_byte_cap() :: pos_integer()
+  def task_archive_byte_cap,
+    do: int_setting("taskArchiveByteCap", @task_archive_byte_cap_default)
+
+  @doc """
+  Rate-limit throttle duration (seconds). Applied to an LLM account
+  when it returns 429 / rate-limited AND the response carried no
+  `Retry-After` header to honor. Default 60 s — a typical upstream
+  rate-limit rolling window.
+  """
+  @spec rate_limit_throttle_secs() :: pos_integer()
+  def rate_limit_throttle_secs,
+    do: int_setting("rateLimitThrottleSecs", @rate_limit_throttle_secs_default)
+
+  @doc """
+  Quota-exhausted throttle duration (hours). Applied when an LLM
+  account signals its quota is spent (Ollama's "weekly usage limit"
+  message). Default 168 h (7 days) to match Ollama cloud's weekly
+  reset.
+  """
+  @spec quota_exhausted_throttle_hours() :: pos_integer()
+  def quota_exhausted_throttle_hours,
+    do: int_setting("quotaExhaustedThrottleHours", @quota_exhausted_throttle_hours_default)
+
+  @doc """
+  Outbound HTTP `receive_timeout` (ms) for both streaming and
+  non-streaming LLM calls. Belt-and-suspenders cap so a stalled
+  connection fails out rather than blocking forever. Default 300 s
+  to absorb cold-loads of large local Ollama models when `num_ctx`
+  forces a KV-cache reallocation.
+  """
+  @spec llm_receive_timeout_ms() :: pos_integer()
+  def llm_receive_timeout_ms,
+    do: int_setting("llmReceiveTimeoutMs", @llm_receive_timeout_ms_default)
+
+  @doc """
+  Output-token ceiling (`num_predict`) applied to every assistant-mode
+  LLM.stream call. A ceiling, not a reservation: unused headroom has
+  no cost. Raise if long tool_calls (scripts, files) are getting cut
+  mid-string; lower to harden against runaway generation.
+  """
+  @spec llm_num_predict_assistant() :: pos_integer()
+  def llm_num_predict_assistant,
+    do: int_setting("llmNumPredictAssistant", @llm_num_predict_assistant_default)
+
+  @doc """
+  Time-to-live (seconds) for a `request_input` form. The BE rejects
+  submissions whose form is older than this; the FE renders the form
+  as expired. The chain that emitted the form stays paused.
+  """
+  @spec request_input_ttl_secs() :: pos_integer()
+  def request_input_ttl_secs,
+    do: int_setting("requestInputTtlSecs", @request_input_ttl_secs_default)
+
+  @doc "TTL (seconds) for pending OAuth2 state tokens before they expire."
+  @spec oauth_state_ttl_secs() :: pos_integer()
+  def oauth_state_ttl_secs,
+    do: int_setting("oauthStateTtlSecs", @oauth_state_ttl_secs_default)
+
+  @doc """
+  Base URL the BE uses when constructing OAuth2 redirect URIs.
+  Combined with a state token as `<base>/oauth/callback/<state>`.
+  Must match the redirect URI (or its prefix) registered with the
+  provider. Genuinely per-deployment — the BE listens on a single
+  host; per-user OAuth App credentials are stored separately in
+  `user_credentials`.
+  """
+  @spec oauth_redirect_base_url() :: String.t()
+  def oauth_redirect_base_url,
+    do: string_setting("oauth_redirect_base_url", @oauth_redirect_base_url_default)
+
+  @doc "HTTP User-Agent string for outbound web requests."
+  @spec http_user_agent() :: String.t()
+  def http_user_agent, do: string_setting("httpUserAgent", @http_user_agent_default)
+
+  @doc "SearXNG base URL."
+  @spec searxng_url() :: String.t()
+  def searxng_url, do: string_setting("searxngUrl", @searxng_url_default)
+
+  @doc "Jina reader base URL (appended with the target URL)."
+  @spec jina_base_url() :: String.t()
+  def jina_base_url, do: string_setting("jinaBaseUrl", @jina_base_url_default)
+
+  @doc "Max number of search-result pages fetched per web search cycle."
+  @spec web_search_max_fetch_pages() :: pos_integer()
+  def web_search_max_fetch_pages, do: int_setting("webSearchMaxFetchPages", @web_search_max_fetch_pages_default)
+
+  @doc "Character budget for accumulated page content per web search cycle."
+  @spec web_search_fetch_content_budget() :: pos_integer()
+  def web_search_fetch_content_budget, do: int_setting("webSearchFetchContentBudget", @web_search_fetch_content_budget_default)
+
+  @doc "HTTP receive timeout (ms) for direct page fetches in web_search."
+  @spec web_search_direct_timeout_ms() :: pos_integer()
+  def web_search_direct_timeout_ms, do: int_setting("webSearchDirectTimeoutMs", @web_search_direct_timeout_ms_default)
+
+  @doc "HTTP receive timeout (ms) for Jina reader fetches."
+  @spec web_search_jina_timeout_ms() :: pos_integer()
+  def web_search_jina_timeout_ms, do: int_setting("webSearchJinaTimeoutMs", @web_search_jina_timeout_ms_default)
+
+  @doc "Task.await_many timeout (ms) for the parallel fetch phase."
+  @spec web_search_total_timeout_ms() :: pos_integer()
+  def web_search_total_timeout_ms, do: int_setting("webSearchTotalTimeoutMs", @web_search_total_timeout_ms_default)
+
+  @doc "Raw result character count above which synthesis is triggered before injection."
+  @spec synthesis_threshold() :: pos_integer()
+  def synthesis_threshold, do: int_setting("synthesisThreshold", @synthesis_threshold_default)
+
+  @doc "Character limit for the truncated fallback when synthesis fails."
+  @spec synthesis_fallback_chars() :: pos_integer()
+  def synthesis_fallback_chars, do: int_setting("synthesisFallbackChars", @synthesis_fallback_chars_default)
+
+  @doc "Target chunk size (tokens) for `/wiki` (knowledge-scope) ingestion."
+  @spec kb_chunk_tokens() :: pos_integer()
+  def kb_chunk_tokens, do: int_setting("kbChunkTokens", @kb_chunk_tokens_default)
+
+  @doc "Overlap (tokens) between adjacent `/wiki` chunks."
+  @spec kb_chunk_overlap_tokens() :: pos_integer()
+  def kb_chunk_overlap_tokens, do: int_setting("kbChunkOverlapTokens", @kb_chunk_overlap_tokens_default)
+
+  @doc """
+  Target chunk size (tokens) for `/memo` (memo-scope) ingestion.
+  Much smaller than `kb_chunk_tokens` because memos are short
+  personal facts, not long documents — see the @kb_memo_chunk_*
+  comment block above.
+  """
+  @spec kb_memo_chunk_tokens() :: pos_integer()
+  def kb_memo_chunk_tokens, do: int_setting("kbMemoChunkTokens", @kb_memo_chunk_tokens_default)
+
+  @doc "Overlap (tokens) between adjacent `/memo` chunks."
+  @spec kb_memo_chunk_overlap_tokens() :: pos_integer()
+  def kb_memo_chunk_overlap_tokens, do: int_setting("kbMemoChunkOverlapTokens", @kb_memo_chunk_overlap_tokens_default)
+
+  @doc "Default top-N for retrieve_knowledge / retrieve_memo searches."
+  @spec kb_top_n() :: pos_integer()
+  def kb_top_n, do: int_setting("kbTopN", @kb_top_n_default)
+
+  @doc "Maximum BFS depth for `/wiki <url>` deep-crawl. Start URL is depth 0."
+  @spec learn_url_max_depth() :: pos_integer()
+  def learn_url_max_depth, do: int_setting("learnUrlMaxDepth", @learn_url_max_depth_default)
+
+  @doc "Maximum total pages indexed per `/wiki <url>` invocation."
+  @spec learn_url_max_pages() :: pos_integer()
+  def learn_url_max_pages, do: int_setting("learnUrlMaxPages", @learn_url_max_pages_default)
+
+  @doc "Parallel page fetches per crawl. Default 1 (strict sequential — one progress row at a time on the FE)."
+  @spec learn_url_concurrency() :: pos_integer()
+  def learn_url_concurrency, do: int_setting("learnUrlConcurrency", @learn_url_concurrency_default)
+
+  @doc """
+  Minimum cosine-similarity score for a hit to be returned.
+  Hits below this are dropped before they reach Oracle / Assistant
+  so the model never has to filter junk chunks itself.
+  """
+  @spec kb_score_threshold() :: float()
+  def kb_score_threshold, do: float_setting("kbScoreThreshold", @kb_score_threshold_default)
+
+  @doc """
+  Cap on memo hits included in the `[memo context]` block injected
+  into Confidant prompts (auto-retrieve pre-step). The score
+  threshold already drops weak hits; this is a safety against
+  many-similar-entry memo stores bloating the prompt.
+  """
+  @spec memo_context_top_k() :: pos_integer()
+  def memo_context_top_k,
+    do: int_setting("memoContextTopK", @memo_context_top_k_default)
+
+  @doc "MMR candidate pool size — how many top-cosine hits get considered before MMR-picking the final `kb_top_n`."
+  @spec kb_mmr_pool_size() :: pos_integer()
+  def kb_mmr_pool_size, do: int_setting("kbMmrPoolSize", @kb_mmr_pool_size_default)
+
+  @doc "MMR diversity / relevance trade-off in [0.0, 1.0]. 1.0 = pure relevance, 0.0 = pure novelty."
+  @spec kb_mmr_lambda() :: float()
+  def kb_mmr_lambda, do: float_setting("kbMmrLambda", @kb_mmr_lambda_default)
+
+  @doc "Embedding vector dimension. Must match the embedding model's output. Changing this requires reindex."
+  @spec kb_embedding_dim() :: pos_integer()
+  def kb_embedding_dim, do: int_setting("kbEmbeddingDim", @kb_embedding_dim_default)
+
+  @doc "How many texts the embedder packs into a single /embeddings request."
+  @spec kb_embedding_batch_size() :: pos_integer()
+  def kb_embedding_batch_size, do: int_setting("kbEmbeddingBatchSize", @kb_embedding_batch_size_default)
+
+  @doc "Cosine threshold above which two inline-text sources merge into one. See specs/vector_kb.md."
+  @spec kb_text_merge_threshold() :: float()
+  def kb_text_merge_threshold, do: float_setting("kbTextMergeThreshold", @kb_text_merge_threshold_default)
+
+  @doc "Cap on concurrent background relearn jobs."
+  @spec kb_relearn_concurrency() :: pos_integer()
+  def kb_relearn_concurrency, do: int_setting("kbRelearnConcurrency", @kb_relearn_concurrency_default)
+
+  @doc "User's chosen video detail level from admin settings. Returns 'low', 'medium', or 'high'."
+  @spec video_detail() :: String.t()
+  def video_detail do
+    settings = load()
+    case settings["videoDetail"] do
+      v when v in ["low", "medium", "high"] -> v
+      _ -> "medium"
+    end
+  end
+
+  @doc """
+  Canonical `<pool>::<model>` strings of all built-in system models in
+  the `ollama-cloud` pool. Used by the FE model picker to render the
+  baked-in cloud roster (operator-added pools/models extend this list
+  but aren't surfaced here).
+  """
+  @spec system_model_names() :: [String.t()]
+  def system_model_names do
+    @defaults
+    |> Map.values()
+    |> Enum.uniq()
+    |> Enum.filter(fn m -> String.starts_with?(m, "ollama-cloud::") end)
+  end
+
+  @doc "Map of every model-role setting key → its baked-in default name. Exposed to the FE via /admin/settings."
+  @spec model_defaults() :: %{String.t() => String.t()}
+  def model_defaults, do: @defaults
+
+  defp string_setting(key, default) do
+    settings = load()
+    case settings[key] do
+      s when is_binary(s) and s != "" -> s
+      _ -> default
+    end
+  end
+
+  defp float_setting(key, default) do
+    settings = load()
+    case settings[key] do
+      n when is_float(n) and n > 0 -> n
+      n when is_integer(n) and n > 0 -> n * 1.0
+      s when is_binary(s) ->
+        case Float.parse(s) do
+          {n, _} when n > 0 -> n
+          _ -> default
+        end
+      _ -> default
+    end
+  end
+
+  defp bool_setting(key, default) do
+    settings = load()
+    case settings[key] do
+      true    -> true
+      false   -> false
+      "true"  -> true
+      "false" -> false
+      _       -> default
+    end
+  end
+
+  defp int_setting(key, default) do
+    settings = load()
+    case settings[key] do
+      n when is_integer(n) and n > 0 -> n
+      s when is_binary(s) ->
+        case Integer.parse(s) do
+          {n, _} when n > 0 -> n
+          _ -> default
+        end
+      _ -> default
+    end
+  end
+
+  defp load do
+    try do
+      result = query!(Repo, "SELECT value FROM settings WHERE key=?", ["admin_cloud_settings"])
+
+      case result.rows do
+        [[v] | _] -> Jason.decode!(v || "{}")
+        _ -> %{}
+      end
+    rescue
+      _ -> %{}
+    end
+  end
+end

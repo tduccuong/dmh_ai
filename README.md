@@ -82,15 +82,15 @@ curl -fsSL https://get.docker.com | sh
 **Linux / macOS:**
 ```bash
 ./build.sh        # builds the Docker image and assembles dist/
-./install.sh      # installs to ~/.dmhai/ and registers the dmhai command
-dmhai start       # start the app
+./install.sh      # installs to ~/.dmh_ai/ and registers the dmh_ai command
+dmh_ai start       # start the app
 ```
 
 **Windows** — open Command Prompt and run:
 ```
 build.bat
 install.bat
-dmhai start
+dmh_ai start
 ```
 
 Open [http://localhost:8080](http://localhost:8080) in your browser.
@@ -98,17 +98,17 @@ Open [http://localhost:8080](http://localhost:8080) in your browser.
 ### Managing the app
 
 ```bash
-dmhai start      # start
-dmhai stop       # stop
-dmhai restart    # restart (picks up new build automatically)
-dmhai status     # show running containers
+dmh_ai start      # start
+dmh_ai stop       # stop
+dmh_ai restart    # restart (picks up new build automatically)
+dmh_ai status     # show running containers
 ```
 
 After a code update, rebuild and reinstall:
 ```bash
 ./build.sh --no-export   # rebuild image without re-exporting tars (faster)
 ./install.sh             # update installed config; preserves all user data
-dmhai restart
+dmh_ai restart
 ```
 
 On Windows, use `build.bat` and `install.bat` instead.
@@ -119,7 +119,7 @@ On first run, DMH-AI creates a default admin account:
 
 | Username | Password |
 |---|---|
-| `admin` | `dmhai` |
+| `admin` | `dmh_ai` |
 
 Sign in, then **immediately change your password**: click the user icon (top right) → **Change password**.
 
@@ -215,14 +215,14 @@ You don't need to do anything differently — just ask your question. Search que
 
 ## Your data
 
-After running `install.sh`, all live data is stored in `~/.dmhai/`:
+After running `install.sh`, all live data is stored in `~/.dmh_ai/`:
 
-- `~/.dmhai/db/` — chat history (SQLite database)
-- `~/.dmhai/user_assets/` — uploaded files, organized by session
-- `~/.dmhai/system_logs/system.log` — web search and system log
+- `~/.dmh_ai/db/` — chat history (SQLite database)
+- `~/.dmh_ai/user_assets/` — uploaded files, organized by session
+- `~/.dmh_ai/system_logs/system.log` — web search and system log
 
-Running `install.sh` again is safe — it never overwrites existing data files. Each file is only copied from `dist/` if it does not yet exist in `~/.dmhai/`.
+Running `install.sh` again is safe — it never overwrites existing data files. Each file is only copied from `dist/` if it does not yet exist in `~/.dmh_ai/`.
 
-To back up or move DMH-AI to another machine, copy `~/.dmhai/` and run `install.sh` on the new machine.
+To back up or move DMH-AI to another machine, copy `~/.dmh_ai/` and run `install.sh` on the new machine.
 
 To add more users: user icon → **Manage users**.

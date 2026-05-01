@@ -40,7 +40,7 @@ RUN mkdir -p /app/static && \
       https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js
 RUN adduser -D -u 1000 appuser && mkdir -p /data && \
     chown -R appuser:appuser /app/ssl
-COPY --from=builder /build/_build/prod/rel/dmhai /app
+COPY --from=builder /build/_build/prod/rel/dmh_ai /app
 COPY index.html /app/static/
 COPY css/ /app/static/css/
 COPY js/ /app/static/js/

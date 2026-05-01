@@ -4,14 +4,14 @@
 defmodule Itgr.TaskRuntime do
   use ExUnit.Case, async: false
 
-  alias Dmhai.Agent.{SessionProgress, Tasks, TaskRuntime}
+  alias DmhAi.Agent.{SessionProgress, Tasks, TaskRuntime}
   import Ecto.Adapters.SQL, only: [query!: 3]
 
   defp uid, do: T.uid()
 
   defp seed_session(sid, user_id) do
     now = System.os_time(:millisecond)
-    query!(Dmhai.Repo,
+    query!(DmhAi.Repo,
       "INSERT OR IGNORE INTO sessions (id, user_id, mode, messages, created_at, updated_at) VALUES (?,?,?,?,?,?)",
       [sid, user_id, "assistant", "[]", now, now])
   end
@@ -95,7 +95,7 @@ defmodule Itgr.TaskRuntime do
     # Force an outdated time_to_pickup — this is the state that would
     # cause burst re-firing without the fix (fetch_next_due returns
     # the same task because time_to_pickup <= now).
-    Ecto.Adapters.SQL.query!(Dmhai.Repo,
+    Ecto.Adapters.SQL.query!(DmhAi.Repo,
       "UPDATE tasks SET time_to_pickup=? WHERE task_id=?",
       [System.os_time(:millisecond) - 1_000, tid])
 

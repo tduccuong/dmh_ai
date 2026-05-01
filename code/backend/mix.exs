@@ -1,9 +1,9 @@
-defmodule Dmhai.MixProject do
+defmodule DmhAi.MixProject do
   use Mix.Project
 
   def project do
     [
-      app: :dmhai,
+      app: :dmh_ai,
       version: "0.1.0",
       elixir: "~> 1.16",
       start_permanent: Mix.env() == :prod,
@@ -15,7 +15,7 @@ defmodule Dmhai.MixProject do
   def application do
     [
       extra_applications: [:logger, :crypto],
-      mod: {Dmhai.Application, []}
+      mod: {DmhAi.Application, []}
     ]
   end
 

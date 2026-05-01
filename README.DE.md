@@ -82,15 +82,15 @@ curl -fsSL https://get.docker.com | sh
 **Linux / macOS:**
 ```bash
 ./build.sh        # Docker-Image bauen und dist/ zusammenstellen
-./install.sh      # nach ~/.dmhai/ installieren und dmhai-Befehl registrieren
-dmhai start       # App starten
+./install.sh      # nach ~/.dmh_ai/ installieren und dmh_ai-Befehl registrieren
+dmh_ai start       # App starten
 ```
 
 **Windows** — Eingabeaufforderung öffnen und ausführen:
 ```
 build.bat
 install.bat
-dmhai start
+dmh_ai start
 ```
 
 Öffnen Sie [http://localhost:8080](http://localhost:8080) im Browser.
@@ -98,17 +98,17 @@ dmhai start
 ### App verwalten
 
 ```bash
-dmhai start      # starten
-dmhai stop       # stoppen
-dmhai restart    # neu starten (nimmt neuen Build automatisch auf)
-dmhai status     # laufende Container anzeigen
+dmh_ai start      # starten
+dmh_ai stop       # stoppen
+dmh_ai restart    # neu starten (nimmt neuen Build automatisch auf)
+dmh_ai status     # laufende Container anzeigen
 ```
 
 Nach einer Code-Aktualisierung neu bauen und neu installieren:
 ```bash
 ./build.sh --no-export   # Image neu bauen ohne Tars zu exportieren (schneller)
 ./install.sh             # installierte Konfiguration aktualisieren; Benutzerdaten bleiben erhalten
-dmhai restart
+dmh_ai restart
 ```
 
 Unter Windows `build.bat` und `install.bat` verwenden.
@@ -119,7 +119,7 @@ Beim ersten Start erstellt DMH-AI automatisch ein Standard-Admin-Konto:
 
 | Benutzername | Passwort |
 |---|---|
-| `admin` | `dmhai` |
+| `admin` | `dmh_ai` |
 
 Anmelden, dann **sofort das Passwort ändern**: Benutzersymbol (oben rechts) → **Passwort ändern**.
 
@@ -215,14 +215,14 @@ Sie müssen nichts anders machen — stellen Sie einfach Ihre Frage. Suchanfrage
 
 ## Ihre Daten
 
-Nach dem Ausführen von `install.sh` werden alle Live-Daten in `~/.dmhai/` gespeichert:
+Nach dem Ausführen von `install.sh` werden alle Live-Daten in `~/.dmh_ai/` gespeichert:
 
-- `~/.dmhai/db/` — Chat-Verlauf (SQLite-Datenbank)
-- `~/.dmhai/user_assets/` — hochgeladene Dateien, nach Sitzung organisiert
-- `~/.dmhai/system_logs/system.log` — Websuche- und System-Protokoll
+- `~/.dmh_ai/db/` — Chat-Verlauf (SQLite-Datenbank)
+- `~/.dmh_ai/user_assets/` — hochgeladene Dateien, nach Sitzung organisiert
+- `~/.dmh_ai/system_logs/system.log` — Websuche- und System-Protokoll
 
-`install.sh` erneut auszuführen ist sicher — vorhandene Datendateien werden nie überschrieben. Jede Datei wird nur dann aus `dist/` kopiert, wenn sie in `~/.dmhai/` noch nicht vorhanden ist.
+`install.sh` erneut auszuführen ist sicher — vorhandene Datendateien werden nie überschrieben. Jede Datei wird nur dann aus `dist/` kopiert, wenn sie in `~/.dmh_ai/` noch nicht vorhanden ist.
 
-Zum Sichern oder Übertragen auf einen anderen Rechner kopieren Sie `~/.dmhai/` und führen Sie `install.sh` auf dem neuen Rechner aus.
+Zum Sichern oder Übertragen auf einen anderen Rechner kopieren Sie `~/.dmh_ai/` und führen Sie `install.sh` auf dem neuen Rechner aus.
 
 Weitere Nutzer hinzufügen: Benutzersymbol → **Benutzer verwalten**.

@@ -14,7 +14,7 @@
 # tears down after, so the runner can't drift from production.
 #
 # Run with:
-#   MIX_ENV=test DB_PATH=~/.dmhai/db/chat.db mix run test/llm/run_scenarios.exs
+#   MIX_ENV=test DB_PATH=~/.dmh_ai/db/chat.db mix run test/llm/run_scenarios.exs
 #
 # Optional env:
 #   PROMPT_FILE   — path to the system prompt (default: test/llm/sysprompt_v2_5.md)
@@ -23,9 +23,9 @@
 #   PROBE_RETRY   — ms to wait before single retry on error (default: 5000)
 
 defmodule TestLLM.Runner do
-  alias Dmhai.Agent.{ContextEngine, LLM, Tasks, ToolHistory, UserAgentMessages}
-  alias Dmhai.Repo
-  alias Dmhai.Tools.Registry, as: ToolsRegistry
+  alias DmhAi.Agent.{ContextEngine, LLM, Tasks, ToolHistory, UserAgentMessages}
+  alias DmhAi.Repo
+  alias DmhAi.Tools.Registry, as: ToolsRegistry
   import Ecto.Adapters.SQL, only: [query!: 3]
 
   # Devstral family is the workhorse — listed first so the default
@@ -400,7 +400,7 @@ defmodule TestLLM.Runner do
   # `:followup_user_msg` field. Hits the mock /authorize endpoint via
   # the auth_url we extracted from chain 1's connect_mcp result, gets
   # back a redirect with `?code=…`, then drives
-  # `Dmhai.Auth.OAuth2.complete_flow/2` + finalize. Returns
+  # `DmhAi.Auth.OAuth2.complete_flow/2` + finalize. Returns
   # `{:run_chain_2, messages}` on success, or `{:skip, reason}` /
   # `:no_resume` otherwise.
   defp scenario_oauth_resume(scenario, trace1, chain_ctx) do
@@ -486,7 +486,7 @@ defmodule TestLLM.Runner do
           state = params["state"]
 
           if is_binary(code) and is_binary(state) do
-            case Dmhai.Auth.OAuth2.complete_flow(state, code) do
+            case DmhAi.Auth.OAuth2.complete_flow(state, code) do
               {:ok, _conn_data} = ok -> ok
               {:error, r}            -> {:error, "complete_flow failed: #{inspect(r)}"}
             end
@@ -506,7 +506,7 @@ defmodule TestLLM.Runner do
   end
 
   # Replicates the production `finalize_connection` body
-  # (lib/dmhai/handlers/data.ex) so the test runner doesn't have to
+  # (lib/dmh_ai/handlers/data.ex) so the test runner doesn't have to
   # build a Plug.Conn to drive the real callback handler. Persists
   # creds, runs the MCP handshake to populate the tool list, registers
   # the service, attaches it to the anchor task. The MCP handshake
@@ -537,7 +537,7 @@ defmodule TestLLM.Runner do
       "client_secret"       => nil
     }
 
-    Dmhai.Auth.Credentials.save(
+    DmhAi.Auth.Credentials.save(
       user_id, "mcp:" <> resource, "oauth2_mcp", cred_payload,
       notes: "MCP connection: #{alias_}",
       expires_at: tokens.expires_at
@@ -550,16 +550,16 @@ defmodule TestLLM.Runner do
     }
 
     tools =
-      with {:ok, _info, sid} <- Dmhai.MCP.Client.initialize(handshake_ctx),
-           {:ok, ts}          <- Dmhai.MCP.Client.list_tools(handshake_ctx, sid) do
+      with {:ok, _info, sid} <- DmhAi.MCP.Client.initialize(handshake_ctx),
+           {:ok, ts}          <- DmhAi.MCP.Client.list_tools(handshake_ctx, sid) do
         ts
       else
         _ -> []
       end
 
-    Dmhai.MCP.Registry.authorize(user_id, alias_, resource, server_url, asm)
-    Dmhai.MCP.Registry.set_authorized_tools(user_id, alias_, tools)
-    Dmhai.MCP.Registry.attach(anchor_task_id, user_id, alias_)
+    DmhAi.MCP.Registry.authorize(user_id, alias_, resource, server_url, asm)
+    DmhAi.MCP.Registry.set_authorized_tools(user_id, alias_, tools)
+    DmhAi.MCP.Registry.attach(anchor_task_id, user_id, alias_)
 
     :ok
   rescue
@@ -708,7 +708,7 @@ defmodule TestLLM.Runner do
   # in its own rescue clause when the rescue follows a multi-line body).
   defp do_execute_tool_call(name, args, tool_call_id, ctx) do
     ctx = Map.put(ctx, :tool_call_id, tool_call_id)
-    Dmhai.Tools.Registry.execute(name, args, ctx)
+    DmhAi.Tools.Registry.execute(name, args, ctx)
   rescue
     e -> {:error, "tool #{name} raised: " <> Exception.message(e)}
   catch
@@ -835,7 +835,7 @@ defmodule TestLLM.Runner do
   # Periodic pickups in production append a long synthetic [Task due: ...]
   # user message AFTER `build_assistant_messages` returns — it isn't
   # persisted. We replicate the exact text from
-  # `Dmhai.Agent.UserAgent.run_assistant_silent/3` so the model sees the
+  # `DmhAi.Agent.UserAgent.run_assistant_silent/3` so the model sees the
   # same workflow / forbidden-this-turn instructions.
   defp append_periodic_synthetic(msgs, %{silent_turn_task_id: tid}) when is_binary(tid) do
     case Tasks.get(tid) do
@@ -1945,7 +1945,7 @@ defmodule TestLLM.Runner do
                `redirect: false`. Mock 302s to the runtime's
                configured redirect_uri with `?code=…&state=…`.
             5. Test parses code+state from the Location header,
-               calls Dmhai.Auth.OAuth2.complete_flow(state, code).
+               calls DmhAi.Auth.OAuth2.complete_flow(state, code).
             6. Test replicates the production finalize_connection
                body — saves creds, runs MCP handshake to populate
                tools list, registers the service, attaches to anchor.
@@ -1987,7 +1987,7 @@ defmodule TestLLM.Runner do
           # `needs_auth`. The hardcoded client_id / client_secret
           # match what the bitrix mock's /oauth/token endpoint
           # accepts (see mocks/src/bitrix24.go: `clientSecrets`).
-          Dmhai.Auth.Credentials.save(
+          DmhAi.Auth.Credentials.save(
             user_id,
             "oauth_client:" <> bitrix_base,
             "oauth_client",

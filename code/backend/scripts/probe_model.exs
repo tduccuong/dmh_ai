@@ -4,10 +4,10 @@
 # does given the current prompt for a known-tricky input.
 #
 # Run with:
-#   DB_PATH=~/.dmhai/db/chat.db mix run scripts/probe_model.exs
+#   DB_PATH=~/.dmh_ai/db/chat.db mix run scripts/probe_model.exs
 
-alias Dmhai.Agent.{AgentSettings, ContextEngine, LLM}
-alias Dmhai.Tools.Registry, as: ToolsRegistry
+alias DmhAi.Agent.{AgentSettings, ContextEngine, LLM}
+alias DmhAi.Tools.Registry, as: ToolsRegistry
 
 user_msg =
   System.get_env("PROBE_MSG") ||

@@ -10,8 +10,8 @@
 defmodule Itgr.ContextToolIntegration do
   use ExUnit.Case, async: false
 
-  alias Dmhai.Agent.{ContextEngine, AttachmentPaths, UserAgent}
-  alias Dmhai.Repo
+  alias DmhAi.Agent.{ContextEngine, AttachmentPaths, UserAgent}
+  alias DmhAi.Repo
   import Ecto.Adapters.SQL, only: [query!: 3]
 
   defp uid, do: T.uid()

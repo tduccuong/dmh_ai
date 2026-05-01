@@ -31,8 +31,8 @@
 defmodule Itgr.PivotTwoChains do
   use ExUnit.Case, async: false
 
-  alias Dmhai.Agent.{AssistantCommand, PendingPivots, Tasks, UserAgent}
-  alias Dmhai.Repo
+  alias DmhAi.Agent.{AssistantCommand, PendingPivots, Tasks, UserAgent}
+  alias DmhAi.Repo
   import Ecto.Adapters.SQL, only: [query!: 3]
 
   defp uid, do: T.uid()
@@ -157,7 +157,7 @@ defmodule Itgr.PivotTwoChains do
 
     on_exit(fn ->
       PendingPivots.clear(sid)
-      Process.delete(:dmhai_oracle_verdict_cached)
+      Process.delete(:dmh_ai_oracle_verdict_cached)
     end)
 
     {:ok,
@@ -350,7 +350,7 @@ defmodule Itgr.PivotTwoChains do
       })
 
       # Reset the per-chain Oracle cache so chain 1 awaits a fresh verdict.
-      Process.delete(:dmhai_oracle_verdict_cached)
+      Process.delete(:dmh_ai_oracle_verdict_cached)
 
       script_chain1 = [
         {:tool_calls, [tool_call("pause_task", %{"task_num" => c.anchor_task_num})]},

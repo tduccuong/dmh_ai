@@ -28,9 +28,9 @@ Token-cost effect: the model sees only the tools its current task explicitly att
 ## What's in vs out of this spec
 
 **In scope:**
-- The MCP client (`Dmhai.MCP.Client`).
-- Discovery + OAuth handshake (`Dmhai.Auth.Discovery` + `Dmhai.Auth.OAuth2`).
-- Token storage (`Dmhai.Auth.Credentials`).
+- The MCP client (`DmhAi.MCP.Client`).
+- Discovery + OAuth handshake (`DmhAi.Auth.Discovery` + `DmhAi.Auth.OAuth2`).
+- Token storage (`DmhAi.Auth.Credentials`).
 - The single `connect_mcp` tool.
 - Per-task dynamic tool catalog.
 
@@ -42,7 +42,7 @@ Token-cost effect: the model sees only the tools its current task explicitly att
 ## Module layout
 
 ```
-lib/dmhai/
+lib/dmh_ai/
   auth/
     oauth2.ex        # generic OAuth 2.1 client, metadata-driven
     discovery.ex     # PRM (RFC 9728) + ASM (RFC 8414) fetcher
@@ -128,7 +128,7 @@ connect_mcp(url, alias?, auth_method?)  with anchor_task_id from ctx
           ++ for each task_services row matching anchor_task_id,
              splice authorized_services.server_tools_json with names
              namespaced as <alias>.<tool>.
-        Persistent_term cache keyed {Dmhai.MCP.Registry, user_id}
+        Persistent_term cache keyed {DmhAi.MCP.Registry, user_id}
           holds the per-user authorized catalog; per-turn filter by
           attached aliases is a small DB read.
 ```
@@ -206,7 +206,7 @@ Streamable HTTP. The client:
 
 The transport is a separable trait so adding stdio later is parallel work, not a rewrite.
 
-## `Dmhai.MCP.Registry` API
+## `DmhAi.MCP.Registry` API
 
 User-tier (authorization) operations:
 - `authorize(user_id, alias, canonical, server_url, asm)` — upsert `authorized_services` row.
@@ -223,7 +223,7 @@ Catalog assembly:
 - `tools_for_task(user_id, task_id)` — the flat namespaced tool list returned to the LLM. Empty when `task_id` is nil or no rows attached.
 
 Cache invalidation:
-- `:persistent_term` keyed `{Dmhai.MCP.Registry, user_id}` holds the user's authorized service catalog (alias → tools). Invalidated on `authorize` and `set_authorized_tools`. Per-turn filter by attached aliases is a small DB query, not cached.
+- `:persistent_term` keyed `{DmhAi.MCP.Registry, user_id}` holds the user's authorized service catalog (alias → tools). Invalidated on `authorize` and `set_authorized_tools`. Per-turn filter by attached aliases is a small DB query, not cached.
 
 ## Disconnection
 

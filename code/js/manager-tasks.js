@@ -104,7 +104,7 @@
         badge.style.display = activeCount > 0 ? '' : 'none';
 
         // Phase 3: derive the anchor task_num locally, mirroring
-        // Dmhai.Agent.Anchor.resolve priority rules (Rule 2: exactly
+        // DmhAi.Agent.Anchor.resolve priority rules (Rule 2: exactly
         // one ongoing → that task; Rule 3: no ongoing + exactly one
         // pending one_off → that task; otherwise no anchor). The BE
         // owns the authoritative anchor; this FE copy drives sidebar
@@ -130,7 +130,7 @@
         if (buckets.ongoing.length === 1) return buckets.ongoing[0].task_num || null;
         if (buckets.ongoing.length > 1) {
             // Multiple ongoing — pick most-recently-updated (matches
-            // Dmhai.Agent.Anchor's Rule 2 fallback for the race case).
+            // DmhAi.Agent.Anchor's Rule 2 fallback for the race case).
             var newest = buckets.ongoing.reduce(function(acc, t) {
                 var ts = t.updated_at || 0;
                 return ts > (acc.updated_at || 0) ? t : acc;

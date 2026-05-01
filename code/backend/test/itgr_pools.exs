@@ -4,8 +4,8 @@
 defmodule Itgr.Pools do
   use ExUnit.Case, async: false
 
-  alias Dmhai.LLM.{Pools, AccountRotation}
-  alias Dmhai.Repo
+  alias DmhAi.LLM.{Pools, AccountRotation}
+  alias DmhAi.Repo
   import Ecto.Adapters.SQL, only: [query!: 3]
 
   setup do
@@ -179,7 +179,7 @@ defmodule Itgr.Pools do
     end
 
     test "probe surfaces network failure as a string error" do
-      alias Dmhai.LLM.Probe
+      alias DmhAi.LLM.Probe
       # Use a guaranteed-unroutable address so this is fast + offline-safe.
       assert {:error, msg} = Probe.probe("http://127.0.0.1:1", nil)
       assert is_binary(msg)

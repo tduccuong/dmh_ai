@@ -10,7 +10,7 @@
 defmodule Itgr.PoliceSchema do
   use ExUnit.Case, async: true
 
-  alias Dmhai.Agent.Police
+  alias DmhAi.Agent.Police
 
   # ─── Happy path ──────────────────────────────────────────────────────────
 

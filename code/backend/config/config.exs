@@ -5,16 +5,16 @@ config :logger, level: :debug
 config :hammer,
   backend: {Hammer.Backend.ETS, [expiry_ms: 60_000 * 60 * 2, cleanup_interval_ms: 60_000 * 5]}
 
-config :dmhai, Dmhai.Repo,
+config :dmh_ai, DmhAi.Repo,
   database: "/data/db/chat.db",
   pool_size: 5
 
 # load_extensions for sqlite-vec is set in runtime.exs because
 # `SqliteVec.path/0` isn't loaded until deps are compiled.
 
-config :dmhai, ecto_repos: [Dmhai.Repo]
+config :dmh_ai, ecto_repos: [DmhAi.Repo]
 
-config :dmhai, :worker,
+config :dmh_ai, :worker,
   # Inline-summarise tool results larger than this (chars) using the compactor model.
   summarize_threshold: 5_000,
   # Hard truncation cap applied when summarisation fails.

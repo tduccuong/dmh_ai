@@ -14,8 +14,8 @@
 defmodule Itgr.SessionContextContract do
   use ExUnit.Case, async: false
 
-  alias Dmhai.Agent.{ContextEngine, Police, UserAgent}
-  alias Dmhai.Repo
+  alias DmhAi.Agent.{ContextEngine, Police, UserAgent}
+  alias DmhAi.Repo
   import Ecto.Adapters.SQL, only: [query!: 3]
 
   defp uid, do: T.uid()
@@ -678,8 +678,8 @@ defmodule Itgr.SessionContextContract do
   # ─── Single-periodic-per-session Police gate ─────────────────────────────
 
   describe "Police.check_no_duplicate_periodic_task_in_session/3" do
-    alias Dmhai.Agent.Tasks
-    alias Dmhai.Repo
+    alias DmhAi.Agent.Tasks
+    alias DmhAi.Repo
     import Ecto.Adapters.SQL, only: [query!: 3]
 
     defp seed_plain_session(sid, user_id) do

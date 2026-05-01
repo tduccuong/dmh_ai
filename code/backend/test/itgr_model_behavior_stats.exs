@@ -4,8 +4,8 @@
 defmodule Itgr.ModelBehaviorStats do
   use ExUnit.Case, async: false
 
-  alias Dmhai.Agent.ModelBehaviorStats
-  alias Dmhai.Repo
+  alias DmhAi.Agent.ModelBehaviorStats
+  alias DmhAi.Repo
   import Ecto.Adapters.SQL, only: [query!: 3]
 
   # Writes the `modelBehaviorTelemetryEnabled` flag into admin settings

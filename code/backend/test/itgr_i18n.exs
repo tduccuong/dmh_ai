@@ -1,10 +1,10 @@
-# Tests for Dmhai.I18n translation coverage + language propagation.
+# Tests for DmhAi.I18n translation coverage + language propagation.
 
 defmodule Itgr.I18n do
   use ExUnit.Case, async: true
 
-  alias Dmhai.I18n
-  alias Dmhai.Agent.{SessionProgress, Tasks, TaskRuntime}
+  alias DmhAi.I18n
+  alias DmhAi.Agent.{SessionProgress, Tasks, TaskRuntime}
   import Ecto.Adapters.SQL, only: [query!: 3]
 
   defp uid, do: T.uid()
@@ -97,7 +97,7 @@ defmodule Itgr.I18n do
 
   defp seed_session(sid, user_id) do
     now = System.os_time(:millisecond)
-    query!(Dmhai.Repo,
+    query!(DmhAi.Repo,
       "INSERT OR IGNORE INTO sessions (id, user_id, mode, messages, created_at, updated_at) VALUES (?,?,?,?,?,?)",
       [sid, user_id, "assistant", "[]", now, now])
   end

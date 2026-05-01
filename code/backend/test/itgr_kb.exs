@@ -4,9 +4,9 @@
 defmodule Itgr.KB do
   use ExUnit.Case, async: false
 
-  alias Dmhai.VectorDB
-  alias Dmhai.VectorDB.{Memory, SqliteVec, Embedder}
-  alias Dmhai.Repo
+  alias DmhAi.VectorDB
+  alias DmhAi.VectorDB.{Memory, SqliteVec, Embedder}
+  alias DmhAi.Repo
   import Ecto.Adapters.SQL, only: [query!: 3]
 
   # Pipeline tests run against the Memory backend with stubbed embedder
@@ -14,18 +14,18 @@ defmodule Itgr.KB do
   # sqlite-vec being loaded. Backend smoke test runs against the real
   # SqliteVec backend through the existing ecto_sqlite3 connection.
   setup do
-    Application.put_env(:dmhai, :__embedder_stub__, fn texts ->
+    Application.put_env(:dmh_ai, :__embedder_stub__, fn texts ->
       vecs = Enum.map(texts, &fake_embedding/1)
       {:ok, vecs}
     end)
-    Application.put_env(:dmhai, :__tagger_stub__, fn _body -> ["test", "stubbed"] end)
-    Application.put_env(:dmhai, :vector_db_backend, Memory)
+    Application.put_env(:dmh_ai, :__tagger_stub__, fn _body -> ["test", "stubbed"] end)
+    Application.put_env(:dmh_ai, :vector_db_backend, Memory)
     Memory.reset()
 
     on_exit(fn ->
-      Application.delete_env(:dmhai, :__embedder_stub__)
-      Application.delete_env(:dmhai, :__tagger_stub__)
-      Application.delete_env(:dmhai, :vector_db_backend)
+      Application.delete_env(:dmh_ai, :__embedder_stub__)
+      Application.delete_env(:dmh_ai, :__tagger_stub__)
+      Application.delete_env(:dmh_ai, :vector_db_backend)
       Memory.reset()
     end)
 
@@ -105,29 +105,29 @@ defmodule Itgr.KB do
 
   describe "Tool definitions" do
     test "fetch_wiki has minimal schema" do
-      d = Dmhai.Tools.FetchWiki.definition()
+      d = DmhAi.Tools.FetchWiki.definition()
       assert d.name == "fetch_wiki"
       assert d.parameters.required == ["q"]
       assert Map.keys(d.parameters.properties) == [:q]
     end
 
     test "fetch_memo has minimal schema" do
-      d = Dmhai.Tools.FetchMemo.definition()
+      d = DmhAi.Tools.FetchMemo.definition()
       assert d.name == "fetch_memo"
       assert d.parameters.required == ["q"]
     end
 
     test "save_memo has minimal schema" do
-      d = Dmhai.Tools.SaveMemo.definition()
+      d = DmhAi.Tools.SaveMemo.definition()
       assert d.name == "save_memo"
       assert d.parameters.required == ["text"]
     end
 
     test "memo tools rejected without user context" do
-      assert {:error, msg} = Dmhai.Tools.FetchMemo.execute(%{"q" => "anything"}, %{})
+      assert {:error, msg} = DmhAi.Tools.FetchMemo.execute(%{"q" => "anything"}, %{})
       assert msg =~ "authenticated user"
 
-      assert {:error, msg2} = Dmhai.Tools.SaveMemo.execute(%{"text" => "x"}, %{})
+      assert {:error, msg2} = DmhAi.Tools.SaveMemo.execute(%{"text" => "x"}, %{})
       assert msg2 =~ "authenticated user"
     end
 
@@ -135,12 +135,12 @@ defmodule Itgr.KB do
       uid = "tool-test-#{T.uid()}"
       ctx = %{user_id: uid}
 
-      assert {:ok, %{ok: true}} = Dmhai.Tools.SaveMemo.execute(
+      assert {:ok, %{ok: true}} = DmhAi.Tools.SaveMemo.execute(
         %{"text" => "I keep my passwords in 1Password vault Personal"},
         ctx
       )
 
-      assert {:ok, hits} = Dmhai.Tools.FetchMemo.execute(
+      assert {:ok, hits} = DmhAi.Tools.FetchMemo.execute(
         %{"q" => "where do I keep passwords"},
         ctx
       )
@@ -155,7 +155,7 @@ defmodule Itgr.KB do
 
   describe "Tools.Registry catalog shape" do
     test "fetch_wiki and fetch_memo are in the static catalog" do
-      names = Dmhai.Tools.Registry.names()
+      names = DmhAi.Tools.Registry.names()
       assert "fetch_wiki" in names
       assert "fetch_memo" in names
     end
@@ -165,10 +165,10 @@ defmodule Itgr.KB do
       # /wiki + /memo runtime paths can dispatch SaveWiki / SaveMemo)
       # but never surfaced to the model — eliminates the risk of a
       # hallucinated write. See specs/commands.md.
-      names = Dmhai.Tools.Registry.names()
+      names = DmhAi.Tools.Registry.names()
       refute "save_memo" in names
 
-      defs = Dmhai.Tools.Registry.all_definitions() |> Enum.map(& &1.name)
+      defs = DmhAi.Tools.Registry.all_definitions() |> Enum.map(& &1.name)
       refute "save_memo" in defs
     end
 
@@ -177,10 +177,10 @@ defmodule Itgr.KB do
       # call. fetch_memo is in the static catalog, but save_memo is
       # save-only — known? must still recognise it so the runtime
       # /memo path can dispatch via Registry.execute.
-      assert Dmhai.Tools.Registry.known?("save_memo")
-      assert Dmhai.Tools.Registry.known?("fetch_memo")
-      assert Dmhai.Tools.Registry.known?("save_memo", "any-user", nil)
-      assert Dmhai.Tools.Registry.known?("fetch_memo", "any-user", "any-task-id")
+      assert DmhAi.Tools.Registry.known?("save_memo")
+      assert DmhAi.Tools.Registry.known?("fetch_memo")
+      assert DmhAi.Tools.Registry.known?("save_memo", "any-user", nil)
+      assert DmhAi.Tools.Registry.known?("fetch_memo", "any-user", "any-task-id")
     end
 
     test "memo tools dispatch via Registry.execute" do
@@ -189,22 +189,22 @@ defmodule Itgr.KB do
 
       # save first, then fetch — proves both ends of the dispatch path.
       assert {:ok, %{ok: true}} =
-               Dmhai.Tools.Registry.execute("save_memo", %{"text" => "registry test"}, ctx)
+               DmhAi.Tools.Registry.execute("save_memo", %{"text" => "registry test"}, ctx)
 
       assert {:ok, _} =
-               Dmhai.Tools.Registry.execute("fetch_memo", %{"q" => "registry"}, ctx)
+               DmhAi.Tools.Registry.execute("fetch_memo", %{"q" => "registry"}, ctx)
     end
   end
 
   describe "SqliteVec backend smoke test" do
     setup do
-      Application.put_env(:dmhai, :vector_db_backend, SqliteVec)
+      Application.put_env(:dmh_ai, :vector_db_backend, SqliteVec)
       uid = "vec-smoke-#{T.uid()}"
 
       on_exit(fn ->
         query!(Repo, "DELETE FROM kb_chunks_meta WHERE user_id=?", [uid])
         query!(Repo, "DELETE FROM kb_sources WHERE user_id=?", [uid])
-        Application.put_env(:dmhai, :vector_db_backend, Memory)
+        Application.put_env(:dmh_ai, :vector_db_backend, Memory)
       end)
 
       {:ok, uid: uid}
@@ -283,14 +283,14 @@ defmodule Itgr.KB do
 
       # Capture relearn worker invocations
       ref_table = :ets.new(:relearn_test, [:public])
-      Application.put_env(:dmhai, :kb_relearn_worker, fn kind, ref ->
+      Application.put_env(:dmh_ai, :kb_relearn_worker, fn kind, ref ->
         :ets.insert(ref_table, {ref, kind})
         :ok
       end)
 
-      on_exit(fn -> Application.delete_env(:dmhai, :kb_relearn_worker) end)
+      on_exit(fn -> Application.delete_env(:dmh_ai, :kb_relearn_worker) end)
 
-      {:ok, _} = Dmhai.Tools.FetchWiki.execute(%{"q" => "nightly cron"}, %{})
+      {:ok, _} = DmhAi.Tools.FetchWiki.execute(%{"q" => "nightly cron"}, %{})
 
       # Background tasks fire async — give them a moment.
       Process.sleep(200)
@@ -304,7 +304,7 @@ defmodule Itgr.KB do
   defp sha(s), do: :crypto.hash(:sha256, s) |> Base.encode16(case: :lower)
 
   defp fake_embedding(text) when is_binary(text) do
-    dim = Dmhai.Agent.AgentSettings.kb_embedding_dim()
+    dim = DmhAi.Agent.AgentSettings.kb_embedding_dim()
     counts =
       text
       |> String.downcase()

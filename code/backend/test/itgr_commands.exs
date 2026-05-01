@@ -4,22 +4,22 @@
 defmodule Itgr.Commands do
   use ExUnit.Case, async: false
 
-  alias Dmhai.Commands
-  alias Dmhai.Commands.Parser
-  alias Dmhai.VectorDB.Memory, as: MemoryBackend
-  alias Dmhai.Repo
+  alias DmhAi.Commands
+  alias DmhAi.Commands.Parser
+  alias DmhAi.VectorDB.Memory, as: MemoryBackend
+  alias DmhAi.Repo
   import Ecto.Adapters.SQL, only: [query!: 3]
 
   setup do
-    Application.put_env(:dmhai, :__embedder_stub__, fn texts ->
+    Application.put_env(:dmh_ai, :__embedder_stub__, fn texts ->
       vecs = Enum.map(texts, fn _ ->
         # Constant 1024-dim vector — content doesn't matter for these tests.
         for _ <- 1..1024, do: :rand.uniform()
       end)
       {:ok, vecs}
     end)
-    Application.put_env(:dmhai, :__tagger_stub__, fn _ -> ["test"] end)
-    Application.put_env(:dmhai, :vector_db_backend, MemoryBackend)
+    Application.put_env(:dmh_ai, :__tagger_stub__, fn _ -> ["test"] end)
+    Application.put_env(:dmh_ai, :vector_db_backend, MemoryBackend)
     MemoryBackend.reset()
 
     # Default LLM stub for the suite — branches on the system prompt
@@ -27,7 +27,7 @@ defmodule Itgr.Commands do
     # The only Oracle entry these tests touch is `localize/2`; the
     # stub echoes the "Message to express:" payload verbatim so the
     # runtime path proceeds without a real translation call.
-    Application.put_env(:dmhai, :__llm_call_stub__, fn _model, msgs, _opts ->
+    Application.put_env(:dmh_ai, :__llm_call_stub__, fn _model, msgs, _opts ->
       sys =
         case Enum.find(msgs, fn m -> Map.get(m, :role) == "system" end) do
           %{content: c} -> c
@@ -66,10 +66,10 @@ defmodule Itgr.Commands do
 
     on_exit(fn ->
       query!(Repo, "DELETE FROM sessions WHERE id=?", [sid])
-      Application.delete_env(:dmhai, :__embedder_stub__)
-      Application.delete_env(:dmhai, :__tagger_stub__)
-      Application.delete_env(:dmhai, :__llm_call_stub__)
-      Application.delete_env(:dmhai, :vector_db_backend)
+      Application.delete_env(:dmh_ai, :__embedder_stub__)
+      Application.delete_env(:dmh_ai, :__tagger_stub__)
+      Application.delete_env(:dmh_ai, :__llm_call_stub__)
+      Application.delete_env(:dmh_ai, :vector_db_backend)
       MemoryBackend.reset()
     end)
 
@@ -199,7 +199,7 @@ defmodule Itgr.Commands do
 
   describe "Pipeline heuristics" do
     test "URL.url?/1 recognises http(s) only" do
-      alias Dmhai.Commands.Pipelines.URL, as: U
+      alias DmhAi.Commands.Pipelines.URL, as: U
       assert U.url?("https://example.com")
       assert U.url?("http://example.com/path?q=1")
       refute U.url?("/abs/path")
@@ -209,7 +209,7 @@ defmodule Itgr.Commands do
     end
 
     test "File.file?/1 requires absolute path that exists" do
-      alias Dmhai.Commands.Pipelines.File, as: FP
+      alias DmhAi.Commands.Pipelines.File, as: FP
       tmp = Path.join(System.tmp_dir!(), "kb-pipe-#{T.uid()}.md")
       Elixir.File.write!(tmp, "hello world")
       on_exit(fn -> Elixir.File.rm(tmp) end)
@@ -220,7 +220,7 @@ defmodule Itgr.Commands do
     end
 
     test "Folder.folder?/1 requires absolute path that is a directory" do
-      alias Dmhai.Commands.Pipelines.Folder, as: F
+      alias DmhAi.Commands.Pipelines.Folder, as: F
       tmp = Path.join(System.tmp_dir!(), "kb-folder-#{T.uid()}")
       Elixir.File.mkdir_p!(tmp)
       on_exit(fn -> Elixir.File.rm_rf(tmp) end)
@@ -233,7 +233,7 @@ defmodule Itgr.Commands do
 
   describe "Pipelines.Folder walk" do
     test "skiplist + extension whitelist filter the right files" do
-      alias Dmhai.Commands.Pipelines.Folder
+      alias DmhAi.Commands.Pipelines.Folder
 
       root = Path.join(System.tmp_dir!(), "kb-folderwalk-#{T.uid()}")
       Elixir.File.mkdir_p!(Path.join(root, ".git"))
@@ -267,7 +267,7 @@ defmodule Itgr.Commands do
 
   describe "Pipelines.File.run" do
     test "indexes a real text file", %{sid: sid, uid: uid} do
-      alias Dmhai.Commands.Pipelines.File, as: FP
+      alias DmhAi.Commands.Pipelines.File, as: FP
       tmp = Path.join(System.tmp_dir!(), "kb-pipe-#{T.uid()}.md")
       body = "# Heading\n\nThis is a sample document used for the file pipeline test.\n"
       Elixir.File.write!(tmp, body)
@@ -298,7 +298,7 @@ defmodule Itgr.Commands do
         "context" => %{}
       }
 
-      msgs = Dmhai.Agent.ContextEngine.build_assistant_messages(session_data)
+      msgs = DmhAi.Agent.ContextEngine.build_assistant_messages(session_data)
 
       contents = msgs |> Enum.map(fn m -> m[:content] || m["content"] end)
 

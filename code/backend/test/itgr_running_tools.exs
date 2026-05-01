@@ -4,7 +4,7 @@
 defmodule Itgr.RunningTools do
   use ExUnit.Case, async: false
 
-  alias Dmhai.Agent.RunningTools
+  alias DmhAi.Agent.RunningTools
 
   setup do
     RunningTools.init()

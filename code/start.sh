@@ -5,4 +5,4 @@ if [ -n "$DOCKER_GID" ]; then
     addgroup -g "$DOCKER_GID" dockerhost 2>/dev/null || true
     adduser appuser dockerhost 2>/dev/null || true
 fi
-exec su-exec appuser /app/bin/dmhai start
+exec su-exec appuser /app/bin/dmh_ai start

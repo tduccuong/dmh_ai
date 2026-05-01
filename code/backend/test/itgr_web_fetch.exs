@@ -10,8 +10,8 @@
 defmodule Itgr.WebFetch do
   use ExUnit.Case, async: true
 
-  alias Dmhai.Util.Url
-  alias Dmhai.Web.{CmpDetector, ConsentSeeder, Fallback, Fetcher, ReaderExtractor}
+  alias DmhAi.Util.Url
+  alias DmhAi.Web.{CmpDetector, ConsentSeeder, Fallback, Fetcher, ReaderExtractor}
 
   # ─── Util.Url ────────────────────────────────────────────────────────────
 
