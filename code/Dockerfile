@@ -1,11 +1,33 @@
 # Stage 1 — compile Elixir release
 FROM elixir:alpine AS builder
-RUN apk add --no-cache build-base git
+RUN apk add --no-cache build-base git sqlite-dev gettext wget tar
 WORKDIR /build
 COPY backend/mix.exs backend/mix.lock* ./
 RUN mix local.hex --force && mix local.rebar --force
 RUN mix deps.get --only prod
 RUN MIX_ENV=prod mix deps.compile
+
+# Override the precompiled vec0.so bundled by the sqlite_vec hex package.
+# Upstream's v0.1.5 `linux-aarch64.tar.gz` release ships a 32-bit ARM
+# binary by mistake (verified: same SHA the hex package pins, but
+# e_machine = 0x28 = EM_ARM). On aarch64-musl hosts it can't be
+# dlopen'd → `Exqlite.Error: no such module: vec0` → boot crash loop.
+# Compiling from upstream source is deterministic across architectures
+# and side-steps the broken release artifact entirely. See
+# specs/known_issues.md.
+ARG SQLITE_VEC_VERSION=0.1.5
+RUN cd /tmp && \
+    wget -qO- https://github.com/asg017/sqlite-vec/archive/refs/tags/v${SQLITE_VEC_VERSION}.tar.gz | tar xz && \
+    cd sqlite-vec-${SQLITE_VEC_VERSION} && \
+    # musl libc lacks BSD's `u_int8_t`; without it gcc silently falls back
+    # to `int` for the dependent `uint8_t` typedef, breaking pointer types
+    # downstream. stdint.h already provides uint{8,16,64}_t directly, so
+    # the BSD-compat typedefs are redundant — drop them.
+    sed -i '/typedef u_int8_t uint8_t;/d; /typedef u_int16_t uint16_t;/d; /typedef u_int64_t uint64_t;/d' sqlite-vec.c && \
+    VERSION=$(cat VERSION) DATE=$(date +%FT%TZ%z) SOURCE= envsubst < sqlite-vec.h.tmpl > sqlite-vec.h && \
+    cc -fPIC -shared -O3 sqlite-vec.c -o vec0.so && \
+    cp vec0.so /build/deps/sqlite_vec/priv/${SQLITE_VEC_VERSION}/vec0.so
+
 COPY backend/ .
 RUN MIX_ENV=prod mix release --overwrite
 

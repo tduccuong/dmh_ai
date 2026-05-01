@@ -66,3 +66,27 @@ For strong models (devstral-2 / gemma4-31b) the empirical probe shows no regress
 - `lib/dmh_ai/agent/user_agent.ex:1278` — persisted `narration_msg` (untouched).
 - `lib/dmh_ai/agent/context_engine.ex` `build_core/5` — Path 2 fix site (kind filter).
 - `specs/commands.md` — kind table updated when Path 2 ships.
+
+---
+
+## sqlite-vec — upstream `linux-aarch64` release artifact is mislabeled (32-bit ARM, not aarch64)
+
+**Symptom.** On aarch64-musl hosts (e.g. ARM SBC, Apple Silicon under linux/arm64), the master container crash-loops at boot:
+
+```
+** (Exqlite.Error) no such module: vec0
+CREATE VIRTUAL TABLE IF NOT EXISTS kb_vec_knowledge USING vec0(...)
+    (dmh_ai 0.1.0) lib/dmh_ai/db/init.ex:466: DmhAi.DB.Init.create_tables/0
+```
+
+Nothing listens on 8080; `docker ps` shows `dmh_ai-master` repeatedly restarting.
+
+**Root cause.** Upstream `asg017/sqlite-vec` v0.1.5 release asset `sqlite-vec-0.1.5-loadable-linux-aarch64.tar.gz` (SHA256 `8ce460c1...` — the exact hash the `sqlite_vec` Hex package pins) actually contains a **32-bit ARM (armv7) `vec0.so`**, not aarch64. Verified by extracting the upstream tarball directly: ELF class 32, `e_machine = 0x28` = EM_ARM. Size 77 580 bytes (vs ~120 KB expected for a 64-bit build). x86_64 unaffected.
+
+The build chain works correctly — `OctoFetch` detects `:arm64` from `:erlang.system_info(:system_architecture)`, downloads the right URL, verifies SHA — but the bytes upstream put behind that URL are wrong. At runtime aarch64-musl's loader rejects the 32-bit ARM .so, surfacing as SQLite "no such module: vec0" because the load_extension call silently fails.
+
+**Fix in tree.** `code/Dockerfile` builder stage now compiles `vec0.so` from upstream source (`asg017/sqlite-vec` tag `v0.1.5`) and overwrites the bundled binary at `deps/sqlite_vec/priv/0.1.5/vec0.so` before `mix release` packages it. Deterministic across architectures, no longer depends on the broken release artifact.
+
+The compile applies one source patch: drop lines 68–70 of `sqlite-vec.c` (`typedef u_int8_t uint8_t;` and friends). Those typedefs assume BSD's `u_int8_t`, which musl libc doesn't define — without the patch gcc silently falls back to `int` for `uint8_t`, breaking pointer compatibility downstream. `stdint.h` already provides the standard `uint{8,16,64}_t`, so the typedefs are redundant on Linux anyway.
+
+**When to revisit.** When upstream sqlite-vec re-releases v0.1.5 (or ships a v0.1.6+) with a correct linux-aarch64 binary AND the `sqlite_vec` Hex package's pinned SHA is updated, the from-source compile in the Dockerfile can be removed. Track: <https://github.com/asg017/sqlite-vec/issues>.
