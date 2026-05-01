@@ -782,12 +782,41 @@ defmodule DmhAi.Agent.UserAgent do
 
         web_task =
           Task.async(fn ->
-            # `reply_pid: nil` — web-search status lines (🔍, 📄) no
-            # longer go over the wire; the FE sees the final context
-            # as part of the LLM's answer and as session_progress rows.
-            case WebSearchEngine.search(command.content, user_msgs, :confidant, reply_pid: nil) do
-              :no_search -> nil
-              result     -> build_web_context(command.content, result, nil)
+            # Two-phase to keep the FE honest:
+            #   1. classify (cheap LLM call) — decide YES/NO, pick category & queries.
+            #   2. only if YES → append a `kind: "confidant_websearch"`
+            #      session_progress row and run SearXNG + page fetches.
+            # Creating the row before classify would make a "WebSearch → q"
+            # row briefly flash on no-search turns ("why moon goes around
+            # sun?"), which is misleading UX.
+            #
+            # Kind `confidant_websearch` is intentionally distinct from
+            # `kind: "tool"` (Assistant LLM tool_call invocations) so audit
+            # / Police queries never conflate the two paths. FE renders
+            # both identically via `_TOOL_LIKE_KINDS` in manager-chat.js.
+            case WebSearchEngine.generate_search_queries(command.content, user_msgs, :confidant) do
+              {:no_search} ->
+                nil
+
+              {:search, category, queries} ->
+                DmhAi.SysLog.log("[SEARCH] category=#{category} queries=#{inspect(Enum.map(queries, & &1.text))}")
+
+                progress_ctx = %{session_id: session_id, user_id: user_id, task_id: nil}
+                label_preview = "WebSearch → " <> String.slice(command.content, 0, 80)
+                {:ok, row} =
+                  DmhAi.Agent.SessionProgress.append(
+                    progress_ctx, "confidant_websearch", label_preview, status: "pending")
+
+                t0 = System.monotonic_time(:millisecond)
+
+                result =
+                  WebSearchEngine.call_search_engine(
+                    queries, category, progress_row_id: row.id)
+
+                DmhAi.Agent.SessionProgress.mark_tool_done(
+                  row.id, System.monotonic_time(:millisecond) - t0)
+
+                build_web_context(command.content, result, nil)
             end
           end)
 

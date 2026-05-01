@@ -25,10 +25,18 @@ defmodule DmhAi.Web.Search do
 
   # Confidant: decide YES/NO, pick category, generate queries — all in one call.
   @confidant_prompt """
+  Today's date and time: %{now}.
+
   %{context_block}New message: "%{content}"
 
   Step 1 — Decide if a live web search is needed.
   Web search is EXPENSIVE. Say YES only when the user genuinely needs current or live information.
+
+  First, identify the question's time-orientation:
+  - About the CURRENT state of something that changes (who holds X today, the latest X, X right now, X this week) → YES, even when the topic feels well-known.
+  - About fixed past events or timeless facts (physics, math, completed history, well-established science) → NO.
+
+  Otherwise apply:
 
   Say NO when the user's intent is:
   - Summarising, translating, reformatting, or analysing content they provided (inline or via URL)
@@ -41,6 +49,8 @@ defmodule DmhAi.Web.Search do
   - Statistics, laws, regulations, prices, or figures that change over time
   - A person's recent news, current job, or latest work
   - Anything you are unsure about or that could be outdated
+
+  For a company, organization, or political group: YES if founded within ~20 years of your training cutoff; NO if older, unless another YES rule applies.
 
   Judge the user's INTENT, not words embedded in content they want processed.
   Example: "translate this article: ...latest news..." → intent is translation → NO.
@@ -136,10 +146,30 @@ defmodule DmhAi.Web.Search do
     * `:reply_pid` — if set, sends `{:status, text}` messages for UI feedback.
 
   Returns `%{snippets: [map()], pages: [map()]}`.
+
+  If the chosen `category` returns zero results AND we haven't already
+  tried `"general"`, retries once with `"general"`. Common case: the
+  `news` category has a flaky engine (Bing news / Yahoo news) returning
+  empty docs while `general` (50+ engines) has plenty. The retry keeps
+  the same queries — only the SearXNG category bucket changes.
   """
   @spec call_search_engine([map()], String.t(), keyword()) ::
           %{snippets: [map()], pages: [map()]}
   def call_search_engine(queries, category, opts \\ []) do
+    case do_call_search_engine(queries, category, opts) do
+      %{snippets: [], pages: []} = empty when category != "general" ->
+        Logger.info("[Web.Search] empty results for category=#{category}, retrying with general")
+        case do_call_search_engine(queries, "general", opts) do
+          %{snippets: [], pages: []} -> empty
+          retried -> retried
+        end
+
+      result ->
+        result
+    end
+  end
+
+  defp do_call_search_engine(queries, category, opts) do
     reply_pid       = Keyword.get(opts, :reply_pid)
     progress_row_id = Keyword.get(opts, :progress_row_id)
     max_fetch = AgentSettings.web_search_max_fetch_pages()
@@ -256,9 +286,15 @@ defmodule DmhAi.Web.Search do
   # ---------------------------------------------------------------------------
 
   defp build_prompt(content, recent_msgs, pipeline) do
-    date  = Date.utc_today()
+    now   = DateTime.utc_now()
+    date  = DateTime.to_date(now)
     month = month_name(date.month)
     year  = Integer.to_string(date.year)
+    # Human-readable date+time stamp injected into the Confidant
+    # classifier prompt so the model can ground "today" / "this week"
+    # reasoning against an absolute reference rather than its
+    # training-cutoff intuition.
+    now_str = Calendar.strftime(now, "%A, %B %-d, %Y, %H:%M UTC")
 
     template =
       case pipeline do
@@ -279,6 +315,7 @@ defmodule DmhAi.Web.Search do
     |> String.replace("%{content}", content)
     |> String.replace("%{month}", month)
     |> String.replace("%{year}", year)
+    |> String.replace("%{now}", now_str)
   end
 
   defp parse_response(response, :confidant, fallback) do

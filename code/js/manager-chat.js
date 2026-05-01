@@ -77,6 +77,14 @@ function buildSessionTimeline(session) {
 // Date.now() math gives a stable index regardless of render cadence.
 var SUB_LABEL_ROTATE_MS = 700;
 
+// Kinds that share the Assistant tool row's rendering (icon, rotating
+// sub_labels, elapsed-time suffix). Today: 'tool' (Assistant LLM tool
+// invocations) + 'confidant_websearch' (Confidant pre-step web search).
+// Kept as a single set so any future "kind with progress UI" can opt in
+// here without spraying string literals across renderProgressRow.
+var _TOOL_LIKE_KINDS = new Set(['tool', 'confidant_websearch']);
+function isToolLikeKind(k) { return _TOOL_LIKE_KINDS.has(k); }
+
 // Per-label state for the sub_labels rotator. Keyed by the `.progress-label`
 // DOM element so rows can be garbage-collected naturally once removed from
 // the timeline (WeakMap doesn't keep them alive). Each value is an array of
@@ -179,7 +187,7 @@ function renderProgressRow(row) {
                     (row.status ? ' progress-status-' + row.status : '');
     var icon = document.createElement('span');
     icon.className = 'progress-icon';
-    if (row.kind === 'tool') {
+    if (isToolLikeKind(row.kind)) {
         icon.textContent = row.status === 'pending' ? '\u25cb' : '\u2713';
     } else if (row.kind === 'thinking') {
         icon.textContent = '\u270e';
@@ -202,7 +210,7 @@ function renderProgressRow(row) {
     // slice; subsequent swaps happen in-place at the text level, no DOM
     // rebuild. Once the row flips to done, the rotator stops touching it
     // and the main `ToolName → args` label stays.
-    var hasRotating = row.kind === 'tool' && row.status === 'pending'
+    var hasRotating = isToolLikeKind(row.kind) && row.status === 'pending'
         && Array.isArray(row.sub_labels) && row.sub_labels.length > 0;
 
     var raw;
@@ -227,7 +235,7 @@ function renderProgressRow(row) {
     //     the .progress-elapsed text in place every 1 s.
     //   - Done + duration_ms set: append a frozen "(Ns)" suffix.
     //     No ticker.
-    if (row.kind === 'tool') {
+    if (isToolLikeKind(row.kind)) {
         var elapsedSpan = document.createElement('span');
         elapsedSpan.className = 'progress-elapsed';
 

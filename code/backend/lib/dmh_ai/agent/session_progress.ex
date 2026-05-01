@@ -14,12 +14,25 @@ defmodule DmhAi.Agent.SessionProgress do
   chat log; this table is pure UI + audit.
 
   kinds:
-    - 'tool'     — one row per tool invocation. Written with status='pending'
-                   before execution, mutated to status='done' after. label
-                   is a one-line "<tool>(<args_preview>)".
-    - 'thinking' — model-provided reasoning excerpt.
-    - 'summary'  — on-demand status summary (from the summariser called by
-                   the session loop when the user asks for a status check).
+    - 'tool'                — one row per Assistant LLM tool invocation.
+                              Written with status='pending' before
+                              execution, mutated to status='done' after.
+                              label is a one-line "<tool>(<args_preview>)".
+    - 'confidant_websearch' — Confidant pre-step web search. Written with
+                              status='pending' before SearXNG starts,
+                              mutated to status='done' once results are
+                              fetched. label "WebSearch → <query>",
+                              sub_labels accumulate "SearXNG → q" /
+                              "WebFetch → url" entries. Distinct from
+                              'tool' so audit / Police queries that
+                              filter by kind don't conflate the two
+                              paths. FE renders identically (see the
+                              shared `_TOOL_LIKE_KINDS` set in
+                              manager-chat.js).
+    - 'thinking'            — model-provided reasoning excerpt.
+    - 'summary'             — on-demand status summary (from the
+                              summariser called by the session loop
+                              when the user asks for a status check).
 
   ctx shape:
       %{
