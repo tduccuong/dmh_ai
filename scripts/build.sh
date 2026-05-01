@@ -5,30 +5,40 @@
 #   ./scripts/build.sh              # build using Docker cache, export images
 #   ./scripts/build.sh --no-cache   # force rebuild all layers
 #   ./scripts/build.sh --stage      # build without exporting images (local staging)
+#   ./scripts/build.sh --no-export  # build without exporting tarballs;
+#                                   # production install loads images from
+#                                   # the local Docker registry instead.
 
 set -e
 
 NO_CACHE=false
 STAGE=false
+NO_EXPORT=false
 for arg in "$@"; do
   case "$arg" in
-    --no-cache) NO_CACHE=true ;;
-    --stage) STAGE=true ;;
+    --no-cache)  NO_CACHE=true ;;
+    --stage)     STAGE=true ;;
+    --no-export) NO_EXPORT=true ;;
   esac
 done
+
+# --stage implies --no-export; the stage installer always reads from the
+# local registry.
+if $STAGE; then NO_EXPORT=true; fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 DIST_DIR="$ROOT_DIR/dist"
 
 echo "=== Building DMH-AI ==="
-if $NO_CACHE; then echo "(--no-cache  Docker cache bypassed)"; fi
-if $STAGE; then echo "(--stage  local install, no image export)"; fi
+if $NO_CACHE;  then echo "(--no-cache   Docker cache bypassed)"; fi
+if $STAGE;     then echo "(--stage      local install, no image export)"; fi
+if $NO_EXPORT && ! $STAGE; then echo "(--no-export  skip image export; install reads from local registry)"; fi
 echo ""
 
 rm -rf "$DIST_DIR"
 mkdir -p "$DIST_DIR"
-if ! $STAGE; then mkdir -p "$DIST_DIR/images"; fi
+if ! $NO_EXPORT; then mkdir -p "$DIST_DIR/images"; fi
 
 #  Build server Docker image 
 echo "Building server Docker image..."
@@ -55,9 +65,9 @@ echo ""
 echo "Docker images:"
 docker images --format "  {{.Repository}}:{{.Tag}}  {{.Size}}" | grep -E "dmh-ai|dmh-ai-sandbox|searxng/searxng"
 
-#  Save images as tarballs 
-if $STAGE; then
-    echo "Skipping image export (--stage)"
+#  Save images as tarballs
+if $NO_EXPORT; then
+    echo "Skipping image export ($($STAGE && echo --stage || echo --no-export))"
 else
     echo ""
     echo "Saving images to dist/images/ (may take a minute)..."
@@ -288,7 +298,11 @@ else
         exit 1
     fi
 
-    #  Load Docker images 
+    #  Load Docker images
+    # Prefer tarballs in $DIST/images/. If absent (build was --no-export
+    # or --stage), fall back to whatever's already loaded in the local
+    # Docker daemon. This lets you build + install on the same host
+    # without paying the save/load round-trip.
     if ls "$DIST/images/"*.tar.gz 1>/dev/null 2>&1; then
         echo "Loading Docker images..."
         for img in "$DIST/images/"*.tar.gz; do
@@ -297,10 +311,22 @@ else
         done
         echo ""
     else
-        echo "ERROR: no Docker images found in $DIST/images/."
-        echo "  Re-run the build WITHOUT --stage to include images:"
-        echo "    ./scripts/build.sh"
-        exit 1
+        echo "No image tarballs in $DIST/images/ — checking local Docker registry..."
+        MISSING=""
+        for img in dmh-ai:latest dmh-ai-sandbox:latest searxng/searxng:latest; do
+            if ! docker image inspect "$img" >/dev/null 2>&1; then
+                MISSING="$MISSING $img"
+            fi
+        done
+        if [ -n "$MISSING" ]; then
+            echo "ERROR: required image(s) not in local registry:$MISSING"
+            echo "  Re-run the build to populate them:"
+            echo "    ./scripts/build.sh             # bundles tarballs"
+            echo "    ./scripts/build.sh --no-export # skip tarballs, registry-only"
+            exit 1
+        fi
+        echo "  All required images present locally."
+        echo ""
     fi
 
     #  Set up install directory
