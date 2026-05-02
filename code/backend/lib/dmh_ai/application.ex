@@ -58,6 +58,7 @@ defmodule DmhAi.Application do
         DmhAi.Agent.ChainInFlight.init()
         DmhAi.Agent.BackgroundPipelines.init()
         DmhAi.Agent.RunningTools.init()
+        DmhAi.GeoIP.init()
         attach_finch_telemetry()
         Logger.info("Sessions API on :3000")
         {:ok, pid}

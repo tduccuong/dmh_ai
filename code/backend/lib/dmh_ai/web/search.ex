@@ -32,6 +32,8 @@ defmodule DmhAi.Web.Search do
   Step 1 — Decide if a live web search is needed.
   Web search is EXPENSIVE. Say YES only when the user genuinely needs current or live information.
 
+  If the user explicitly asks for a web search (e.g. "search the web", "look it up", "search online", "check on the web", "find this online") → YES, skip the rest of this analysis.
+
   First, identify the question's time-orientation:
   - About the CURRENT state of something that changes (who holds X today, the latest X, X right now, X this week) → YES, even when the topic feels well-known.
   - About fixed past events or timeless facts (physics, math, completed history, well-established science) → NO.

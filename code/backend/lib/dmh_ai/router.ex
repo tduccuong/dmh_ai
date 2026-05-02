@@ -49,6 +49,20 @@ defmodule DmhAi.Router do
     Auth.get_me(conn)
   end
 
+  # GET /detect-lang — IP-geolocation hint for the FE language fallback
+  # chain. Returns `{"lang": "vi" | "de" | … | null}`. Best-effort:
+  # any failure (private IP, API down, unsupported country) yields
+  # `null` and the FE keeps its existing default. Cached server-side
+  # (see DmhAi.GeoIP) so external API hits stay rare.
+  get "/detect-lang" do
+    lang = client_ip(conn) |> DmhAi.GeoIP.lookup_lang()
+    body = Jason.encode!(%{lang: lang})
+
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(200, body)
+  end
+
   # GET /local-api/* — no auth required
   get "/local-api/*glob" do
     sub = Enum.join(glob, "/")
@@ -579,6 +593,33 @@ defmodule DmhAi.Router do
 
       user ->
         {:ok, conn, user}
+    end
+  end
+
+  # Best-effort client IP for non-security purposes (UI language hint).
+  # When behind a reverse proxy (nginx, traefik, Caddy) `conn.remote_ip`
+  # is the proxy's IP; the original client is in `X-Forwarded-For`
+  # (leftmost = original) or `X-Real-IP`. We accept those headers
+  # unconditionally — this value is NEVER used for security/auth, only
+  # for picking a default UI language, so a spoofed header at worst
+  # gives the spoofer a different default language. Falls back to
+  # `conn.remote_ip` formatted as a string.
+  defp client_ip(conn) do
+    case Plug.Conn.get_req_header(conn, "x-forwarded-for") do
+      [val | _] when val != "" ->
+        val |> String.split(",") |> hd() |> String.trim()
+
+      _ ->
+        case Plug.Conn.get_req_header(conn, "x-real-ip") do
+          [val | _] when val != "" ->
+            val
+
+          _ ->
+            case conn.remote_ip do
+              ip when is_tuple(ip) -> ip |> :inet_parse.ntoa() |> List.to_string()
+              _ -> nil
+            end
+        end
     end
   end
 end

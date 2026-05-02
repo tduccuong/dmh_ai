@@ -82,7 +82,7 @@ defmodule DmhAi.Commands.Memo do
           Oracle.localize(@save_ack_template, text)
 
         {:error, reason} ->
-          Oracle.localize("Couldn't save: #{inspect(reason, limit: 80)}", text)
+          Oracle.localize(format_save_error(reason), text)
       end
 
     UserAgentMessages.append(session_id, user_id, %{
@@ -96,4 +96,25 @@ defmodule DmhAi.Commands.Memo do
   end
 
   defp sha256(s), do: :crypto.hash(:sha256, s) |> Base.encode16(case: :lower)
+
+  # Map common embedder/pool failures to operator-actionable English text.
+  # Oracle.localize/2 then translates this into the user's language so the
+  # ack reads naturally even when the underlying error is internal.
+  # Anything not enumerated here falls through to the verbatim
+  # `inspect/2` form (last clause) so unknown failure modes still carry
+  # diagnostic detail rather than getting silently swallowed.
+  defp format_save_error({:all_throttled, 0}),
+    do: "Couldn't save: the embedding pool has no accounts configured. Add one in System Settings → Pools."
+
+  defp format_save_error({:all_throttled, retry_ms}) when is_integer(retry_ms) and retry_ms > 0,
+    do: "Couldn't save: all embedding accounts are rate-limited. Try again in #{div(retry_ms + 999, 1000)}s."
+
+  defp format_save_error(:unknown_pool),
+    do: "Couldn't save: the configured embedding pool doesn't exist. Check the kbEmbeddingModel setting in System Settings."
+
+  defp format_save_error(:invalid_format),
+    do: "Couldn't save: the kbEmbeddingModel setting is malformed (expected 'pool::model'). Fix it in System Settings."
+
+  defp format_save_error(reason),
+    do: "Couldn't save: #{inspect(reason, limit: 80)}"
 end

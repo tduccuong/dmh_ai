@@ -158,8 +158,8 @@ const I18n = {
             processingVideo: 'Đang xử lý video, có thể mất một lúc…', analyzingVideo: 'Đang phân tích video, có thể mất một lúc…',
             processingImage: 'Đang xử lý ảnh, có thể mất một lúc…', analyzingImage: 'Đang phân tích ảnh, có thể mất một lúc…',
             thinkingOutLoud: 'Suy nghĩ…',
-            modeConfidant: 'Bạn Tâm Giao',
-            modeAssistant: 'Người Giúp Việc',
+            modeConfidant: 'Bạn thân',
+            modeAssistant: 'Trợ lý',
         },
         de: {
             retry: 'Wiederholen', clear: 'Löschen', send: 'Senden', cancel: 'Abbrechen', ok: 'OK', stopGen: 'Stopp', onTask: 'bei Aufgabe',
@@ -216,8 +216,8 @@ const I18n = {
             processingVideo: 'Video wird verarbeitet, das kann einen Moment dauern…', analyzingVideo: 'Video wird analysiert, das kann einen Moment dauern…',
             processingImage: 'Bild wird verarbeitet, das kann einen Moment dauern…', analyzingImage: 'Foto wird analysiert, das kann einen Moment dauern…',
             thinkingOutLoud: 'Denken…',
-            modeConfidant: 'Vertrauter',
-            modeAssistant: 'Assistent',
+            modeConfidant: 'Confidant',
+            modeAssistant: 'Assistant',
         },
         es: {
             retry: 'Reintentar', clear: 'Limpiar', send: 'Enviar', cancel: 'Cancelar', ok: 'OK', stopGen: 'Detener', onTask: 'en la tarea',
@@ -274,8 +274,8 @@ const I18n = {
             processingVideo: 'Procesando vídeo, puede tardar un momento…', analyzingVideo: 'Analizando vídeo, puede tardar un momento…',
             processingImage: 'Procesando imagen, puede tardar un momento…', analyzingImage: 'Analizando foto, puede tardar un momento…',
             thinkingOutLoud: 'Pensando…',
-            modeConfidant: 'Confidente',
-            modeAssistant: 'Asistente',
+            modeConfidant: 'Confidant',
+            modeAssistant: 'Assistant',
         },
         fr: {
             retry: 'Réessayer', clear: 'Effacer', send: 'Envoyer', cancel: 'Annuler', ok: 'OK', stopGen: 'Arrêter', onTask: 'sur la tâche',
@@ -332,7 +332,7 @@ const I18n = {
             processingVideo: 'Traitement de la vidéo, cela peut prendre un moment…', analyzingVideo: 'Analyse de la vidéo, cela peut prendre un moment…',
             processingImage: 'Traitement de l\'image, cela peut prendre un moment…', analyzingImage: 'Analyse de la photo, cela peut prendre un moment…',
             thinkingOutLoud: 'Réflexion…',
-            modeConfidant: 'Confident',
+            modeConfidant: 'Confidant',
             modeAssistant: 'Assistant',
         }
     },
@@ -343,6 +343,36 @@ const I18n = {
     names: { en: 'English', vi: 'Tiếng Việt', de: 'Deutsch', es: 'Español', fr: 'Français' }
 };
 function t(key) { return I18n.t(key); }
+
+// IP-geolocation fallback for the language picker. Fires only on first-
+// ever load (no localStorage 'lang' key) AND when navigator.languages
+// gave us nothing supported (i.e., I18n._lang fell through to 'en').
+// Asynchronous — UI renders synchronously with whatever I18n._lang
+// already resolved to, then re-renders via applyLanguage() if the
+// server returns a supported language hint based on client IP.
+// Best-effort: any failure leaves the UI on its current default.
+async function maybeApplyIpLang() {
+    if (localStorage.getItem('lang')) return;
+
+    var supported = { en: 1, vi: 1, de: 1, es: 1, fr: 1 };
+    var langs = navigator.languages && navigator.languages.length
+        ? navigator.languages
+        : [navigator.language || 'en'];
+    for (var i = 0; i < langs.length; i++) {
+        var code = langs[i].split('-')[0].toLowerCase();
+        if (supported[code]) return;
+    }
+
+    try {
+        var r = await fetch('/detect-lang', { credentials: 'omit' });
+        if (!r.ok) return;
+        var d = await r.json();
+        if (d && d.lang && supported[d.lang] && d.lang !== I18n._lang) {
+            I18n._lang = d.lang;
+            if (typeof applyLanguage === 'function') applyLanguage();
+        }
+    } catch (e) { /* best-effort, keep current default */ }
+}
 
 const Auth = {
     _token: localStorage.getItem('auth_token'),

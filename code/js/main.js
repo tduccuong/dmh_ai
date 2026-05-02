@@ -802,4 +802,8 @@ const UIManager = {
 document.addEventListener('DOMContentLoaded', function() {
     Lightbox.init();
     UIManager.init();
+    // Third-tier language fallback. Runs only when neither localStorage
+    // nor navigator.languages produced a supported language; resolves
+    // async and re-applies the UI strings if the BE returns a hint.
+    if (typeof maybeApplyIpLang === 'function') maybeApplyIpLang();
 });
