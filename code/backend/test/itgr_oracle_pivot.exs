@@ -1,6 +1,6 @@
-# Cheap-tier coverage for the Oracle / pivot / knowledge gate stack:
+# Cheap-tier coverage for the Swift / pivot / knowledge gate stack:
 #
-#   1. `DmhAi.Agent.Oracle.classify/2`     — verdict parsing against
+#   1. `DmhAi.Agent.Swift.classify/2`     — verdict parsing against
 #      stubbed LLM responses.
 #   2. `DmhAi.Agent.PendingPivots`         — ETS round-trip + TTL.
 #   3. `DmhAi.Agent.Police.check_pivot/3`  — gate routing per verdict,
@@ -23,11 +23,11 @@
 defmodule Itgr.OraclePivot do
   use ExUnit.Case, async: false
 
-  alias DmhAi.Agent.{Oracle, PendingPivots, Police}
+  alias DmhAi.Agent.{Swift, PendingPivots, Police}
 
-  # ─── Oracle.classify/2 ──────────────────────────────────────────────────
+  # ─── Swift.classify/2 ──────────────────────────────────────────────────
 
-  describe "Oracle.classify/2 verdict parsing" do
+  describe "Swift.classify/2 verdict parsing" do
     setup do
       # Each test installs its own stub via T.stub_llm_call/1 in the body.
       :ok
@@ -35,28 +35,28 @@ defmodule Itgr.OraclePivot do
 
     test "RELATED verdict maps to :related" do
       T.stub_llm_call(fn _model, _msgs, _opts -> {:ok, "RELATED"} end)
-      assert Oracle.classify("follow-up clarification", "Search HF for sentiment models") == :related
+      assert Swift.classify("follow-up clarification", "Search HF for sentiment models") == :related
     end
 
     test "UNRELATED verdict maps to :unrelated" do
       T.stub_llm_call(fn _model, _msgs, _opts -> {:ok, "UNRELATED"} end)
-      assert Oracle.classify("why stock market soars today", "Search HF for sentiment models") == :unrelated
+      assert Swift.classify("why stock market soars today", "Search HF for sentiment models") == :unrelated
     end
 
     test "KNOWLEDGE verdict maps to :knowledge" do
       T.stub_llm_call(fn _model, _msgs, _opts -> {:ok, "KNOWLEDGE"} end)
-      assert Oracle.classify("hi", "Search HF for sentiment models") == :knowledge
+      assert Swift.classify("hi", "Search HF for sentiment models") == :knowledge
     end
 
     test "DONE verdict maps to :done" do
       T.stub_llm_call(fn _model, _msgs, _opts -> {:ok, "DONE"} end)
-      assert Oracle.classify("ko can, dong nhiem vu lai", "Tạo quy trình tự động trong Bitrix24") == :done
-      assert Oracle.classify("stop, that's all", "long-running task") == :done
+      assert Swift.classify("ko can, dong nhiem vu lai", "Tạo quy trình tự động trong Bitrix24") == :done
+      assert Swift.classify("stop, that's all", "long-running task") == :done
     end
 
     test "passes prev_assistant_msg through to the prompt as conversational context" do
       # Pin the contract: the third arg ends up in the prompt under the
-      # "Assistant's last reply" header so a real Oracle can see that
+      # "Assistant's last reply" header so a real Swift can see that
       # the user is answering a question. We don't assert the verdict
       # here (model picks that); we assert the prompt shape.
       seen_user_content = :counters.new(1, [])
@@ -76,7 +76,7 @@ defmodule Itgr.OraclePivot do
         {:ok, "RELATED"}
       end)
 
-      assert Oracle.classify(
+      assert Swift.classify(
                "switch to EXECUTING",
                "Set up Bitrix24 automation: move new Deal to Negotiation",
                "You don't have a 'Negotiation' stage. Pick one of: NEW, EXECUTING, WON, LOSE, or shall I create a new one?"
@@ -104,8 +104,8 @@ defmodule Itgr.OraclePivot do
         {:ok, "UNRELATED"}
       end)
 
-      assert Oracle.classify("why is the sky blue", "Bitrix24 automation") == :unrelated
-      assert Oracle.classify("why is the sky blue", "Bitrix24 automation", nil) == :unrelated
+      assert Swift.classify("why is the sky blue", "Bitrix24 automation") == :unrelated
+      assert Swift.classify("why is the sky blue", "Bitrix24 automation", nil) == :unrelated
 
       [{:prompt, prompt}] = :ets.lookup(received, :prompt)
       refute prompt =~ "Assistant's last reply"
@@ -113,35 +113,35 @@ defmodule Itgr.OraclePivot do
 
     test "tolerates lowercase / mixed case" do
       T.stub_llm_call(fn _model, _msgs, _opts -> {:ok, "knowledge"} end)
-      assert Oracle.classify("hello", "anything") == :knowledge
+      assert Swift.classify("hello", "anything") == :knowledge
 
       T.stub_llm_call(fn _model, _msgs, _opts -> {:ok, "Related"} end)
-      assert Oracle.classify("yes", "anything") == :related
+      assert Swift.classify("yes", "anything") == :related
     end
 
     test "tolerates surrounding whitespace and trailing punctuation" do
       T.stub_llm_call(fn _model, _msgs, _opts -> {:ok, "  UNRELATED.\n"} end)
-      assert Oracle.classify("off-topic", "anything") == :unrelated
+      assert Swift.classify("off-topic", "anything") == :unrelated
     end
 
     test "picks the FIRST word — extra commentary doesn't break parsing" do
       T.stub_llm_call(fn _model, _msgs, _opts -> {:ok, "UNRELATED — different domain"} end)
-      assert Oracle.classify("off-topic", "anything") == :unrelated
+      assert Swift.classify("off-topic", "anything") == :unrelated
     end
 
     test "garbage verdict word maps to :error (soft fail)" do
       T.stub_llm_call(fn _model, _msgs, _opts -> {:ok, "MAYBE"} end)
-      assert Oracle.classify("anything", "anything") == :error
+      assert Swift.classify("anything", "anything") == :error
     end
 
     test "LLM error maps to :error (soft fail)" do
       T.stub_llm_call(fn _model, _msgs, _opts -> {:error, :timeout} end)
-      assert Oracle.classify("anything", "anything") == :error
+      assert Swift.classify("anything", "anything") == :error
     end
 
     test "LLM emits tool_calls (it shouldn't, but if it does) → :error" do
       T.stub_llm_call(fn _model, _msgs, _opts -> {:ok, {:tool_calls, []}} end)
-      assert Oracle.classify("anything", "anything") == :error
+      assert Swift.classify("anything", "anything") == :error
     end
 
     test "empty / nil anchor task spec short-circuits to :related (no classifier call)" do
@@ -149,14 +149,14 @@ defmodule Itgr.OraclePivot do
         flunk("classifier should not be called when anchor task spec is empty")
       end)
 
-      assert Oracle.classify("anything", nil) == :related
-      assert Oracle.classify("anything", "") == :related
-      assert Oracle.classify("anything", "   ") == :related
+      assert Swift.classify("anything", nil) == :related
+      assert Swift.classify("anything", "") == :related
+      assert Swift.classify("anything", "   ") == :related
     end
 
     test "non-binary user_msg returns :error" do
-      assert Oracle.classify(nil, "spec") == :error
-      assert Oracle.classify(:atom, "spec") == :error
+      assert Swift.classify(nil, "spec") == :error
+      assert Swift.classify(:atom, "spec") == :error
     end
   end
 
@@ -296,7 +296,7 @@ defmodule Itgr.OraclePivot do
       Process.delete(:dmh_ai_oracle_verdict_cached)
       ctx = %{anchor_task_num: 1, session_id: "s_" <> T.uid()}
       # Without an oracle_task and no cached verdict, await_oracle/1
-      # returns :related (no anchor case from Oracle's perspective).
+      # returns :related (no anchor case from Swift's perspective).
       assert Police.check_pivot("web_search", %{}, ctx) == :ok
     end
 
@@ -489,7 +489,7 @@ defmodule Itgr.OraclePivot do
       # 5. PendingPivots cleared.
       assert PendingPivots.get(ctx.sid) == nil
 
-      # 6. Cached Oracle verdict forced to :related so subsequent
+      # 6. Cached Swift verdict forced to :related so subsequent
       #    Police gate calls in this chain pass through (anchor moved,
       #    old verdict is stale).
       assert Process.get(:dmh_ai_oracle_verdict_cached) == {:resolved, :related}
@@ -570,11 +570,11 @@ defmodule Itgr.OraclePivot do
 
   # ─── Optional: live ministral round-trip ────────────────────────────────
 
-  describe "Oracle.classify/2 against real ministral (network)" do
+  describe "Swift.classify/2 against real ministral (network)" do
     @describetag :network
 
     test "classifies a clear off-topic message as UNRELATED" do
-      verdict = Oracle.classify("why is the stock market soaring today?",
+      verdict = Swift.classify("why is the stock market soaring today?",
                                  "Search HuggingFace for sentiment analysis models")
 
       assert verdict in [:unrelated, :knowledge, :error],
@@ -590,7 +590,7 @@ defmodule Itgr.OraclePivot do
     end
 
     test "classifies a refining follow-up as RELATED" do
-      verdict = Oracle.classify("can you also include the model size?",
+      verdict = Swift.classify("can you also include the model size?",
                                  "Search HuggingFace for sentiment analysis models")
 
       assert verdict in [:related, :error],
@@ -598,7 +598,7 @@ defmodule Itgr.OraclePivot do
     end
 
     test "classifies a greeting as KNOWLEDGE" do
-      verdict = Oracle.classify("thanks!",
+      verdict = Swift.classify("thanks!",
                                  "Search HuggingFace for sentiment analysis models")
 
       assert verdict in [:knowledge, :error],

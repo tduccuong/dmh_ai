@@ -53,6 +53,7 @@ defmodule DmhAi.Application do
       {:ok, pid} ->
         if Application.get_env(:dmh_ai, :run_startup_check, true), do: DmhAi.StartupCheck.run()
         DmhAi.DB.Init.run()
+        DmhAi.Permissions.Migration.run()
         DmhAi.DomainBlocker.load_from_db()
         DmhAi.Agent.PendingPivots.init()
         DmhAi.Agent.ChainInFlight.init()

@@ -166,6 +166,11 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
 .settings-section-title { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; color: #c090e0; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 14px; }
 .settings-subsection { margin-bottom: 14px; }
 .settings-subsection-title { font-size: 12px; color: #9080a8; margin-bottom: 8px; font-weight: 600; }
+/* Inline help blurb under a model-tier section title — describes
+   which BE callers use this tier. Tone-matches `.role-picker-current`
+   (13px, secondary text colour) so the form reads as one consistent
+   density rather than a tier name + a louder paragraph. */
+.settings-subsection-help { font-size: 13px; color: var(--text-secondary); line-height: 1.5; margin-bottom: 10px; }
 .settings-subsection.disabled { opacity: 0.4; pointer-events: none; }
 .settings-list { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
 .settings-list-item { display: flex; align-items: center; gap: 8px; background: #141018; border: 1px solid #281e38; border-radius: 6px; padding: 7px 10px; font-size: 13px; color: #d0c0e8; }
@@ -448,13 +453,22 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
    First line reads "<icon> <label…>", subsequent wrapped lines flow
    flush-left under the icon column — no visual right-indent creep. */
 .progress-row {
+    /* Outer container — column so sub_labels stack beneath the
+       header. Header is its own flex-row child (.progress-row-header).
+       See manager-chat.js renderProgressRow. */
     display: flex;
-    align-items: baseline;
+    flex-direction: column;
+    align-items: stretch;
     padding: 2px 16px;
     font-size: 12.5px;
     color: #b0a3cc;
     font-family: ui-monospace, Menlo, Consolas, monospace;
     line-height: 1.5;
+    min-width: 0;
+}
+.progress-row .progress-row-header {
+    display: flex;
+    align-items: baseline;
     min-width: 0;
 }
 .progress-row .progress-icon {
@@ -487,6 +501,31 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
     margin-left: 6px;
     color: #7d6f99;
     font-variant-numeric: tabular-nums;
+}
+/* Stacked sub-labels — appear beneath the row header for tool /
+   confidant_websearch rows that emit per-step progress. Each entry
+   is its own line so the user can review the entire chain (which
+   queries SearXNG ran, which URLs were fetched, etc.). Indented to
+   visually associate with the parent row's main label; dimmer so
+   the parent stays the dominant text. */
+.progress-row .progress-sub-labels {
+    display: flex;
+    flex-direction: column;
+    margin-left: 24px;          /* aligns under the parent label, past the icon */
+    margin-top: 1px;
+}
+.progress-row .progress-sub-label {
+    color: #8a7fa0;             /* a touch dimmer than the parent label */
+    font-size: 12px;
+    line-height: 1.45;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+}
+.progress-row .progress-sub-label::before {
+    content: '↳ ';              /* visual hierarchy hint */
+    opacity: 0.55;
 }
 .progress-tool.progress-status-pending .progress-icon {
     display: inline-block;

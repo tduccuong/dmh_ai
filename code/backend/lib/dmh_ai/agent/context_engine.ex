@@ -686,7 +686,7 @@ defmodule DmhAi.Agent.ContextEngine do
           ]
 
       trace = %{origin: "system", path: "ContextEngine.compact", role: "ContextCompactor", phase: "compact"}
-      case LLM.call(AgentSettings.compactor_model(), compaction_messages, trace: trace) do
+      case LLM.call(AgentSettings.oracle_model(), compaction_messages, trace: trace) do
         {:ok, summary} when is_binary(summary) and summary != "" ->
           new_ctx = %{
             "summary"              => summary,

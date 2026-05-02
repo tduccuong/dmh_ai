@@ -22,7 +22,7 @@ defmodule DmhAi.Commands do
       automatic retrieval pre-step (task #186).
   """
 
-  alias DmhAi.Agent.{Oracle, UserAgentMessages}
+  alias DmhAi.Agent.{Swift, UserAgentMessages}
   alias DmhAi.Commands.{Parser, Memo, Pipelines}
 
   @doc """
@@ -97,7 +97,7 @@ defmodule DmhAi.Commands do
       kind: "command"
     })
 
-    err_msg = Oracle.localize("Couldn't process: " <> to_string(reason), original_content)
+    err_msg = Swift.localize("Couldn't process: " <> to_string(reason), original_content)
 
     {:ok, _ack_ts} = UserAgentMessages.append(session_id, user_id, %{
       role: "assistant",

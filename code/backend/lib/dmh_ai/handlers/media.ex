@@ -27,7 +27,7 @@ defmodule DmhAi.Handlers.Media do
 
   # GET /video-frame-count
   def get_video_frame_count(conn) do
-    model = AgentSettings.video_describer_model()
+    model = AgentSettings.vision_model()
     base = if cloud_model?(model), do: 8, else: 16
     multiplier = %{"low" => 0.5, "medium" => 0.75, "high" => 1.0}[AgentSettings.video_detail()] || 0.75
     count = max(2, round(base * multiplier))
@@ -54,7 +54,7 @@ defmodule DmhAi.Handlers.Media do
         messages = [%{role: "user", content: video_prompt(), images: frames}]
 
         trace = %{origin: "system", path: "Handlers.Media.describe_video", role: "VideoDescriber", phase: "describe"}
-        case LLM.call(AgentSettings.video_describer_model(), messages, trace: trace) do
+        case LLM.call(AgentSettings.vision_model(), messages, trace: trace) do
           {:ok, desc} when is_binary(desc) and desc != "" ->
             store_video_description(session_id, file_id, name, desc)
             Logger.info("[Media] video description stored session=#{session_id} name=#{name}")
@@ -87,7 +87,7 @@ defmodule DmhAi.Handlers.Media do
         messages = [%{role: "user", content: image_prompt(), images: [image]}]
 
         trace = %{origin: "system", path: "Handlers.Media.describe_image", role: "ImageDescriber", phase: "describe"}
-        case LLM.call(AgentSettings.image_describer_model(), messages, trace: trace) do
+        case LLM.call(AgentSettings.vision_model(), messages, trace: trace) do
           {:ok, desc} when is_binary(desc) and desc != "" ->
             store_image_description(session_id, file_id, name, desc)
             Logger.info("[Media] image description stored session=#{session_id} name=#{name}")

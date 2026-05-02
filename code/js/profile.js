@@ -37,27 +37,20 @@ const Settings = {
             }
         } catch(e) {}
     },
-    // Agent model settings — one per BE role. Empty string means
-    // "use the @defaults value baked into AgentSettings".
+    // Agent model settings — one per tier. Empty string means "use
+    // the @defaults value baked into AgentSettings". See
+    // specs/architecture.md §Model tiers.
     _confidantModel: '',
     _assistantModel: '',
-    _compactorModel: '',
-    _summarizerModel: '',
-    _webSearchModel: '',
-    _oracleModel: '',
-    _imageDescriberModel: '',
-    _videoDescriberModel: '',
-    _profileExtractorModel: '',
+    _swiftModel: '',         // Swift  — short fast classifier work
+    _oracleModel: '',        // Oracle — long-context summarisers
+    _visionModel: '',        // image / video / OCR
     _kbEmbeddingModel: '',
     get confidantModel() { return this._confidantModel; },
     get assistantModel() { return this._assistantModel; },
-    get compactorModel() { return this._compactorModel; },
-    get summarizerModel() { return this._summarizerModel; },
-    get webSearchModel() { return this._webSearchModel; },
+    get swiftModel() { return this._swiftModel; },
     get oracleModel() { return this._oracleModel; },
-    get imageDescriberModel() { return this._imageDescriberModel; },
-    get videoDescriberModel() { return this._videoDescriberModel; },
-    get profileExtractorModel() { return this._profileExtractorModel; },
+    get visionModel() { return this._visionModel; },
     get kbEmbeddingModel() { return this._kbEmbeddingModel; },
     // Worker agent tuning
     _maxToolResultChars: 8000,
@@ -77,13 +70,9 @@ const Settings = {
                 videoDetail: this._videoDetail, modelLabels: this._modelLabels,
                 confidantModel: this._confidantModel,
                 assistantModel: this._assistantModel,
-                compactorModel: this._compactorModel,
-                summarizerModel: this._summarizerModel,
-                webSearchModel: this._webSearchModel,
+                swiftModel: this._swiftModel,
                 oracleModel: this._oracleModel,
-                imageDescriberModel: this._imageDescriberModel,
-                videoDescriberModel: this._videoDescriberModel,
-                profileExtractorModel: this._profileExtractorModel,
+                visionModel: this._visionModel,
                 kbEmbeddingModel: this._kbEmbeddingModel,
                 maxToolResultChars: this._maxToolResultChars,
                 logTrace: this._logTrace
@@ -118,16 +107,12 @@ const Settings = {
                     this._modelLabels = d.modelLabels;
                 }
                 // Agent model settings
-                if (d.confidantModel)        this._confidantModel        = d.confidantModel;
-                if (d.assistantModel)        this._assistantModel        = d.assistantModel;
-                if (d.compactorModel)        this._compactorModel        = d.compactorModel;
-                if (d.summarizerModel)       this._summarizerModel       = d.summarizerModel;
-                if (d.webSearchModel)        this._webSearchModel        = d.webSearchModel;
-                if (d.oracleModel)           this._oracleModel           = d.oracleModel;
-                if (d.imageDescriberModel)   this._imageDescriberModel   = d.imageDescriberModel;
-                if (d.videoDescriberModel)   this._videoDescriberModel   = d.videoDescriberModel;
-                if (d.profileExtractorModel) this._profileExtractorModel = d.profileExtractorModel;
-                if (d.kbEmbeddingModel)      this._kbEmbeddingModel      = d.kbEmbeddingModel;
+                if (d.confidantModel)   this._confidantModel   = d.confidantModel;
+                if (d.assistantModel)   this._assistantModel   = d.assistantModel;
+                if (d.swiftModel)       this._swiftModel       = d.swiftModel;
+                if (d.oracleModel)      this._oracleModel      = d.oracleModel;
+                if (d.visionModel)      this._visionModel      = d.visionModel;
+                if (d.kbEmbeddingModel) this._kbEmbeddingModel = d.kbEmbeddingModel;
                 if (d.maxToolResultChars !== undefined) this._maxToolResultChars = parseInt(d.maxToolResultChars) || 8000;
                 if (d.logTrace !== undefined) this._logTrace = d.logTrace === true;
             }
@@ -179,17 +164,16 @@ const UserProfile = {
 };
 
 const SettingsModal = {
-    // All BE model roles that have a picker in the AI Model Settings page.
+    // All BE model tiers that have a picker in the AI Model Settings page.
     // Keep in sync with the HTML sections in `page-ai-models` and with
     // `AgentSettings.model_for/1` keys on the BE.
     _ROLES: [
         'assistant', 'confidant',
-        'imageDescriber', 'videoDescriber',
-        'webSearch', 'oracle', 'compactor', 'summarizer', 'profileExtractor',
+        'swift', 'oracle', 'vision',
         'kbEmbedding'
     ],
     _roleField: function(role) {
-        // 'assistant' → '_assistantModel', 'imageDescriber' → '_imageDescriberModel'
+        // 'assistant' → '_assistantModel', 'swift' → '_swiftModel'
         return '_' + role + 'Model';
     },
     // Format a stored "<pool>::<model>" string for display as

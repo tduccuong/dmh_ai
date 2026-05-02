@@ -23,7 +23,7 @@ defmodule DmhAi.Agent.WebSearch do
   """
   @spec synthesize_results(String.t()) :: {:ok, String.t()} | {:error, term()}
   def synthesize_results(raw_results) do
-    model = AgentSettings.web_search_model()
+    model = AgentSettings.swift_model()
     today = Date.to_string(Date.utc_today())
 
     prompt =

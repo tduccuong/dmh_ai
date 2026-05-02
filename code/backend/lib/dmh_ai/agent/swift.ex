@@ -3,33 +3,40 @@
 # See the LICENSE file in the repository root for full details.
 # For commercial inquiries, contact: tduccuong@gmail.com
 
-defmodule DmhAi.Agent.Oracle do
+defmodule DmhAi.Agent.Swift do
   @moduledoc """
-  Independent classifier consulted by Police's anchor-pivot gate.
+  The "Swift" tier — short, single-shot LLM calls that return a
+  classification or a one-line answer. Cheapest model in the
+  agent_settings hierarchy (`swiftModel`); designed for fast
+  decisions where latency dominates and the output is a few tokens.
 
-  Compares the chain-start user message against the active anchor's
-  `task_spec` and returns one of three classes:
+  Today this module exposes:
 
-    * `:related`   — the message extends, refines, or replies to the
-      anchor; tools may run as usual.
-    * `:unrelated` — the message is off-topic from the anchor; the
-      assistant must confirm with the user (pause / cancel / stop)
-      before any tool work for the new ask.
-    * `:knowledge` — the message is a greeting, chitchat, identity
-      question, or factual question answerable from the model's
-      training (no live lookup needed); regardless of anchor, no tool
-      call should run for it.
+    * `classify/2` (and `classify/3`) — Police's anchor-pivot gate.
+      Compares the chain-start user message against the active
+      anchor's `task_spec` and returns one of:
 
-  Soft fail: any error (timeout, transport, parse) returns `:error`.
-  Police treats `:error` as a pass-through so a flaky classifier
-  never blocks legitimate work.
+        * `:related`   — extends/refines/replies to the anchor; tools
+          may run as usual.
+        * `:unrelated` — off-topic from the anchor; the assistant must
+          confirm with the user (pause / cancel / stop) before any
+          tool work for the new ask.
+        * `:knowledge` — greeting, chitchat, identity question, or
+          factual question answerable from training (no live lookup);
+          regardless of anchor, no tool call should run for it.
 
-  Also exposes `localize/2` — a small helper to express a runtime
-  ack template in the user's language. Used by `/memo` (success and
-  error acks) and by `/wiki` pipelines (accepted / final acks).
+      Soft fail: any error (timeout, transport, parse) returns
+      `:error`. Police treats `:error` as a pass-through so a flaky
+      classifier never blocks legitimate work.
 
-  Model role: `oracleModel` (configurable via AgentSettings; default
-  ministral-3:14b-cloud — small, fast, cheap).
+    * `localize/2` — translates a short English template message into
+      the user's language using their recent text as the language
+      signal. Used by `/memo` (success / error acks) and `/wiki`
+      pipelines (accepted / final acks).
+
+  Other Swift-tier callers (Web.Search query planner, Handlers.Data
+  session naming) live in their own modules but read the same
+  `swiftModel` setting.
   """
 
   require Logger
@@ -42,7 +49,7 @@ defmodule DmhAi.Agent.Oracle do
   Optionally takes the assistant's most recent reply as conversational
   context — when the assistant just asked a clarifying question, the
   user's terse follow-up reply ("yes", a stage name, an account, …) is
-  RELATED, not DONE / UNRELATED. Without that context Oracle is blind
+  RELATED, not DONE / UNRELATED. Without that context Swift is blind
   to "user is answering my question" and misclassifies short replies.
   Callers that don't have the prior reply pass `nil`.
 
@@ -75,14 +82,14 @@ defmodule DmhAi.Agent.Oracle do
   # ── private ───────────────────────────────────────────────────────────
 
   defp do_classify(user_msg, spec, prev_assistant_msg) do
-    model = AgentSettings.oracle_model()
+    model = AgentSettings.swift_model()
 
     messages = [
       %{role: "system", content: system_prompt()},
       %{role: "user", content: user_prompt(user_msg, spec, prev_assistant_msg)}
     ]
 
-    trace = %{origin: "system", path: "Agent.Oracle.classify", role: "OraclePivot", phase: "classify"}
+    trace = %{origin: "system", path: "Agent.Swift.classify", role: "SwiftPivot", phase: "classify"}
 
     case LLM.call(model, messages, options: %{temperature: 0}, trace: trace) do
       {:ok, text} when is_binary(text) ->
@@ -94,12 +101,12 @@ defmodule DmhAi.Agent.Oracle do
         :error
 
       {:error, reason} ->
-        Logger.warning("[Oracle] classify error: #{inspect(reason)}")
+        Logger.warning("[Swift] classify error: #{inspect(reason)}")
         :error
     end
   rescue
     e ->
-      Logger.error("[Oracle] classify raised: #{Exception.message(e)}")
+      Logger.error("[Swift] classify raised: #{Exception.message(e)}")
       :error
   end
 
@@ -162,7 +169,7 @@ defmodule DmhAi.Agent.Oracle do
       "UNRELATED" -> :unrelated
       "KNOWLEDGE" -> :knowledge
       _ ->
-        Logger.warning("[Oracle] unparseable verdict: #{inspect(String.slice(text, 0, 80))}")
+        Logger.warning("[Swift] unparseable verdict: #{inspect(String.slice(text, 0, 80))}")
         :error
     end
   end
@@ -173,10 +180,10 @@ defmodule DmhAi.Agent.Oracle do
   Express `message` in the user's language, inferred from
   `user_input`. Returns one short sentence in plain text. On any
   error / empty reply, falls back to `message` verbatim — a flaky
-  Oracle never strands the user with no ack.
+  Swift never strands the user with no ack.
 
   `user_input` is the language signal. Strong for inline text (the
-  text itself); weak for paths/URLs (Oracle defaults to English,
+  text itself); weak for paths/URLs (Swift defaults to English,
   which is fine for path-shaped commands).
   """
   @spec localize(String.t(), String.t()) :: String.t()
@@ -187,9 +194,9 @@ defmodule DmhAi.Agent.Oracle do
       %{role: "user",   content: "User input: #{user_input}\nMessage to express: #{message}"}
     ]
 
-    trace = %{origin: "system", path: "Agent.Oracle.localize", role: "OracleLocalize", phase: "localize"}
+    trace = %{origin: "system", path: "Agent.Swift.localize", role: "SwiftLocalize", phase: "localize"}
 
-    case LLM.call(AgentSettings.oracle_model(), msgs, options: %{temperature: 0}, trace: trace) do
+    case LLM.call(AgentSettings.swift_model(), msgs, options: %{temperature: 0}, trace: trace) do
       {:ok, text} when is_binary(text) ->
         case String.trim(text) do
           ""    -> message
@@ -201,7 +208,7 @@ defmodule DmhAi.Agent.Oracle do
     end
   rescue
     e ->
-      Logger.warning("[Oracle] localize raised: #{Exception.message(e)}")
+      Logger.warning("[Swift] localize raised: #{Exception.message(e)}")
       message
   end
 

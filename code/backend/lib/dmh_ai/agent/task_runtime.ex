@@ -277,7 +277,7 @@ defmodule DmhAi.Agent.TaskRuntime do
     ]
 
     trace = %{origin: "assistant", path: "TaskRuntime.summarize_progress", role: "ProgressSummarizer", phase: "summarize"}
-    LLM.call(AgentSettings.summarizer_model(), prompt, trace: trace)
+    LLM.call(AgentSettings.oracle_model(), prompt, trace: trace)
   end
 
   defp task_ctx(task) do

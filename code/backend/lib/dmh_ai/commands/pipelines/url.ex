@@ -22,7 +22,7 @@ defmodule DmhAi.Commands.Pipelines.URL do
 
   alias DmhAi.VectorDB
   alias DmhAi.Web.Fetcher
-  alias DmhAi.Agent.{AgentSettings, BackgroundPipelines, Oracle, SessionProgress, UserAgentMessages}
+  alias DmhAi.Agent.{AgentSettings, BackgroundPipelines, Swift, SessionProgress, UserAgentMessages}
   alias DmhAi.Commands.WikiAck
   require Logger
 
@@ -45,6 +45,36 @@ defmodule DmhAi.Commands.Pipelines.URL do
     .exe .dmg .iso .deb .rpm .apk
   )
 
+  # Path segments that signal "asset / build artifact / vendor tree /
+  # cache / VCS internals" across popular tech stacks. Match is
+  # whole-segment, case-sensitive — `node_modules` matches
+  # `/foo/node_modules/x` but NOT `/foo/abc-node_modules-x/`.
+  # Curated to exclude ambiguous names (`out`, `bin`, `obj`,
+  # `coverage`, `public`, `tmp`, `pkg`, `Pods`, `.github`) where
+  # legitimate doc URLs use the same name.
+  @asset_path_segments ~w(
+    _images _static _assets _site _book
+    node_modules bower_components
+    dist build target
+    .next .nuxt .svelte-kit .docusaurus .vuepress
+    .cache .parcel-cache .turbo .angular .gradle .dart_tool
+    __pycache__ .pytest_cache .mypy_cache .ruff_cache .tox
+    htmlcov .nyc_output
+    vendor
+    .idea .vscode
+    .git .svn .hg
+    .terraform cdk.out .serverless
+  )
+
+  # Pages with extracted text below this length are treated as
+  # leaves: not ingested, no progress row emitted, outbound links
+  # not enqueued. Catches sparse listings, error stubs, "About"
+  # pages, navigation skeletons. The threshold is generous on
+  # purpose — real doc pages run into the thousands of characters
+  # post-extraction; anything well under 500 is essentially nav
+  # markup that survived the Reader's prose heuristics.
+  @min_chars_for_useful_page 500
+
   @doc "Heuristic — is this an http(s) URL?"
   @spec url?(String.t()) :: boolean()
   def url?(s) when is_binary(s) do
@@ -65,9 +95,9 @@ defmodule DmhAi.Commands.Pipelines.URL do
       do_crawl(url, session_id, user_id)
     end)
 
-    # URL itself carries no language signal — Oracle defaults to
+    # URL itself carries no language signal — Swift defaults to
     # English here, which is the right behaviour for path-shaped args.
-    {:ok, Oracle.localize(WikiAck.accepted_ack(url), url)}
+    {:ok, Swift.localize(WikiAck.accepted_ack(url), url)}
   end
 
   # Top-level crawl: derive same-prefix scope, BFS until the queue
@@ -100,12 +130,12 @@ defmodule DmhAi.Commands.Pipelines.URL do
 
       summary = compose_summary(final_state, prefix)
       lang_signal = final_state.first_lang_signal || start_url
-      post_ack(session_id, user_id, Oracle.localize(summary, lang_signal))
+      post_ack(session_id, user_id, Swift.localize(summary, lang_signal))
     rescue
       e ->
         Logger.error("[Commands.URL] crawl crashed on #{start_url}: #{Exception.message(e)}")
         post_ack(session_id, user_id,
-          Oracle.localize("Crawl crashed for `#{start_url}`: #{Exception.message(e)}", start_url))
+          Swift.localize("Crawl crashed for `#{start_url}`: #{Exception.message(e)}", start_url))
     after
       BackgroundPipelines.unregister(session_id)
     end
@@ -133,85 +163,102 @@ defmodule DmhAi.Commands.Pipelines.URL do
     end
   end
 
-  # Fetch + ingest one page; emit the matching tool progress row and
-  # push outbound same-prefix links onto the queue.
+  # Fetch + ingest one page. The progress row is emitted ONLY after the
+  # page survives every gate (in-scope, non-trivial text, ingest
+  # succeeded) — we don't want to clutter the chat with rows for URLs
+  # that fetch successfully but have nothing worth indexing
+  # (asset listings, nav stubs, redirect leaks). Silent skips here
+  # are still counted in `state.errors` so the summary's tally is
+  # accurate even though the FE shows fewer rows.
   defp process_page(state, url, depth) do
+    result = Fetcher.fetch(url, extractor: :kb, max_chars: @max_chars_per_page, include_html: true)
+
+    case result do
+      {:ok, %{title: title, content: text, html: html} = res} when is_binary(text) and text != "" ->
+        final_url = Map.get(res, :final_url, url)
+
+        cond do
+          # Redirect-out-of-prefix guard. A queued in-prefix URL may
+          # 30x to an out-of-prefix (or off-host) URL. `state.prefix`
+          # always ends in "/" (see same_prefix_path/1) so we append
+          # "/" to final_url before comparison — that handles the
+          # bare-dir case (final_url = `https://github.com/X` vs.
+          # prefix `https://github.com/X/`) without false-positiving
+          # on sibling paths (`https://github.com/X-other/…`).
+          not String.starts_with?(final_url <> "/", state.prefix) ->
+            %{state | errors: state.errors + 1}
+
+          # Layer 2C — text-quality gate. Pages below the threshold
+          # are treated as leaves: not indexed, no row, no link
+          # propagation. Stops sparse listing pages (`_images/`,
+          # tag indexes, "About" stubs) from ballooning the BFS
+          # queue with their useless outbound links.
+          byte_size(text) < @min_chars_for_useful_page ->
+            %{state | errors: state.errors + 1}
+
+          true ->
+            ingest_with_row(state, url, final_url, title, text, html, depth)
+        end
+
+      _ ->
+        # No usable content (CMP wall, binary content-type rejected
+        # by Fetcher's gate, fetch error, etc.). Silent skip, no row.
+        %{state | errors: state.errors + 1}
+    end
+  end
+
+  # Page survived all gates — create the SessionProgress row, run
+  # ingest, and propagate links. Centralised here so the gating
+  # logic in `process_page/3` stays a single readable cond.
+  defp ingest_with_row(state, url, final_url, title, text, html, depth) do
     ctx   = %{session_id: state.session_id, user_id: state.user_id, task_id: nil}
     label = "IndexWiki -> #{slice_url(url)}"
 
     {:ok, prog_row} = SessionProgress.append_tool_pending(ctx, label)
     started_ms      = System.monotonic_time(:millisecond)
 
-    result = Fetcher.fetch(url, extractor: :kb, max_chars: @max_chars_per_page, include_html: true)
+    effective_title = title || url
 
-    case result do
-      {:ok, %{title: title, content: text, html: html} = res} when is_binary(text) and text != "" ->
-        # Redirect-out-of-prefix guard: a queued in-prefix URL may
-        # 30x to an out-of-prefix (or off-host) URL. Fetcher follows
-        # the redirect and returns the FINAL URL via :final_url.
-        # Index only when the final landing is still inside scope —
-        # otherwise we'd silently leak content from an unrelated
-        # section / domain into the wiki under the original URL.
-        final_url = Map.get(res, :final_url, url)
+    attrs = %{
+      scope:       :knowledge,
+      user_id:     nil,
+      source_kind: "url",
+      source_ref:  url,
+      title:       effective_title
+    }
 
-        if String.starts_with?(final_url, state.prefix) do
-          effective_title = title || url
+    ingest_status =
+      case VectorDB.ingest(attrs, text) do
+        {:ok, _info} -> :ok
+        {:error, _r} -> :error
+      end
 
-          attrs = %{
-            scope:       :knowledge,
-            user_id:     nil,
-            source_kind: "url",
-            source_ref:  url,
-            title:       effective_title
-          }
+    # Mark done AFTER ingest so duration_ms reflects fetch + ingest
+    # end-to-end (the embedder is the bulk of per-page wall-clock,
+    # not the HTTP fetch).
+    duration_ms = System.monotonic_time(:millisecond) - started_ms
+    SessionProgress.mark_tool_done(prog_row.id, duration_ms)
 
-          ingest_status =
-            case VectorDB.ingest(attrs, text) do
-              {:ok, _info}   -> :ok
-              {:error, _r}   -> :error
-            end
+    new_seen_queue =
+      if depth + 1 <= state.max_depth and (state.indexed + 1) < state.max_pages do
+        queue_links(html, final_url, state.prefix, state.seen, state.queue, depth + 1)
+      else
+        {state.seen, state.queue}
+      end
 
-          # Mark done AFTER ingest so duration_ms reflects fetch +
-          # ingest end-to-end (the embedder is the bulk of per-page
-          # wall-clock, not the HTTP fetch).
-          duration_ms = System.monotonic_time(:millisecond) - started_ms
-          SessionProgress.mark_tool_done(prog_row.id, duration_ms)
+    {seen2, queue2} = new_seen_queue
 
-          new_seen_queue =
-            if depth + 1 <= state.max_depth and (state.indexed + 1) < state.max_pages do
-              queue_links(html, final_url, state.prefix, state.seen, state.queue, depth + 1)
-            else
-              {state.seen, state.queue}
-            end
+    case ingest_status do
+      :ok ->
+        %{state |
+          seen:    seen2,
+          queue:   queue2,
+          indexed: state.indexed + 1,
+          first_lang_signal: state.first_lang_signal || text
+        }
 
-          {seen2, queue2} = new_seen_queue
-
-          case ingest_status do
-            :ok ->
-              %{state |
-                seen:    seen2,
-                queue:   queue2,
-                indexed: state.indexed + 1,
-                first_lang_signal: state.first_lang_signal || text
-              }
-
-            :error ->
-              %{state | seen: seen2, queue: queue2, errors: state.errors + 1}
-          end
-        else
-          # Followed a redirect outside the prefix. Don't index,
-          # don't queue links from it, count as a (silent) skip.
-          duration_ms = System.monotonic_time(:millisecond) - started_ms
-          SessionProgress.mark_tool_done(prog_row.id, duration_ms)
-          %{state | errors: state.errors + 1}
-        end
-
-      _ ->
-        # No usable content (CMP wall, empty body, fetch error, etc.) — count as
-        # error, mark the row done, move on.
-        duration_ms = System.monotonic_time(:millisecond) - started_ms
-        SessionProgress.mark_tool_done(prog_row.id, duration_ms)
-        %{state | errors: state.errors + 1}
+      :error ->
+        %{state | seen: seen2, queue: queue2, errors: state.errors + 1}
     end
   end
 
@@ -230,7 +277,7 @@ defmodule DmhAi.Commands.Pipelines.URL do
         |> Enum.reject(&is_nil/1)
         |> Enum.uniq()
         |> Enum.filter(&String.starts_with?(&1, prefix))
-        |> Enum.reject(&binary_asset?/1)
+        |> Enum.reject(&should_skip_discovered_link?/1)
         |> Enum.reduce({seen, queue}, fn link, {s, q} ->
           if MapSet.member?(s, link) do
             {s, q}
@@ -293,6 +340,46 @@ defmodule DmhAi.Commands.Pipelines.URL do
   end
 
   defp resolve_url(_, _), do: nil
+
+  # Combined pre-fetch link filter — drop any URL that looks like
+  # a binary asset, a faceted UI view (querystring), or a
+  # well-known asset/build/vendor directory. Applied only to
+  # links DISCOVERED from page HTML (the user's start_url is
+  # trusted and bypasses these gates).
+  defp should_skip_discovered_link?(url) when is_binary(url) do
+    binary_asset?(url) or has_query_string?(url) or asset_path_segment?(url)
+  end
+
+  defp should_skip_discovered_link?(_), do: true
+
+  # Layer 2A — drop any URL with a query string. Documentation URLs
+  # are nearly always queryless; faceted views (`?q=is:pr+is:open`,
+  # `?sort=created-desc`, `?action=edit`) almost never carry stable
+  # content worth indexing. Aggressive on purpose: simpler than a
+  # noisy-key heuristic and the false-positive rate (legitimate
+  # `?version=v2` etc.) is low enough on real doc sites.
+  defp has_query_string?(url) do
+    case URI.parse(url) do
+      %URI{query: q} when is_binary(q) and q != "" -> true
+      _ -> false
+    end
+  end
+
+  # Layer 2B — drop URLs whose path contains any whole segment in
+  # the asset blocklist (see @asset_path_segments).
+  defp asset_path_segment?(url) when is_binary(url) do
+    case URI.parse(url) do
+      %URI{path: path} when is_binary(path) ->
+        path
+        |> String.split("/", trim: true)
+        |> Enum.any?(&(&1 in @asset_path_segments))
+
+      _ ->
+        false
+    end
+  end
+
+  defp asset_path_segment?(_), do: false
 
   # Skip URLs whose path extension is in the asset/binary blocklist.
   # The file would land at the kb extractor as raw bytes and produce

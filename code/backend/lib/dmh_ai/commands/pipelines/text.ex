@@ -14,7 +14,7 @@ defmodule DmhAi.Commands.Pipelines.Text do
   """
 
   alias DmhAi.VectorDB
-  alias DmhAi.Agent.Oracle
+  alias DmhAi.Agent.Swift
   alias DmhAi.Commands.WikiAck
 
   @spec run(String.t(), String.t(), String.t()) :: {:ok, String.t()} | {:error, String.t()}
@@ -35,7 +35,7 @@ defmodule DmhAi.Commands.Pipelines.Text do
       }
 
       case VectorDB.ingest(attrs, body) do
-        {:ok, _info}     -> {:ok, Oracle.localize(WikiAck.final_ack(title), body)}
+        {:ok, _info}     -> {:ok, Swift.localize(WikiAck.final_ack(title), body)}
         {:error, reason} -> {:error, "ingest failed: #{inspect(reason, limit: 80)}"}
       end
     end

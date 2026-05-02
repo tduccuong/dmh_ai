@@ -157,7 +157,7 @@ defmodule Itgr.ConfidantFlow do
     # localized apology so session.messages never ends with role=user
     # (otherwise the chain hook's mode-blind fallback would loop
     # forever — see git history for the bug). The placeholder is
-    # produced by Oracle.localize/2; the test stub for that call
+    # produced by Swift.localize/2; the test stub for that call
     # echoes its "Message to express:" payload back verbatim so we
     # can assert on the template literal.
     user_id = uid(); sid = uid()

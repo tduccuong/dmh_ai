@@ -16,6 +16,7 @@ defmodule DmhAi.DB.Init do
 
     create_tables()
     migrate_columns()
+    DmhAi.Agent.AgentSettings.migrate_legacy_model_keys()
     seed_admin()
     seed_pools()
   end
@@ -64,6 +65,16 @@ defmodule DmhAi.DB.Init do
     # streaming phase. See architecture.md §Polling-based delivery.
     add_column_if_missing("sessions", "thinking_buffer", "TEXT")
     add_column_if_missing("sessions", "thinking_buffer_ts", "INTEGER")
+    # Per-user Linux UID inside the sandbox container — see
+    # specs/permissions.md §Per-user Linux accounts in the sandbox.
+    # Allocated lazily on first sandbox use (DmhAi.Permissions.SandboxUser),
+    # ≥ 10001. NULL until first allocation. Uniqueness enforced by the
+    # index below — SQLite ALTER TABLE can't add a UNIQUE constraint to
+    # an existing column directly, so we use a UNIQUE INDEX (NULLs
+    # don't collide in standard SQLite indices, which is what we want).
+    add_column_if_missing("users", "unix_uid", "INTEGER")
+    query!(Repo,
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_unix_uid ON users (unix_uid) WHERE unix_uid IS NOT NULL")
   end
 
   # SQLite 3.25+ supports `ALTER TABLE … RENAME COLUMN`. The rename

@@ -356,47 +356,27 @@
                     </div>
                     <div class="settings-section">
                         <div class="settings-section-title">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
-                            Image Describer
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="13 2 13 11 20 11"/><polyline points="20 13 13 13 13 22"/><polyline points="4 13 11 13 11 22"/><polyline points="11 11 4 11 4 2"/></svg>
+                            Swift — short, fast actions
+                        </div>
+                        <div class="settings-subsection settings-subsection-help">
+                            Used for: anchor-pivot classify, runtime message localisation, web-search query planning, session naming. Cheapest model — latency dominates over quality.
                         </div>
                         <div class="settings-subsection">
-                            <div class="role-picker-current" id="imageDescriber-model-current"></div>
+                            <div class="role-picker-current" id="swift-model-current"></div>
                             <div class="settings-search-wrap">
-                                <input id="imageDescriber-model-search" class="settings-input" placeholder="Search model name...">
-                                <div class="settings-suggestions" id="imageDescriber-model-suggestions"></div>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="settings-section">
-                        <div class="settings-section-title">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
-                            Video Describer
-                        </div>
-                        <div class="settings-subsection">
-                            <div class="role-picker-current" id="videoDescriber-model-current"></div>
-                            <div class="settings-search-wrap">
-                                <input id="videoDescriber-model-search" class="settings-input" placeholder="Search model name...">
-                                <div class="settings-suggestions" id="videoDescriber-model-suggestions"></div>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="settings-section">
-                        <div class="settings-section-title">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-                            Web Search Classifier
-                        </div>
-                        <div class="settings-subsection">
-                            <div class="role-picker-current" id="webSearch-model-current"></div>
-                            <div class="settings-search-wrap">
-                                <input id="webSearch-model-search" class="settings-input" placeholder="Search model name...">
-                                <div class="settings-suggestions" id="webSearch-model-suggestions"></div>
+                                <input id="swift-model-search" class="settings-input" placeholder="Search model name...">
+                                <div class="settings-suggestions" id="swift-model-suggestions"></div>
                             </div>
                         </div>
                     </div>
                     <div class="settings-section">
                         <div class="settings-section-title">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/><path d="M9 21h6"/></svg>
-                            Oracle
+                            Oracle — long, dense content
+                        </div>
+                        <div class="settings-subsection settings-subsection-help">
+                            Used for: context compaction, task progress summaries, web-result synthesis, profile extraction + condensation. Strong general model.
                         </div>
                         <div class="settings-subsection">
                             <div class="role-picker-current" id="oracle-model-current"></div>
@@ -408,40 +388,17 @@
                     </div>
                     <div class="settings-section">
                         <div class="settings-section-title">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-                            Context Compactor
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+                            Vision — image / video / OCR
+                        </div>
+                        <div class="settings-subsection settings-subsection-help">
+                            Used for: image describer, video describer, PDF OCR. Must be image-capable.
                         </div>
                         <div class="settings-subsection">
-                            <div class="role-picker-current" id="compactor-model-current"></div>
+                            <div class="role-picker-current" id="vision-model-current"></div>
                             <div class="settings-search-wrap">
-                                <input id="compactor-model-search" class="settings-input" placeholder="Search model name...">
-                                <div class="settings-suggestions" id="compactor-model-suggestions"></div>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="settings-section">
-                        <div class="settings-section-title">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="14" y2="18"/></svg>
-                            Task Summarizer
-                        </div>
-                        <div class="settings-subsection">
-                            <div class="role-picker-current" id="summarizer-model-current"></div>
-                            <div class="settings-search-wrap">
-                                <input id="summarizer-model-search" class="settings-input" placeholder="Search model name...">
-                                <div class="settings-suggestions" id="summarizer-model-suggestions"></div>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="settings-section">
-                        <div class="settings-section-title">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-                            Profile Extractor
-                        </div>
-                        <div class="settings-subsection">
-                            <div class="role-picker-current" id="profileExtractor-model-current"></div>
-                            <div class="settings-search-wrap">
-                                <input id="profileExtractor-model-search" class="settings-input" placeholder="Search model name...">
-                                <div class="settings-suggestions" id="profileExtractor-model-suggestions"></div>
+                                <input id="vision-model-search" class="settings-input" placeholder="Search model name...">
+                                <div class="settings-suggestions" id="vision-model-suggestions"></div>
                             </div>
                         </div>
                     </div>

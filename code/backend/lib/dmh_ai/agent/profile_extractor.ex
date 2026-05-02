@@ -46,7 +46,7 @@ defmodule DmhAi.Agent.ProfileExtractor do
   end
 
   defp do_extract_and_merge(user_text, user_id) do
-    model = AgentSettings.profile_extractor_model()
+    model = AgentSettings.oracle_model()
     existing = load_profile(user_id)
 
     already_known =

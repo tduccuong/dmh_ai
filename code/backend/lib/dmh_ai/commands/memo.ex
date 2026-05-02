@@ -20,7 +20,7 @@ defmodule DmhAi.Commands.Memo do
        dedup. The kind tag also keeps the message out of LLM context
        (it's audit log, not conversation).
     2. Background `Task.Supervisor` child runs `VectorDB.ingest/2` +
-       `Oracle.localize/2` for the ack. The ack is appended with
+       `Swift.localize/2` for the ack. The ack is appended with
        `kind="command_ack"` once the ingest completes.
 
   Safety: if the background task crashes mid-ingest, the worst case
@@ -30,7 +30,7 @@ defmodule DmhAi.Commands.Memo do
   See specs/commands.md.
   """
 
-  alias DmhAi.Agent.{Oracle, UserAgentMessages}
+  alias DmhAi.Agent.{Swift, UserAgentMessages}
   alias DmhAi.Commands
   alias DmhAi.VectorDB
   require Logger
@@ -79,10 +79,10 @@ defmodule DmhAi.Commands.Memo do
     ack =
       case VectorDB.ingest(attrs, text) do
         {:ok, _info} ->
-          Oracle.localize(@save_ack_template, text)
+          Swift.localize(@save_ack_template, text)
 
         {:error, reason} ->
-          Oracle.localize(format_save_error(reason), text)
+          Swift.localize(format_save_error(reason), text)
       end
 
     UserAgentMessages.append(session_id, user_id, %{
@@ -98,7 +98,7 @@ defmodule DmhAi.Commands.Memo do
   defp sha256(s), do: :crypto.hash(:sha256, s) |> Base.encode16(case: :lower)
 
   # Map common embedder/pool failures to operator-actionable English text.
-  # Oracle.localize/2 then translates this into the user's language so the
+  # Swift.localize/2 then translates this into the user's language so the
   # ack reads naturally even when the underlying error is internal.
   # Anything not enumerated here falls through to the verbatim
   # `inspect/2` form (last clause) so unknown failure modes still carry

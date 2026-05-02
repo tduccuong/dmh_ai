@@ -50,7 +50,7 @@ defmodule DmhAi.Agent.UserAgent do
   require Logger
 
   alias DmhAi.Agent.{AgentSettings, AssistantCommand, ConfidantCommand, ContextEngine,
-                     LLM, Oracle, ProfileExtractor, StreamBuffer, ThinkingBuffer,
+                     LLM, Swift, ProfileExtractor, StreamBuffer, ThinkingBuffer,
                      Supervisor, Tasks, TokenTracker, WebSearch}
   alias DmhAi.Web.Search, as: WebSearchEngine
   alias DmhAi.VectorDB
@@ -500,6 +500,7 @@ defmodule DmhAi.Agent.UserAgent do
     ctx = %{
       user_id:       user_id,
       user_email:    email,
+      user_role:     Tasks.lookup_user_role(user_id),
       session_id:    session_id,
       session_root:  DmhAi.Constants.session_root(email, session_id),
       data_dir:      data_dir,
@@ -773,7 +774,7 @@ defmodule DmhAi.Agent.UserAgent do
     # in PARALLEL so total wall time is max(t_web, t_memo) rather than
     # the sum. Both bail to nil when their gating logic decides nothing
     # to fetch (web: WebSearchEngine.search returns :no_search; memo:
-    # Oracle.memo_keywords returns "" or vector search produces no
+    # vector search produces no
     # above-threshold hits). See specs/commands.md §Confidant memo
     # auto-retrieve.
     {web_context, memo_context} =
@@ -901,7 +902,7 @@ defmodule DmhAi.Agent.UserAgent do
         # `{:error, _}` arm — Confidant has no chain semantics, no
         # task_num to tag, no system-error vs generic classification.
         # A short Oracle-localized apology is enough.
-        ack = Oracle.localize(
+        ack = Swift.localize(
           "Sorry — couldn't reach the model. Please try again.",
           command.content
         )
@@ -1077,6 +1078,7 @@ defmodule DmhAi.Agent.UserAgent do
     ctx = %{
       user_id:       user_id,
       user_email:    email,
+      user_role:     Tasks.lookup_user_role(user_id),
       session_id:    session_id,
       session_root:  DmhAi.Constants.session_root(email, session_id),
       data_dir:      data_dir,
@@ -2365,7 +2367,7 @@ defmodule DmhAi.Agent.UserAgent do
 
         task =
           Task.Supervisor.async_nolink(DmhAi.Agent.TaskSupervisor, fn ->
-            verdict = DmhAi.Agent.Oracle.classify(user_msg, spec, prev_assistant_msg)
+            verdict = DmhAi.Agent.Swift.classify(user_msg, spec, prev_assistant_msg)
 
             # Only :unrelated stashes a pending pivot — that signals
             # "user is pivoting to a NEW task". :done means "user wants
@@ -2613,7 +2615,7 @@ defmodule DmhAi.Agent.UserAgent do
   # block is a no-op signal — the model answers per its usual
   # system-prompt rules. This avoids putting a "is this a personal
   # question?" classification burden on the model, which is exactly
-  # the gate problem the Oracle.memo_keywords removal escaped.
+  # the gate problem we hit before.
   defp format_memo_context_block([]) do
     "[memo context]\n" <>
       "We checked the user's saved memos for this question. Nothing relevant found.\n\n" <>

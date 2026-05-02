@@ -7,6 +7,7 @@ defmodule DmhAi.Tools.RunScript do
   @behaviour DmhAi.Tools.Behaviour
 
   alias DmhAi.Agent.{AgentSettings, RunningTools, Sandbox}
+  alias DmhAi.Permissions.SandboxUser
 
   @max_output 50_000
 
@@ -60,6 +61,25 @@ defmodule DmhAi.Tools.RunScript do
 
   @impl true
   def execute(%{"script" => command} = _args, ctx) do
+    # Resolve the user's sandbox identity first. Provisioning is
+    # idempotent — the cost on already-provisioned users is one
+    # SQL read + one `docker exec id <name>` (~50 ms). On fresh
+    # users it allocates UID, runs `useradd`, and sets host-dir
+    # ownership.
+    case provision(ctx) do
+      {:ok, run_ctx} ->
+        do_execute(command, ctx, run_ctx)
+
+      {:error, reason} ->
+        {:error, "sandbox provisioning failed: #{reason}"}
+    end
+  end
+
+  def execute(_, _), do: {:error, "Missing required argument: script"}
+
+  defp do_execute(command, ctx, run_ctx) do
+    # Master-side workdir (used by tools that File.write directly).
+    # Sandbox-side cwd (used by docker exec -w) is computed in run_ctx.
     workdir = resolve_workdir(ctx)
     File.mkdir_p!(workdir)
 
@@ -70,7 +90,7 @@ defmodule DmhAi.Tools.RunScript do
     poll_ms       = AgentSettings.tool_run_poll_interval_ms()
     max_runtime_ms = AgentSettings.run_script_max_runtime_ms()
 
-    case launch(command, workdir) do
+    case launch(command, run_ctx) do
       {:ok, %{pid: pid, run_id: run_id}} ->
         if session_id != "" and tool_call_id != "" do
           RunningTools.register(session_id, %{
@@ -84,7 +104,7 @@ defmodule DmhAi.Tools.RunScript do
         end
 
         try do
-          poll_loop(pid, run_id, started_at_ms, poll_ms, max_runtime_ms)
+          poll_loop(pid, run_id, started_at_ms, poll_ms, max_runtime_ms, run_ctx)
         after
           if session_id != "", do: RunningTools.clear(session_id)
         end
@@ -96,7 +116,56 @@ defmodule DmhAi.Tools.RunScript do
     e -> {:error, Exception.message(e)}
   end
 
-  def execute(_, _), do: {:error, "Missing required argument: script"}
+  # Resolve `{:ok, %{username, sandbox_cwd}}` for the given ctx.
+  # Username drives `docker exec -u`; sandbox_cwd drives `docker exec -w`.
+  # `username` is the per-user OS account for non-admin users, or
+  # `dmh_ai-master-u` for admins. `sandbox_cwd` is the sandbox-side
+  # path the script runs in — `/work/<email>/<session>/` for users,
+  # `/work` for admin.
+  defp provision(ctx) do
+    user_id = Map.get(ctx, :user_id) || ""
+    email   = Map.get(ctx, :user_email) || ""
+    role    = Map.get(ctx, :user_role) || "user"
+    session_id = Map.get(ctx, :session_id) || ""
+
+    cond do
+      role == "admin" ->
+        {:ok,
+         %{
+           username:    SandboxUser.master_username(),
+           sandbox_cwd: "/work"
+         }}
+
+      user_id == "" or email == "" ->
+        # Defensive — should never happen in real chains. Surface a
+        # clear error so the model retries rather than hanging.
+        {:error, "missing user context (user_id or user_email empty)"}
+
+      true ->
+        case SandboxUser.ensure_provisioned(%{id: user_id, email: email}) do
+          {:ok, uid} ->
+            {:ok,
+             %{
+               username:    SandboxUser.username_for(uid),
+               sandbox_cwd: sandbox_cwd_for(email, session_id)
+             }}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+    end
+  end
+
+  # Sandbox-side path the script runs in. Falls back to `/work/<email>`
+  # when there's no session (rare — e.g. ad-hoc tool invocations
+  # outside a session loop). Master-side path is computed separately
+  # via `Constants.session_workspace_dir/2`.
+  defp sandbox_cwd_for(email, ""), do: Path.join("/work", to_string(email))
+
+  defp sandbox_cwd_for(email, session_id) do
+    safe_session = String.replace(to_string(session_id), ~r/[^\w\-]/, "_")
+    Path.join(["/work", to_string(email), safe_session])
+  end
 
   # ─── private ──────────────────────────────────────────────────────────────
 
@@ -112,22 +181,32 @@ defmodule DmhAi.Tools.RunScript do
   # Spawn the script under nohup inside the sandbox container, capture
   # the PID, return immediately. Poll loop reads the log + exit code
   # files when the PID is no longer alive.
-  defp launch(command, workdir) do
+  #
+  # `run_ctx` carries the per-user identity and sandbox-side cwd —
+  # the docker exec runs as `dmh_ai-u<uid>` (or `dmh_ai-master-u`
+  # for admins) with `-w` set to the user's session workspace
+  # inside the container. Files written under cwd land on the
+  # `user_workspaces` bind mount; everything outside is RO or
+  # blocked by the per-user 0700 fence.
+  defp launch(command, run_ctx) do
     b64 = Base.encode64(command)
     run_id = :crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)
-    safe_workdir = String.replace(workdir, "'", "'\\''")
 
+    # mkdir -p the sandbox cwd just in case (idempotent). The
+    # workspace dir was created by SandboxUser.ensure_provisioned/1
+    # at the email level; per-session subdir is created lazily here.
     launcher = """
     set -e
     mkdir -p /tmp/_dmh_runs
+    mkdir -p '#{shell_escape(run_ctx.sandbox_cwd)}'
     printf '%s' '#{b64}' | base64 -d > /tmp/_dmh_runs/#{run_id}.sh
     chmod +x /tmp/_dmh_runs/#{run_id}.sh
-    cd '#{safe_workdir}' || cd /
+    cd '#{shell_escape(run_ctx.sandbox_cwd)}' || cd /tmp
     nohup sh -c '/tmp/_dmh_runs/#{run_id}.sh; echo $? > /tmp/_dmh_runs/#{run_id}.exit' > /tmp/_dmh_runs/#{run_id}.log 2>&1 &
     echo $!
     """
 
-    case docker_exec(launcher, @docker_exec_timeout_medium) do
+    case docker_exec(launcher, @docker_exec_timeout_medium, run_ctx) do
       {:ok, output, 0} ->
         pid_line =
           output
@@ -151,24 +230,36 @@ defmodule DmhAi.Tools.RunScript do
     end
   end
 
+  defp shell_escape(s), do: String.replace(to_string(s), "'", "'\\''")
+
   # Wrap `System.cmd("docker", ["exec", ...])` in a Task with a hard
   # timeout. Without this, a stuck docker daemon would freeze the
   # caller indefinitely — every code path in this module funnels
   # through here so a single bad daemon can't wedge the chain.
+  #
+  # `run_ctx` (optional) selects the OS user for `docker exec -u`.
+  # When omitted the exec runs as the container's default identity
+  # (root). Some helpers (kill, drain, cleanup) operate on /tmp
+  # files written by the user — they go through the same `-u` to
+  # avoid permission errors.
   #
   # Returns:
   #   {:ok, output, exit_code}   on completion
   #   :timeout                    when the docker exec didn't return
   #                               within `timeout_ms`
   #   {:error, reason}            for raised exceptions
-  defp docker_exec(shell_cmd, timeout_ms) do
+  defp docker_exec(shell_cmd, timeout_ms, run_ctx) do
+    user_args =
+      case run_ctx do
+        %{username: name} when is_binary(name) and name != "" -> ["-u", name]
+        _ -> []
+      end
+
+    args = ["exec"] ++ user_args ++ [Sandbox.container_name(), "sh", "-c", shell_cmd]
+
     task =
       Task.async(fn ->
-        System.cmd(
-          "docker",
-          ["exec", Sandbox.container_name(), "sh", "-c", shell_cmd],
-          stderr_to_stdout: true
-        )
+        System.cmd("docker", args, stderr_to_stdout: true)
       end)
 
     case Task.yield(task, timeout_ms) || Task.shutdown(task, :brutal_kill) do
@@ -189,23 +280,23 @@ defmodule DmhAi.Tools.RunScript do
   # (success — "alive") for the zombie's PID forever, hanging the
   # chain. Secondary signal (PID dead AND no exit file) catches
   # crashes that didn't get to write the exit code.
-  defp poll_loop(pid, run_id, started_at_ms, poll_ms, max_runtime_ms) do
+  defp poll_loop(pid, run_id, started_at_ms, poll_ms, max_runtime_ms, run_ctx) do
     Process.sleep(poll_ms)
     elapsed = System.system_time(:millisecond) - started_at_ms
     hard_ceiling = max_runtime_ms + @poll_loop_grace_ms
 
     cond do
-      script_finished?(run_id, pid) ->
-        finalize(pid, run_id, started_at_ms)
+      script_finished?(run_id, pid, run_ctx) ->
+        finalize(pid, run_id, started_at_ms, run_ctx)
 
       elapsed > max_runtime_ms ->
         # Best-effort kill; if it survives we still return an error
         # rather than hang the chain.
-        kill_pid(pid, "TERM")
+        kill_pid(pid, "TERM", run_ctx)
         Process.sleep(1_000)
-        if RunningTools.alive?(pid), do: kill_pid(pid, "KILL")
-        partial = drain_log_only(run_id)
-        cleanup_run_files(run_id)
+        if RunningTools.alive?(pid), do: kill_pid(pid, "KILL", run_ctx)
+        partial = drain_log_only(run_id, run_ctx)
+        cleanup_run_files(run_id, run_ctx)
         {:error,
          "run_script exceeded max runtime of #{div(max_runtime_ms, 1000)}s. Last output: " <>
            String.slice(partial, 0, 1_000)}
@@ -221,7 +312,7 @@ defmodule DmhAi.Tools.RunScript do
            "(max_runtime + #{div(@poll_loop_grace_ms, 1000)}s grace) — chain unwedged forcibly"}
 
       true ->
-        poll_loop(pid, run_id, started_at_ms, poll_ms, max_runtime_ms)
+        poll_loop(pid, run_id, started_at_ms, poll_ms, max_runtime_ms, run_ctx)
     end
   end
 
@@ -230,18 +321,19 @@ defmodule DmhAi.Tools.RunScript do
   # alive AND no exit file (script crashed without recording).
   # Avoids hanging on PID 1's failure to reap zombies inside the
   # sandbox.
-  defp script_finished?(run_id, pid) do
-    if exit_file_exists?(run_id) do
+  defp script_finished?(run_id, pid, run_ctx) do
+    if exit_file_exists?(run_id, run_ctx) do
       true
     else
       not RunningTools.alive?(pid)
     end
   end
 
-  defp exit_file_exists?(run_id) do
+  defp exit_file_exists?(run_id, run_ctx) do
     case docker_exec(
            "test -f /tmp/_dmh_runs/#{run_id}.exit && echo yes || echo no",
-           @docker_exec_timeout_short
+           @docker_exec_timeout_short,
+           run_ctx
          ) do
       {:ok, output, _} -> String.trim(output) == "yes"
       _ -> false
@@ -251,13 +343,13 @@ defmodule DmhAi.Tools.RunScript do
   # Read log + exit code from the temp files, normalise into the same
   # `{:ok, output} | {:error, reason}` shape the previous synchronous
   # `run_script` returned, then unlink the temp files.
-  defp finalize(_pid, run_id, _started_at_ms) do
+  defp finalize(_pid, run_id, _started_at_ms, run_ctx) do
     drain_cmd =
       "tail -c #{@max_output} /tmp/_dmh_runs/#{run_id}.log; printf '\\n@@DMH_EXIT@@\\n'; " <>
         "cat /tmp/_dmh_runs/#{run_id}.exit 2>/dev/null; " <>
         "rm -f /tmp/_dmh_runs/#{run_id}.sh /tmp/_dmh_runs/#{run_id}.log /tmp/_dmh_runs/#{run_id}.exit"
 
-    case docker_exec(drain_cmd, @docker_exec_timeout_long) do
+    case docker_exec(drain_cmd, @docker_exec_timeout_long, run_ctx) do
       {:ok, output, 0} ->
         {body, exit_code} = parse_drained(output)
 
@@ -307,28 +399,30 @@ defmodule DmhAi.Tools.RunScript do
     end
   end
 
-  defp kill_pid(pid, signal) when is_integer(pid) and signal in ["TERM", "KILL"] do
-    _ = docker_exec("kill -#{signal} #{pid}", @docker_exec_timeout_short)
+  defp kill_pid(pid, signal, run_ctx) when is_integer(pid) and signal in ["TERM", "KILL"] do
+    _ = docker_exec("kill -#{signal} #{pid}", @docker_exec_timeout_short, run_ctx)
 
     :ok
   rescue
     _ -> :ok
   end
 
-  defp drain_log_only(run_id) do
+  defp drain_log_only(run_id, run_ctx) do
     case docker_exec(
            "tail -c #{@max_output} /tmp/_dmh_runs/#{run_id}.log 2>/dev/null",
-           @docker_exec_timeout_long
+           @docker_exec_timeout_long,
+           run_ctx
          ) do
       {:ok, output, _} -> output
       _                -> ""
     end
   end
 
-  defp cleanup_run_files(run_id) do
+  defp cleanup_run_files(run_id, run_ctx) do
     _ = docker_exec(
       "rm -f /tmp/_dmh_runs/#{run_id}.sh /tmp/_dmh_runs/#{run_id}.log /tmp/_dmh_runs/#{run_id}.exit",
-      @docker_exec_timeout_short
+      @docker_exec_timeout_short,
+      run_ctx
     )
 
     :ok

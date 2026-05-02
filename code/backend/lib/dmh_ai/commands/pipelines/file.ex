@@ -14,7 +14,7 @@ defmodule DmhAi.Commands.Pipelines.File do
   """
 
   alias DmhAi.VectorDB
-  alias DmhAi.Agent.Oracle
+  alias DmhAi.Agent.Swift
   alias DmhAi.Tools.ExtractContent
   alias DmhAi.Commands.WikiAck
 
@@ -45,7 +45,7 @@ defmodule DmhAi.Commands.Pipelines.File do
             # Localize using the file body as the language signal —
             # it's the strongest signal we have (the path is usually
             # English-ish regardless of the user).
-            {:ok, Oracle.localize(WikiAck.final_ack(Path.basename(path)), body)}
+            {:ok, Swift.localize(WikiAck.final_ack(Path.basename(path)), body)}
 
           {:error, reason} ->
             {:error, "ingest failed: #{inspect(reason, limit: 80)}"}

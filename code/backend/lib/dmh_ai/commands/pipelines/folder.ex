@@ -17,7 +17,7 @@ defmodule DmhAi.Commands.Pipelines.Folder do
   """
 
   alias DmhAi.Commands.Pipelines.File, as: FilePipe
-  alias DmhAi.Agent.{Oracle, UserAgentMessages}
+  alias DmhAi.Agent.{Swift, UserAgentMessages}
   alias DmhAi.Commands.WikiAck
   require Logger
 
@@ -49,9 +49,9 @@ defmodule DmhAi.Commands.Pipelines.Folder do
       do_run(root, session_id, user_id)
     end)
 
-    # Path arg is a weak language signal; Oracle defaults to English
+    # Path arg is a weak language signal; Swift defaults to English
     # for path-shaped commands, which is fine.
-    {:ok, Oracle.localize(WikiAck.accepted_ack(root), root)}
+    {:ok, Swift.localize(WikiAck.accepted_ack(root), root)}
   end
 
   # Public for tests — walks the tree and returns the eligible-files
@@ -87,7 +87,7 @@ defmodule DmhAi.Commands.Pipelines.Folder do
       end
 
     final_text =
-      Oracle.localize(
+      Swift.localize(
         WikiAck.final_ack(root) <> " (#{indexed} indexed, #{skipped} skipped#{err_summary})",
         root
       )
@@ -102,7 +102,7 @@ defmodule DmhAi.Commands.Pipelines.Folder do
       Logger.error("[Commands.Folder] crash on #{root}: #{Exception.message(e)}")
       UserAgentMessages.append(session_id, user_id, %{
         role: "assistant",
-        content: Oracle.localize("Folder walk failed: #{Exception.message(e)}", root),
+        content: Swift.localize("Folder walk failed: #{Exception.message(e)}", root),
         kind: "command_ack"
       })
   end

@@ -17,19 +17,47 @@ defmodule DmhAi.Agent.AgentSettings do
   # from the operator's pool seed file (defaults to placeholder zero
   # accounts; admin must add their cloud accounts via System Settings →
   # API Pools before these models can be used).
+  # Two-tier model layout (see specs/architecture.md §Model tiers):
+  #
+  #   confidantModel — Confidant answer. Conversational, image-capable.
+  #   assistantModel — Assistant answer. Tool-using, image-capable.
+  #   swiftModel     — Swift tier. Short, single-shot decisions:
+  #                    Swift.classify (anchor pivot), Swift.localize,
+  #                    Web.Search query planner, session naming.
+  #                    Cheapest model — latency dominates over quality.
+  #   oracleModel    — Oracle tier. Long, dense content processing:
+  #                    context compaction, task progress summaries,
+  #                    web result synthesis, profile extraction +
+  #                    condensation. Strong general model.
+  #   visionModel    — Vision/OCR. Image describe, video describe,
+  #                    PDF OCR. Must be image-capable.
+  #   kbEmbeddingModel — Vector KB embedder. See specs/vector_kb.md.
   @defaults %{
-    "confidantModel"         => "ollama-cloud::gemma4:31b-cloud",
-    "assistantModel"         => "ollama-cloud::gemma4:31b-cloud",
-    "compactorModel"         => "ollama-cloud::gemma4:31b-cloud",
-    "summarizerModel"        => "ollama-cloud::gemma4:31b-cloud",
-    "webSearchModel"         => "ollama-cloud::ministral-3:14b-cloud",
-    "oracleModel"            => "ollama-cloud::ministral-3:14b-cloud",
-    "imageDescriberModel"    => "ollama-cloud::gemma4:31b-cloud",
-    "videoDescriberModel"    => "ollama-cloud::gemma4:31b-cloud",
-    "profileExtractorModel"  => "ollama-cloud::gemma4:31b-cloud",
-    # Embedding model used by the vector KB pipeline (see specs/vector_kb.md).
-    "kbEmbeddingModel"       => "miner::qwen3-embedding:0.6b"
+    "confidantModel"   => "ollama-cloud::gemma4:31b-cloud",
+    "assistantModel"   => "ollama-cloud::gemma4:31b-cloud",
+    "swiftModel"       => "ollama-cloud::ministral-3:14b-cloud",
+    "oracleModel"      => "ollama-cloud::gemma4:31b-cloud",
+    "visionModel"      => "ollama-cloud::gemma4:31b-cloud",
+    "kbEmbeddingModel" => "miner::qwen3-embedding:0.6b"
   }
+
+  # Old setting keys → new tier keys, used by the one-shot DB
+  # migration (`migrate_legacy_model_keys/0`). First-write-wins so
+  # multiple legacy keys collapsing onto the same new tier never
+  # clobber an earlier copy.
+  @legacy_model_key_map [
+    # Old `oracleModel` was the fast-classifier tier. Carry the
+    # operator's chosen value forward to the new `swiftModel`.
+    {"oracleModel",           "swiftModel"},
+    {"webSearchModel",        "swiftModel"},
+    # Class B summarizers all collapse into the new `oracleModel`.
+    {"compactorModel",        "oracleModel"},
+    {"summarizerModel",       "oracleModel"},
+    {"profileExtractorModel", "oracleModel"},
+    # Vision describers collapse into a single `visionModel`.
+    {"imageDescriberModel",   "visionModel"},
+    {"videoDescriberModel",   "visionModel"}
+  ]
 
   @log_trace_default false
   @model_behavior_telemetry_enabled_default true
@@ -243,16 +271,83 @@ defmodule DmhAi.Agent.AgentSettings do
     do: bool_setting("modelBehaviorTelemetryEnabled", @model_behavior_telemetry_enabled_default)
 
   @doc "Shortcut accessors."
-  def confidant_model,          do: model_for("confidantModel")
-  def assistant_model,          do: model_for("assistantModel")
-  def compactor_model,        do: model_for("compactorModel")
-  def summarizer_model,       do: model_for("summarizerModel")
-  def web_search_model,       do: model_for("webSearchModel")
-  def oracle_model,           do: model_for("oracleModel")
-  def image_describer_model,  do: model_for("imageDescriberModel")
-  def video_describer_model,  do: model_for("videoDescriberModel")
-  def profile_extractor_model, do: model_for("profileExtractorModel")
-  def kb_embedding_model,      do: model_for("kbEmbeddingModel")
+  def confidant_model,    do: model_for("confidantModel")
+  def assistant_model,    do: model_for("assistantModel")
+  def swift_model,        do: model_for("swiftModel")
+  def oracle_model,       do: model_for("oracleModel")
+  def vision_model,       do: model_for("visionModel")
+  def kb_embedding_model, do: model_for("kbEmbeddingModel")
+
+  @doc """
+  One-shot, idempotent DB migration: collapse the pre-tier model
+  settings keys into the new Swift / Oracle / Vision tiers. Called
+  from `DmhAi.DB.Init.run/0`. Re-runs are no-ops once the legacy
+  keys are gone.
+
+  Settings live as a JSON blob under the `admin_cloud_settings`
+  row in the `settings` table — see `load/0`. The migration reads
+  that blob, rewrites it with legacy keys collapsed into tier keys
+  (first-write-wins so operator-set tier values never get
+  clobbered by a legacy carry-over), and persists the result back.
+  """
+  @spec migrate_legacy_model_keys() :: :ok
+  def migrate_legacy_model_keys do
+    settings = load()
+
+    # Single-pass: for each (old, new) mapping, atomically drop the
+    # old key AND (if the new tier isn't set yet) carry its value
+    # forward. Doing delete + write in the same step is critical
+    # because one of the new-tier names (`oracleModel`) is ALSO an
+    # old-tier name with different semantics — a separate deletion
+    # pass would wipe a value we'd just written.
+    #
+    # The order of @legacy_model_key_map matters here: entries that
+    # delete `oracleModel` (old fast classifier) must come before
+    # entries that write the new `oracleModel` (Class B).
+    {final, changed?} =
+      Enum.reduce(@legacy_model_key_map, {settings, false}, fn {old_key, new_key},
+                                                                {acc, changed} ->
+        had_key? = Map.has_key?(acc, old_key)
+        old_val  = acc |> Map.get(old_key, "") |> to_string() |> String.trim()
+        new_set? = acc |> Map.get(new_key, "") |> to_string() |> String.trim() != ""
+
+        cond do
+          old_val != "" and not new_set? ->
+            # Carry value forward, drop old key.
+            acc
+            |> Map.delete(old_key)
+            |> Map.put(new_key, old_val)
+            |> then(&{&1, true})
+
+          had_key? ->
+            # Old key exists but won't be carried forward (empty
+            # or new tier already set). Drop it.
+            {Map.delete(acc, old_key), true}
+
+          true ->
+            {acc, changed}
+        end
+      end)
+
+    if changed? do
+      query!(
+        Repo,
+        "INSERT INTO settings (key, value) VALUES (?, ?) " <>
+          "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        ["admin_cloud_settings", Jason.encode!(final)]
+      )
+
+      require Logger
+      Logger.info("[AgentSettings] migrated legacy model setting keys to Swift/Oracle/Vision tiers")
+    end
+
+    :ok
+  rescue
+    e ->
+      require Logger
+      Logger.error("[AgentSettings] migrate_legacy_model_keys failed: #{Exception.message(e)}")
+      :ok
+  end
 
   @doc "Timeout in seconds applied to each bash command run inside spawn_task."
   @spec spawn_task_timeout_secs() :: pos_integer()

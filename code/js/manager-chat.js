@@ -73,24 +73,35 @@ function buildSessionTimeline(session) {
     return entries;
 }
 
-// Rotation cadence for sub_labels (ms). Independent of poll interval —
-// Date.now() math gives a stable index regardless of render cadence.
-var SUB_LABEL_ROTATE_MS = 700;
-
-// Kinds that share the Assistant tool row's rendering (icon, rotating
-// sub_labels, elapsed-time suffix). Today: 'tool' (Assistant LLM tool
-// invocations) + 'confidant_websearch' (Confidant pre-step web search).
-// Kept as a single set so any future "kind with progress UI" can opt in
-// here without spraying string literals across renderProgressRow.
+// Kinds that share the Assistant tool row's rendering (icon,
+// stacked sub_labels, elapsed-time suffix). Today: 'tool' (Assistant
+// LLM tool invocations) + 'confidant_websearch' (Confidant pre-step
+// web search). Kept as a single set so any future "kind with
+// progress UI" can opt in here without spraying string literals
+// across renderProgressRow.
 var _TOOL_LIKE_KINDS = new Set(['tool', 'confidant_websearch']);
 function isToolLikeKind(k) { return _TOOL_LIKE_KINDS.has(k); }
 
-// Per-label state for the sub_labels rotator. Keyed by the `.progress-label`
-// DOM element so rows can be garbage-collected naturally once removed from
-// the timeline (WeakMap doesn't keep them alive). Each value is an array of
-// strings pulled from row.sub_labels.
-var _subLabelsMap = new WeakMap();
-var _subLabelsInterval = null;
+// Sliding window for sub_labels — when a tool-like row has more
+// activity entries than fit on screen comfortably, render only
+// `SUB_LABEL_WINDOW_SIZE` lines and advance the window by one
+// every `SUB_LABEL_SLIDE_MS` while the row is pending. On wrap,
+// jump back to offset 0 (the user explicitly asked for "rotate
+// to the beginning once reach to the end" — not modular wrap).
+//
+// Once the row flips to `status: done`, the slider stops touching
+// it; the row freezes on the latest `SUB_LABEL_WINDOW_SIZE` entries
+// (most-recent activity) so the chat reads as a clean fixed-height
+// final state.
+var SUB_LABEL_WINDOW_SIZE = 2;
+var SUB_LABEL_SLIDE_MS    = 1000;
+var _subLabelSlideInterval = null;
+
+// Per-row offset preserved across DOM rebuilds. The chat re-renders
+// progress rows when their hash changes (sub_labels list grows by
+// one entry per BE write), which would otherwise reset the slider
+// to offset 0 on every poll. Keyed by row.id (BE-assigned integer).
+var _subLabelOffsets = new Map();
 
 // Write the label's text. Plain textContent + CSS ellipsis; no fancy
 // span-splitting. Labels from the BE are now in `ToolName: content`
@@ -109,31 +120,49 @@ function writeProgressLabel(label, raw, _kind) {
     label.title = safe;
 }
 
-// Walk every pending tool row that carries sub_labels and refresh its
-// displayed label for the current time slice. Stops the interval
-// automatically when no rotating rows remain — no idle heartbeat.
-function _rotateSubLabels() {
-    var nodes = document.querySelectorAll('.progress-row.progress-tool.progress-status-pending');
-    var anyRotating = false;
-    for (var i = 0; i < nodes.length; i++) {
-        var node = nodes[i];
-        var label = node.querySelector('.progress-label');
-        if (!label) continue;
-        var subs = _subLabelsMap.get(label);
-        if (!subs || subs.length === 0) continue;
-        anyRotating = true;
-        var idx = Math.floor(Date.now() / SUB_LABEL_ROTATE_MS) % subs.length;
-        writeProgressLabel(label, subs[idx], 'tool');
+// Walk every pending tool-like row whose sub_labels list overflows
+// the visible window, advance its offset by one, rewrite the
+// visible lines in place. Stops when no row qualifies — no idle
+// heartbeat. Same shape as `_tickElapsed`.
+function _slideSubLabels() {
+    var containers = document.querySelectorAll(
+        '.progress-row.progress-status-pending .progress-sub-labels[data-subs]');
+    var anyActive = false;
+    for (var ci = 0; ci < containers.length; ci++) {
+        var c = containers[ci];
+        var subs;
+        try { subs = JSON.parse(c.dataset.subs || '[]'); } catch (e) { continue; }
+        if (!Array.isArray(subs) || subs.length <= SUB_LABEL_WINDOW_SIZE) continue;
+        anyActive = true;
+
+        // Advance offset; jump to 0 once the window's right edge
+        // hits the last entry. `maxOffset` is the largest value
+        // for which the window still fits without overflow.
+        var maxOffset = subs.length - SUB_LABEL_WINDOW_SIZE;
+        var prev = parseInt(c.dataset.offset || '0', 10);
+        if (!isFinite(prev)) prev = 0;
+        var next = prev + 1;
+        if (next > maxOffset) next = 0;
+
+        c.dataset.offset = String(next);
+        if (c.dataset.rowid) {
+            _subLabelOffsets.set(c.dataset.rowid, next);
+        }
+
+        var lines = c.querySelectorAll('.progress-sub-label');
+        for (var i = 0; i < lines.length && i < SUB_LABEL_WINDOW_SIZE; i++) {
+            writeProgressLabel(lines[i], subs[next + i], '');
+        }
     }
-    if (!anyRotating) {
-        clearInterval(_subLabelsInterval);
-        _subLabelsInterval = null;
+    if (!anyActive) {
+        clearInterval(_subLabelSlideInterval);
+        _subLabelSlideInterval = null;
     }
 }
 
-function _ensureSubLabelsRotator() {
-    if (_subLabelsInterval) return;
-    _subLabelsInterval = setInterval(_rotateSubLabels, SUB_LABEL_ROTATE_MS);
+function _ensureSubLabelSlider() {
+    if (_subLabelSlideInterval) return;
+    _subLabelSlideInterval = setInterval(_slideSubLabels, SUB_LABEL_SLIDE_MS);
 }
 
 // Format wall-clock duration (ms) as a compact "(Ns)" / "(Nm Ss)" /
@@ -154,8 +183,8 @@ function formatElapsedSuffix(ms) {
 // the currently-running run_script row. Walks
 // `.progress-row.progress-tool.progress-status-pending[data-running=1]`,
 // reads `data-started-at-ms`, writes the formatted suffix into
-// `.progress-elapsed`. Stops when no running rows remain — like
-// _rotateSubLabels, no idle heartbeat.
+// `.progress-elapsed`. Stops when no running rows remain — no
+// idle heartbeat.
 var _elapsedTickerInterval = null;
 
 function _tickElapsed() {
@@ -182,9 +211,16 @@ function _ensureElapsedTicker() {
 }
 
 function renderProgressRow(row) {
+    // Outer container is a flex-column so sub_labels can stack
+    // beneath the header (icon + main label + elapsed). The header
+    // itself stays a flex-row — see CSS .progress-row-header.
     var div = document.createElement('div');
     div.className = 'progress-row progress-' + row.kind +
                     (row.status ? ' progress-status-' + row.status : '');
+
+    var header = document.createElement('div');
+    header.className = 'progress-row-header';
+
     var icon = document.createElement('span');
     icon.className = 'progress-icon';
     if (isToolLikeKind(row.kind)) {
@@ -199,33 +235,12 @@ function renderProgressRow(row) {
     } else {
         icon.textContent = '\u00b7';
     }
-    div.appendChild(icon);
+    header.appendChild(icon);
+
     var label = document.createElement('span');
     label.className = 'progress-label';
-
-    // While a tool row is still pending and the BE has reported sub-
-    // activity labels (parallel URL fetches, etc.), rotate through them
-    // round-robin. The rotator runs on its own timer (see
-    // `_ensureSubLabelsRotator`) — initial paint just seeds the current
-    // slice; subsequent swaps happen in-place at the text level, no DOM
-    // rebuild. Once the row flips to done, the rotator stops touching it
-    // and the main `ToolName → args` label stays.
-    var hasRotating = isToolLikeKind(row.kind) && row.status === 'pending'
-        && Array.isArray(row.sub_labels) && row.sub_labels.length > 0;
-
-    var raw;
-    if (hasRotating) {
-        _subLabelsMap.set(label, row.sub_labels);
-        var idx = Math.floor(Date.now() / SUB_LABEL_ROTATE_MS) % row.sub_labels.length;
-        raw = row.sub_labels[idx];
-    } else {
-        raw = row.label || '';
-    }
-
-    writeProgressLabel(label, raw, row.kind);
-    div.appendChild(label);
-
-    if (hasRotating) _ensureSubLabelsRotator();
+    writeProgressLabel(label, row.label || '', row.kind);
+    header.appendChild(label);
 
     // Elapsed-time decoration (see specs/architecture.md
     // §Long-running tool execution).
@@ -245,12 +260,64 @@ function renderProgressRow(row) {
                 div.setAttribute('data-running', '1');
                 div.setAttribute('data-started-at-ms', String(running.started_at_ms || 0));
                 elapsedSpan.textContent = formatElapsedSuffix(Date.now() - (running.started_at_ms || Date.now()));
-                div.appendChild(elapsedSpan);
+                header.appendChild(elapsedSpan);
                 _ensureElapsedTicker();
             }
         } else if (row.status === 'done' && typeof row.duration_ms === 'number') {
             elapsedSpan.textContent = formatElapsedSuffix(row.duration_ms);
-            div.appendChild(elapsedSpan);
+            header.appendChild(elapsedSpan);
+        }
+    }
+
+    div.appendChild(header);
+
+    // Sliding sub-labels window — render up to SUB_LABEL_WINDOW_SIZE
+    // lines and advance the visible slice every SUB_LABEL_SLIDE_MS
+    // while the row is pending. Once done, freeze on the LAST window
+    // (most recent activity). Keeps the chat compact even when the
+    // BE writes many sub_labels for one tool-like row.
+    if (isToolLikeKind(row.kind)
+        && Array.isArray(row.sub_labels) && row.sub_labels.length > 0) {
+        var subs    = row.sub_labels;
+        var winSize = Math.min(SUB_LABEL_WINDOW_SIZE, subs.length);
+
+        // Pick the starting offset:
+        //   - done   → last winSize entries (final state, most recent
+        //             activity).
+        //   - pending → preserved offset across re-renders if any
+        //             (we re-render every BE poll when sub_labels
+        //             grows; without preservation the window resets
+        //             to 0 and the slider jumps backward visually).
+        //             Capped at the new maxOffset so a shrunk list
+        //             can't point past the end.
+        var maxOffset = Math.max(0, subs.length - winSize);
+        var startIdx;
+        if (row.status === 'done') {
+            startIdx = maxOffset;
+            _subLabelOffsets.delete(String(row.id));
+        } else {
+            var preserved = _subLabelOffsets.get(String(row.id));
+            startIdx = (typeof preserved === 'number')
+                ? Math.min(preserved, maxOffset)
+                : 0;
+        }
+
+        var sublist = document.createElement('div');
+        sublist.className = 'progress-sub-labels';
+        sublist.dataset.rowid  = String(row.id);
+        sublist.dataset.subs   = JSON.stringify(subs);
+        sublist.dataset.offset = String(startIdx);
+
+        for (var i = 0; i < winSize; i++) {
+            var subLine = document.createElement('div');
+            subLine.className = 'progress-sub-label';
+            writeProgressLabel(subLine, subs[startIdx + i], row.kind);
+            sublist.appendChild(subLine);
+        }
+        div.appendChild(sublist);
+
+        if (row.status === 'pending' && subs.length > winSize) {
+            _ensureSubLabelSlider();
         }
     }
 
@@ -809,9 +876,10 @@ function buildMessageEntryNode(msg, sessionId, renderSession, progressRows) {
 // it isn't hashed.
 //
 // Progress rows key on id; hash on the structurally visible fields
-// (status, kind, label, sub_labels list). Sub-label rotation is
-// handled in-place by `_ensureSubLabelsRotator` and does NOT change
-// the hash — only the rotation set itself does.
+// (status, kind, label, sub_labels list). Sub-labels render as
+// stacked lines beneath the row header — when a new sub-label is
+// appended on the BE, the hash changes and the row gets re-rendered
+// with the new line visible.
 function entryKeyHash(entry) {
     // Identify whether THIS row is the in-flight one. Inclusion in the
     // hash ensures the row gets rebuilt the moment running status flips

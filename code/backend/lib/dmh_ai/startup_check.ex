@@ -11,7 +11,10 @@ defmodule DmhAi.StartupCheck do
   require Logger
 
   @sandbox_container "dmh_ai-assistant-sandbox"
-  @data_dirs ["/data/user_assets", "/data/db", "/data/system_logs"]
+  # Bind-mounted host volumes that must exist + be writable for the
+  # release to function. user_workspaces was added by #190 (per-user
+  # permission redesign — see specs/permissions.md).
+  @data_dirs ["/data/user_assets", "/data/user_workspaces", "/data/db", "/data/system_logs"]
   @ollama_host "localhost"
   @ollama_port 11_434
 
@@ -22,6 +25,7 @@ defmodule DmhAi.StartupCheck do
       check_docker_socket(),
       check_sandbox_running(),
       check_sandbox_exec(),
+      check_sandbox_iptables(),
       check_data_paths()
     ] ++ warn_checks()
 
@@ -75,6 +79,58 @@ defmodule DmhAi.StartupCheck do
     end
   rescue
     e -> {:fatal, :sandbox_exec, Exception.message(e)}
+  end
+
+  # Verify the sandbox booted with the LAN fence applied (#190 §Network
+  # isolation). We probe `iptables -L OUTPUT -n` from inside the
+  # sandbox and look for:
+  #   • the admin ACCEPT pass-through (`owner UID match 10000`), and
+  #   • at least 5 REJECT rules — one per RFC1918 / loopback /
+  #     link-local range that start.sh installs.
+  #
+  # Rationale (operator surfacing): if `cap_add: NET_ADMIN` was lost
+  # (custom seccomp profile, AppArmor, host kernel without netfilter),
+  # the sandbox still boots but every non-admin script can reach
+  # `192.168.x.x`, the host itself, etc. — silent security
+  # degradation. Surfacing it as FATAL forces the operator to fix the
+  # host policy or knowingly disable this check before serving users.
+  @expected_reject_count 5
+  @admin_uid_marker "owner UID match 10000"
+
+  defp check_sandbox_iptables do
+    case System.cmd(
+           "docker",
+           ["exec", @sandbox_container, "sh", "-c", "iptables -L OUTPUT -n 2>&1"],
+           stderr_to_stdout: true
+         ) do
+      {output, 0} ->
+        rejects = output |> String.split("\n") |> Enum.count(&String.contains?(&1, "REJECT"))
+        has_admin_accept = String.contains?(output, @admin_uid_marker)
+
+        cond do
+          rejects < @expected_reject_count ->
+            {:fatal, :sandbox_iptables,
+             "expected ≥ #{@expected_reject_count} REJECT rules in OUTPUT chain, got #{rejects} — " <>
+               "sandbox/start.sh did not install the LAN fence " <>
+               "(check `cap_add: NET_ADMIN` in docker-compose.yml + host AppArmor/seccomp policy)"}
+
+          not has_admin_accept ->
+            {:fatal, :sandbox_iptables,
+             "admin pass-through ACCEPT rule missing from OUTPUT chain — admin LAN access broken " <>
+               "(expected a rule with marker `#{@admin_uid_marker}`)"}
+
+          true ->
+            {:ok, :sandbox_iptables}
+        end
+
+      {output, _} ->
+        {:fatal, :sandbox_iptables,
+         "iptables -L OUTPUT failed inside sandbox: #{String.trim(output)} — " <>
+           "likely cause: `cap_add: NET_ADMIN` missing from sandbox in docker-compose.yml, " <>
+           "or host kernel lacks netfilter support"}
+    end
+  rescue
+    e -> {:fatal, :sandbox_iptables, Exception.message(e)}
   end
 
   defp check_data_paths do

@@ -91,6 +91,7 @@ services:
     volumes:
       - ${DMHAI_HOME:-.}/db:/data/db
       - ${DMHAI_HOME:-.}/user_assets:/data/user_assets
+      - ${DMHAI_HOME:-.}/user_workspaces:/data/user_workspaces
       - ${DMHAI_HOME:-.}/system_logs:/data/system_logs
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
@@ -104,11 +105,20 @@ services:
   sandbox:
     image: dmh-ai-sandbox:latest
     container_name: __SANDBOX_NAME__
-    network_mode: host
+    # Sandbox is OFF host networking now — the iptables fence in
+    # /sandbox-start.sh REJECTs RFC1918 outbound for non-admin UIDs.
+    # Default bridge networking gives the container its own netns.
     restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
     volumes:
-      - ${DMHAI_HOME:-.}/user_assets:/data/user_assets
-    # tail -f /dev/null is the image CMD; scripts arrive via docker exec.
+      # Two-tree split per specs/permissions.md.
+      # /assets is read-only; uploads + _keystore live here. /work is
+      # the only writable surface for sandbox processes.
+      - ${DMHAI_HOME:-.}/user_assets:/assets:ro
+      - ${DMHAI_HOME:-.}/user_workspaces:/work
+    # /sandbox-start.sh sets sysctl + iptables, then `tail -f /dev/null`.
+    # Scripts arrive via `docker exec -u dmh_ai-u<uid> -w /work/<email>/<session>/`.
 
   searxng:
     image: searxng/searxng:latest
@@ -176,10 +186,14 @@ if [ "$MODE" = "stage" ]; then
 
     #  Set up install directory
     mkdir -p "$INSTALL_DIR"
-    mkdir -p "$INSTALL_DIR/db" "$INSTALL_DIR/user_assets" "$INSTALL_DIR/system_logs"
+    mkdir -p "$INSTALL_DIR/db" "$INSTALL_DIR/user_assets" "$INSTALL_DIR/user_workspaces" "$INSTALL_DIR/system_logs"
     rm -rf "$INSTALL_DIR/searxng-settings.yml"
     cp "$DIST/searxng-settings.yml" "$INSTALL_DIR/searxng-settings.yml"
-    chown -R 1000:1000 "$INSTALL_DIR"
+    # No chown -R: master runs as root post-#190 and doesn't need a
+    # specific host UID. Per-user subdirs under user_workspaces/ are
+    # owned by per-user UIDs (10001+) for the OS-level isolation
+    # fence — clobbering them with `chown -R 1000:1000` on reinstall
+    # would break that. See specs/permissions.md.
 
     #  Generate docker-compose for stage
     cat > "$INSTALL_DIR/docker-compose.yml" << COMPOSE
@@ -192,6 +206,7 @@ services:
     volumes:
       - ${INSTALL_DIR}/db:/data/db
       - ${INSTALL_DIR}/user_assets:/data/user_assets
+      - ${INSTALL_DIR}/user_workspaces:/data/user_workspaces
       - ${INSTALL_DIR}/system_logs:/data/system_logs
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
@@ -205,10 +220,12 @@ services:
   sandbox:
     image: dmh-ai-sandbox:latest
     container_name: dmh_ai-assistant-sandbox
-    network_mode: host
     restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
     volumes:
-      - ${INSTALL_DIR}/user_assets:/data/user_assets
+      - ${INSTALL_DIR}/user_assets:/assets:ro
+      - ${INSTALL_DIR}/user_workspaces:/work
 
   searxng:
     image: searxng/searxng:latest
@@ -333,12 +350,16 @@ else
     # Pre-create bind-mount targets so docker compose doesn't auto-create
     # them as root — the container runs as UID 1000 and would otherwise
     # hit EACCES on first write to /data/db, /data/system_logs, etc.
-    mkdir -p "$INSTALL_DIR/db" "$INSTALL_DIR/user_assets" "$INSTALL_DIR/system_logs"
+    mkdir -p "$INSTALL_DIR/db" "$INSTALL_DIR/user_assets" "$INSTALL_DIR/user_workspaces" "$INSTALL_DIR/system_logs"
     rm -rf "$INSTALL_DIR/searxng-settings.yml"
     cp "$DIST/searxng-settings.yml" "$INSTALL_DIR/searxng-settings.yml"
-    chown -R 1000:1000 "$INSTALL_DIR"
+    # No chown -R: master runs as root post-#190 and doesn't need a
+    # specific host UID. Per-user subdirs under user_workspaces/ are
+    # owned by per-user UIDs (10001+) for the OS-level isolation
+    # fence — `chown -R 1000:1000` on reinstall would silently
+    # flatten that. See specs/permissions.md.
 
-    #  Create dmh_ai service user 
+    #  Create dmh_ai service user
     if ! getent passwd dmh_ai &>/dev/null; then
         echo "Creating system user: dmh_ai"
         useradd --system --user-group --no-create-home --shell /usr/sbin/nologin dmh_ai

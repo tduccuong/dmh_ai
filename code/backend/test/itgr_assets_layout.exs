@@ -23,9 +23,16 @@ defmodule Itgr.AssetsLayout do
                "/data/user_assets/u@x.com/S1/data"
     end
 
-    test "session_workspace_dir" do
+    test "session_workspace_dir lives under workspaces_dir, not assets_dir" do
+      # Per #190 / specs/permissions.md: the workspace tree is split off
+      # into its own top-level dir so the sandbox can mount user_assets
+      # :ro and user_workspaces rw.
       assert Constants.session_workspace_dir("u@x.com", "S") ==
-               "/data/user_assets/u@x.com/S/workspace"
+               "/data/user_workspaces/u@x.com/S"
+    end
+
+    test "workspaces_dir accessor" do
+      assert Constants.workspaces_dir() == "/data/user_workspaces"
     end
 
     test "sanitize replaces special chars with underscore" do
@@ -87,9 +94,13 @@ defmodule Itgr.AssetsLayout do
 
   describe "Police.check_tool_calls path safety" do
     defp path_ctx do
+      # Reflects the post-#190 split: workspace lives in
+      # user_workspaces/, data lives in user_assets/. session_root
+      # remains the assets-side parent so within? checks for
+      # "this user's session tree" still work for legacy callers.
       %{
         session_root:  "/data/user_assets/u/S",
-        workspace_dir: "/data/user_assets/u/S/assistant/tasks/J1",
+        workspace_dir: "/data/user_workspaces/u/S",
         data_dir:      "/data/user_assets/u/S/data"
       }
     end

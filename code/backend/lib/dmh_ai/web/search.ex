@@ -27,35 +27,39 @@ defmodule DmhAi.Web.Search do
   @confidant_prompt """
   Today's date and time: %{now}.
 
-  %{context_block}New message: "%{content}"
+  %{context_block}
+  New message: "%{content}"
 
   Step 1 — Decide if a live web search is needed.
-  Web search is EXPENSIVE. Say YES only when the user genuinely needs current or live information.
+  Search is EXPENSIVE. Efficiency is priority, but accuracy on time-sensitive facts is mandatory.
 
-  If the user explicitly asks for a web search (e.g. "search the web", "look it up", "search online", "check on the web", "find this online") → YES, skip the rest of this analysis.
+  ### RULE 0: EXPLICIT REQUEST
+  If the user explicitly asks for a search (e.g., "search the web", "look up", "check online", "find recent news") → YES.
 
-  First, identify the question's time-orientation:
-  - About the CURRENT state of something that changes (who holds X today, the latest X, X right now, X this week) → YES, even when the topic feels well-known.
-  - About fixed past events or timeless facts (physics, math, completed history, well-established science) → NO.
+  ### RULE 1: THE PERISHABILITY TEST (High Priority)
+  Identify if the question involves "Dynamic Knowledge" (facts that can change over time).
+  Say YES if the query involves:
+  - **Current Roles & Leadership:** Who is the [Title] of [Place/Company]? (e.g., President, CEO, Governor).
+  - **Status & Rankings:** Current prices (Stock/Crypto), weather, sports scores, top charts, or current "best" recommendations.
+  - **Recent Events:** Breaking news, latest releases (movies/software), or recent legal/regulatory changes.
+  - **Versions & Technical Docs:** Latest version of a library, GitHub repo status, or recent API documentation.
+  - **People:** A person's current job, latest work, or recent news.
 
-  Otherwise apply:
+  ### RULE 2: THE STATIC KNOWLEDGE TEST
+  Say NO if the query involves "Timeless Knowledge":
+  - **Fixed History:** Events that are concluded (e.g., "Who was the president in 1995?", "Causes of WWII").
+  - **Core Science/Math:** Physics constants, mathematical proofs, biological classifications.
+  - **Geography/Cultural Basics:** Capital cities, definitions of words, well-established cultural concepts.
+  - **Internal Tasks:** Summarizing, translating, reformatting, or analyzing text provided in the prompt.
 
-  Say NO when the user's intent is:
-  - Summarising, translating, reformatting, or analysing content they provided (inline or via URL)
-  - Writing help, coding questions you can answer, science, history, math, geography, well-known concepts
-  - Anything you know confidently from training data
+  ### RULE 3: THE "UNCERTAINTY" OVERRIDE
+  - If the topic is a company, product, or person that gained prominence near or after your training cutoff → YES.
+  - If you have any doubt about whether a "fact" has changed since your training ended → YES.
 
-  Say YES when the user needs:
-  - Breaking news, sports scores, stock/crypto prices, weather, live events, headlines
-  - Technical docs, GitHub repos, library/framework versions, StackOverflow-style code questions
-  - Statistics, laws, regulations, prices, or figures that change over time
-  - A person's recent news, current job, or latest work
-  - Anything you are unsure about or that could be outdated
-
-  For a company, organization, or political group: YES if founded within ~20 years of your training cutoff; NO if older, unless another YES rule applies.
-
-  Judge the user's INTENT, not words embedded in content they want processed.
-  Example: "translate this article: ...latest news..." → intent is translation → NO.
+  ### FINAL LOGIC
+  Judge the user's **INTENT**.
+  - If they ask "Who is the president?" they want the person *holding office today*, not a history lesson → YES.
+  - If they ask "Translate this news: [Article Content]" → they want a translation → NO.
 
   Step 2 — If YES: pick the SearXNG category:
   - NEWS  : breaking news, sports, stock/crypto prices, weather, live events
@@ -123,7 +127,7 @@ defmodule DmhAi.Web.Search do
   @spec generate_search_queries(String.t(), [String.t()], :confidant | :assistant) ::
           {:no_search} | {:search, String.t(), [%{text: String.t(), lang: String.t()}]}
   def generate_search_queries(content, recent_msgs \\ [], pipeline \\ :confidant) do
-    model  = AgentSettings.web_search_model()
+    model  = AgentSettings.swift_model()
     prompt = build_prompt(content, recent_msgs, pipeline)
 
     trace = %{origin: "system", path: "Web.Search.generate_queries", role: "WebQueryPlanner", phase: "plan"}

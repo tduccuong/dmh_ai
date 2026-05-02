@@ -50,7 +50,7 @@ defmodule DmhAi.Tools.ExtractContent do
         properties: %{
           path: %{
             type: "string",
-            description: "Path to the uploaded file. Use 'workspace/<filename>' for task attachments."
+            description: "Path to the uploaded file. Use 'data/<filename>' for task attachments (user uploads); 'workspace/<filename>' for files produced by previous tool runs in this session."
           }
         },
         required: ["path"]
@@ -161,7 +161,7 @@ defmodule DmhAi.Tools.ExtractContent do
   defp describe_base64_image(b64) do
     messages = [%{role: "user", content: image_prompt(), images: [b64]}]
     trace = %{origin: "assistant", path: "ExtractContent.describe_image", role: "ImageDescriber", phase: "describe"}
-    case LLM.call(AgentSettings.image_describer_model(), messages, trace: trace) do
+    case LLM.call(AgentSettings.vision_model(), messages, trace: trace) do
       {:ok, result} when is_binary(result) and result != "" ->
         {:ok, result}
 
@@ -174,7 +174,7 @@ defmodule DmhAi.Tools.ExtractContent do
   defp describe_base64_frames(frames) do
     messages = [%{role: "user", content: video_prompt(), images: frames}]
     trace = %{origin: "assistant", path: "ExtractContent.describe_video", role: "VideoDescriber", phase: "describe"}
-    case LLM.call(AgentSettings.video_describer_model(), messages, trace: trace) do
+    case LLM.call(AgentSettings.vision_model(), messages, trace: trace) do
       {:ok, result} when is_binary(result) and result != "" ->
         {:ok, result}
 
@@ -190,7 +190,7 @@ defmodule DmhAi.Tools.ExtractContent do
     with {:ok, b64} <- scale_and_encode(abs) do
       messages = [%{role: "user", content: image_prompt(), images: [b64]}]
       trace = %{origin: "assistant", path: "ExtractContent.extract_image", role: "ImageDescriber", phase: "describe"}
-      case LLM.call(AgentSettings.image_describer_model(), messages, trace: trace) do
+      case LLM.call(AgentSettings.vision_model(), messages, trace: trace) do
         {:ok, result} when is_binary(result) and result != "" ->
           {:ok, result}
 
@@ -245,7 +245,7 @@ defmodule DmhAi.Tools.ExtractContent do
     with {:ok, frames} <- extract_frames(abs) do
       messages = [%{role: "user", content: video_prompt(), images: frames}]
       trace = %{origin: "assistant", path: "ExtractContent.extract_video", role: "VideoDescriber", phase: "describe"}
-      case LLM.call(AgentSettings.video_describer_model(), messages, trace: trace) do
+      case LLM.call(AgentSettings.vision_model(), messages, trace: trace) do
         {:ok, result} when is_binary(result) and result != "" ->
           {:ok, result}
 
@@ -459,7 +459,7 @@ defmodule DmhAi.Tools.ExtractContent do
     messages = [%{role: "user", content: prompt, images: frames}]
     trace = %{origin: "assistant", path: "ExtractContent.ocr_pdf", role: "OcrPdf", phase: "ocr"}
 
-    case LLM.call(AgentSettings.image_describer_model(), messages, trace: trace) do
+    case LLM.call(AgentSettings.vision_model(), messages, trace: trace) do
       {:ok, result} when is_binary(result) and result != "" -> {:ok, result}
       other ->
         Logger.warning("[ExtractContent] OCR chunk LLM call failed: #{inspect(other)}")

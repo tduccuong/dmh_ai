@@ -28,6 +28,11 @@ defmodule DmhAi.Constants do
   # Paths
   @db_path "/data/db/chat.db"
   @assets_dir "/data/user_assets"
+  # Per-user workspaces tree (model scratch). Sibling of user_assets,
+  # split out as part of the per-user permission redesign — see
+  # specs/permissions.md. user_assets is RO from the sandbox;
+  # user_workspaces is the only writable bind mount.
+  @workspaces_dir "/data/user_workspaces"
   @log_file "/data/system_logs/system.log"
 
   def search_page2_threshold, do: @search_page2_threshold
@@ -45,19 +50,25 @@ defmodule DmhAi.Constants do
   def password_hash_iterations, do: @password_hash_iterations
   def db_path, do: @db_path
   def assets_dir, do: @assets_dir
+  def workspaces_dir, do: @workspaces_dir
   def log_file, do: @log_file
 
   def image_exts, do: ~w(.png .jpg .jpeg .gif .webp .bmp)
 
-  # ── Filesystem layout for user assets ────────────────────────────────────
+  # ── Filesystem layout for user assets + workspaces ──────────────────────
   #
-  #   /data/user_assets/<email>/<session_id>/
-  #     ├── data/       ← user uploads (photos, docs, video frames)
-  #     └── workspace/  ← assistant task outputs (web fetches, temp files, etc.)
+  #   /data/user_assets/<email>/                  (RO from sandbox)
+  #     ├── _keystore/                            ← per-user secrets (sibling of sessions)
+  #     └── <session_id>/
+  #         └── data/                             ← user uploads
   #
-  # One data/ and one workspace/ per session — shared across all tasks in the
-  # session (not per-task). Confidant sessions don't use workspace/ (Confidant
-  # is sync, no tasks run).
+  #   /data/user_workspaces/<email>/              (RW from sandbox)
+  #     └── <session_id>/                         ← assistant task outputs
+  #
+  # Two trees; one bind-mount each into the sandbox. Per-session split as
+  # before — data/ is uploads, workspace files live one tree over.
+  # Confidant sessions don't write workspaces (Confidant is sync, no tasks).
+  # Full design: specs/permissions.md.
 
   @doc """
   Make a filesystem-safe slug (alphanumerics, dash, underscore only).
@@ -81,10 +92,15 @@ defmodule DmhAi.Constants do
     Path.join(session_root(email, session_id), "data")
   end
 
-  @doc "Workspace directory for a session — shared across all tasks in the session."
+  @doc """
+  Workspace directory for a session — shared across all tasks in the
+  session. Lives under `@workspaces_dir`, NOT under `@assets_dir`, so
+  the sandbox can mount workspaces RW while keeping assets RO. See
+  specs/permissions.md.
+  """
   @spec session_workspace_dir(String.t(), String.t()) :: String.t()
   def session_workspace_dir(email, session_id) do
-    Path.join(session_root(email, session_id), "workspace")
+    Path.join([@workspaces_dir, to_string(email), sanitize(session_id)])
   end
 
   @doc """

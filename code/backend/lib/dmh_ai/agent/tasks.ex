@@ -520,6 +520,18 @@ defmodule DmhAi.Agent.Tasks do
     end
   end
 
+  @doc """
+  Look up a user's role (`'admin' | 'user'`). Falls back to `'user'`
+  on miss — the safe default for permission gates downstream.
+  """
+  @spec lookup_user_role(String.t()) :: String.t()
+  def lookup_user_role(user_id) do
+    case query!(Repo, "SELECT role FROM users WHERE id=?", [user_id]) do
+      %{rows: [[role]]} when is_binary(role) and role != "" -> role
+      _ -> "user"
+    end
+  end
+
   # ── private ─────────────────────────────────────────────────────────────
 
   defp row_to_map([

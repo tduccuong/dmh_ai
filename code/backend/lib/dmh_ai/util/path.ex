@@ -66,10 +66,28 @@ defmodule DmhAi.Util.Path do
           Path.expand(Path.join(workspace_dir || session_root, path))
       end
 
-    if is_nil(session_root) or within?(abs, session_root) do
-      {:ok, abs}
-    else
-      {:error, "Access denied: path escapes the session root (#{session_root})"}
+    # session_root, data_dir, and workspace_dir live in two physically
+    # different trees now (user_assets vs user_workspaces, see
+    # specs/permissions.md). The legacy invariant "abs must be under
+    # session_root" no longer holds — a path like
+    # /data/user_workspaces/<email>/<session>/foo isn't under
+    # /data/user_assets/<email>/<session>/. Generalise to "abs must be
+    # under at least one of the configured roots".
+    allowed_roots =
+      [session_root, data_dir, workspace_dir]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+
+    cond do
+      allowed_roots == [] ->
+        {:ok, abs}
+
+      Enum.any?(allowed_roots, &within?(abs, &1)) ->
+        {:ok, abs}
+
+      true ->
+        {:error,
+         "Access denied: path escapes the configured roots (#{Enum.join(allowed_roots, ", ")})"}
     end
   end
 

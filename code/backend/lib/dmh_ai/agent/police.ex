@@ -189,25 +189,36 @@ defmodule DmhAi.Agent.Police do
   defp type_placeholder(_),         do: "<value>"
 
   @doc """
-  Check a batch of tool calls against path-safety rules. Skipped entirely
-  when `ctx` doesn't carry a `:session_root` (non-loop callers).
+  Check a batch of tool calls against path-safety rules + the LAN-
+  destination gate (#190 §Police hook). Skipped entirely when `ctx`
+  doesn't carry a `:session_root` (non-loop callers).
   """
   @spec check_tool_calls(list(), list(), map()) :: :ok | {:rejected, String.t()}
   def check_tool_calls(calls, _messages, ctx \\ %{}) do
-    case path_violation(calls, ctx) do
-      nil ->
-        :ok
-
-      reason ->
+    cond do
+      reason = path_violation(calls, ctx) ->
         Logger.warning("[Police] path_violation: #{reason}")
         DmhAi.SysLog.log("[POLICE] REJECTED path_violation: #{reason}")
         {:rejected, "path_violation: #{reason}"}
+
+      hit = DmhAi.Permissions.LanBlock.check(calls, ctx) ->
+        {tool, host, detail} = hit
+        full = "#{tool}: #{detail}"
+        Logger.warning("[Police] lan_blocked: #{full}")
+        DmhAi.SysLog.log("[POLICE] REJECTED lan_blocked: tool=#{tool} host=#{host}")
+        {:rejected, "lan_blocked: #{full}"}
+
+      true ->
+        :ok
     end
   end
 
   @doc "Rejection message shown back to the model when a tool call is refused."
   def rejection_msg("path_violation: " <> detail) do
     "REJECTED (path_violation): #{detail}. Use a path under the session's workspace/ or data/ directory and try again."
+  end
+  def rejection_msg("lan_blocked: " <> detail) do
+    "REJECTED (lan_blocked): #{detail}. Local-network destinations (RFC1918, loopback, link-local) are not reachable from the assistant. Use a public URL, or ask the user to share the data directly."
   end
   def rejection_msg(reason) do
     "REJECTED (#{reason}): Fix this specific violation before continuing. Do not repeat the same mistake."
@@ -333,16 +344,20 @@ defmodule DmhAi.Agent.Police do
     end
   end
 
-  defp check_path_arg_read(args, ctx, session_root) do
+  defp check_path_arg_read(args, ctx, _session_root) do
     case Map.get(args, "path") do
       p when is_binary(p) ->
+        # `Util.Path.resolve/2` already enforces "must be within at
+        # least one configured root" (session_root | data_dir |
+        # workspace_dir). Pre-#190 there was a single root, so we
+        # additionally pinned reads to session_root here. Post-#190
+        # data and workspace are in physically different trees, so
+        # that pin is too narrow — a legitimate `read_file
+        # workspace/foo.csv` resolves under `/data/user_workspaces/`,
+        # outside session_root, and would falsely reject. Trusting
+        # `resolve/2`'s :ok signal is sufficient.
         case DmhAi.Util.Path.resolve(p, ctx) do
-          {:ok, abs} ->
-            cond do
-              not String.starts_with?(abs, "/data/") -> nil
-              DmhAi.Util.Path.within?(abs, session_root) -> nil
-              true -> "path '#{p}' escapes the session root (#{session_root})"
-            end
+          {:ok, _abs} -> nil
           {:error, reason} -> reason
         end
       _ -> nil

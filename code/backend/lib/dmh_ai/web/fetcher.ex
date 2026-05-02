@@ -32,6 +32,38 @@ defmodule DmhAi.Web.Fetcher do
   @jina_timeout_ms    10_000
   @max_chars 20_000
 
+  # ── Three-gate binary filter (see specs/architecture.md or pipelines/url.ex) ──
+  #
+  # Gate 1 (caller's job, e.g. url.ex):
+  #   pre-fetch URL extension blocklist — saves a round-trip on
+  #   obvious binaries (.zip/.png/.exe). Cheap, pattern-only.
+  #
+  # Gate 2 (this module, response-time):
+  #   Content-Type header check. If the server says binary, we don't
+  #   even try to extract.
+  #
+  # Gate 3 (this module, response-time fallback):
+  #   First-bytes sniff. Some servers omit Content-Type or send
+  #   `application/octet-stream` for everything. NUL bytes in the
+  #   first 512 bytes are an essentially-zero false-positive signal
+  #   that the payload is binary. Fires only when Gate 2 was
+  #   inconclusive.
+  @text_content_type_prefixes ~w(text/)
+
+  @text_content_type_exact ~w(
+    application/xhtml+xml
+    application/xml
+    application/atom+xml
+    application/rss+xml
+    application/json
+    application/ld+json
+    application/javascript
+    application/x-yaml
+    application/yaml
+  )
+
+  @sniff_bytes 512
+
   @doc """
   Fetch `url` with CMP-aware fallback behaviour.
 
@@ -102,18 +134,29 @@ defmodule DmhAi.Web.Fetcher do
     case http_fn.(url, headers) do
       {:ok, %{status: status, body: body} = resp} when status in 200..299 ->
         final_url = Map.get(resp, :final_url, url)
+        resp_headers = Map.get(resp, :headers, [])
 
-        case CmpDetector.detect(body) do
-          {:cmp, vendor} ->
-            {:cmp, vendor, %{state | cmp: vendor}}
+        # Gate 2: Content-Type. If the server says binary, drop now.
+        # Gate 3: NUL-byte sniff for the first @sniff_bytes when
+        # Content-Type is missing/ambiguous (HEAD-less servers,
+        # `application/octet-stream` everywhere, etc.).
+        case classify_payload(resp_headers, body) do
+          {:reject, reason} ->
+            {:error, reason, state}
 
-          :clean ->
-            extractor    = Keyword.get(state.opts, :extractor, :general)
-            {title, text} = extract(body, final_url, extractor)
-            if byte_size(text) == 0 do
-              {:error, :empty_content, state}
-            else
-              {:ok, build_result(url, final_url, title, text, body, state)}
+          :ok ->
+            case CmpDetector.detect(body) do
+              {:cmp, vendor} ->
+                {:cmp, vendor, %{state | cmp: vendor}}
+
+              :clean ->
+                extractor    = Keyword.get(state.opts, :extractor, :general)
+                {title, text} = extract(body, final_url, extractor)
+                if byte_size(text) == 0 do
+                  {:error, :empty_content, state}
+                else
+                  {:ok, build_result(url, final_url, title, text, body, state)}
+                end
             end
         end
 
@@ -124,6 +167,75 @@ defmodule DmhAi.Web.Fetcher do
         {:error, reason, state}
     end
   end
+
+  # Combines Gate 2 (content-type) and Gate 3 (body sniff) into a
+  # single decision. Order matters: header-stated binary always wins
+  # over body-sniff (even if a binary file's first 512 bytes happen
+  # to contain no NUL).
+  defp classify_payload(headers, body) do
+    case content_type(headers) do
+      {:ok, ct} ->
+        if text_content_type?(ct) do
+          :ok
+        else
+          {:reject, {:non_text_content_type, ct}}
+        end
+
+      :missing ->
+        # No Content-Type header. Fall through to body sniff.
+        if body_looks_text?(body) do
+          :ok
+        else
+          {:reject, :binary_body_sniffed}
+        end
+    end
+  end
+
+  defp content_type(headers) when is_list(headers) do
+    Enum.find_value(headers, :missing, fn
+      {k, v} when is_binary(k) ->
+        if String.downcase(k) == "content-type", do: {:ok, parse_content_type(v)}, else: nil
+
+      _ ->
+        nil
+    end)
+  end
+
+  defp content_type(headers) when is_map(headers) do
+    case Map.get(headers, "content-type") || Map.get(headers, "Content-Type") do
+      nil   -> :missing
+      [v | _] when is_binary(v) -> {:ok, parse_content_type(v)}
+      v when is_binary(v)        -> {:ok, parse_content_type(v)}
+      _ -> :missing
+    end
+  end
+
+  defp content_type(_), do: :missing
+
+  # Strip charset and other params: "text/html; charset=utf-8" → "text/html"
+  defp parse_content_type(v) do
+    v |> to_string() |> String.split(";") |> hd() |> String.trim() |> String.downcase()
+  end
+
+  defp text_content_type?(ct) when is_binary(ct) do
+    Enum.any?(@text_content_type_prefixes, &String.starts_with?(ct, &1)) or
+      ct in @text_content_type_exact
+  end
+
+  defp text_content_type?(_), do: false
+
+  # Body sniff: a NUL byte (0x00) in the first @sniff_bytes is an
+  # essentially-zero-FP signal that the payload is binary — text
+  # encodings used on the web (UTF-8, ASCII, ISO-8859-*) don't
+  # produce embedded NULs. UTF-16 does, but UTF-16-served HTML is
+  # vanishingly rare and our extractors couldn't parse it either.
+  defp body_looks_text?(body) when is_binary(body) do
+    prefix_len = min(byte_size(body), @sniff_bytes)
+    prefix     = binary_part(body, 0, prefix_len)
+    not String.contains?(prefix, <<0>>)
+  end
+
+  defp body_looks_text?(_), do: true
 
   defp extract(body, source_url, extractor) do
     extracted =
@@ -252,7 +364,9 @@ defmodule DmhAi.Web.Fetcher do
       {:ok, resp} ->
         # Req doesn't expose the post-redirect URL on %Req.Response{} directly;
         # fall back to the input URL. Tests supply final_url via the mock.
-        {:ok, %{status: resp.status, body: resp.body, final_url: url}}
+        # `resp.headers` is a `%{lowercased_name => [value, …]}` map — pass it
+        # through so the caller can inspect Content-Type without a HEAD round-trip.
+        {:ok, %{status: resp.status, body: resp.body, final_url: url, headers: resp.headers}}
 
       {:error, reason} ->
         {:error, reason}
