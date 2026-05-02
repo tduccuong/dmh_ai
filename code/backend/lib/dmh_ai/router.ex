@@ -555,6 +555,27 @@ defmodule DmhAi.Router do
     end
   end
 
+  # Stop the user's currently-running inline turn (Confidant or
+  # Assistant). FE Stop button. Idempotent — repeated calls or
+  # calls when no turn is in flight return 200 with `stopped: false`.
+  # session_id is in the URL for FE clarity / future per-session
+  # filtering, but the cancellation is per-user (one inline turn at a
+  # time per user). See specs/architecture.md §Stop button.
+  post "/sessions/:session_id/stop" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      _ = session_id
+      result =
+        case UserAgent.cancel_current_turn(user.id) do
+          {:ok, :stopped}        -> %{stopped: true}
+          {:ok, :no_active_turn} -> %{stopped: false, reason: "no_active_turn"}
+          {:error, :not_started} -> %{stopped: false, reason: "agent_not_started"}
+          {:error, reason}       -> %{stopped: false, reason: inspect(reason)}
+        end
+
+      send_resp(conn, 200, Jason.encode!(result))
+    end
+  end
+
   delete "/image-descriptions/:session_id" do
     with {:ok, conn, user} <- check_auth(conn) do
       Data.delete_image_descriptions(conn, user, session_id)

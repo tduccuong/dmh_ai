@@ -139,6 +139,17 @@ defmodule DmhAi.Agent.AgentSettings do
   # rather fail fast on misbehaving cloud endpoints.
   @llm_receive_timeout_ms_default 300_000
 
+  # Wall-clock budget for the Confidant pre-step (web search planner +
+  # memo retrieval, both run in parallel before the main answer
+  # streams). When exceeded, the pre-step Task crashes; the chain ends
+  # with a visible `chain_aborted` row instead of streaming an answer.
+  # Default 60 s comfortably covers cloud Swift latencies and most
+  # warm self-hosted models. Operators on slow miners that need
+  # cold-load + non-streaming completion budget should bump this; the
+  # tradeoff is a longer silent wait before the user sees the error
+  # row when something is genuinely wedged.
+  @confidant_pre_step_timeout_ms_default 60_000
+
   # Output-token ceiling (num_predict) passed to every assistant-mode
   # LLM.stream call. `num_predict` is a ceiling, NOT a prepaid budget
   # — unused headroom has no cost. Set far above any practical
@@ -172,8 +183,12 @@ defmodule DmhAi.Agent.AgentSettings do
   @web_search_direct_timeout_ms_default 6_000
   @web_search_jina_timeout_ms_default 7_000
   @web_search_total_timeout_ms_default 20_000
-  @synthesis_threshold_default 45_000
-  @synthesis_fallback_chars_default 8_000
+  # Hard cap (chars) on raw web-search-results text injected into the
+  # Confidant turn. Cuts boilerplate / ads / dup snippets at the tail
+  # so the main Confidant LLM call doesn't choke on a 45 KB+ blob.
+  # The framing block ("Web search results (retrieved DATE)…") already
+  # tells the model to focus on relevant facts and ignore noise.
+  @web_results_max_chars_default 12_000
 
   # Vector knowledge base — see specs/vector_kb.md. Chunk size targets
   # the embedding model's recall sweet spot (256–512 tokens for dense
@@ -466,6 +481,11 @@ defmodule DmhAi.Agent.AgentSettings do
   def llm_receive_timeout_ms,
     do: int_setting("llmReceiveTimeoutMs", @llm_receive_timeout_ms_default)
 
+  @doc "Wall-clock budget (ms) for Confidant's parallel web/memo pre-step."
+  @spec confidant_pre_step_timeout_ms() :: pos_integer()
+  def confidant_pre_step_timeout_ms,
+    do: int_setting("confidantPreStepTimeoutMs", @confidant_pre_step_timeout_ms_default)
+
   @doc """
   Output-token ceiling (`num_predict`) applied to every assistant-mode
   LLM.stream call. A ceiling, not a reservation: unused headroom has
@@ -534,13 +554,10 @@ defmodule DmhAi.Agent.AgentSettings do
   @spec web_search_total_timeout_ms() :: pos_integer()
   def web_search_total_timeout_ms, do: int_setting("webSearchTotalTimeoutMs", @web_search_total_timeout_ms_default)
 
-  @doc "Raw result character count above which synthesis is triggered before injection."
-  @spec synthesis_threshold() :: pos_integer()
-  def synthesis_threshold, do: int_setting("synthesisThreshold", @synthesis_threshold_default)
-
-  @doc "Character limit for the truncated fallback when synthesis fails."
-  @spec synthesis_fallback_chars() :: pos_integer()
-  def synthesis_fallback_chars, do: int_setting("synthesisFallbackChars", @synthesis_fallback_chars_default)
+  @doc "Hard cap (chars) on raw web-search-results text injected into the Confidant turn."
+  @spec web_results_max_chars() :: pos_integer()
+  def web_results_max_chars,
+    do: int_setting("webResultsMaxChars", @web_results_max_chars_default)
 
   @doc "Target chunk size (tokens) for `/wiki` (knowledge-scope) ingestion."
   @spec kb_chunk_tokens() :: pos_integer()

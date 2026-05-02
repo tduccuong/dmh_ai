@@ -1958,6 +1958,93 @@ What an in-flight tool call does when the task is cancelled:
   loop), the user's wait is bounded by "current tool finishes" — 1–30
   s wall clock.
 
+### Chat-level Stop button (turn interrupt)
+
+Distinct from the per-task Stop above, the **chat input** carries a
+Stop button that interrupts the inline turn currently in flight on the
+active session (Confidant or Assistant — both modes are reachable via
+the same `current_task` 5-tuple in `UserAgent`).
+
+Endpoint: `POST /sessions/:session_id/stop` →
+`UserAgent.cancel_current_turn(user_id)`. The session id in the URL is
+informational only for auth/route shape — `UserAgent` is keyed by
+user, and only one inline turn can be in flight per user, so the
+cancel always targets that turn.
+
+Inside `handle_call(:cancel_current_turn, ...)`, ordering is
+load-bearing (all synchronous, all inside the GenServer):
+
+1. `Process.demonitor(ref, [:flush])` — drop any already-queued `:DOWN`
+   so the kill below doesn't double-fire the `:DOWN` clause after
+   state is cleared.
+2. `Process.exit(task_pid, :kill)` — brutal-kill the inline `Task`.
+   Closes its Finch sockets, kills spawned children, collapses the
+   LLM stream collector via the Task's supervision link.
+3. `send(reply_pid, {:cancelled, "Stopped by user."})` — notify any
+   synchronous waiter on the original dispatch (no-op for dead pids).
+4. `StreamBuffer.clear/2` and `ThinkingBuffer.clear/2` — wipe partial
+   tokens. Done AFTER kill so a final write from the doomed Task
+   can't race in.
+5. `SessionProgress.append("chain_aborted", "Stopped by user.")` —
+   FE-visible chain-end signal. Same row shape as the per-task path.
+6. Clear `current_task` in state.
+
+`RunningTools` (run_script in flight) is left to natural cleanup —
+the killed parent's pipe close gives the docker-exec child SIGPIPE,
+and the next /poll's orphan-cleanup sweeper flips the row to done.
+
+**FE surfacing** — `/poll` returns `agent_busy: bool`, true only on
+the session whose `UserAgent.current_turn_session_id/1` matches.
+This lets the Stop button render only on the session that actually
+owns the in-flight turn (across reload / tab restore / session
+switch). The FE applies `agent_busy` from both poll loops
+(`pollTurnToCompletion` and `startProgressPolling`) and resets it on
+session switch so the button doesn't lag the active-session change.
+
+**Idempotence** — second cancel arriving while the first is in flight
+finds `current_task = nil` and returns `:no_active_turn`. Natural
+completion `{ref, result}` or `:DOWN` arriving after a cancel doesn't
+match (current_task already nil) and falls through to the
+catch-all swallow. Either ordering of cancel/complete leaves the
+agent ready for the next dispatch.
+
+### Inline-task crash → visible chain_aborted
+
+When the inline Task crashes for any reason other than user cancel
+(uncaught exception in `run_assistant` / `run_confidant`, pre-step
+`Task.await` timeout, OOM, etc.), the `:DOWN` handler in `UserAgent`
+mirrors the Stop-button cleanup so the failure is visible to the FE
+instead of disappearing silently:
+
+1. Clear `stream_buffer` + `thinking_buffer` for the session.
+2. Append a `kind: "chain_aborted"` `session_progress` row with a
+   short label (`"Internal error — please try again."`).
+3. Clear `current_task` in state.
+
+The FE renders the row through the same `chain_aborted` path used by
+the Stop button — no FE-side branch on the cause.
+
+**No auto-resume on crash**, even when `session.messages` ends with
+an unanswered user message. Crash causes are typically deterministic
+(broken model setting, network down, OOM in a tool); a tight
+re-dispatch would crash the same way and `:DOWN` again, producing a
+silent infinite retry loop. Auto-resume remains for two legitimate
+paths: mid-chain user-message injection on natural completion (see
+§Mid-chain user message injection) and boot-scan recovery after
+GenServer restart (see §Boot scan).
+
+### Confidant pre-step timeout
+
+`run_confidant` runs `web_task` (Swift search-planner LLM call →
+SearXNG → page fetches → optional synthesis LLM call) and `memo_task`
+(embedding + vector search) in parallel via `Task.async`, then waits
+on both with `Task.await(_, AgentSettings.confidant_pre_step_timeout_ms)`.
+Default 60 s. Operators on slow self-hosted models can bump it (the
+Swift call in particular is non-streaming and pays cold-load + full
+generation latency). On timeout, `Task.await` raises and the chain
+ends through the `chain_aborted` path above — user sees the error
+row, not a silent hang.
+
 ### Boot scan for orphan recovery
 
 On `UserAgent.init/1`, after the GenServer starts, it queries its
@@ -2215,10 +2302,10 @@ runtime safety net for when this guidance doesn't stick.
    `{:silent_turn_other_task_verb, reason}` feed the existing
    `[[ISSUE:...]]` / `ctx.nudges` / 3-strike escalation plumbing.
 
-10. **Oracle-backed pivot / knowledge gate** — `check_pivot/3` reads
-    a verdict from the **Oracle**, an independent classifier
-    (`DmhAi.Agent.Oracle`, default model role `oracleModel` →
-    `ministral-3:14b-cloud`). The Oracle compares the chain-start
+10. **Swift-backed pivot / knowledge gate** — `check_pivot/3` reads
+    a verdict from the **Swift classifier**
+    (`DmhAi.Agent.Swift.classify/3`, runs on `swiftModel` —
+    default `ministral-3:14b-cloud`). Compares the chain-start
     user message against the active anchor's `task_spec` and
     returns one of `:related`, `:unrelated`, `:knowledge`, or
     `:error`. The classifier fires in parallel with the assistant
@@ -2276,7 +2363,7 @@ runtime safety net for when this guidance doesn't stick.
     message pair is appended alongside the original
     pause/cancel pair. The model's next roundtrip sees the new
     anchor and proceeds against it — no separate `create_task` from
-    the model. PendingPivots is cleared and the cached Oracle
+    the model. PendingPivots is cleared and the cached Swift
     verdict is forced to `:related` so subsequent gate checks in
     this chain (now under the new anchor) pass through.
 
@@ -2774,18 +2861,47 @@ All calls go through `DmhAi.Agent.LLM`. Model strings: `<provider>::<pool>::<mod
 
 Models ending in `:cloud` / `-cloud` auto-route to cloud pool. Cloud keys managed in admin settings as a per-provider pool; `LLM` picks one per call, shuffles active keys first, then throttled ones. 5xx responses are retried 3× with 2s backoff on the same account before rotating.
 
-### Model Assignments (admin-configurable)
+### Model tiers (admin-configurable)
 
-| Role | Default |
-|------|---------|
-| Confidant | `gemma4:31b-cloud` |
-| Assistant (session loop) | `gpt-oss:120b-cloud` |
-| Context Compactor | `gemma4:31b-cloud` |
-| Progress Summariser (on-demand) | `gemma4:31b-cloud` |
-| Web Search Detector | `ministral-3:14b-cloud` |
-| Image Describer | `gemma4:31b-cloud` |
-| Video Describer | `gemma4:31b-cloud` |
-| Profile Extractor | `gemma4:31b-cloud` |
+Six tier-shaped settings cover every LLM call in the system. Two
+tiers (`Swift`, `Oracle`) collapse what used to be one role per
+caller into latency-class buckets; one (`Vision`) collapses the
+image/video describers and PDF OCR into a single image-capable
+slot. The two main answerers (Confidant, Assistant) and the
+embedder keep their own settings since they're independently
+swappable.
+
+| Setting | Tier | Powers | Default |
+|---|---|---|---|
+| `confidantModel` | answer | `ConfidantMaster` | `gemma4:31b-cloud` |
+| `assistantModel` | answer | `AssistantSession` | `gemma4:31b-cloud` |
+| `swiftModel` | **Swift — short / fast actions** | `SwiftPivot` (anchor classify), `SwiftLocalize` (runtime ack i18n), `WebQueryPlanner` (web-search YES/NO + queries), `SessionNamer` (3–5-word session title) | `ministral-3:14b-cloud` |
+| `oracleModel` | **Oracle — long / dense content** | `ContextCompactor`, `ProgressSummarizer`, `ProfileExtractor`, `ProfileCondenser` | `gemma4:31b-cloud` |
+| `visionModel` | vision/OCR | `ImageDescriber`, `VideoDescriber`, `OcrPdf` | `gemma4:31b-cloud` |
+| `kbEmbeddingModel` | embedding | `DmhAi.VectorDB.Embedder` | `qwen3-embedding:0.6b` |
+
+`Swift` should run on the cheapest model the operator is comfortable
+with — every entry under it is a single-shot decision where latency
+dominates over quality. `Oracle` needs a stronger general-purpose
+model since each call processes long context (compaction history,
+multi-page web fetch summaries, full-turn profile extraction).
+`Vision` must be image-capable. The two answerer tiers can match
+either — Confidant typically gets a chattier general model,
+Assistant something tool-using.
+
+A one-shot DB migration in `AgentSettings.migrate_legacy_model_keys/0`
+(invoked from `DB.Init.run/0`) collapses old per-role keys
+(`compactorModel`, `summarizerModel`, `webSearchModel`, the old
+fast-classifier `oracleModel`, `imageDescriberModel`,
+`videoDescriberModel`, `profileExtractorModel`) into the new tier
+keys with first-write-wins so operator overrides survive intact.
+Idempotent on re-runs.
+
+**Naming nuance:** the old fast-classifier module
+`DmhAi.Agent.Swift` was renamed to `DmhAi.Agent.Swift` because
+the new `oracleModel` setting carries the new heavy-content
+meaning. The trace tags moved with it (`OraclePivot` →
+`SwiftPivot`, `OracleLocalize` → `SwiftLocalize`).
 
 ### Other Settings (admin-configurable)
 

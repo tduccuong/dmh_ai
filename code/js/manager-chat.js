@@ -16,9 +16,13 @@
 // assistant message that ends the chain (in the entry's `progress`
 // field) — they render inside the assistant bubble below the header,
 // above the final text. Bracketing rule: a progress row with
-// `ts ∈ (prev_assistant_ts, this_assistant_ts]` belongs to
-// `this_assistant_msg`. Any progress rows AFTER the last assistant
-// message (chain in flight) render flat as before.
+// `ts ∈ (prev_message_ts, this_assistant_ts]` belongs to
+// `this_assistant_msg` — where `prev_message_ts` is the most recent
+// message of either role. A USER message between progress rows and
+// the next assistant breaks the bracket: the orphaned rows (typically
+// `chain_aborted` from a Stop or crash) flush as flat entries in
+// chat order, NOT into the unrelated next assistant. Any progress
+// rows AFTER the last assistant message (chain in flight) render flat.
 function buildSessionTimeline(session) {
     var msgs = (session.messages || []).filter(function(m) {
         // `kind: "form_response"` user messages are runtime plumbing —
@@ -57,6 +61,18 @@ function buildSessionTimeline(session) {
             }
             entries.push({ kind: 'message', ts: t, payload: m, progress: claimed });
         } else {
+            // User message — flush any progress rows with ts < this user
+            // msg as FLAT entries first. They belong to a prior chain
+            // that ended without an assistant reply (Stop button →
+            // chain_aborted, or task crash). Without this flush, the
+            // NEXT assistant message would claim them via the
+            // `ts ≤ assistant.ts` rule above and render them inside its
+            // bubble — visually attaching another chain's failure to an
+            // unrelated successful answer.
+            while (pIdx < progress.length && (progress[pIdx].ts || 0) < t) {
+                var p = progress[pIdx++];
+                entries.push({ kind: 'progress', ts: p.ts || 0, payload: p });
+            }
             entries.push({ kind: 'message', ts: t, payload: m });
         }
     });
@@ -1664,12 +1680,65 @@ UIManager.renderAttachments = function() {
 UIManager.updateSendBtn = function() {
     var hasText = document.getElementById('message-input').value.trim() !== '';
     var hasAttachment = this.attachedFiles.length > 0;
+    var sendBtn = document.getElementById('send-btn');
     // Phase 2: send is NOT disabled while `isStreaming` is true — users
     // can always send mid-chain. The BE splices the new message into
     // the current chain on the next LLM roundtrip. `_pendingVideo` /
     // `_pendingDesc` still gate sending because those are the FE
     // waiting on upload / description, not an assistant chain.
-    document.getElementById('send-btn').disabled = this._pendingVideo > 0 || this._pendingDesc > 0 || (!hasText && !hasAttachment);
+    sendBtn.disabled = this._pendingVideo > 0 || this._pendingDesc > 0 || (!hasText && !hasAttachment);
+    this._updateStopBtn();
+};
+
+// Send / Stop are mutually exclusive — Stop fully REPLACES Send while
+// the BE has an in-flight inline turn on the active session, then
+// flips back to Send when the turn ends. The truth source is
+// `_agentBusy`, fed by `agent_busy` on every `/poll` response (true
+// only when `UserAgent.current_turn_session_id(user_id)` matches the
+// polled session). `isStreaming` (FE-local) is NOT used — it lies
+// after a reload, where the BE may still be working but the FE just
+// spawned without an active poll.
+UIManager._updateStopBtn = function() {
+    var sendBtn = document.getElementById('send-btn');
+    var stopBtn = document.getElementById('stop-btn');
+    if (!sendBtn || !stopBtn) return;
+    if (this._agentBusy) {
+        sendBtn.classList.add('hidden');
+        stopBtn.classList.remove('hidden');
+    } else {
+        sendBtn.classList.remove('hidden');
+        stopBtn.classList.add('hidden');
+    }
+};
+
+// Apply the `agent_busy` field from a /poll response. Called from
+// both pollTurnToCompletion (active-turn loop) and startProgressPolling
+// (idle background loop) so the Stop button stays in sync regardless
+// of which loop is driving the cadence.
+UIManager._applyAgentBusy = function(sessionId, busy) {
+    if (!this.currentSession || this.currentSession.id !== sessionId) return;
+    this._agentBusy = !!busy;
+    this._updateStopBtn();
+};
+
+// Stop button click — hits POST /sessions/:id/stop. The BE kills the
+// inline Task, clears stream/thinking buffers, and writes a
+// `chain_aborted` SessionProgress row that the next poll renders.
+// FE-side we just hide the button optimistically; `_applyAgentBusy`
+// will reconcile from BE truth on the next poll tick anyway.
+UIManager.stopCurrentTurn = async function() {
+    if (!this.currentSession) return;
+    var sid = this.currentSession.id;
+    this._agentBusy = false;
+    this._updateStopBtn();
+    try {
+        await apiFetch('/sessions/' + encodeURIComponent(sid) + '/stop', { method: 'POST' });
+    } catch (e) {
+        // Network failure / 404 / etc. — let the next poll re-surface
+        // the button if BE is still actually busy.
+    }
+    if (this._kickActiveTurnPoll) this._kickActiveTurnPoll();
+    if (this._kickIdleProgressPoll) this._kickIdleProgressPoll();
 };
 
 // No-op retained for call-site compatibility (visibility/beforeunload hooks).

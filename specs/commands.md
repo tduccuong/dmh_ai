@@ -14,7 +14,7 @@ Both slash commands are **verbs that store**. Querying / retrieving stored conte
 - **Assistant**: `fetch_memo` is in the LLM tool catalog. The assistant calls it on its own when a question matches stored memo content.
 - **Confidant**: no tool loop. Retrieval runs as an automatic pre-step before the LLM call — see `## Confidant memo auto-retrieve` below.
 
-Storage and retrieval are owned by `specs/vector_kb.md`. Pool resolution for the embedding/Oracle models is owned by `specs/api_pools.md`.
+Storage and retrieval are owned by `specs/vector_kb.md`. Pool resolution for the embedding/Swift models is owned by `specs/api_pools.md`.
 
 ## What's in / out
 
@@ -22,7 +22,7 @@ Storage and retrieval are owned by `specs/vector_kb.md`. Pool resolution for the
 - Slash-command parser at the chat HTTP entry.
 - Source pipelines for `/wiki`: text inline, file, URL crawl, folder scan.
 - Sync-ack flow for light sources; async background flow for heavy ones.
-- `/memo` save pipeline: vector-ingest + localized ack via `Oracle.localize/2`.
+- `/memo` save pipeline: vector-ingest + localized ack via `Swift.localize/2`.
 - `kind` column on persisted messages + `ContextEngine` filtering.
 - Failure UX (extraction error, broken URL, permission denied folder).
 
@@ -56,7 +56,7 @@ Parse rules (`DmhAi.Commands.Parser.parse/1`):
 
 ## /memo — write-only save
 
-`DmhAi.Commands.Memo.run/4` is the single entry point. **Vector ingest + localize-ack runs asynchronously** under `DmhAi.Agent.TaskSupervisor`. The HTTP request thread persists the user message synchronously (so `user_ts` can return for FE optimistic-render dedup) and returns immediately; the ack lands later via the existing `/poll` channel. This avoids a 1–3 s blocking request while embedding + Oracle.localize run.
+`DmhAi.Commands.Memo.run/4` is the single entry point. **Vector ingest + localize-ack runs asynchronously** under `DmhAi.Agent.TaskSupervisor`. The HTTP request thread persists the user message synchronously (so `user_ts` can return for FE optimistic-render dedup) and returns immediately; the ack lands later via the existing `/poll` channel. This avoids a 1–3 s blocking request while embedding + Swift.localize run.
 
 Safety default: the user message is always persisted with `kind="command"`. If the background task crashes mid-ingest, the worst case is a "stuck" command-tagged message in scrollback — never an unanswered message in the LLM's context.
 
@@ -94,13 +94,25 @@ defp run_save(text, session_id, user_id) do
             source_ref: sha256(text), title: nil}
 
   ack = case VectorDB.ingest(attrs, text) do
-    {:ok, _info}     -> Oracle.localize("Saved.", text)
-    {:error, reason} -> Oracle.localize("Couldn't save: #{inspect(reason)}", text)
+    {:ok, _info}     -> Swift.localize("Saved.", text)
+    {:error, reason} -> Swift.localize(format_save_error(reason), text)
   end
 
   Commands.append_command_ack(session_id, user_id, ack)
 end
 ```
+
+`format_save_error/1` maps common embedder/pool errors into operator-actionable English, so the localized ack reads naturally even when the underlying failure is internal:
+
+| Reason | English message |
+|---|---|
+| `{:all_throttled, 0}` | "Couldn't save: the embedding pool has no accounts configured. Add one in System Settings → Pools." |
+| `{:all_throttled, ms > 0}` | "Couldn't save: all embedding accounts are rate-limited. Try again in Ns." |
+| `:unknown_pool` | "Couldn't save: the configured embedding pool doesn't exist. Check the kbEmbeddingModel setting in System Settings." |
+| `:invalid_format` | "Couldn't save: the kbEmbeddingModel setting is malformed (expected 'pool::model'). Fix it in System Settings." |
+| anything else | `"Couldn't save: #{inspect(reason)}"` (catch-all) |
+
+`Swift.localize/2` then translates whichever English string was chosen.
 
 Persisted messages (both filtered from LLM context):
 
@@ -109,9 +121,9 @@ Persisted messages (both filtered from LLM context):
 | user      | `/memo my bank is NorthWest Trust` | `command`     |
 | assistant | `Saved.` (or `Đã lưu.` if user wrote in VN) | `command_ack` |
 
-### Localizing acks via `Oracle.localize/2`
+### Localizing acks via `Swift.localize/2`
 
-`DmhAi.Agent.Oracle.localize/2` is a generic helper that takes a meaning + a user-input language signal and returns the meaning expressed in the user's language (or English on weak/unclear signal). Used by:
+`DmhAi.Agent.Swift.localize/2` is a generic helper that takes a meaning + a user-input language signal and returns the meaning expressed in the user's language (or English on weak/unclear signal). Used by:
 
 - `/memo` save success — localizes `"Saved."` against the input text.
 - `/memo` save error path — localizes `"Couldn't save: <reason>"` against the input text.
@@ -122,7 +134,7 @@ Persisted messages (both filtered from LLM context):
 - `/wiki` folder pipeline — localizes accepted + final acks against the path (weak signal → English).
 - `Commands.finalize_command/4` error branch — localizes `"Couldn't process: <reason>"`.
 
-Localize is soft-failing: any Oracle error returns the input message verbatim, so a flaky classifier never strands the user with no ack.
+Localize is soft-failing: any Swift error returns the input message verbatim, so a flaky classifier never strands the user with no ack.
 
 ## Confidant memo auto-retrieve
 
@@ -178,13 +190,13 @@ How to use this signal:
 [/memo context]
 ```
 
-The empty-state wording is **anchored on a lexical trigger in the user's input**, not on the model classifying whether the question is personal-fact-flavored. This avoids the gate problem `Oracle.memo_keywords` had — the model only changes behavior when the user explicitly invoked memo, which is unambiguous from the message text.
+The empty-state wording is **anchored on a lexical trigger in the user's input**, not on the model classifying whether the question is personal-fact-flavored. This avoids the gate problem `Swift.memo_keywords` had — the model only changes behavior when the user explicitly invoked memo, which is unambiguous from the message text.
 
 The retrieval and `WebSearchEngine.search` run in parallel (`Task.async`) so total pre-step latency is `max(t_memo, t_websearch)` rather than the sum.
 
 ### Why no LLM gate
 
-An earlier design used an Oracle classifier (`memo_keywords/2`) to decide whether to retrieve at all, with the goal of skipping embed+search on chitchat. In practice the gate failed in the **cross-session case**: a question like "who eats chicken?" in a fresh session got classified `NONE` because Oracle's only signal is the user's text + recent same-session turns — it has no view of what's actually saved in the memo store. The user's answer ("my wife eats chicken") was sitting in the memo store, but a fresh session never retrieved it.
+An earlier design used a Swift classifier (`memo_keywords/2`) to decide whether to retrieve at all, with the goal of skipping embed+search on chitchat. In practice the gate failed in the **cross-session case**: a question like "who eats chicken?" in a fresh session got classified `NONE` because the classifier's only signal is the user's text + recent same-session turns — it has no view of what's actually saved in the memo store. The user's answer ("my wife eats chicken") was sitting in the memo store, but a fresh session never retrieved it.
 
 The fix is to remove the gate and **always** embed + search. The score threshold (`kb_score_threshold`, default 0.55) is the real filter; chitchat embeddings score low against personal-fact memos and get dropped naturally. Cost analysis:
 
@@ -193,7 +205,7 @@ The fix is to remove the gate and **always** embed + search. The score threshold
 | Embed (qwen3-0.6b) | ~30 ms |
 | `VectorDB.search` | ~10 ms |
 | Total per turn | ~40 ms |
-| Old Oracle gate per turn | 250–500 ms |
+| Old Swift gate per turn | 250–500 ms |
 
 The simpler design is also faster on average. Pronoun resolution falls out implicitly because the embed input concatenates the last 1–2 prior user turns with the current message — embedding co-occurrence carries over, no rewrite step needed.
 
@@ -227,7 +239,18 @@ The wiki path is unchanged from earlier specs. Source classification (URL → fo
 
 Argument is classified in this order:
 
-1. **URL** — matches `^https?://`. Pipeline: BFS deep crawl over same-prefix pages (`learn_url_max_depth`, `learn_url_max_pages`, `learn_url_concurrency` in `AgentSettings`; concurrency defaults to 1 so the FE renders the crawl as a strict sequence of progress rows). Each page emits a `session_progress` 'tool' row labeled `IndexWiki -> <sliced url>`, pending → done with duration. The accepted-ack is returned synchronously; the final ack summarises pages indexed and any failures, and Oracle-localizes the summary using the first page's text as language signal.
+1. **URL** — matches `^https?://`. Pipeline: BFS deep crawl over same-prefix pages (`learn_url_max_depth`, `learn_url_max_pages`, `learn_url_concurrency` in `AgentSettings`; concurrency defaults to 1 so the FE renders the crawl as a strict sequence of progress rows).
+
+   Per-page processing fires three layered filters before doing any work that costs a row:
+
+   - **Layer 1 (pre-fetch)** — extension blocklist (`@skip_extensions`: PDF/ZIP/PNG/etc.) + path-segment blocklist (`@asset_path_segments`: `_images`, `_static`, `node_modules`, `dist`, `.next`, `__pycache__`, `vendor`, `.git`, … 36 entries) + querystring filter (anything with `?` is dropped — faceted UI views like `/pulls?q=is:pr`). Applied only to discovered links, not the user-supplied start URL.
+   - **Layer 2 (response-time, in `Web.Fetcher.attempt/2`)** — Content-Type allowlist (`text/*`, `application/{xhtml+xml,xml,json,…}`); anything else returns `{:error, {:non_text_content_type, ct}, state}`.
+   - **Layer 3 (response-time fallback)** — first-512-byte NUL sniff. Fires only when the server omits Content-Type. NUL → `{:error, :binary_body_sniffed, state}`.
+   - **Layer 4 (post-extract)** — text-quality threshold `@min_chars_for_useful_page` (500). Pages below it are treated as leaves: not ingested, no row, outbound links not enqueued. Catches sparse listings and nav stubs.
+
+   Scope check uses `String.starts_with?(final_url <> "/", state.prefix)` — the trailing-`/` append closes the bare-directory case (`https://github.com/X` vs prefix `https://github.com/X/`) without false-positiving on sibling paths.
+
+   Each page that survives every gate emits a `session_progress` 'tool' row labeled `IndexWiki -> <sliced url>`, pending → done with duration. The row is **deferred until the page is actually being ingested** — silent skips never produce a row, so the chat stays clean even when the crawl walks dozens of out-of-scope/asset URLs. The accepted-ack is returned synchronously; the final ack summarises pages indexed and any failures, and Swift-localizes the summary using the first page's text as language signal.
 2. **Folder** — matches an existing absolute path that is a directory. Pipeline: recursive scan with skiplist + extension whitelist.
 3. **File** — matches an existing absolute path that is a file. Pipeline: `extract_content` then index.
 4. **Text** — fallback. Pipeline: index inline.
@@ -297,4 +320,4 @@ This is deliberate: from the user's perspective, a `/memo my X is 42` line they 
 | Account rotation back-pressure   | `api_pools.md` | `{:error, :all_throttled, retry_ms}` |
 | Source registry                  | `vector_kb.md` | `KbSources.upsert(scope, kind, ref, raw_text)` |
 
-This spec stops at "ingest succeeded; chunks land in vec0" and "Oracle answered the query". Retrieval indexing detail belongs in `vector_kb.md`. Pool/auth detail belongs in `api_pools.md`. Together they form the full feature.
+This spec stops at "ingest succeeded; chunks land in vec0" and "Confidant answered the query". Retrieval indexing detail belongs in `vector_kb.md`. Pool/auth detail belongs in `api_pools.md`. Together they form the full feature.

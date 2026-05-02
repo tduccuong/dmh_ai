@@ -242,6 +242,7 @@ const UIManager = {
         document.getElementById('new-session-btn').addEventListener('click', function() { self.createNewSession(); });
         document.getElementById('sidebar-settings-btn').addEventListener('click', function() { SettingsModal.open(); });
         document.getElementById('send-btn').addEventListener('click', function() { self.sendMessage(); });
+        document.getElementById('stop-btn').addEventListener('click', function() { self.stopCurrentTurn(); });
         document.getElementById('message-input').addEventListener('keydown', function(e) {
             // Phase 2: mid-chain sends are allowed (no `isStreaming` check).
             // Uploads / description-generation still gate because those

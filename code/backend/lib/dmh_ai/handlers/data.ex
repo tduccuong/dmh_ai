@@ -286,6 +286,17 @@ defmodule DmhAi.Handlers.Data do
               nil
           end
 
+        # Per-session Stop button gate. The Stop call cancels whichever
+        # turn the user has in flight (only one inline turn is allowed
+        # per UserAgent — Registry-keyed by user_id, not session_id),
+        # so the FE shows the button only on the session that actually
+        # owns the in-flight turn. The agent-side session_id wins over
+        # `is_working`, which can be true for ambient reasons (queued
+        # user message about to be picked up, periodic task armed) that
+        # don't yet have a Task to kill.
+        agent_busy_session_id = DmhAi.Agent.UserAgent.current_turn_session_id(user.id)
+        agent_busy = agent_busy_session_id == session_id
+
         json(conn, 200, %{
           messages:          new_msgs,
           progress:          progress,
@@ -293,7 +304,8 @@ defmodule DmhAi.Handlers.Data do
           thinking_buffer:   thinking_buffer,
           is_working:        is_working,
           chain_in_flight:   chain_in_flight?,
-          running_tool_call: running_tool_call
+          running_tool_call: running_tool_call,
+          agent_busy:        agent_busy
         })
 
       _ ->

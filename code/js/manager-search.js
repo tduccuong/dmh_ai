@@ -564,6 +564,9 @@ UIManager.pollTurnToCompletion = function(sessionAtSend, onComplete, onError, ab
                 self.currentSession.progress = sessionAtSend.progress;
             }
 
+            // Stop button visibility — driven by BE-truth `agent_busy`.
+            self._applyAgentBusy(sessionAtSend.id, data.agent_busy);
+
             // Streaming buffer → rendered in the streaming placeholder div.
             self._updateStreamPlaceholder(sessionAtSend, data.stream_buffer);
 

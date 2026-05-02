@@ -51,11 +51,10 @@ defmodule DmhAi.Agent.UserAgent do
 
   alias DmhAi.Agent.{AgentSettings, AssistantCommand, ConfidantCommand, ContextEngine,
                      LLM, Swift, ProfileExtractor, StreamBuffer, ThinkingBuffer,
-                     Supervisor, Tasks, TokenTracker, WebSearch}
+                     Supervisor, Tasks, TokenTracker}
   alias DmhAi.Web.Search, as: WebSearchEngine
   alias DmhAi.VectorDB
   alias DmhAi.VectorDB.Embedder
-  # WebSearch kept for synthesize_results used in build_web_context
   alias DmhAi.Repo
   import Ecto.Adapters.SQL, only: [query!: 3]
 
@@ -102,6 +101,58 @@ defmodule DmhAi.Agent.UserAgent do
     |> Tasks.active_for_session()
     |> Enum.each(fn task -> Tasks.mark_cancelled(task.task_id) end)
     :ok
+  end
+
+  @doc """
+  Cancel the user's currently-running inline turn (Confidant or
+  Assistant), if any. Returns:
+
+    * `{:ok, :stopped}`         — a turn was running, it's now killed
+                                  and `current_task` cleared. The
+                                  session has a `chain_aborted`
+                                  progress row marking the chain end.
+    * `{:ok, :no_active_turn}`  — nothing was running; idempotent
+                                  no-op.
+    * `{:error, :not_started}`  — the user has no agent process yet
+                                  (never sent a message).
+
+  Idempotent under concurrency: a second cancel arriving while the
+  first is still in flight finds `current_task = nil` and returns
+  `:no_active_turn`. A natural task completion arriving as a
+  `{ref, result}` or `:DOWN` after a cancel is harmless — its
+  pattern doesn't match (current_task already nil) and falls
+  through to the catch-all swallow.
+  """
+  @spec cancel_current_turn(String.t()) :: {:ok, :stopped | :no_active_turn} | {:error, term()}
+  def cancel_current_turn(user_id) do
+    case Registry.lookup(DmhAi.Agent.Registry, user_id) do
+      [{pid, _}] -> GenServer.call(pid, :cancel_current_turn)
+      []         -> {:error, :not_started}
+    end
+  end
+
+  @doc """
+  Returns the session_id of the user's currently-running inline turn,
+  or nil. Used by `/poll` to surface a per-session busy flag — the FE
+  shows the Stop button only on the session that's actually in
+  flight, not all of them.
+
+  Returns nil if the user has no agent process yet (never sent a
+  message). Read-only; doesn't start the agent.
+  """
+  @spec current_turn_session_id(String.t()) :: String.t() | nil
+  def current_turn_session_id(user_id) do
+    case Registry.lookup(DmhAi.Agent.Registry, user_id) do
+      [{pid, _}] ->
+        try do
+          GenServer.call(pid, :current_turn_session_id, 1_000)
+        catch
+          :exit, _ -> nil
+        end
+
+      [] ->
+        nil
+    end
   end
 
   @doc "Store platform-specific state (e.g. Telegram chat_id) in the agent."
@@ -170,6 +221,83 @@ defmodule DmhAi.Agent.UserAgent do
   # Platform state
   def handle_call({:get_platform_state, platform}, _from, state) do
     {:reply, Map.get(state.platform_state, platform), state, @idle_timeout}
+  end
+
+  # Stop button — kill the inline turn immediately. See
+  # `cancel_current_turn/1` for the public-API docstring + invariants.
+  #
+  # Order matters here, all inside the synchronous handle_call:
+  #   1. demonitor with :flush — drops any already-queued :DOWN so
+  #      our own kill below doesn't double-fire the :DOWN handler
+  #      after we've already cleared state. (Without :flush the
+  #      :DOWN clause would land with current_task = nil and fall
+  #      through to the catch-all swallow — harmless but noisy.)
+  #   2. Process.exit(pid, :kill) — brutal-kill the inline Task.
+  #      Closes its Finch socket(s), kills any spawned children,
+  #      collapses the LLM stream collector via the Task's
+  #      supervision link.
+  #   3. Clear stream_buffer + thinking_buffer — wipes any partial
+  #      tokens written before the kill. The Task may have written
+  #      to these between our kill signal and its actual exit; we
+  #      clear AFTER the exit signal has been sent so a final write
+  #      from the doomed Task can't race in afterwards.
+  #   4. Append `chain_aborted` SessionProgress row. FE-visible
+  #      chain-end signal — same shape as the existing
+  #      `anchor_task_cancelled?` graceful-end path.
+  #   5. Clear current_task in state.
+  #
+  # `RunningTools` registration (run_script in flight) — left to
+  # natural cleanup. The brutal-killed run_script's docker-exec
+  # subprocess receives SIGPIPE on its log file pipe and exits;
+  # the next /poll's orphan-cleanup sweeper flips its progress
+  # row to done. We don't need to touch it here.
+  def handle_call(:cancel_current_turn, _from, state) do
+    case state.current_task do
+      nil ->
+        {:reply, {:ok, :no_active_turn}, state, @idle_timeout}
+
+      {ref, task_pid, reply_pid, session_id, _mode} ->
+        Process.demonitor(ref, [:flush])
+
+        if is_pid(task_pid) and Process.alive?(task_pid) do
+          Process.exit(task_pid, :kill)
+        end
+
+        # Notify any synchronous waiter on the original dispatch
+        # call. Caller may already be gone (HTTP conn died on
+        # FE force-reload); send is a no-op for dead pids.
+        if is_pid(reply_pid) do
+          send(reply_pid, {:cancelled, "Stopped by user."})
+        end
+
+        _ = StreamBuffer.clear(session_id, state.user_id)
+        _ = ThinkingBuffer.clear(session_id, state.user_id)
+
+        progress_ctx = %{
+          session_id: session_id,
+          user_id:    state.user_id,
+          task_id:    nil
+        }
+        _ = DmhAi.Agent.SessionProgress.append(
+              progress_ctx, "chain_aborted", "Stopped by user.")
+
+        Logger.info("[UserAgent] cancel_current_turn user=#{state.user_id} session=#{session_id}")
+        DmhAi.SysLog.log("[UserAgent] cancel_current_turn user=#{state.user_id} session=#{session_id}")
+
+        {:reply, {:ok, :stopped}, %{state | current_task: nil}, @idle_timeout}
+    end
+  end
+
+  # Read-only — returns the session_id of the in-flight inline turn,
+  # or nil. Used by `/poll` to surface a per-session busy flag.
+  def handle_call(:current_turn_session_id, _from, state) do
+    sid =
+      case state.current_task do
+        {_ref, _pid, _reply, session_id, _mode} -> session_id
+        nil -> nil
+      end
+
+    {:reply, sid, state, @idle_timeout}
   end
 
   @impl true
@@ -248,19 +376,40 @@ defmodule DmhAi.Agent.UserAgent do
     {:noreply, state, @idle_timeout}
   end
 
-  # Inline task crashed. Before clearing state, also check the user-msg
-  # queue — but only for Assistant; Confidant has no auto-resume.
-  def handle_info({:DOWN, ref, :task, _pid, reason}, %{current_task: {ref, _task_pid, reply_pid, session_id, mode}} = state) do
+  # Inline task crashed. Make the failure visible to the FE via the
+  # same `chain_aborted` end-signal the Stop-button / per-task cancel
+  # path uses, then clear state.
+  #
+  # `Task.Supervisor.async_nolink/2` registers a `Process.monitor` on
+  # the spawned task PID, which delivers `{:DOWN, ref, :process, pid,
+  # reason}`. (The `:task` atom spelling here used to make this whole
+  # clause dead code: any crashed inline-task `:DOWN` fell through to
+  # the catch-all below WITHOUT clearing `current_task`, leaving the
+  # per-user agent permanently "busy" until its 30-minute idle
+  # timeout. Symptom was a sticky "Agent is busy, please wait" 409
+  # even after the task had clearly died long ago.)
+  #
+  # Why we DON'T auto-resume Assistant on crash — even when the user
+  # message is still unanswered. The crash cause is usually
+  # deterministic (broken model setting, network down, OOM). An
+  # immediate re-dispatch would crash the same way and fire `:DOWN`
+  # again → infinite silent retry loop hammering the LLM. The user
+  # must see the error row and decide whether to retry. Auto-resume
+  # remains for the legitimate paths: mid-chain user-message
+  # injection on natural completion (`handle_info({ref, result}, ...)`)
+  # and boot-scan recovery after GenServer restart.
+  def handle_info({:DOWN, ref, :process, _pid, reason}, %{current_task: {ref, _task_pid, reply_pid, session_id, mode}} = state) do
     Logger.error("[UserAgent] inline task crashed mode=#{mode} user=#{state.user_id} reason=#{inspect(reason)}")
     send(reply_pid, {:error, "Internal error — please try again"})
-    state = %{state | current_task: nil}
 
-    if mode == "assistant" and
-         DmhAi.Agent.UserAgentMessages.has_unanswered_user_msg?(session_id) do
-      send(self(), {:auto_resume_assistant, session_id})
-    end
+    _ = StreamBuffer.clear(session_id, state.user_id)
+    _ = ThinkingBuffer.clear(session_id, state.user_id)
 
-    {:noreply, state, @idle_timeout}
+    progress_ctx = %{session_id: session_id, user_id: state.user_id, task_id: nil}
+    _ = DmhAi.Agent.SessionProgress.append(
+          progress_ctx, "chain_aborted", "Internal error — please try again.")
+
+    {:noreply, %{state | current_task: nil}, @idle_timeout}
   end
 
   # Stray DOWN — swallow. TaskRuntime owns worker-like processes.
@@ -826,7 +975,8 @@ defmodule DmhAi.Agent.UserAgent do
             build_memo_context(command.content, user_msgs, user_id)
           end)
 
-        {Task.await(web_task, 30_000), Task.await(memo_task, 30_000)}
+        pre_timeout = AgentSettings.confidant_pre_step_timeout_ms()
+        {Task.await(web_task, pre_timeout), Task.await(memo_task, pre_timeout)}
       else
         {nil, nil}
       end
@@ -2640,27 +2790,13 @@ defmodule DmhAi.Agent.UserAgent do
 
   defp build_web_context(_content, %{snippets: [], pages: []}, _reply_pid), do: nil
 
-  defp build_web_context(_content, result_map, reply_pid) do
+  defp build_web_context(_content, result_map, _reply_pid) do
     raw = format_raw_results(result_map)
 
     if raw == "" do
       nil
     else
-      if String.length(raw) > AgentSettings.synthesis_threshold() do
-        send(reply_pid, {:status, "🧠 Synthesizing results..."})
-
-        case WebSearch.synthesize_results(raw) do
-          {:ok, synthesis} when is_binary(synthesis) and synthesis != "" ->
-            Logger.info("[UserAgent] synthesis ok chars=#{String.length(synthesis)}")
-            synthesis
-
-          _ ->
-            Logger.info("[UserAgent] synthesis failed, truncating raw results")
-            String.slice(raw, 0, AgentSettings.synthesis_fallback_chars())
-        end
-      else
-        raw
-      end
+      String.slice(raw, 0, AgentSettings.web_results_max_chars())
     end
   end
 

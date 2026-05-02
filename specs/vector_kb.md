@@ -78,7 +78,7 @@ lib/dmh_ai/
     memory.ex           # test impl — ETS
     chunker.ex          # recursive splitter
     embedder.ex         # /v1/embeddings client
-    tagger.ex           # auto-tagger (oracleModel call at ingest)
+    tagger.ex           # auto-tagger (kbTaggerModel ▸ oracleModel fallback)
     sources.ex          # kb_sources accessor
     seeds.ex            # kb_seeds accessor
     pipeline.ex         # chunk → embed → tag → merge-or-insert
@@ -232,10 +232,14 @@ the index.
 
 ## Auto-tagger
 
-One LLM call per source at ingest. Uses the cheap `oracleModel`
-(`ministral-3:14b-cloud` default) — adds latency in the order of
-hundreds of milliseconds, runs in the background relative to the
-user's chat acknowledgement.
+One LLM call per source at ingest. Falls back to `oracleModel` when
+`kbTaggerModel` is unset — note that since the model-tier
+consolidation, `oracleModel` defaults to `gemma4:31b-cloud` (Oracle
+tier — long/dense content), which is heavier than ideal for a
+3–10-tag classification task. Operators who want lower per-ingest
+cost should set `kbTaggerModel` explicitly to a `swiftModel`-class
+model. Runs in the background relative to the user's chat ack so the
+extra latency doesn't block the request thread.
 
 ```
 Tagger.tag(text) -> ["bitrix24", "webhook", "oauth"]
@@ -399,7 +403,7 @@ shared knowledge for all users).
 | `kb_top_n` | 8 | Default top-N for fetch_*. |
 | `kb_text_merge_threshold` | 0.92 | Centroid cosine threshold for inline-text merge. |
 | `kb_relearn_concurrency` | 4 | Background relearn supervisor cap. |
-| `kb_tagger_model` | (uses `oracleModel`) | Override if you want a dedicated tag model. |
+| `kb_tagger_model` | (uses `oracleModel`) | Override if you want a dedicated tag model. `oracleModel` is the **Oracle tier** (long/dense content) — see `architecture.md` §Model tiers. |
 
 ## Failure modes
 

@@ -305,6 +305,11 @@ UIManager.switchSession = async function(id) {
     this.currentSession = await SessionStore.getSession(id);
     await SessionStore.setCurrentSessionId(id);
     this.clearTaskStatusArea();
+    // Reset Stop button — the new session's first /poll will re-source
+    // the truth. Without this reset, the button would stick visible
+    // briefly after switching from a busy session to an idle one.
+    this._agentBusy = false;
+    this._updateStopBtn();
     await this.refreshSessionProgress();
     this.renderChat();
     this._pinChatToBottom();
@@ -465,6 +470,7 @@ UIManager.startProgressPolling = function() {
                 isWorking = !!data.is_working;
                 streamBuffer = data.stream_buffer;
                 chainInFlight = !!data.chain_in_flight;
+                self._applyAgentBusy(self.currentSession.id, data.agent_busy);
 
                 // Long-running tool surfacing — see manager-search.js
                 // pollTurnToCompletion for full rationale.
