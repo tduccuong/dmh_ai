@@ -124,6 +124,14 @@ defmodule DmhAi.Agent.AgentSettings do
   @profile_extract_batch_size_default 4
   @profile_condense_threshold_default 50
 
+  # Auto session naming. The Data handler's `post_name_session` pulls
+  # the last N user messages (slash commands skipped) and feeds them
+  # to a swift-tier LLM. On a refresh-rename it also passes the
+  # current title so the model can bridge the old framing with the
+  # new direction (continuity over snap-to-latest). See arch §Session
+  # naming.
+  @session_namer_user_msg_count_default 4
+
   # LLM-account rotation throttle durations. Applied by
   # `DmhAi.Agent.LLM` when an account hits a rate-limit (HTTP 429 or
   # stream-inline RL error) or has its quota exhausted (Ollama's
@@ -412,6 +420,11 @@ defmodule DmhAi.Agent.AgentSettings do
   @spec profile_condense_threshold() :: pos_integer()
   def profile_condense_threshold,
     do: int_setting("profileCondenseThreshold", @profile_condense_threshold_default)
+
+  @doc "Number of recent user messages fed to the auto session-namer LLM call."
+  @spec session_namer_user_msg_count() :: pos_integer()
+  def session_namer_user_msg_count,
+    do: int_setting("sessionNamerUserMsgCount", @session_namer_user_msg_count_default)
 
   @doc "Runtime poll cadence (ms) for in-flight `run_script` processes."
   @spec tool_run_poll_interval_ms() :: pos_integer()

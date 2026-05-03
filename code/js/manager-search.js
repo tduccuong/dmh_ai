@@ -209,19 +209,23 @@ UIManager.sendMessage = async function() {
 
         // Auto-name triggers:
         //   1. session still has its default "New chat" title AND at
-        //      least one assistant reply has landed → first-rename.
-        //   2. every 8 user turns thereafter → periodic refresh.
-        // The old "(length - 2) % 8 === 0" formula assumed each turn
-        // appends exactly 2 messages (user + assistant). That holds
-        // for Confidant but breaks for Assistant, where a single
-        // chain produces user + N assistants (tool-call narrations,
-        // intermediates, final text). Counting USER turns instead
-        // gives a stable modulo regardless of mode.
+        //      least one user turn has landed → first-rename.
+        //   2. every NAMER_REFRESH_TURNS user turns thereafter →
+        //      bridge-refresh. Aligned with the BE's last-N-user-msgs
+        //      window (sessionNamerUserMsgCount = 4) so each refresh
+        //      sees exactly the messages added since the previous
+        //      rename — no overlap, no skipped messages.
+        // Counting USER turns rather than total messages keeps the
+        // modulo stable across Confidant (one user + one assistant
+        // per turn) and Assistant (one user + N assistants per chain).
+        var NAMER_REFRESH_TURNS = 4;
         var defaultNames = ['New chat', 'New session', t('newChat')];
         var hasDefaultName = defaultNames.indexOf(sessionAtSend.name) !== -1;
         var userTurns = (sessionAtSend.messages || []).filter(function(m) { return m.role === 'user'; }).length;
-        if (hasDefaultName || (userTurns > 0 && userTurns % 8 === 0)) {
-            self.autoNameSession(sessionAtSend);
+        if (hasDefaultName) {
+            self.autoNameSession(sessionAtSend, { firstRename: true });
+        } else if (userTurns > 0 && userTurns % NAMER_REFRESH_TURNS === 0) {
+            self.autoNameSession(sessionAtSend, { firstRename: false });
         }
     }
 

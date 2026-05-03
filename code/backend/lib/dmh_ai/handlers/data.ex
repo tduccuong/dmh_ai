@@ -5,12 +5,10 @@
 
 defmodule DmhAi.Handlers.Data do
   import Plug.Conn
-  alias DmhAi.{Repo, Agent.LLM, Agent.TokenTracker, Agent.UserAgent}
+  alias DmhAi.{Repo, Agent.AgentSettings, Agent.LLM, Agent.TokenTracker, Agent.UserAgent}
+  alias DmhAi.Commands.Parser, as: CommandParser
   import Ecto.Adapters.SQL, only: [query!: 3]
   require Logger
-
-  # Dedicated model for session naming; fast, cheap, 1M context.
-  @namer_model "ollama-cloud::gemma4:31b-cloud"
 
   @image_exts ~w(.png .jpg .jpeg .gif .webp .bmp)
   @video_exts ~w(.mp4 .webm .mov .avi .mkv .m4v .3gp .ogv)
@@ -518,42 +516,63 @@ defmodule DmhAi.Handlers.Data do
     json(conn, 200, d)
   end
 
-  # POST /sessions/:id/name — call LLM to generate and persist a session name
+  # POST /sessions/:id/name — call LLM to generate and persist a session name.
+  #
+  # Two prompt shapes:
+  #   * first_rename — session is still on its default title. Standard
+  #     "give a short title for this conversation" instruction.
+  #   * refresh-rename — session has a real title. Bridge prompt: pass
+  #     the current title alongside the recent user messages and ask
+  #     for a refreshed title that preserves continuity where the topic
+  #     still applies, leans toward new content when it has clearly
+  #     shifted, and captures the bridge when the conversation is in
+  #     the gray area between old and new.
+  #
+  # The FE supplies `first_rename: true|false` in the POST body — it
+  # already knows whether the current title is one of the locale-keyed
+  # defaults ("New chat", "New session", ...).
   def post_name_session(conn, user, session_id) do
+    {:ok, body, conn} = read_body(conn)
+    flags = Jason.decode!(body || "{}")
+    first_rename? = flags["first_rename"] == true
+
     owns = query!(Repo, "SELECT id FROM sessions WHERE id=? AND user_id=?", [session_id, user.id])
 
     if owns.rows == [] do
       json(conn, 403, %{error: "Forbidden"})
     else
-      result = query!(Repo, "SELECT messages FROM sessions WHERE id=?", [session_id])
+      result = query!(Repo, "SELECT name, messages FROM sessions WHERE id=?", [session_id])
 
       case result.rows do
-        [[msgs_json]] ->
-          msgs = Jason.decode!(msgs_json || "[]")
-          # Use up to last 6 messages for naming context
-          excerpt_msgs = Enum.take(msgs, -6)
+        [[current_name, msgs_json]] ->
+          recent_user_msgs =
+            (msgs_json || "[]")
+            |> Jason.decode!()
+            |> Enum.flat_map(fn
+              %{"role" => "user", "content" => content} when is_binary(content) ->
+                trimmed = String.trim(content)
 
-          excerpt =
-            Enum.map_join(excerpt_msgs, "\n", fn msg ->
-              role    = msg["role"] || "user"
-              content = msg["content"] || ""
-              prefix  = if role == "user", do: "User: ", else: "Assistant: "
-              prefix <> String.slice(to_string(content), 0, 200)
+                # /memo and /wiki are user intent for the KB layer, not
+                # conversation about a topic. Skip them so they don't
+                # bias the title.
+                if trimmed == "" or CommandParser.parse(content) != :not_a_command do
+                  []
+                else
+                  [String.slice(content, 0, 200)]
+                end
+
+              _ ->
+                []
             end)
+            |> Enum.take(-AgentSettings.session_namer_user_msg_count())
 
-          if String.trim(excerpt) == "" do
+          if recent_user_msgs == [] do
             json(conn, 200, %{name: nil})
           else
-            messages = [%{
-              role: "user",
-              content:
-                "Give a short title (3-5 words) for this conversation:\n\n#{excerpt}\n\n" <>
-                "Use the language that dominates the conversation. " <>
-                "Reply with only the title, no quotes, no explanation."
-            }]
-
+            messages = [%{role: "user", content: build_namer_prompt(recent_user_msgs, current_name, first_rename?)}]
             trace = %{origin: "system", path: "Handlers.Data.name_session", role: "SessionNamer", phase: "name"}
-            case LLM.call(@namer_model, messages, trace: trace) do
+
+            case LLM.call(AgentSettings.swift_model(), messages, trace: trace) do
               {:ok, name} when is_binary(name) and name != "" ->
                 sanitized = sanitize_session_name(name)
 
@@ -574,6 +593,32 @@ defmodule DmhAi.Handlers.Data do
         _ ->
           json(conn, 404, %{error: "Not found"})
       end
+    end
+  end
+
+  # First-rename: simple "give a title" shape.
+  # Refresh-rename: bridge prompt that carries the old title forward
+  # and asks the model to balance continuity against drift.
+  defp build_namer_prompt(user_msgs, current_name, first_rename?) do
+    numbered =
+      user_msgs
+      |> Enum.with_index(1)
+      |> Enum.map_join("\n", fn {m, i} -> "#{i}. \"#{m}\"" end)
+
+    if first_rename? or current_name in [nil, ""] do
+      "Give a short title (3-5 words) for this conversation. " <>
+        "Use the language that dominates the user messages. " <>
+        "Reply with only the title — no quotes, no explanation, no leading or trailing punctuation.\n\n" <>
+        "User messages (newest last):\n" <> numbered
+    else
+      "Current session title: \"#{current_name}\"\n\n" <>
+        "User messages since the title was last set (newest last):\n" <> numbered <> "\n\n" <>
+        "Produce a refreshed title — 3 to 5 words, in the dominant language of the messages — " <>
+        "that bridges the old title and the new direction:\n" <>
+        "- If the recent messages still circle the same topic as the old title, lean toward continuity — keep the through-line, refine the wording.\n" <>
+        "- If the conversation has clearly moved on to a different topic, lean toward the new content.\n" <>
+        "- When the two overlap (the conversation is in a gray area between them), the title should capture the bridge between the old framing and the new — not snap to either side.\n\n" <>
+        "Reply with only the refreshed title — no quotes, no explanation, no leading or trailing punctuation."
     end
   end
 

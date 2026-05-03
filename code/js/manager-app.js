@@ -667,18 +667,19 @@ UIManager.showTokenStats = async function(sessionId, sessionName) {
     }
 };
 
-UIManager.autoNameSession = async function(session) {
+UIManager.autoNameSession = async function(session, opts) {
     if (!this._namingInProgress) this._namingInProgress = new Set();
     if (this._namingInProgress.has(session.id)) return;
     this._namingInProgress.add(session.id);
+    const firstRename = !!(opts && opts.firstRename);
     const controller = new AbortController();
     this._namingController = controller;
     try {
-        syslog('[NAMING] session=' + session.id);
+        syslog('[NAMING] session=' + session.id + ' first=' + firstRename);
         const res = await apiFetch('/sessions/' + session.id + '/name', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({}),
+            body: JSON.stringify({ first_rename: firstRename }),
             signal: controller.signal
         });
         if (controller.signal.aborted) return;
