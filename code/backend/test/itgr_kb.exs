@@ -76,14 +76,16 @@ defmodule Itgr.KB do
     test "memos are user-scoped — different users don't see each other's hits" do
       uid_a = "user-a-#{T.uid()}"
       uid_b = "user-b-#{T.uid()}"
+      mmk_a = T.memo_test_key()
+      mmk_b = T.memo_test_key()
 
       VectorDB.ingest(
-        %{scope: :memo, user_id: uid_a, source_kind: "text", source_ref: sha("a-1"), title: nil},
+        %{scope: :memo, user_id: uid_a, source_kind: "text", source_ref: sha("a-1"), title: nil, memo_key: mmk_a},
         "alice's bank account is at NorthWest Trust, account number 12345"
       )
 
       VectorDB.ingest(
-        %{scope: :memo, user_id: uid_b, source_kind: "text", source_ref: sha("b-1"), title: nil},
+        %{scope: :memo, user_id: uid_b, source_kind: "text", source_ref: sha("b-1"), title: nil, memo_key: mmk_b},
         "bob's apartment is on Oak Street and the wifi password is hunter2"
       )
 
@@ -91,15 +93,21 @@ defmodule Itgr.KB do
       {:ok, qvec} = Embedder.embed(q)
 
       {:ok, hits_a} = VectorDB.search(:memo, q, qvec, 5, {:user, uid_a})
-      assert Enum.all?(hits_a, fn _ -> true end)
       refute hits_a == []
 
       {:ok, hits_b} = VectorDB.search(:memo, q, qvec, 5, {:user, uid_b})
-      # b's content shouldn't surface in a's filter and vice versa
-      a_texts = Enum.map(hits_a, & &1.chunk_text)
-      b_texts = Enum.map(hits_b, & &1.chunk_text)
-      refute Enum.any?(a_texts, fn t -> String.contains?(t, "Oak Street") end)
-      refute Enum.any?(b_texts, fn t -> String.contains?(t, "NorthWest Trust") end)
+      refute hits_b == []
+
+      # User filter prevents cross-user hits — verify by decrypting
+      # under each user's own key. A's hits decrypt under mmk_a only
+      # (B's MMK against A's row would fail the GCM tag check).
+      decrypt = fn hit, mmk ->
+        DmhAi.MemoCrypto.decrypt_chunk(hit.chunk_text, mmk, hit.source_id || "", hit.chunk_idx || 0)
+      end
+      a_plain = Enum.map(hits_a, fn h -> {:ok, t} = decrypt.(h, mmk_a); t end)
+      b_plain = Enum.map(hits_b, fn h -> {:ok, t} = decrypt.(h, mmk_b); t end)
+      refute Enum.any?(a_plain, fn t -> String.contains?(t, "Oak Street") end)
+      refute Enum.any?(b_plain, fn t -> String.contains?(t, "NorthWest Trust") end)
     end
   end
 
@@ -134,6 +142,7 @@ defmodule Itgr.KB do
     test "save_memo + fetch_memo round-trip with user context" do
       uid = "tool-test-#{T.uid()}"
       ctx = %{user_id: uid}
+      _mmk = T.install_memo_key(uid)
 
       assert {:ok, %{ok: true}} = DmhAi.Tools.SaveMemo.execute(
         %{"text" => "I keep my passwords in 1Password vault Personal"},
@@ -150,6 +159,8 @@ defmodule Itgr.KB do
       assert Enum.all?(hits, fn h ->
         Map.has_key?(h, :text) and Map.has_key?(h, :source) and Map.has_key?(h, :score)
       end)
+      # Decryption succeeded: returned text is plaintext, not the v1 wire format.
+      assert Enum.any?(hits, fn h -> String.contains?(h.text, "1Password") end)
     end
   end
 
@@ -186,6 +197,7 @@ defmodule Itgr.KB do
     test "memo tools dispatch via Registry.execute" do
       uid = "registry-dispatch-#{T.uid()}"
       ctx = %{user_id: uid}
+      _mmk = T.install_memo_key(uid)
 
       # save first, then fetch — proves both ends of the dispatch path.
       assert {:ok, %{ok: true}} =
@@ -216,7 +228,8 @@ defmodule Itgr.KB do
         user_id: uid,
         source_kind: "text",
         source_ref: sha("vec-smoke-1-#{T.uid()}"),
-        title: nil
+        title: nil,
+        memo_key: T.memo_test_key()
       }
 
       {:ok, _} = VectorDB.ingest(attrs, "the eiffel tower is in paris france")
@@ -236,7 +249,7 @@ defmodule Itgr.KB do
     end
 
     test "hybrid BM25 + vector merge surfaces a chunk vector misses on shared keywords",
-         %{uid: uid} do
+         %{uid: _uid} do
       # Two docs:
       #   A — exact-match keywords for the query.
       #   B — semantically about the topic but with different
@@ -244,7 +257,11 @@ defmodule Itgr.KB do
       #       point of this test is just that the BM25 leg fires
       #       (kb_fts is queried + joined) AND the dedup/RRF
       #       merge yields a coherent ranked list.
-      attrs = %{scope: :memo, user_id: uid, source_kind: "text", title: nil}
+      #
+      # Knowledge scope (NOT memo) — memo skips kb_fts inserts (the
+      # column would hold AES-GCM ciphertext, which BM25 can't search
+      # over). BM25 hybrid search is :knowledge-only by design.
+      attrs = %{scope: :knowledge, user_id: nil, source_kind: "text", title: nil}
 
       {:ok, _} = VectorDB.ingest(
         Map.put(attrs, :source_ref, sha("hybrid-A-#{T.uid()}")),
@@ -257,7 +274,7 @@ defmodule Itgr.KB do
 
       q = "bizproc.workflow.template.add"
       {:ok, qvec} = Embedder.embed(q)
-      {:ok, hits} = VectorDB.search(:memo, q, qvec, 5, {:user, uid})
+      {:ok, hits} = VectorDB.search(:knowledge, q, qvec, 5, :none)
 
       # Both docs returned (no error from FTS5 path); the exact-
       # keyword doc A reaches top via BM25 even if cosine alone

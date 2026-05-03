@@ -16,6 +16,7 @@ defmodule DmhAi.Tools.SaveMemo do
 
   @behaviour DmhAi.Tools.Behaviour
 
+  alias DmhAi.Agent.UserAgent
   alias DmhAi.VectorDB
 
   @impl true
@@ -49,17 +50,29 @@ defmodule DmhAi.Tools.SaveMemo do
         {:error, "save_memo requires authenticated user context"}
 
       true ->
-        attrs = %{
-          scope:       :memo,
-          user_id:     user_id,
-          source_kind: "text",
-          source_ref:  sha256(text),
-          title:       nil
-        }
+        # Per specs/memo_encryption.md, memo chunks are AES-GCM
+        # encrypted under a per-user MMK. `ensure_memo_key` is lazy:
+        # if the user has no wrap on disk yet, it generates one
+        # under the deployment master key and persists. Result is
+        # cached in `UserAgent` state for subsequent calls.
+        case UserAgent.ensure_memo_key(user_id) do
+          {:ok, mmk} ->
+            attrs = %{
+              scope:       :memo,
+              user_id:     user_id,
+              source_kind: "text",
+              source_ref:  sha256(text),
+              title:       nil,
+              memo_key:    mmk
+            }
 
-        case VectorDB.ingest(attrs, text) do
-          {:ok, _info} -> {:ok, %{ok: true}}
-          {:error, r}  -> {:error, "save_memo failed: #{inspect(r)}"}
+            case VectorDB.ingest(attrs, text) do
+              {:ok, _info} -> {:ok, %{ok: true}}
+              {:error, r}  -> {:error, "save_memo failed: #{inspect(r)}"}
+            end
+
+          {:error, reason} ->
+            {:error, "save_memo failed: could not initialise memo key (#{inspect(reason)})"}
         end
     end
   end

@@ -8,6 +8,9 @@ services:
       - ./db:/data/db
       - ./user_assets:/data/user_assets
       - ./system_logs:/data/system_logs
+      # Memo encryption master key — MUST persist across rebuilds.
+      # See specs/memo_encryption.md.
+      - ./secrets:/data/secrets
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       - searxng

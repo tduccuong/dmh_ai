@@ -2,7 +2,7 @@
 
 A self-hosted AI chat app you run on your own computer — like ChatGPT, but private, free, and yours.
 
-Because DMH-AI runs on your own machine, **you are in full control of your data**. Your conversations, your companion memory, your files — all of it lives on your hardware, under your roof. No third party can ever access, analyse, or monetise it. When using cloud AI, only the text of each request is sent out for processing — nothing else leaves your machine.
+Because DMH-AI runs on your own machine, **you are in full control of your data**. Your conversations, your companion memory, your private notes, your files — all of it lives on your hardware, under your roof. No third party can ever access, analyse, or monetise it. When using cloud AI models, only the text of each request is sent out for processing — nothing else leaves your machine.
 
 ## Screenshots
 
@@ -22,41 +22,50 @@ DMH-AI gives you two kinds of AI sessions, switchable from the top bar.
 
 ### Confidant — your private AI companion
 
-Confidant is conversational, like ChatGPT. You type a message, the AI replies, and the exchange flows naturally back and forth. It is the mode you use for everyday questions, writing help, image analysis, brainstorming, and anything where you want an immediate, streaming response.
+Conversational, like ChatGPT. You type, the answer streams back. Use it for everyday questions, writing help, image analysis, and brainstorming — anything where you want an immediate response.
 
 What makes Confidant more than a chat tool:
 
-- **It grows with you.** Confidant builds a profile of you over time — your preferences, your context, the things you've told it — and uses that understanding to give more relevant, personalised answers. You never have to re-explain yourself.
-- **It remembers long conversations.** No matter how long a session runs, Confidant compresses old context intelligently so you never hit a memory wall.
-- **It searches the web automatically.** Ask about anything time-sensitive and Confidant decides on its own whether a web search is needed. If so, it fetches live results through its bundled search engine and synthesises a sourced answer — without you having to ask.
-- **Your profile stays on your machine.** Popular AI chatbots build a picture of you too, but store it on their servers outside your control. Everything Confidant learns about you stays on your hardware. You can review or clear it at any time from Conversation Settings.
+- **Drop in any file.** PDFs, Word docs, spreadsheets, images, videos. Ask questions about them inline. On mobile, photograph or record straight into the chat.
+- **Auto web search.** Confidant decides on its own whether your question needs live information. If yes, it searches the Web, fetches the pages, and gives you a sourced answer — no "search mode" toggle to remember.
+- **`/memo` your private notes.** Type `/memo my homelab SSH key is X`, or `/memo I prefer Tailwind over plain CSS`, and Confidant remembers. The next time the topic comes up — even months later — those notes can be looked up easily. **Encrypted at rest** with a key kept off the database, so even a stolen backup can't read them.
+- **It grows with you.** Confidant builds an evolving picture of you (preferences, context, things you've told it) and uses it to make answers more relevant. Lives on your hardware; review or clear it from Conversation Settings any time.
+- **No memory wall.** Long sessions compress old context intelligently. You won't hit a token limit.
 
 ### Assistant — background AI that works while you chat
 
-Assistant is for tasks that take time: research, writing long documents, running code, coordinating multiple steps. You give it a goal, it works autonomously in the background, and it notifies you when it's done — you don't have to wait or watch.
+For tasks that take time: research, writing long documents, running code, coordinating multiple steps. You give it a goal; it works autonomously and notifies you when done. While it runs, you can keep chatting — ask *"how's it going?"* and you'll get a live status update.
 
-While the Assistant is working, you can keep chatting. Ask it how the task is going and it will give you a live status update. When the Assistant finishes, its result appears in the session and a notification pops up.
+What it can do:
 
-Assistant sessions are independent: you can have several running at the same time, each working on a different goal.
+- **Run scripts in a sandbox.** Bash, Python, curl, jq, git, node — the Assistant can write and execute scripts inside an isolated container. Long jobs (hours, even overnight) keep running while you do something else.
+- **Periodic tasks.** Say *"summarise new arxiv physics papers every morning at 8"* and it'll keep doing it. Edit, pause, or cancel any task from the sidebar at any time.
+- **Read and write files.** Every session has its own scratch workspace. The Assistant reads uploaded files, fetches web pages, and writes results to the workspace as it works through a goal.
+- **Connect external services.** Many services (HuggingFace, and a growing list of others) expose a standard AI-tools interface (MCP). Tell the Assistant *"connect to HuggingFace"* — it walks through the authorisation, and from then on the service's actions are live tools for that task.
+- **`/wiki` your own knowledge base.** Type `/wiki https://my-internal-docs.example` to crawl and index a site, or `/wiki <attached file>` for a single document. From then on, the Assistant pulls in matching passages whenever they're relevant — Perplexity-style retrieval, but over your own material.
+- **Run several at once.** Open multiple Assistant sessions; each works in parallel. Send a refinement mid-task and the Assistant picks it up on its next step. Hit Stop to cancel cleanly.
 
 **When to use which:**
 
 | | Confidant | Assistant |
 |---|---|---|
-| Response style | Streaming, immediate | Notification when done |
-| Good for | Questions, writing, image analysis, conversation | Long tasks, research, multi-step work |
+| Style | Streaming, immediate | Works in the background, notifies on done |
+| Good for | Questions, writing, image / doc analysis, brainstorming | Multi-step work, scripting, research, automation, integrations |
 | You wait? | Yes, but seconds | No — keep chatting |
-| Multiple at once | One active at a time | Many concurrent |
+| Concurrency | One active per session | Many tasks per session, many sessions at once |
 
 ---
 
 ## What you get
 
-- **Companion memory** — personalised answers that get better the longer you use it
+- **Companion memory & private notes** — auto-built profile + encrypted `/memo` notes, all on your hardware
 - **Built-in web search** — like Perplexity, but self-hosted and private; works in any language
-- **Rich media attachments** — PDF, DOCX, XLSX, images, and videos; on mobile, photograph or record directly into the chat
+- **Sandboxed agent** — Bash, Python, file ops, document extraction, web fetch, periodic schedules
+- **External service integrations** — for any service that speaks the MCP standard
+- **Personal knowledge base** — `/wiki` ingests URLs, files, or folders; the AI retrieves automatically
+- **Rich media attachments** — PDF, DOCX, XLSX, images, videos; on mobile, photograph or record directly into the chat
 - **Multi-user support** — each person has their own login, history, and files; admin manages users from within the app
-- **Persistent chat history** — all sessions saved and searchable
+- **Persistent chat history** — every session saved and searchable
 - **Multi-language UI** — English, Vietnamese, German, Spanish, French
 - **Access from any device on your home network** — phone, tablet, laptop
 
@@ -139,7 +148,7 @@ Ollama offers powerful cloud AI models for free, with generous usage limits. Thi
 
 That's it. Both Confidant and Assistant modes are immediately available to all users.
 
-In this setup, only the text of each AI request is sent to Ollama's servers for processing. All user data — chat history, companion memory, uploaded files — stays on your machine and is never shared with any third party.
+In this setup, only the text of each AI request is sent to Ollama's servers for processing. All user data — chat history, companion memory, uploaded files, `/memo` notes — stays on your machine and is never shared with any third party.
 
 ### Alternative — Local Ollama (fully offline)
 
@@ -190,7 +199,7 @@ Add one or more accounts (label + API key). DMH-AI rotates through all added acc
 
 **AI Models**
 
-Configure which AI model handles each role: Confidant conversations, Assistant background work, web search, image and video analysis, and context compaction. Each role can use a different model optimised for that task.
+Configure which AI model handles each role: Confidant conversations, Assistant background work, fast classifications (Swift), long-context summarisation (Oracle), image and video analysis, and embeddings. Each role can use a different model optimised for that task.
 
 **Ollama Local — Endpoint URL**
 
@@ -207,7 +216,7 @@ DMH-AI includes a built-in web search pipeline — similar to Perplexity or Chat
 1. You ask a question in any language
 2. The AI decides whether your question needs live information from the web (no hardcoded keywords — it understands intent)
 3. If yes, DMH-AI searches via its bundled SearXNG instance and fetches the top results
-4. The AI synthesizes those results into a well-structured, sourced answer
+4. The AI synthesises those results into a well-structured, sourced answer
 
 You don't need to do anything differently — just ask your question. Search queries go through your own SearXNG instance, not any third-party service.
 
@@ -218,11 +227,14 @@ You don't need to do anything differently — just ask your question. Search que
 After running `install.sh`, all live data is stored in `~/.dmh_ai/`:
 
 - `~/.dmh_ai/db/` — chat history (SQLite database)
-- `~/.dmh_ai/user_assets/` — uploaded files, organized by session
+- `~/.dmh_ai/secrets/` — master encryption key for `/memo` notes (back this up **separately** from the database — see below)
+- `~/.dmh_ai/user_assets/` — uploaded files, organised by session
 - `~/.dmh_ai/system_logs/system.log` — web search and system log
 
 Running `install.sh` again is safe — it never overwrites existing data files. Each file is only copied from `dist/` if it does not yet exist in `~/.dmh_ai/`.
 
 To back up or move DMH-AI to another machine, copy `~/.dmh_ai/` and run `install.sh` on the new machine.
+
+**About `/memo` encryption.** Your saved notes are encrypted with a per-user key, which is itself wrapped by a master key in `~/.dmh_ai/secrets/`. Keep the secrets folder backed up **separately** from the database — that's the whole point: a stolen DB backup alone can't decrypt your notes. If you lose the secrets folder, the existing notes can no longer be read (DMH-AI will let you continue saving new ones under a fresh key).
 
 To add more users: user icon → **Manage users**.

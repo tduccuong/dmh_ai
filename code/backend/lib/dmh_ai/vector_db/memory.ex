@@ -62,6 +62,7 @@ defmodule DmhAi.VectorDB.Memory do
         score = cosine(query_vec, r.embedding, q_norm)
         %{
           chunk_text: r.chunk_text,
+          chunk_idx: r.chunk_idx,
           source_id: r.source_id,
           source_kind: Map.get(r, :_source_kind, "?"),
           source_ref: Map.get(r, :_source_ref, ""),

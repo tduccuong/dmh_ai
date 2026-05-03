@@ -27,16 +27,24 @@ defmodule DmhAi.Web.Search do
   @confidant_prompt """
   Today's date and time: %{now}.
 
-  %{context_block}
-  New message: "%{content}"
+  %{context_block}%{memo_block}New message: "%{content}"
 
   Step 1 — Decide if a live web search is needed.
   Search is EXPENSIVE. Efficiency is priority, but accuracy on time-sensitive facts is mandatory.
 
-  ### RULE 0: EXPLICIT REQUEST
+  ### RULE 0: SAVED MEMO COVERAGE
+  If a `[saved memos]` block above contains a fact that already answers the user's question (same person, same animal, same object, same property — even if the user wrote without diacritics or with typos), return `SEARCH: NO` immediately. The user's saved memo is authoritative for personal facts; do not search the web for something the user has already told us.
+
+  ### RULE 1: EXPLICIT REQUEST
   If the user explicitly asks for a search (e.g., "search the web", "look up", "check online", "find recent news") → YES.
 
-  ### RULE 1: THE PERISHABILITY TEST (High Priority)
+  ### RULE 2: THE PRIVATE SPHERE
+  Say NO if the query is about:
+  - **Private/Personal Context:** Neighbors, friends, family, personal items, or your own history.
+  - **Hyper-Local details:** Specific pets/things, local individuals, or non-public events.
+  - **Conversational/Venting:** Subjective feelings or local gossip.
+
+  ### RULE 3: THE PERISHABILITY TEST (High Priority)
   Identify if the question involves "Dynamic Knowledge" (facts that can change over time).
   Say YES if the query involves:
   - **Current Roles & Leadership:** Who is the [Title] of [Place/Company]? (e.g., President, CEO, Governor).
@@ -45,14 +53,14 @@ defmodule DmhAi.Web.Search do
   - **Versions & Technical Docs:** Latest version of a library, GitHub repo status, or recent API documentation.
   - **People:** A person's current job, latest work, or recent news.
 
-  ### RULE 2: THE STATIC KNOWLEDGE TEST
+  ### RULE 4: THE STATIC KNOWLEDGE TEST
   Say NO if the query involves "Timeless Knowledge":
   - **Fixed History:** Events that are concluded (e.g., "Who was the president in 1995?", "Causes of WWII").
   - **Core Science/Math:** Physics constants, mathematical proofs, biological classifications.
   - **Geography/Cultural Basics:** Capital cities, definitions of words, well-established cultural concepts.
   - **Internal Tasks:** Summarizing, translating, reformatting, or analyzing text provided in the prompt.
 
-  ### RULE 3: THE "UNCERTAINTY" OVERRIDE
+  ### RULE 5: THE "UNCERTAINTY" OVERRIDE
   - If the topic is a company, product, or person that gained prominence near or after your training cutoff → YES.
   - If you have any doubt about whether a "fact" has changed since your training ended → YES.
 
@@ -119,16 +127,26 @@ defmodule DmhAi.Web.Search do
   One LLM call that decides whether to search, picks the SearXNG category,
   and generates optimised keyword queries.
 
+  `memo_hits` — optional list of `%{chunk_text: String.t()}` decrypted
+  memo snippets (Confidant-only). When non-empty, the planner sees
+  them in a `[saved memos]` block in its prompt and is instructed
+  (RULE 0) to return `SEARCH: NO` when a saved memo already answers
+  the question. This is how Confidant defers to the user's memo
+  store for personal-fact questions instead of falling through to
+  web search. Empty / unset = today's behaviour (Assistant pipeline
+  always passes empty; Confidant passes hits when the upstream memo
+  retrieval found any).
+
   Returns:
     * `{:no_search}`                      — search not needed (Confidant only)
     * `{:search, category, queries}`      — `category` is "news"|"it"|"news,general";
                                             `queries` is `[%{text, lang}]`
   """
-  @spec generate_search_queries(String.t(), [String.t()], :confidant | :assistant) ::
+  @spec generate_search_queries(String.t(), [String.t()], :confidant | :assistant, [map()]) ::
           {:no_search} | {:search, String.t(), [%{text: String.t(), lang: String.t()}]}
-  def generate_search_queries(content, recent_msgs \\ [], pipeline \\ :confidant) do
+  def generate_search_queries(content, recent_msgs \\ [], pipeline \\ :confidant, memo_hits \\ []) do
     model  = AgentSettings.swift_model()
-    prompt = build_prompt(content, recent_msgs, pipeline)
+    prompt = build_prompt(content, recent_msgs, pipeline, memo_hits)
 
     trace = %{origin: "system", path: "Web.Search.generate_queries", role: "WebQueryPlanner", phase: "plan"}
     case LLM.call(model, [%{role: "user", content: prompt}], options: %{temperature: 0}, trace: trace) do
@@ -291,7 +309,7 @@ defmodule DmhAi.Web.Search do
   # Private
   # ---------------------------------------------------------------------------
 
-  defp build_prompt(content, recent_msgs, pipeline) do
+  defp build_prompt(content, recent_msgs, pipeline, memo_hits) do
     now   = DateTime.utc_now()
     date  = DateTime.to_date(now)
     month = month_name(date.month)
@@ -316,8 +334,30 @@ defmodule DmhAi.Web.Search do
         ""
       end
 
+    # Saved memos — only injected for the Confidant pipeline. Each
+    # hit's `chunk_text` is a decrypted plaintext snippet from the
+    # user's memo store, ranked by cosine similarity and bounded by
+    # `memo_context_top_k`. RULE 0 of the prompt template tells the
+    # planner to judge whether any of these memos answers the user's
+    # question and short-circuit web search when so. Empty list /
+    # Assistant pipeline → empty string, no `[saved memos]` block.
+    memo_block =
+      if pipeline == :confidant and memo_hits != [] do
+        bullets =
+          memo_hits
+          |> Enum.map_join("\n", fn h ->
+            text = Map.get(h, :chunk_text) || Map.get(h, "chunk_text") || ""
+            "- " <> String.replace(text, "\n", " ")
+          end)
+
+        "[saved memos]\nThese facts the user has already saved with /memo:\n#{bullets}\n[/saved memos]\n\n"
+      else
+        ""
+      end
+
     template
     |> String.replace("%{context_block}", context_block)
+    |> String.replace("%{memo_block}", memo_block)
     |> String.replace("%{content}", content)
     |> String.replace("%{month}", month)
     |> String.replace("%{year}", year)

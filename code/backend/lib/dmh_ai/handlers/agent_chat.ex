@@ -140,7 +140,7 @@ defmodule DmhAi.Handlers.AgentChat do
       # Without it, the FE poll picks up the BE row as a "new"
       # message that doesn't match anything via `(ts, role)` dedup
       # → the user's line renders twice.
-      case DmhAi.Commands.dispatch(stored_content, session_id, user.id) do
+      case DmhAi.Commands.dispatch(stored_content, session_id, user.id, request_lang(d)) do
         {:handled, user_ts} ->
           json(conn, 200, %{user_ts: user_ts, handled: true})
 
@@ -190,7 +190,7 @@ defmodule DmhAi.Handlers.AgentChat do
       # Assistant route — Memo runtime is mode-agnostic. Runs BEFORE the
       # LLM dispatch, persists its own user + synthetic ack rows, returns
       # immediately. See specs/commands.md §Command parser.
-      case DmhAi.Commands.dispatch(content, session_id, user.id) do
+      case DmhAi.Commands.dispatch(content, session_id, user.id, request_lang(d)) do
         {:handled, user_ts} ->
           json(conn, 200, %{user_ts: user_ts, handled: true})
 
@@ -301,6 +301,14 @@ defmodule DmhAi.Handlers.AgentChat do
     end)
   end
   defp parse_files(_), do: []
+
+  # Read the FE-supplied locale (`I18n._lang`) from the request body.
+  # Used by the slash-command runtime (e.g. /memo's static-i18n ack)
+  # to render in the user's language without an LLM round-trip. Falls
+  # back to "en" if absent or malformed; downstream `normalize_lang/1`
+  # in `Commands.Memo` validates against the supported set.
+  defp request_lang(%{"lang" => l}) when is_binary(l) and l != "", do: l
+  defp request_lang(_), do: "en"
 
   defp json(conn, status, data) do
     conn

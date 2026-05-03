@@ -7,6 +7,9 @@ defmodule DmhAi.Handlers.Auth do
   import Plug.Conn
   alias DmhAi.Repo
   alias DmhAi.AuthPlug
+  alias DmhAi.MemoCrypto
+  alias DmhAi.Agent.UserAgent
+  require Logger
   import Ecto.Adapters.SQL, only: [query!: 2, query!: 3]
 
   def json(conn, status, data) do
@@ -99,16 +102,24 @@ defmodule DmhAi.Handlers.Auth do
 
     result =
       query!(Repo, """
-      SELECT id, email, name, role, password_hash, password_changed
+      SELECT id, email, name, role, password_hash, password_changed,
+             memo_kdf_salt, memo_wrapped_mmk
       FROM users WHERE email=? AND deleted=0
       """, [email])
 
     case result.rows do
-      [[id, db_email, name, role, password_hash, pw_changed] | _] ->
+      [[id, db_email, name, role, password_hash, pw_changed, memo_salt, memo_wrapped] | _] ->
         if AuthPlug.verify_password(password, password_hash) do
           token = :crypto.strong_rand_bytes(32) |> Base.encode16(case: :lower)
           now = :os.system_time(:second)
           query!(Repo, "INSERT INTO auth_tokens (token, user_id, created_at) VALUES (?,?,?)", [token, id, now])
+
+          # One-shot V1 → V2 migration. Only fires for users who still
+          # have a legacy password-wrapped MMK (memo_kdf_salt non-NULL,
+          # memo_wrapped_mmk leading byte == 0x01). Idempotent: V2-
+          # wrapped users skip immediately. See specs/memo_encryption.md
+          # § Migration from V1.
+          maybe_migrate_v1_to_v2(id, password, memo_salt, memo_wrapped)
 
           display = name || hd(String.split(db_email, "@"))
 
@@ -131,11 +142,58 @@ defmodule DmhAi.Handlers.Auth do
     end
   end
 
+  # V1 → V2 migration. Login is the only place that has the user's
+  # password, and the password is needed to unwrap a V1 wrap once.
+  # After this point the MMK is wrapped under the deployment master
+  # key and no further password unwrap is ever needed.
+  #
+  # Branches:
+  #   * memo_salt nil OR wrap nil → user has no V1 wrap. Nothing to do
+  #     (the lazy ensure path handles V2 + first-time on demand).
+  #   * wrap leading byte 0x02 → already V2. Idempotent skip.
+  #   * wrap leading byte 0x01 → unwrap with password, re-wrap with
+  #     master, persist. NULL out memo_kdf_salt to mark migration done.
+  #   * unknown leading byte → log warning, leave alone.
+  defp maybe_migrate_v1_to_v2(user_id, password, memo_salt, memo_wrapped) do
+    cond do
+      not (is_binary(memo_salt) and is_binary(memo_wrapped)) ->
+        :ok
+
+      MemoCrypto.wrap_version(memo_wrapped) != :v1 ->
+        :ok
+
+      true ->
+        password_key = MemoCrypto.derive_password_key(password, memo_salt)
+
+        case MemoCrypto.unwrap_mmk(memo_wrapped, password_key) do
+          {:ok, mmk} ->
+            wrapped_v2 = MemoCrypto.wrap_with_master(mmk, MemoCrypto.MasterKey.get())
+
+            query!(Repo, """
+              UPDATE users SET memo_wrapped_mmk = ?, memo_kdf_salt = NULL WHERE id = ?
+              """, [wrapped_v2, user_id])
+
+            Logger.info("[MemoCrypto] migrated v1 → v2 wrap for user=#{user_id}")
+
+          {:error, reason} ->
+            Logger.warning(
+              "[MemoCrypto] v1 unwrap failed for user=#{user_id} reason=#{inspect(reason)} — leaving wrap untouched")
+        end
+    end
+  end
+
   # POST /auth/logout
   def post_logout(conn) do
     case get_req_header(conn, "authorization") do
       ["Bearer " <> token | _] ->
         token = String.trim(token)
+
+        # Logout revokes the auth token but does NOT wipe the in-memory
+        # MMK cache. Per specs/memo_encryption.md, memo access must
+        # survive logout/login — the encryption key is master-key-
+        # wrapped on disk and re-unwraps lazily on the next memo
+        # activity (regardless of which session it happens in). The
+        # logout act here is purely about token revocation.
         query!(Repo, "DELETE FROM auth_tokens WHERE token=?", [token])
 
       _ ->
@@ -354,6 +412,10 @@ defmodule DmhAi.Handlers.Auth do
       case result.rows do
         [[password_hash] | _] ->
           if AuthPlug.verify_password(current, password_hash) do
+            # No memo-key work needed — under V2 the MMK is wrapped
+            # under the deployment master key, not the user's
+            # password. Changing the password leaves the wrap (and
+            # therefore memo access) untouched.
             query!(Repo, "UPDATE users SET password_hash=?, password_changed=1 WHERE id=?",
               [AuthPlug.hash_password(new_pw), user.id])
 
@@ -440,12 +502,64 @@ defmodule DmhAi.Handlers.Auth do
       end
 
       if d["password"] && d["password"] != "" do
-        query!(Repo, "UPDATE users SET password_hash=?, password_changed=1 WHERE id=?",
-          [AuthPlug.hash_password(d["password"]), uid])
-      end
+        # Admin-reset is destructive to the target user's memos —
+        # the admin doesn't know the old password, so the existing
+        # wrapped MMK is unrecoverable. Require an explicit confirm
+        # flag if the user has saved memos; the FE prompts.
+        # See specs/memo_encryption.md § Admin password reset.
+        memo_count = count_memo_rows(uid)
+        confirmed = d["confirm_memo_wipe"] == true
 
-      json(conn, 200, %{ok: true})
+        cond do
+          memo_count > 0 and not confirmed ->
+            json(conn, 409, %{
+              error: "memo_wipe_required",
+              memo_count: memo_count,
+              message: "User has #{memo_count} saved memo(s) which cannot be recovered without their old password. Re-submit with confirm_memo_wipe: true to proceed."
+            })
+
+          true ->
+            wipe_user_memo_state(uid)
+
+            query!(Repo, """
+              UPDATE users
+              SET password_hash=?, password_changed=1,
+                  memo_kdf_salt=NULL, memo_wrapped_mmk=NULL
+              WHERE id=?
+              """, [AuthPlug.hash_password(d["password"]), uid])
+
+            # Force re-login on every device so a stale token can't
+            # keep an in-memory MMK alive past the reset moment.
+            query!(Repo, "DELETE FROM auth_tokens WHERE user_id=?", [uid])
+            UserAgent.wipe_memo_key(uid)
+
+            json(conn, 200, %{ok: true, memo_rows_deleted: memo_count})
+        end
+      else
+        json(conn, 200, %{ok: true})
+      end
     end
+  end
+
+  defp count_memo_rows(uid) do
+    case query!(Repo,
+           "SELECT COUNT(*) FROM kb_chunks_meta WHERE scope='memo' AND user_id=?",
+           [uid]) do
+      %{rows: [[n] | _]} when is_integer(n) -> n
+      _ -> 0
+    end
+  end
+
+  defp wipe_user_memo_state(uid) do
+    # Delete the user's memo metadata rows; the corresponding vector
+    # rows in `kb_vec_memo` and `kb_fts` (if any) reference these
+    # `id`s — but FTS is skipped for memo scope on write, and the
+    # vec table keys by the same rowid as meta. Same row deletion
+    # cascades naturally.
+    query!(Repo,
+      "DELETE FROM kb_vec_memo WHERE rowid IN (SELECT id FROM kb_chunks_meta WHERE scope='memo' AND user_id=?)",
+      [uid])
+    query!(Repo, "DELETE FROM kb_chunks_meta WHERE scope='memo' AND user_id=?", [uid])
   end
 
   # DELETE /users/:id (admin: soft-delete user)

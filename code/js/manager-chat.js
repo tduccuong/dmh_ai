@@ -405,11 +405,25 @@ UIManager._applyScrollPolicy = function() {
     // empty space goes away.
     var clearTailRoom = function() { UIManager._clearTailRoom(); };
     var applyTailRoom = function() {
-        var bodies = c.querySelectorAll('.msg-body');
-        for (var i = 0; i < bodies.length - 1; i++) {
-            if (bodies[i].style.minHeight) bodies[i].style.minHeight = '';
+        // Reservation goes on the last ASSISTANT message body — never
+        // a user body. Spec assumed the last `.msg-body` is always
+        // assistant (streaming placeholder during a chain, final
+        // assistant body after chain end). On a `chain_aborted` end
+        // there's NO assistant body — only a progress row, which has
+        // no `.msg-body` — so a naive "last `.msg-body`" lookup
+        // landed on the user message and inflated it to viewport
+        // height for the brief window before the next render
+        // overflowed and tail-room was cleared. Targeting only
+        // assistant bodies makes the empty space go to zero in the
+        // chain_aborted case (which is fine — no anchor reservation
+        // needed when there's nothing streaming below the user msg).
+        var assistantBodies = c.querySelectorAll('.message.assistant > .msg-body');
+        // Strip any prior reservation on every assistant body (cheap;
+        // keeps the "only the LAST body holds reservation" invariant).
+        for (var i = 0; i < assistantBodies.length; i++) {
+            if (assistantBodies[i].style.minHeight) assistantBodies[i].style.minHeight = '';
         }
-        var last = bodies.length > 0 ? bodies[bodies.length - 1] : null;
+        var last = assistantBodies.length > 0 ? assistantBodies[assistantBodies.length - 1] : null;
         if (last) last.style.minHeight = c.clientHeight + 'px';
     };
 
@@ -967,6 +981,23 @@ UIManager.renderChat = function() {
         if (streamingMessage) container.appendChild(streamingMessage);
         return;
     }
+
+    // Empty session → splash. Replaces any prior content. The splash
+    // teaches the user what THIS mode does and offers a one-click
+    // switch to the other mode (which lands on an existing empty
+    // session of the target mode, or creates one). The moment the
+    // user sends the first message, `messages.length` becomes 1 and
+    // the next renderChat skips this branch — the splash disappears.
+    var msgCount = (this.currentSession.messages || []).length;
+    if (msgCount === 0) {
+        container.innerHTML = '';
+        var splash = this._buildSplashEl(this.currentSession.mode || 'confidant');
+        if (splash) container.appendChild(splash);
+        if (streamingMessage) container.appendChild(streamingMessage);
+        this.updateScrollFab && this.updateScrollFab();
+        return;
+    }
+
     var sessionId = this.currentSession.id;
     var renderSession = this.currentSession;
     var timeline = buildSessionTimeline(this.currentSession);
@@ -1675,6 +1706,71 @@ UIManager.renderAttachments = function() {
         bar.appendChild(chip);
     });
     this.updateSendBtn();
+};
+
+// Empty-session splash card — greeting + mode pitch + switch link.
+// Rendered by `renderChat` when `currentSession.messages.length === 0`.
+// Content is i18n'd: per-locale `splashConfidant` / `splashAssistant`
+// objects in `core.js` carry `{title, lead, bullets[], switchPrompt}`;
+// the link target's display name reuses the existing `modeConfidant`
+// / `modeAssistant` keys so dropdown and splash stay consistent.
+//
+// The switch link does NOT mutate the current session's mode. It
+// jumps to (or creates) an empty session in the target mode, leaving
+// any existing in-progress sessions of either mode alone.
+UIManager._buildSplashEl = function(mode) {
+    var key = mode === 'assistant' ? 'splashAssistant' : 'splashConfidant';
+    var data = t(key);
+    if (!data || typeof data !== 'object') return null;
+
+    var targetMode = mode === 'assistant' ? 'confidant' : 'assistant';
+    var targetLabelKey = targetMode === 'assistant' ? 'modeAssistant' : 'modeConfidant';
+    var targetLabel = t(targetLabelKey);
+
+    var wrap = document.createElement('div');
+    wrap.className = 'session-splash';
+
+    var h = document.createElement('h2');
+    h.textContent = data.title || '';
+    wrap.appendChild(h);
+
+    if (data.lead) {
+        var lead = document.createElement('p');
+        lead.className = 'splash-lead';
+        lead.textContent = data.lead;
+        wrap.appendChild(lead);
+    }
+
+    if (Array.isArray(data.bullets) && data.bullets.length > 0) {
+        var ul = document.createElement('ul');
+        data.bullets.forEach(function(b) {
+            var li = document.createElement('li');
+            // `strong` carries pre-escaped HTML for inline-code-style
+            // syntax tokens (e.g. `/memo &lt;text&gt;`); `text` is plain.
+            li.innerHTML = '<strong>' + (b.strong || '') + '</strong> — ' + escapeHtml(b.text || '');
+            ul.appendChild(li);
+        });
+        wrap.appendChild(ul);
+    }
+
+    var switchDiv = document.createElement('div');
+    switchDiv.className = 'splash-switch';
+    // Mobile uses a shorter variant of the cross-promote prompt to
+    // keep the splash compact on narrow screens. 768 px matches the
+    // breakpoint used elsewhere (e.g. message-input placeholder).
+    var promptText = (window.innerWidth <= 768 && data.switchPromptShort) ? data.switchPromptShort : (data.switchPrompt || '');
+    switchDiv.appendChild(document.createTextNode('💡 ' + promptText + ' '));
+    var a = document.createElement('a');
+    a.textContent = targetLabel;
+    a.addEventListener('click', function(e) {
+        e.preventDefault();
+        UIManager.splashSwitchToMode(targetMode);
+    });
+    switchDiv.appendChild(a);
+    switchDiv.appendChild(document.createTextNode('.'));
+    wrap.appendChild(switchDiv);
+
+    return wrap;
 };
 
 UIManager.updateSendBtn = function() {

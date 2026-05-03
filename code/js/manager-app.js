@@ -67,6 +67,10 @@ UIManager.initializeApp = async function() {
         this.startProgressPolling();
         document.getElementById('message-input').focus();
 
+        // Non-empty landing → mode-hint toast; empty landing → splash
+        // already explains the mode, no toast needed.
+        this.showModeHint();
+
         // Mirror switchSession's sidebar behaviour on first load / refresh.
         if ((this.currentSession.mode || 'confidant') === 'assistant') {
             if (this.startTaskListPolling) this.startTaskListPolling();
@@ -148,13 +152,34 @@ UIManager.switchMode = async function(mode) {
         this.renderChat();
         this.startProgressPolling();
         if (mode === 'assistant') {
-            this.showAssistantHint();
             if (this.startTaskListPolling) this.startTaskListPolling();
         } else if (this.renderTaskList) {
             this.renderTaskList();
         }
     }
 };
+
+// Splash-card "switch to other mode" — distinct from `switchMode`
+// (dropdown), which prefers the first existing session of the target
+// mode. The splash variant explicitly prefers an EMPTY session (so
+// the user lands on the OTHER mode's splash, not on whatever they
+// were last working on); falls back to creating a fresh empty
+// session of the target mode. Current session is left untouched.
+UIManager.splashSwitchToMode = async function(mode) {
+    var sessions = await SessionStore.getSessions();
+    var target = sessions.find(function(s) {
+        return (s.mode || 'confidant') === mode &&
+               (!s.messages || s.messages.length === 0);
+    });
+    if (!target) {
+        target = await SessionStore.createSession(t('newChat'), mode);
+    }
+    this._currentMode = mode;
+    this._updateModeLabel();
+    await this.renderSessions();
+    await this.switchSession(target.id);
+};
+
 
 UIManager._updateModeLabel = function() {
     var label = document.getElementById('mode-dropdown-label');
@@ -239,9 +264,9 @@ UIManager.renderSessions = async function() {
 };
 
 UIManager.createNewSession = async function() {
-    // If already in an empty session, just focus input
+    // If already in an empty session, just focus input. No hint toast
+    // — splash is already showing.
     if (this.currentSession && (!this.currentSession.messages || this.currentSession.messages.length === 0)) {
-        if ((this._currentMode || 'confidant') === 'assistant') this.showAssistantHint();
         document.getElementById('message-input').focus();
         return;
     }
@@ -274,12 +299,12 @@ UIManager.createNewSession = async function() {
     // actually reflects the newly-focused session. Otherwise the old
     // session's tasks stay rendered until something else retriggers it.
     if (currentMode === 'assistant') {
-        this.showAssistantHint();
         if (this.startTaskListPolling) this.startTaskListPolling();
     } else {
         if (this._taskPoll) { clearInterval(this._taskPoll); this._taskPoll = null; }
         if (this.renderTaskList) this.renderTaskList();
     }
+    // New session is empty by definition → splash, no hint toast.
     document.getElementById('message-input').focus();
 };
 
@@ -314,8 +339,16 @@ UIManager.switchSession = async function(id) {
     this.renderChat();
     this._pinChatToBottom();
     this.startProgressPolling();
+    // Empty session → splash already speaks for itself, just focus
+    // the input. Non-empty → fire the mode-hint toast so the user is
+    // reminded of the other mode's role mid-conversation.
+    if (this.currentSession && (!this.currentSession.messages || this.currentSession.messages.length === 0)) {
+        var input = document.getElementById('message-input');
+        if (input) input.focus();
+    } else {
+        this.showModeHint();
+    }
     if ((this.currentSession.mode || 'confidant') === 'assistant') {
-        this.showAssistantHint();
         if (this.startTaskListPolling) this.startTaskListPolling();
     } else {
         // Confidant: stop any prior polling and hide the sidebar section.
@@ -585,12 +618,14 @@ UIManager.clearSession = async function() {
     // yet"); for confidant mode we tear down any running poll + hide
     // the section.
     if (currentMode === 'assistant') {
-        if (this.showAssistantHint) this.showAssistantHint();
         if (this.startTaskListPolling) this.startTaskListPolling();
     } else {
         if (this._taskPoll) { clearInterval(this._taskPoll); this._taskPoll = null; }
         if (this.renderTaskList) this.renderTaskList();
     }
+    // Cleared session is empty by definition → splash, no hint toast.
+    var clearedInput = document.getElementById('message-input');
+    if (clearedInput) clearedInput.focus();
 };
 
 UIManager.showTokenStats = async function(sessionId, sessionName) {
@@ -724,15 +759,25 @@ UIManager.clearTaskStatusArea = function() {
     area.style.display = 'none';
 };
 
-UIManager.showAssistantHint = function() {
-    var el = document.getElementById('assistant-hint');
+// Mode-hint toast — fires only on a NON-empty session (empty
+// sessions show the splash, which already explains the mode). Picks
+// `hintAssistant` or `hintConfidant` from the i18n table; both are
+// HTML strings (with <strong> tags). 5 s show + 400 ms fade-out.
+UIManager.showModeHint = function() {
+    var el = document.getElementById('mode-hint');
     if (!el) return;
-    el.innerHTML = 'Note: For <strong>quick answers</strong>, talk to Confidant. Assistant is meant only for <strong>heavy tasks</strong>.';
+    if (!this.currentSession ||
+        !this.currentSession.messages || this.currentSession.messages.length === 0) {
+        el.style.display = 'none';
+        return;
+    }
+    var key = (this.currentSession.mode || 'confidant') === 'assistant' ? 'hintAssistant' : 'hintConfidant';
+    el.innerHTML = t(key);
     el.classList.remove('fade-out');
     el.style.display = 'block';
     var self = this;
-    clearTimeout(self._assistantHintTimer);
-    self._assistantHintTimer = setTimeout(function() {
+    clearTimeout(self._modeHintTimer);
+    self._modeHintTimer = setTimeout(function() {
         el.classList.add('fade-out');
         setTimeout(function() { el.style.display = 'none'; el.classList.remove('fade-out'); }, 400);
     }, 5000);

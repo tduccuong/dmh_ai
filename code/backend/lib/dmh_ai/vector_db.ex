@@ -19,7 +19,10 @@ defmodule DmhAi.VectorDB do
   """
 
   alias DmhAi.Agent.AgentSettings
-  alias DmhAi.VectorDB.{Backend, Chunker, Embedder, MMR, Sources, Tagger}
+  alias DmhAi.VectorDB.{Backend, Chunker, Embedder, MMR, Sources, SqliteVec, Tagger}
+  alias DmhAi.MemoCrypto
+  alias DmhAi.Repo
+  import Ecto.Adapters.SQL, only: [query!: 3]
 
   @default_backend DmhAi.VectorDB.SqliteVec
 
@@ -110,7 +113,113 @@ defmodule DmhAi.VectorDB do
   # ─── High-level ingest pipeline ────────────────────────────────────────────
 
   @doc """
+  Two-phase memo ingest — phase 1 (synchronous): chunk + encrypt +
+  persist `kb_chunks_meta` rows WITHOUT computing the embedding.
+  Returns `{:ok, %{source_id, chunks: [{meta_id, plaintext, chunk_idx}]}}`
+  so the caller can fire the slow embedder HTTP call in the
+  background and follow up with `attach_memo_embedding/2` per chunk.
+
+  This is the path taken by `/memo` so the user sees "Memo saved."
+  instantly (no embedder round-trip on the critical path). The
+  `fetch_memo` / Confidant pre-step paths still use the synchronous
+  `ingest/2` because they need the row searchable on return.
+
+  Memo scope only — passing any other scope returns
+  `{:error, :memo_scope_required}`.
+  """
+  @spec ingest_memo_async(map()) :: {:ok, map()} | {:error, term()}
+  def ingest_memo_async(%{scope: :memo} = attrs) do
+    %{user_id: user_id, source_kind: kind, source_ref: ref, memo_key: mmk, body: body} = attrs
+
+    cond do
+      not is_binary(body) or body == "" ->
+        {:error, :empty_body}
+
+      not is_binary(mmk) ->
+        {:error, :memo_key_unavailable}
+
+      true ->
+        chunks = Chunker.split(body, chunker_opts_for(:memo))
+
+        if chunks == [] do
+          {:error, :empty_body}
+        else
+          # Memo dedupes by source_ref (sha256 hash of text). No
+          # centroid-based merge — that would require the embedding,
+          # which is exactly what we're deferring.
+          #
+          # Skip Tagger.tag/1 — it makes an Oracle-tier LLM call to
+          # extract free-form tags, which on a slow miner/cloud
+          # endpoint can be 5–15 s. Memo retrieval is vector + MMR
+          # only; tags don't drive scoring for memo scope, so they're
+          # decorative-only and not worth the latency on the
+          # synchronous /memo path. Wiki paths still tag via the
+          # synchronous `ingest/2`.
+          {:ok, source_id} = Sources.upsert(
+            %{
+              scope: :memo,
+              user_id: user_id,
+              source_kind: kind,
+              source_ref: ref,
+              title: attrs[:title],
+              centroid: nil,
+              tags: []
+            },
+            body
+          )
+
+          # Sweep any prior chunks for this source_id (idempotent re-save).
+          delete_by_source(:memo, source_id)
+
+          now = System.os_time(:millisecond)
+
+          chunk_records =
+            chunks
+            |> Enum.with_index()
+            |> Enum.map(fn {plaintext, idx} ->
+              ciphertext = MemoCrypto.encrypt_chunk(plaintext, mmk, source_id, idx)
+
+              %{rows: [[meta_id]]} =
+                query!(Repo, """
+                INSERT INTO kb_chunks_meta (scope, user_id, source_id, chunk_idx, chunk_text, indexed_at)
+                VALUES ('memo', ?, ?, ?, ?, ?)
+                RETURNING id
+                """, [user_id, source_id, idx, ciphertext, now])
+
+              %{meta_id: meta_id, plaintext: plaintext, chunk_idx: idx}
+            end)
+
+          {:ok, %{source_id: source_id, chunks: chunk_records}}
+        end
+    end
+  end
+
+  def ingest_memo_async(_), do: {:error, :memo_scope_required}
+
+  @doc """
+  Phase 2 of the memo two-phase save: attach an embedding vector to
+  a previously-inserted `kb_chunks_meta` row. Inserts into
+  `kb_vec_memo` keyed on the same rowid. Idempotent-ish — a second
+  call for the same `meta_id` raises (PK violation), which is fine
+  because the spawned background task per save is one-shot.
+  """
+  @spec attach_memo_embedding(integer(), [float()]) :: :ok | {:error, term()}
+  def attach_memo_embedding(meta_id, embedding) when is_integer(meta_id) and is_list(embedding) do
+    encoded = SqliteVec.encode_vector(embedding)
+    query!(Repo, "INSERT INTO kb_vec_memo(rowid, embedding) VALUES (?, CAST(? AS BLOB))",
+           [meta_id, encoded])
+    :ok
+  rescue
+    e -> {:error, Exception.message(e)}
+  end
+
+  @doc """
   Chunk → embed → tag → (semantic-merge for inline text) → upsert.
+  Synchronous: returns only after the embedder pool has produced
+  vectors and the meta+vec rows are inserted. Used by `/wiki` paths
+  and the `save_memo` Assistant tool. The slash-command `/memo` path
+  uses the async variant `ingest_memo_async/1` to avoid blocking the
+  user-visible ack on the embedder HTTP call.
 
   `attrs` shape:
     %{
@@ -128,9 +237,18 @@ defmodule DmhAi.VectorDB do
   def ingest(attrs, body) when is_binary(body) do
     chunks = Chunker.split(body, chunker_opts_for(attrs[:scope] || attrs["scope"]))
 
+    # Memo scope is encrypted at rest. The caller (Commands.Memo,
+    # Tools.SaveMemo) is responsible for looking up the user's MMK
+    # via UserAgent.get_memo_key/1 and putting it in `attrs[:memo_key]`
+    # — VectorDB stays independent of the agent runtime. Without a
+    # key we refuse to save: better than persisting plaintext that
+    # contradicts the encryption guarantee.
     cond do
       chunks == [] ->
         {:error, :empty_body}
+
+      (attrs[:scope] || attrs["scope"]) == :memo and not is_binary(attrs[:memo_key]) ->
+        {:error, :memo_key_unavailable}
 
       true ->
         with {:ok, embeddings} <- Embedder.embed_batch(chunks) do
@@ -196,17 +314,28 @@ defmodule DmhAi.VectorDB do
 
   defp build_rows(attrs, source_id, chunks, embeddings) do
     now = System.os_time(:millisecond)
+    memo_key = if attrs.scope == :memo, do: attrs[:memo_key], else: nil
 
     chunks
     |> Enum.zip(embeddings)
     |> Enum.with_index()
     |> Enum.map(fn {{text, embedding}, idx} ->
+      stored_text =
+        if memo_key do
+          # AES-GCM encrypt under the user's MMK. AAD binds the row
+          # to (source_id, chunk_idx) so a row physically copied to
+          # another position fails the auth-tag check on read.
+          MemoCrypto.encrypt_chunk(text, memo_key, source_id, idx)
+        else
+          text
+        end
+
       %{
         scope:       attrs.scope,
         user_id:     attrs[:user_id],
         source_id:   source_id,
         chunk_idx:   idx,
-        chunk_text:  text,
+        chunk_text:  stored_text,
         embedding:   embedding,
         indexed_at:  now,
         # Decoration consumed by the Memory backend (which doesn't

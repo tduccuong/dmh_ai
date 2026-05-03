@@ -277,7 +277,12 @@ UIManager.sendMessage = async function() {
             imageNames: imageNamesForAPI,
             files: filesForAPI,
             hasVideo: hasVideo,
-            attachmentNames: attachmentNamesForAssistant
+            attachmentNames: attachmentNamesForAssistant,
+            // FE-supplied locale, used by the slash-command runtime
+            // (e.g. /memo's static-i18n ack) to render in the user's
+            // language without an LLM round-trip. The chat path itself
+            // is unaffected.
+            lang: I18n.lang
         }),
         signal: pipelineController.signal
     }).then(async function(response) {
@@ -407,7 +412,8 @@ UIManager._sendMidChainMessage = async function() {
                 content:         content,
                 mode:            sessionAtSend.mode || 'assistant',
                 attachmentNames: attachmentNamesForAssistant,
-                client_msg_id:   clientMsgId
+                client_msg_id:   clientMsgId,
+                lang:            I18n.lang
             })
         });
 

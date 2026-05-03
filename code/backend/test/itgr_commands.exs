@@ -150,11 +150,11 @@ defmodule Itgr.Commands do
 
     test "/memo (save) — async; user msg + localized ack both kind-tagged",
          %{sid: sid, uid: uid} do
-      # Default suite stub echoes the localize "Message to express"
-      # payload verbatim, so the ack lands as the templated "Saved."
-      # without a real translation call. user_ts returns synchronously;
-      # the ack appears once the background Task.Supervisor child
-      # finishes the ingest + localize.
+      # Static i18n on the /memo path — no LLM round-trip. Default
+      # locale is "en" (test calls dispatch/3, no lang arg). user_ts
+      # returns synchronously; the ack appears once the background
+      # Task.Supervisor child finishes the ingest.
+      _mmk = T.install_memo_key(uid)
       assert {:handled, user_ts} =
                Commands.dispatch("/memo ngân hàng của tôi là Vietcombank", sid, uid)
 
@@ -168,7 +168,18 @@ defmodule Itgr.Commands do
 
       assert ack_msg["kind"]    == "command_ack"
       assert ack_msg["role"]    == "assistant"
-      assert ack_msg["content"] == "Saved."
+      assert ack_msg["content"] == "Memo saved."
+    end
+
+    test "/memo ack honours the FE-supplied locale (lang=vi → Vietnamese)",
+         %{sid: sid, uid: uid} do
+      _mmk = T.install_memo_key(uid)
+      assert {:handled, _} = Commands.dispatch("/memo abc", sid, uid, "vi")
+
+      msgs = wait_for_message_count(sid, 2)
+      [_, ack_msg] = msgs
+
+      assert ack_msg["content"] == "Đã lưu ghi chú."
     end
 
     test "/memo (save) — question-shaped input is stored verbatim, no classifier branch",
@@ -177,6 +188,7 @@ defmodule Itgr.Commands do
       # An input that looks like a question gets stored as-is — there
       # is no classify-then-route. Querying happens via fetch_memo
       # (Assistant) or the auto-retrieve pre-step (#186, Confidant).
+      _mmk = T.install_memo_key(uid)
       assert {:handled, _} = Commands.dispatch("/memo what is my bank?", sid, uid)
 
       msgs = wait_for_message_count(sid, 2)
@@ -185,7 +197,7 @@ defmodule Itgr.Commands do
       # Both messages are kind-tagged — neither flows into LLM context.
       assert user_msg["kind"] == "command"
       assert ack_msg["kind"]  == "command_ack"
-      assert ack_msg["content"] == "Saved."
+      assert ack_msg["content"] == "Memo saved."
     end
 
     test "empty /wiki arg returns usage hint", %{sid: sid, uid: uid} do

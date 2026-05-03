@@ -115,6 +115,15 @@ defmodule DmhAi.Agent.AgentSettings do
   @task_archive_row_cap_default 60
   @task_archive_byte_cap_default 120_000
 
+  # ProfileExtractor batching. The extractor walks unprocessed user
+  # messages across all of a user's sessions and only fires its single
+  # LLM call once `profile_extract_batch_size` messages have accumulated
+  # past the per-user `last_profile_extracted_msg_ts` watermark. Once
+  # the merged profile reaches `profile_condense_threshold` bullet
+  # lines, a second LLM pass condenses it. See ProfileExtractor.
+  @profile_extract_batch_size_default 4
+  @profile_condense_threshold_default 50
+
   # LLM-account rotation throttle durations. Applied by
   # `DmhAi.Agent.LLM` when an account hits a rate-limit (HTTP 429 or
   # stream-inline RL error) or has its quota exhausted (Ollama's
@@ -149,6 +158,15 @@ defmodule DmhAi.Agent.AgentSettings do
   # tradeoff is a longer silent wait before the user sees the error
   # row when something is genuinely wedged.
   @confidant_pre_step_timeout_ms_default 60_000
+
+  # Path to the deployment-wide memo master key file — see
+  # specs/memo_encryption.md. Default lives one level OUT of /data/db/
+  # so operators backing up the DB don't pick up the key by accident
+  # (defeating the encryption-at-rest claim). Generated lazily on
+  # first BE start if missing; persistent across restarts. Override
+  # via `DMHAI_MEMO_MASTER_KEY` env var (base64-encoded 32 bytes) if
+  # the operator prefers an externally-supplied key.
+  @memo_master_key_path_default "/data/secrets/dmh_ai_master.key"
 
   # Output-token ceiling (num_predict) passed to every assistant-mode
   # LLM.stream call. `num_predict` is a ceiling, NOT a prepaid budget
@@ -232,14 +250,6 @@ defmodule DmhAi.Agent.AgentSettings do
   @kb_mmr_pool_size_default 30
   @kb_mmr_lambda_default 0.6
 
-  # Cosine-similarity floor for accepting a vector hit. Hits below
-  # this score are dropped before they reach Oracle / Assistant —
-  # prevents the model from forcing answers out of weak / unrelated
-  # chunks. With qwen3-embedding:0.6b the empirical separator
-  # between "actually about the topic" and noise sits around 0.55.
-  # Lower → more recall (and more false positives); raise → tighter
-  # precision. See specs/vector_kb.md.
-  @kb_score_threshold_default 0.55
   @kb_embedding_dim_default 1024
   @kb_embedding_batch_size_default 32
 
@@ -393,6 +403,16 @@ defmodule DmhAi.Agent.AgentSettings do
   @spec run_script_probe_budget() :: pos_integer()
   def run_script_probe_budget, do: int_setting("runScriptProbeBudget", @run_script_probe_budget_default)
 
+  @doc "Number of unprocessed user messages required before ProfileExtractor fires one LLM call."
+  @spec profile_extract_batch_size() :: pos_integer()
+  def profile_extract_batch_size,
+    do: int_setting("profileExtractBatchSize", @profile_extract_batch_size_default)
+
+  @doc "Bullet-line count in users.profile that triggers the ProfileCondenser LLM pass."
+  @spec profile_condense_threshold() :: pos_integer()
+  def profile_condense_threshold,
+    do: int_setting("profileCondenseThreshold", @profile_condense_threshold_default)
+
   @doc "Runtime poll cadence (ms) for in-flight `run_script` processes."
   @spec tool_run_poll_interval_ms() :: pos_integer()
   def tool_run_poll_interval_ms,
@@ -485,6 +505,11 @@ defmodule DmhAi.Agent.AgentSettings do
   @spec confidant_pre_step_timeout_ms() :: pos_integer()
   def confidant_pre_step_timeout_ms,
     do: int_setting("confidantPreStepTimeoutMs", @confidant_pre_step_timeout_ms_default)
+
+  @doc "Filesystem path to the deployment's memo master key file."
+  @spec memo_master_key_path() :: String.t()
+  def memo_master_key_path,
+    do: string_setting("memoMasterKeyPath", @memo_master_key_path_default)
 
   @doc """
   Output-token ceiling (`num_predict`) applied to every assistant-mode
@@ -597,17 +622,11 @@ defmodule DmhAi.Agent.AgentSettings do
   def learn_url_concurrency, do: int_setting("learnUrlConcurrency", @learn_url_concurrency_default)
 
   @doc """
-  Minimum cosine-similarity score for a hit to be returned.
-  Hits below this are dropped before they reach Oracle / Assistant
-  so the model never has to filter junk chunks itself.
-  """
-  @spec kb_score_threshold() :: float()
-  def kb_score_threshold, do: float_setting("kbScoreThreshold", @kb_score_threshold_default)
-
-  @doc """
   Cap on memo hits included in the `[memo context]` block injected
-  into Confidant prompts (auto-retrieve pre-step). The score
-  threshold already drops weak hits; this is a safety against
+  into Confidant prompts (auto-retrieve pre-step). Top-K is the
+  ONLY gate — no score floor (the downstream LLM judges relevance
+  from content, see specs/commands.md § Confidant memo auto-retrieve).
+  This is a safety against
   many-similar-entry memo stores bloating the prompt.
   """
   @spec memo_context_top_k() :: pos_integer()

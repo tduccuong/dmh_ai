@@ -35,12 +35,12 @@ defmodule DmhAi.Commands do
       and the chat shows a duplicate).
     * `:not_a_command` — caller continues with the regular flow.
   """
-  @spec dispatch(String.t(), String.t(), String.t()) ::
+  @spec dispatch(String.t(), String.t(), String.t(), String.t()) ::
           {:handled, non_neg_integer()} | :not_a_command
-  def dispatch(content, session_id, user_id) when is_binary(content) do
+  def dispatch(content, session_id, user_id, lang \\ "en") when is_binary(content) do
     case Parser.parse(content) do
       {:wiki, arg} -> run_wiki(arg, content, session_id, user_id) |> finalize_command(session_id, user_id, content)
-      {:memo, arg} -> Memo.run(arg, content, session_id, user_id)
+      {:memo, arg} -> Memo.run(arg, content, session_id, user_id, lang)
       _            -> :not_a_command
     end
   end

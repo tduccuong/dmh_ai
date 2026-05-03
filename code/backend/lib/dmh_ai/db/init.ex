@@ -75,6 +75,45 @@ defmodule DmhAi.DB.Init do
     add_column_if_missing("users", "unix_uid", "INTEGER")
     query!(Repo,
       "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_unix_uid ON users (unix_uid) WHERE unix_uid IS NOT NULL")
+    # Memo encryption — see specs/memo_encryption.md.
+    # `memo_kdf_salt` (16 raw bytes) is the per-user PBKDF2 salt for
+    # deriving the memo wrap-key from the login password (separate
+    # salt purpose from auth's password hash). `memo_wrapped_mmk` is
+    # the user's master memo key wrapped with the wrap-key — wire
+    # format `0x01 ‖ iv ‖ tag ‖ ct`. Both NULL until the user's first
+    # post-deploy login, which generates+stores them and re-encrypts
+    # any pre-existing plaintext memo rows.
+    add_column_if_missing("users", "memo_kdf_salt", "BLOB")
+    add_column_if_missing("users", "memo_wrapped_mmk", "BLOB")
+
+    # Profile-extraction watermark — see ProfileExtractor. Holds the ts
+    # of the last user message folded into users.profile by the
+    # batched extractor. NULL means "never extracted"; the extractor
+    # treats it as 0 and counts every user message as unprocessed on
+    # first run.
+    add_column_if_missing("users", "last_profile_extracted_msg_ts", "INTEGER")
+
+    # One-shot sweep of legacy memo entries from kb_fts. Memo writes
+    # since the encryption deploy skip kb_fts (FTS over ciphertext is
+    # useless, FTS over plaintext defeats encryption — see
+    # specs/memo_encryption.md). Older memo rows from before that
+    # skip still have plaintext shadows in kb_fts that BM25 returns
+    # on retrieval; the bm25 hits then drive `decrypt_memo_hit`,
+    # which expects ciphertext and crashes on the stale plaintext
+    # row's missing chunk_idx. Idempotent: subsequent runs see no
+    # memo rows in kb_fts and the DELETE is a no-op.
+    cleanup_memo_fts()
+  end
+
+  defp cleanup_memo_fts do
+    try do
+      query!(Repo, """
+      DELETE FROM kb_fts
+      WHERE rowid IN (SELECT id FROM kb_chunks_meta WHERE scope='memo')
+      """)
+    rescue
+      _ -> :ok  # kb_fts may not exist on a brand-new install pre-create_tables
+    end
   end
 
   # SQLite 3.25+ supports `ALTER TABLE … RENAME COLUMN`. The rename
@@ -133,6 +172,7 @@ defmodule DmhAi.DB.Init do
       password_hash TEXT NOT NULL,
       role TEXT NOT NULL DEFAULT 'user',
       profile TEXT DEFAULT '',
+      last_profile_extracted_msg_ts INTEGER,
       password_changed INTEGER DEFAULT 0,
       deleted INTEGER DEFAULT 0,
       created_at INTEGER

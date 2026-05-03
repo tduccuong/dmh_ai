@@ -51,8 +51,16 @@ defmodule DmhAi.VectorDB.SqliteVec do
       # Mirror into the FTS5 index so the BM25 leg of hybrid search
       # (#182) sees this chunk. `kb_fts` is contentless; the rowid
       # is the kb_chunks_meta id we just minted above.
-      query!(Repo, "INSERT INTO kb_fts(rowid, chunk_text) VALUES (?, ?)",
-             [id, row.chunk_text])
+      #
+      # Memo scope is excluded — `chunk_text` for memo rows is
+      # AES-GCM ciphertext (per specs/memo_encryption.md). FTS over
+      # ciphertext yields nothing matchable; FTS over plaintext
+      # would defeat the encryption. Memo retrieval uses vector ANN
+      # only, no BM25 — hybrid search is :knowledge-only.
+      if row.scope != :memo do
+        query!(Repo, "INSERT INTO kb_fts(rowid, chunk_text) VALUES (?, ?)",
+               [id, row.chunk_text])
+      end
     end)
 
     :ok
@@ -69,6 +77,7 @@ defmodule DmhAi.VectorDB.SqliteVec do
 
     sql = """
     SELECT meta.chunk_text,
+           meta.chunk_idx,
            src.id AS source_id,
            src.source_kind,
            src.source_ref,
@@ -88,9 +97,10 @@ defmodule DmhAi.VectorDB.SqliteVec do
     %{rows: rows} = query!(Repo, sql, args)
 
     hits =
-      Enum.map(rows, fn [chunk_text, source_id, kind, ref, title, tags_json, distance] ->
+      Enum.map(rows, fn [chunk_text, chunk_idx, source_id, kind, ref, title, tags_json, distance] ->
         %{
           chunk_text: chunk_text,
+          chunk_idx: chunk_idx,
           source_id: source_id,
           source_kind: kind,
           source_ref: ref,
@@ -125,6 +135,7 @@ defmodule DmhAi.VectorDB.SqliteVec do
 
         sql = """
         SELECT meta.chunk_text,
+               meta.chunk_idx,
                src.id AS source_id,
                src.source_kind,
                src.source_ref,
@@ -148,9 +159,10 @@ defmodule DmhAi.VectorDB.SqliteVec do
         hits =
           rows
           |> Enum.with_index(1)
-          |> Enum.map(fn {[chunk_text, source_id, kind, ref, title, tags_json, _rank], position} ->
+          |> Enum.map(fn {[chunk_text, chunk_idx, source_id, kind, ref, title, tags_json, _rank], position} ->
             %{
               chunk_text:  chunk_text,
+              chunk_idx:   chunk_idx,
               source_id:   source_id,
               source_kind: kind,
               source_ref:  ref,
@@ -251,8 +263,11 @@ defmodule DmhAi.VectorDB.SqliteVec do
 
   defp build_filter(_scope, _other), do: {"", []}
 
-  # vec0 accepts vectors as packed float32 LE blobs.
-  defp encode_vector(list) when is_list(list) do
+  # vec0 accepts vectors as packed float32 LE blobs. Exposed (not
+  # `defp`) so the memo two-phase ingest path in `VectorDB` can
+  # encode an embedding without going through `add/1`.
+  @doc false
+  def encode_vector(list) when is_list(list) do
     list
     |> Enum.map(fn f -> <<to_float(f)::float-32-little>> end)
     |> IO.iodata_to_binary()

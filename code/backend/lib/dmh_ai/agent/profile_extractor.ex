@@ -5,10 +5,36 @@
 
 defmodule DmhAi.Agent.ProfileExtractor do
   @moduledoc """
-  Extracts personal facts from each conversation turn and merges them into the
-  user's stored profile. Mirrors the frontend `UserProfile.extractAndMerge` logic.
+  Builds the per-user `users.profile` bullet-list from the user's own
+  messages. Runs as a background Task after each user-message persist;
+  never blocks a reply.
 
-  Called in a background Task after each LLM response — never blocks the reply.
+  Batched, watermark-driven. On every fire it walks `sessions.messages`
+  for ALL of this user's sessions and counts user-role entries with
+  `ts > users.last_profile_extracted_msg_ts`. Below
+  `AgentSettings.profile_extract_batch_size/0` (default 4) → no-op.
+  At or above → one LLM call against the OLDEST N unprocessed
+  messages (chronological), then bump the watermark to the Nth
+  message's ts. Forward-progress guarantee: any message above the
+  watermark eventually gets processed; nothing is dropped.
+
+  `/memo` and `/wiki` slash commands are excluded from the batch
+  contents but still count toward the watermark — otherwise a
+  long-tail of slash-only activity would block the trigger forever.
+
+  Two LLM calls live here:
+
+    * `extract` — single user-role prompt, `temperature=0`,
+      `num_predict=200`. Asked to emit `[FACTS]` (explicit
+      self-statements) and `[CANDIDATES]` (broad topical interests)
+      against an "Already known" block of the existing profile.
+      FACTS merge directly via `merge_facts/2`; CANDIDATES feed the
+      promotion-by-vote mechanism in `Auth.track_facts_for_user/2`.
+
+    * `condense` — fired only when the merged profile crosses
+      `profile_condense_threshold` (default 50) bullet lines. Asks
+      the model to compress the profile to ~half that count, merge
+      near-dup keys, drop superseded facts.
   """
 
   import Ecto.Adapters.SQL, only: [query!: 3]
@@ -16,63 +42,138 @@ defmodule DmhAi.Agent.ProfileExtractor do
   alias DmhAi.Commands.Parser, as: CommandParser
   require Logger
 
-  @condense_threshold 50
-
   @doc """
-  Extract facts from one conversation turn and persist them into the user's profile.
+  Trigger the batched extractor for `user_id`. Runs synchronously
+  inside whatever Task the caller spawned — call sites use
+  `Task.start(fn -> ProfileExtractor.extract_and_merge(user_id) end)`
+  so this never blocks a reply.
 
-  - `user_text`      — the user's message text
-  - `assistant_text` — the assistant's reply text
-  - `user_id`        — DB user ID for loading/saving the profile
+  Returns `:ok` regardless of outcome (no-op on under-threshold,
+  silent on LLM failure — the watermark stays put and the same
+  batch retries on the next user message).
   """
-  @spec extract_and_merge(String.t(), String.t() | nil, String.t()) :: :ok
-  def extract_and_merge(user_text, assistant_text, user_id) do
-    cond do
-      # Empty input on either side is a no-op. assistant_text is `nil`
-      # in assistant-mode chains (we don't have a single reply text) —
-      # the prompt below only consumes user_text, so nil is fine there.
-      user_text == "" or assistant_text == "" ->
+  @spec extract_and_merge(String.t()) :: :ok
+  def extract_and_merge(user_id) when is_binary(user_id) do
+    batch_size = AgentSettings.profile_extract_batch_size()
+    watermark = load_watermark(user_id)
+
+    case collect_unprocessed(user_id, watermark) do
+      [] ->
         :ok
 
-      # Slash commands (`/memo`, `/wiki`) are administrative — they
-      # save / query KB content rather than the user describing
-      # themselves. Skip the LLM round-trip; nothing to learn.
-      CommandParser.parse(user_text) != :not_a_command ->
+      msgs when length(msgs) < batch_size ->
         :ok
 
-      true ->
-        do_extract_and_merge(user_text, user_id)
+      msgs ->
+        # Always take the OLDEST N. Excess waits for the next call.
+        # Cap the leftover at 2× batch_size to avoid a flood after a
+        # long extraction outage — past that we'd still process N per
+        # call but the queue would shrink one batch at a time.
+        batch = Enum.take(msgs, batch_size)
+        run_batch(user_id, batch)
+    end
+
+    :ok
+  end
+
+  # ─── Batch collection ──────────────────────────────────────────────────────
+
+  defp collect_unprocessed(user_id, watermark) do
+    result =
+      query!(
+        Repo,
+        "SELECT messages FROM sessions WHERE user_id=? AND messages IS NOT NULL AND messages != ''",
+        [user_id]
+      )
+
+    result.rows
+    |> Enum.flat_map(fn [json] -> decode_user_msgs(json) end)
+    |> Enum.filter(fn %{ts: ts} -> ts > watermark end)
+    |> Enum.sort_by(fn %{ts: ts} -> ts end)
+  end
+
+  defp decode_user_msgs(json) when is_binary(json) do
+    case Jason.decode(json) do
+      {:ok, list} when is_list(list) ->
+        Enum.flat_map(list, fn
+          %{"role" => "user", "content" => content, "ts" => ts}
+          when is_binary(content) and is_integer(ts) ->
+            [%{ts: ts, content: content}]
+
+          _ ->
+            []
+        end)
+
+      _ ->
+        []
     end
   end
 
-  defp do_extract_and_merge(user_text, user_id) do
+  defp decode_user_msgs(_), do: []
+
+  # ─── Batch processing ──────────────────────────────────────────────────────
+
+  defp run_batch(user_id, batch) do
+    last_ts = batch |> List.last() |> Map.fetch!(:ts)
+
+    # Filter out slash commands from the LLM input but still bump the
+    # watermark past them — slash-only activity must not block the
+    # extractor forever.
+    extractable =
+      batch
+      |> Enum.reject(fn %{content: c} ->
+        CommandParser.parse(c) != :not_a_command
+      end)
+      |> Enum.map(& &1.content)
+      |> Enum.reject(&(&1 == ""))
+
+    if extractable == [] do
+      save_watermark(user_id, last_ts)
+    else
+      do_extract_and_merge(user_id, extractable, last_ts)
+    end
+
+    :ok
+  end
+
+  defp do_extract_and_merge(user_id, msgs, last_ts) do
     model = AgentSettings.oracle_model()
     existing = load_profile(user_id)
 
     already_known =
       if existing != "", do: "Already known:\n#{existing}\n\n", else: ""
 
+    numbered =
+      msgs
+      |> Enum.with_index(1)
+      |> Enum.map(fn {m, i} -> "#{i}. \"#{m}\"" end)
+      |> Enum.join("\n")
+
     prompt =
-      "[USER MESSAGE]\n\"#{user_text}\"\n[END USER MESSAGE]\n\n" <>
+      "[USER MESSAGES — most recent across this user's conversations]\n" <>
+        numbered <>
+        "\n[END USER MESSAGES]\n\n" <>
         already_known <>
-        "Task: Analyse the USER MESSAGE and output TWO sections.\n\n" <>
+        "Task: Analyse the USER MESSAGES collectively and output TWO sections.\n\n" <>
         "[FACTS]\n" <>
         "Explicit personal facts the user stated about themselves (name, job, family, hobbies declared, preferences stated, health, location, events).\n" <>
         "Only extract from explicit self-descriptions: \"I am...\", \"I have...\", \"I like...\", \"I live in...\", etc.\n" <>
+        "Cross-message inference is allowed: if message 2 says \"I have two kids\" and message 4 says \"my older one starts school\", that's one fact about a school-age child.\n" <>
         "One bullet per category, comma-separated values. e.g. \"- Name: Carl\", \"- Hobbies: hiking, reading\"\n" <>
         "Never repeat a category key. Keep values short (a few words each).\n" <>
         "Do not duplicate anything already in \"Already known\".\n" <>
         "Write NONE if nothing qualifies.\n\n" <>
         "[CANDIDATES]\n" <>
-        "Topics or subjects the user is asking about or showing curiosity in — even without explicit \"I like X\" statements.\n" <>
+        "Topics or subjects the user is asking about or showing curiosity in across these messages — even without explicit \"I like X\" statements.\n" <>
         "Rules:\n" <>
         "- Use the broadest, most general label possible: prefer \"gardening\" over \"indoor tomato cultivation\", \"blockchain\" over \"blockchain immutability\"\n" <>
         "- 1–2 words maximum. No qualifiers, adjectives, or specifics.\n" <>
-        "- If the message covers multiple aspects of the same broad topic, output only ONE label for it.\n" <>
+        "- If multiple messages cover aspects of the same broad topic, output only ONE label for it.\n" <>
         "Write NONE if nothing qualifies.\n\n" <>
-        "The user message may be in any language. Always write output in English. Plain text only, no markdown."
+        "User messages may be in any language. Always write output in English. Plain text only, no markdown."
 
     trace = %{origin: "system", path: "ProfileExtractor.extract", role: "ProfileExtractor", phase: "extract"}
+
     case LLM.call(model, [%{role: "user", content: prompt}],
            options: %{temperature: 0, num_predict: 200},
            trace: trace
@@ -87,18 +188,28 @@ defmodule DmhAi.Agent.ProfileExtractor do
 
           if merged != existing do
             all_lines = String.split(merged, "\n") |> Enum.filter(&String.starts_with?(&1, "-"))
-            final = if length(all_lines) >= @condense_threshold,
-                      do: condense(merged, model),
-                      else: merged
+            threshold = AgentSettings.profile_condense_threshold()
+
+            final =
+              if length(all_lines) >= threshold,
+                do: condense(merged, model),
+                else: merged
 
             save_profile(user_id, final)
-            Logger.info("[ProfileExtractor] merged #{length(new_lines)} fact(s) user=#{user_id}")
+            Logger.info(
+              "[ProfileExtractor] merged #{length(new_lines)} fact(s) user=#{user_id} batch=#{length(msgs)}"
+            )
           end
         end
 
         if candidates != [] do
           DmhAi.Handlers.Auth.track_facts_for_user(user_id, candidates)
         end
+
+        # Watermark bump only on successful LLM round-trip — a failure
+        # leaves the watermark in place so the same batch retries on
+        # the next user message.
+        save_watermark(user_id, last_ts)
 
       _ ->
         :ok
@@ -107,7 +218,7 @@ defmodule DmhAi.Agent.ProfileExtractor do
     :ok
   end
 
-  # ─── Private ────────────────────────────────────────────────────────────────
+  # ─── Parsing ───────────────────────────────────────────────────────────────
 
   defp parse_candidates(reply) do
     case Regex.run(~r/\[CANDIDATES\]([\s\S]*?)$/i, reply) do
@@ -118,12 +229,13 @@ defmodule DmhAi.Agent.ProfileExtractor do
         |> Enum.reject(&(&1 == "" or String.downcase(&1) == "none"))
         |> Enum.map(fn line -> String.trim_leading(line, "- ") end)
         |> Enum.reject(&(&1 == ""))
-      _ -> []
+
+      _ ->
+        []
     end
   end
 
   defp parse_facts(reply) do
-    # Extract only the [FACTS] section
     facts_text =
       case Regex.run(~r/\[FACTS\]([\s\S]*?)(?=\[CANDIDATES\]|$)/i, reply) do
         [_, text] -> text
@@ -144,8 +256,9 @@ defmodule DmhAi.Agent.ProfileExtractor do
     end)
   end
 
+  # ─── Merge ─────────────────────────────────────────────────────────────────
+
   defp merge_facts(existing, new_lines) do
-    # Build key → values map from existing facts
     existing_lines = if existing != "", do: String.split(existing, "\n"), else: []
 
     key_map =
@@ -224,9 +337,11 @@ defmodule DmhAi.Agent.ProfileExtractor do
     |> Enum.join("\n")
   end
 
+  # ─── Condense ──────────────────────────────────────────────────────────────
+
   defp condense(current_facts, model) do
     all_lines = String.split(current_facts, "\n") |> Enum.filter(&String.starts_with?(&1, "-"))
-    target = div(@condense_threshold, 2)
+    target = div(AgentSettings.profile_condense_threshold(), 2)
 
     prompt =
       "Below is a list of personal facts about a user, accumulated over many conversations.\n\n" <>
@@ -242,6 +357,7 @@ defmodule DmhAi.Agent.ProfileExtractor do
         "Plain text only, no extra commentary."
 
     trace = %{origin: "system", path: "ProfileExtractor.condense", role: "ProfileCondenser", phase: "condense"}
+
     case LLM.call(model, [%{role: "user", content: prompt}],
            options: %{temperature: 0, num_predict: 600},
            trace: trace
@@ -266,6 +382,8 @@ defmodule DmhAi.Agent.ProfileExtractor do
     end
   end
 
+  # ─── DB ────────────────────────────────────────────────────────────────────
+
   defp load_profile(user_id) do
     try do
       result = query!(Repo, "SELECT profile FROM users WHERE id=?", [user_id])
@@ -282,6 +400,29 @@ defmodule DmhAi.Agent.ProfileExtractor do
   defp save_profile(user_id, profile) do
     try do
       query!(Repo, "UPDATE users SET profile=? WHERE id=?", [profile, user_id])
+    rescue
+      _ -> :ok
+    end
+
+    :ok
+  end
+
+  defp load_watermark(user_id) do
+    try do
+      result = query!(Repo, "SELECT last_profile_extracted_msg_ts FROM users WHERE id=?", [user_id])
+
+      case result.rows do
+        [[ts] | _] when is_integer(ts) -> ts
+        _ -> 0
+      end
+    rescue
+      _ -> 0
+    end
+  end
+
+  defp save_watermark(user_id, ts) when is_integer(ts) do
+    try do
+      query!(Repo, "UPDATE users SET last_profile_extracted_msg_ts=? WHERE id=?", [ts, user_id])
     rescue
       _ -> :ok
     end

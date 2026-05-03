@@ -73,7 +73,12 @@ defmodule DmhAi.Agent.UserAgent do
     #   the next pending task).
     current_task: nil,
     # per-platform opaque state (e.g. %{telegram: %{chat_id: "123"}})
-    platform_state: %{}
+    platform_state: %{},
+    # 32-byte raw MMK (master memo key). Set on login by Handlers.Auth
+    # via `set_memo_key/2`; nil until then. Wiped on logout, idle
+    # timeout, GenServer crash, server restart. See
+    # specs/memo_encryption.md § MMK lifecycle.
+    memo_key: nil
   ]
 
   # ─── Client API ───────────────────────────────────────────────────────────
@@ -173,6 +178,76 @@ defmodule DmhAi.Agent.UserAgent do
     end
   end
 
+  @doc """
+  Read the user's MMK. Lazy: on cache miss, queries
+  `users.memo_wrapped_mmk` and unwraps with the deployment master
+  key. Caches the result for the lifetime of the GenServer. On a
+  fresh GenServer (post-restart, post-idle), the next call repeats
+  the lookup transparently — memo access survives across logout,
+  login, and BE restart.
+
+  Returns `nil` when the user has no wrapped MMK row (never saved a
+  memo), the wrap is the legacy V1 (login migration handles it), or
+  unwrap fails (logs a warning — operationally rare; usually means
+  the master key file changed).
+
+  See specs/memo_encryption.md § Read path.
+  """
+  @spec get_memo_key(String.t()) :: binary() | nil
+  def get_memo_key(user_id) when is_binary(user_id) do
+    with {:ok, pid} <- Supervisor.ensure_started(user_id) do
+      try do
+        GenServer.call(pid, :get_memo_key, 5_000)
+      catch
+        :exit, _ -> nil
+      end
+    else
+      _ -> nil
+    end
+  end
+
+  @doc """
+  Generate a fresh MMK for a user with no existing wrap, persist
+  it (wrapped under the master key), and install it in the agent's
+  state. Idempotent: if the user already has a V2 wrap, the existing
+  MMK is returned. Called from the write path on first save when
+  `get_memo_key` returns nil.
+
+  Returns `{:ok, mmk}` or `{:error, reason}`.
+  """
+  @spec ensure_memo_key(String.t()) :: {:ok, binary()} | {:error, term()}
+  def ensure_memo_key(user_id) when is_binary(user_id) do
+    with {:ok, pid} <- Supervisor.ensure_started(user_id) do
+      try do
+        GenServer.call(pid, :ensure_memo_key, 5_000)
+      catch
+        :exit, reason -> {:error, reason}
+      end
+    end
+  end
+
+  @doc """
+  Drop the in-memory MMK cache. Called only by **admin password
+  reset** — the underlying DB wrap is being destroyed there too, so
+  the in-memory cached MMK would otherwise still be used by in-flight
+  or scheduled work and produce ciphertext that's unreadable on next
+  read (the DB wrap is gone). Dropping the cache forces the next
+  memo activity to go through `ensure_memo_key` and generate a
+  fresh wrap.
+
+  NOT called by logout — per spec, memos remain accessible across
+  logout/login.
+
+  No-op if the agent isn't running.
+  """
+  @spec wipe_memo_key(String.t()) :: :ok
+  def wipe_memo_key(user_id) when is_binary(user_id) do
+    case Registry.lookup(DmhAi.Agent.Registry, user_id) do
+      [{pid, _}] -> GenServer.cast(pid, :wipe_memo_key)
+      [] -> :ok
+    end
+  end
+
   # ─── GenServer callbacks ───────────────────────────────────────────────────
 
   def start_link(user_id) do
@@ -223,6 +298,91 @@ defmodule DmhAi.Agent.UserAgent do
     {:reply, Map.get(state.platform_state, platform), state, @idle_timeout}
   end
 
+  # Memo encryption — see specs/memo_encryption.md.
+  #
+  # Lazy DB unwrap on cache miss: the GenServer's memo_key cache is
+  # ephemeral (wiped on idle timeout or restart), but the DB-backed
+  # wrap survives. Any cache miss triggers a one-time SELECT + AES-
+  # GCM unwrap; the result is cached for the rest of this GenServer's
+  # lifetime.
+  #
+  # Bad-master-key path: same auto-rotation as `:ensure_memo_key`.
+  # The wrap is mathematically unrecoverable (master key gone), so
+  # every memo encrypted under it is already garbage. Wiping +
+  # regenerating gives the user a clean slate so the *next* memo
+  # save / retrieval works under the current master key. Without
+  # this, the read path silently returns nil and the user sees
+  # Confidant blathering with no memo grounding (and no signal that
+  # their memos are gone).
+  def handle_call(:get_memo_key, _from, state) do
+    case state.memo_key do
+      mmk when is_binary(mmk) ->
+        {:reply, mmk, state, @idle_timeout}
+
+      nil ->
+        case lazy_load_memo_key(state.user_id) do
+          {:ok, mmk} ->
+            {:reply, mmk, %{state | memo_key: mmk}, @idle_timeout}
+
+          {:error, :bad_master_key} ->
+            Logger.warning(
+              "[UserAgent] master-key mismatch on read for user=#{state.user_id} — " <>
+                "auto-rotating memo wrap. All previously-encrypted memos are unrecoverable " <>
+                "and will be deleted. Persist /data/secrets across deploys to prevent this."
+            )
+            DmhAi.SysLog.log(
+              "[MemoCrypto] master-key mismatch (read) user=#{state.user_id} — wrap + memo rows wiped, fresh MMK generated")
+
+            wipe_user_memo_state(state.user_id)
+            generate_and_persist_mmk(state)
+
+          {:error, _r} ->
+            {:reply, nil, state, @idle_timeout}
+        end
+    end
+  end
+
+  # First-write path: if the user has no wrapped MMK row yet,
+  # generate one, persist it (wrapped under the master key), cache
+  # in state, return. If they already have one, return it (idempotent).
+  def handle_call(:ensure_memo_key, _from, state) do
+    case state.memo_key do
+      mmk when is_binary(mmk) ->
+        {:reply, {:ok, mmk}, state, @idle_timeout}
+
+      nil ->
+        case lazy_load_memo_key(state.user_id) do
+          {:ok, mmk} ->
+            {:reply, {:ok, mmk}, %{state | memo_key: mmk}, @idle_timeout}
+
+          {:error, :no_wrap} ->
+            generate_and_persist_mmk(state)
+
+          # Master-key file changed (or was lost on container rebuild).
+          # The existing wrap is mathematically unrecoverable, and so is
+          # every memo it ever encrypted. Auto-rotate: wipe the user's
+          # stale wrap + memo rows, generate a fresh wrap. Log loud so
+          # operators see what happened. See specs/memo_encryption.md
+          # § Master-key recovery.
+          {:error, :bad_master_key} ->
+            Logger.warning(
+              "[UserAgent] master-key mismatch for user=#{state.user_id} — auto-rotating " <>
+                "memo wrap. All memos previously encrypted under the lost key are unrecoverable " <>
+                "and will be deleted. Persist /data/secrets across deploys to prevent this."
+            )
+            DmhAi.SysLog.log(
+              "[MemoCrypto] master-key mismatch user=#{state.user_id} — wrap + memo rows wiped, fresh MMK generated")
+
+            wipe_user_memo_state(state.user_id)
+            generate_and_persist_mmk(state)
+
+          {:error, reason} ->
+            {:reply, {:error, reason}, state, @idle_timeout}
+        end
+    end
+  end
+
+
   # Stop button — kill the inline turn immediately. See
   # `cancel_current_turn/1` for the public-API docstring + invariants.
   #
@@ -272,6 +432,7 @@ defmodule DmhAi.Agent.UserAgent do
 
         _ = StreamBuffer.clear(session_id, state.user_id)
         _ = ThinkingBuffer.clear(session_id, state.user_id)
+        _ = DmhAi.Agent.ChainInFlight.clear(session_id)
 
         progress_ctx = %{
           session_id: session_id,
@@ -304,6 +465,20 @@ defmodule DmhAi.Agent.UserAgent do
   def handle_cast({:set_platform_state, platform, pstate}, state) do
     {:noreply, %{state | platform_state: Map.put(state.platform_state, platform, pstate)},
      @idle_timeout}
+  end
+
+  # Drop the in-memory MMK cache. Called by the admin password reset
+  # handler — the underlying DB wrap is also being destroyed there,
+  # so the in-memory cached MMK would otherwise still be used by
+  # in-flight or scheduled work and produce ciphertext that's
+  # unreadable on next read (DB wrap is gone). Dropping the cache
+  # forces the next memo activity to go through `ensure_memo_key`
+  # and generate a fresh wrap.
+  #
+  # NOT called by logout — per spec, memos must remain accessible
+  # across logout/login. Logout only revokes the auth token.
+  def handle_cast(:wipe_memo_key, state) do
+    {:noreply, %{state | memo_key: nil}, @idle_timeout}
   end
 
   # Inline task completed normally — {ref, result} message from Task.
@@ -399,11 +574,20 @@ defmodule DmhAi.Agent.UserAgent do
   # injection on natural completion (`handle_info({ref, result}, ...)`)
   # and boot-scan recovery after GenServer restart.
   def handle_info({:DOWN, ref, :process, _pid, reason}, %{current_task: {ref, _task_pid, reply_pid, session_id, mode}} = state) do
-    Logger.error("[UserAgent] inline task crashed mode=#{mode} user=#{state.user_id} reason=#{inspect(reason)}")
+    # Log the crash reason to BOTH Logger (for systemd journals) AND
+    # SysLog (for the operator-visible system.log file). Without the
+    # SysLog mirror, post-mortem diagnostics depended on having access
+    # to the live BEAM stderr — out of reach for most operators.
+    crash_summary =
+      "[UserAgent] inline task crashed mode=#{mode} user=#{state.user_id} session=#{session_id} reason=#{inspect(reason, limit: 1000)}"
+    Logger.error(crash_summary)
+    DmhAi.SysLog.log(crash_summary)
+
     send(reply_pid, {:error, "Internal error — please try again"})
 
     _ = StreamBuffer.clear(session_id, state.user_id)
     _ = ThinkingBuffer.clear(session_id, state.user_id)
+    _ = DmhAi.Agent.ChainInFlight.clear(session_id)
 
     progress_ctx = %{session_id: session_id, user_id: state.user_id, task_id: nil}
     _ = DmhAi.Agent.SessionProgress.append(
@@ -522,6 +706,84 @@ defmodule DmhAi.Agent.UserAgent do
 
   defp via(user_id) do
     {:via, Registry, {DmhAi.Agent.Registry, user_id}}
+  end
+
+  # Read the user's wrapped MMK from DB and unwrap with the master
+  # key. Used by `handle_call(:get_memo_key, ...)` and
+  # `handle_call(:ensure_memo_key, ...)` to lazy-load on cache miss.
+  # Outcomes:
+  #
+  #   {:ok, mmk}        — V2 wrap; unwrapped successfully.
+  #   {:error, :no_wrap}    — row is NULL (user has never saved a memo,
+  #                           OR admin reset just wiped it).
+  #   {:error, :legacy_v1}  — V1 password-wrap; only the login flow
+  #                           can migrate it (we don't have the
+  #                           password here). Caller fails soft.
+  #   {:error, term}        — unwrap failed (master key changed,
+  #                           wrap corrupted). Logs a warning.
+  defp lazy_load_memo_key(user_id) do
+    case query!(Repo, "SELECT memo_wrapped_mmk FROM users WHERE id=?", [user_id]) do
+      %{rows: [[nil]]} ->
+        {:error, :no_wrap}
+
+      %{rows: [[wrapped]]} when is_binary(wrapped) ->
+        case DmhAi.MemoCrypto.wrap_version(wrapped) do
+          :v2 ->
+            case DmhAi.MemoCrypto.unwrap_with_master(wrapped, DmhAi.MemoCrypto.MasterKey.get()) do
+              {:ok, mmk} ->
+                {:ok, mmk}
+
+              {:error, reason} ->
+                Logger.warning("[UserAgent] master-key unwrap failed user=#{user_id} reason=#{inspect(reason)}")
+                {:error, reason}
+            end
+
+          :v1 ->
+            Logger.warning("[UserAgent] user=#{user_id} still has legacy v1 wrap — needs login to migrate")
+            {:error, :legacy_v1}
+
+          :unknown ->
+            Logger.warning("[UserAgent] user=#{user_id} memo_wrapped_mmk has unknown version byte")
+            {:error, :unknown_format}
+        end
+
+      _ ->
+        {:error, :no_wrap}
+    end
+  end
+
+  # Generate a fresh MMK, wrap under the deployment master key, and
+  # persist. Reused by `handle_call(:ensure_memo_key, ...)` for the
+  # no-wrap (first-time-user) and the bad-master-key (auto-rotate)
+  # branches.
+  defp generate_and_persist_mmk(state) do
+    mmk = DmhAi.MemoCrypto.generate_mmk()
+    wrapped = DmhAi.MemoCrypto.wrap_with_master(mmk, DmhAi.MemoCrypto.MasterKey.get())
+
+    try do
+      query!(Repo,
+        "UPDATE users SET memo_wrapped_mmk = ?, memo_kdf_salt = NULL WHERE id = ?",
+        [wrapped, state.user_id])
+      {:reply, {:ok, mmk}, %{state | memo_key: mmk}, @idle_timeout}
+    rescue
+      e ->
+        {:reply, {:error, Exception.message(e)}, state, @idle_timeout}
+    end
+  end
+
+  # Sweep the user's memo data when the wrap is unrecoverable. The
+  # ciphertext is now garbage so deleting it loses nothing. Vec rows
+  # share the same id space and get cleaned via explicit DELETE.
+  defp wipe_user_memo_state(user_id) do
+    try do
+      query!(Repo,
+        "DELETE FROM kb_vec_memo WHERE rowid IN (SELECT id FROM kb_chunks_meta WHERE scope='memo' AND user_id=?)",
+        [user_id])
+      query!(Repo, "DELETE FROM kb_chunks_meta WHERE scope='memo' AND user_id=?", [user_id])
+      query!(Repo, "DELETE FROM kb_sources WHERE scope='memo' AND user_id=?", [user_id])
+    rescue
+      e -> Logger.error("[UserAgent] wipe_user_memo_state failed for user=#{user_id}: #{Exception.message(e)}")
+    end
   end
 
   # Post-turn hook: check for another pending task in the same session
@@ -930,6 +1192,20 @@ defmodule DmhAi.Agent.UserAgent do
       if command.content != "" do
         user_msgs = extract_user_messages(session_data)
 
+        # Memo retrieval runs FIRST (synchronously) so its hits can be
+        # passed into the web-search planner prompt. The planner then
+        # decides SEARCH:YES/NO with full visibility of what the user
+        # has saved — Rule 0 in the planner template tells it to skip
+        # the web when a saved memo answers the question. This deletes
+        # the entire homophone-confusion class of false-positives
+        # (e.g. unaccented "con cho" → "con chợ" → market-closure
+        # queries) and saves SearXNG + page-fetch wall time on every
+        # memo-answerable turn.
+        #
+        # See specs/commands.md § Confidant memo auto-retrieve and
+        # specs/commands.md § Memo-aware web planner.
+        {memo_context, memo_hits} = build_memo_context(command.content, user_msgs, user_id)
+
         web_task =
           Task.async(fn ->
             # Two-phase to keep the FE honest:
@@ -944,7 +1220,7 @@ defmodule DmhAi.Agent.UserAgent do
             # `kind: "tool"` (Assistant LLM tool_call invocations) so audit
             # / Police queries never conflate the two paths. FE renders
             # both identically via `_TOOL_LIKE_KINDS` in manager-chat.js.
-            case WebSearchEngine.generate_search_queries(command.content, user_msgs, :confidant) do
+            case WebSearchEngine.generate_search_queries(command.content, user_msgs, :confidant, memo_hits) do
               {:no_search} ->
                 nil
 
@@ -970,13 +1246,8 @@ defmodule DmhAi.Agent.UserAgent do
             end
           end)
 
-        memo_task =
-          Task.async(fn ->
-            build_memo_context(command.content, user_msgs, user_id)
-          end)
-
         pre_timeout = AgentSettings.confidant_pre_step_timeout_ms()
-        {Task.await(web_task, pre_timeout), Task.await(memo_task, pre_timeout)}
+        {Task.await(web_task, pre_timeout), memo_context}
       else
         {nil, nil}
       end
@@ -1030,9 +1301,7 @@ defmodule DmhAi.Agent.UserAgent do
 
         Task.start(fn -> maybe_compact(session_id, user_id) end)
 
-        Task.start(fn ->
-          ProfileExtractor.extract_and_merge(command.content, full_text, user_id)
-        end)
+        Task.start(fn -> ProfileExtractor.extract_and_merge(user_id) end)
 
       {:ok, ""} ->
         StreamBuffer.clear(session_id, user_id)
@@ -1295,7 +1564,7 @@ defmodule DmhAi.Agent.UserAgent do
 
     Task.start(fn ->
       maybe_compact(session_id, user_id)
-      ProfileExtractor.extract_and_merge(command.content, nil, user_id)
+      ProfileExtractor.extract_and_merge(user_id)
     end)
 
     # Return value is captured by Task's `{ref, result}` message to the
@@ -2690,9 +2959,19 @@ defmodule DmhAi.Agent.UserAgent do
   end
 
   # Confidant memo auto-retrieve. Always embeds + searches — no LLM
-  # gate. The score threshold (`kb_score_threshold`, default 0.55)
-  # acts as the filter. See specs/commands.md §Confidant memo
+  # gate. The retrieval is bounded only by `memo_context_top_k` (the
+  # K in vector ANN). See specs/commands.md § Confidant memo
   # auto-retrieve.
+  #
+  # No score-threshold filter — top-K already bounds the count, and
+  # the downstream consumers (web-search planner + Confidant model)
+  # judge relevance from content. A score floor on top of top-K only
+  # served to hide weak-but-still-best matches from the LLM, which
+  # is the opposite of what we want when the LLM is the smart
+  # filter. Concretely: on small embedders (qwen3-0.6B etc.) and
+  # cross-lingual / unaccented input, a relevant memo can score
+  # ~0.45 — below any reasonable threshold yet clearly the right
+  # match by content. Top-K + LLM judgment handles this correctly.
   #
   # Pronoun resolution falls out implicitly: the embed input
   # concatenates the last 1–2 prior user turns with the current
@@ -2703,15 +2982,34 @@ defmodule DmhAi.Agent.UserAgent do
   # ~10 user turns INCLUDING the current. We drop the last entry
   # (already in `current_content`) and take up to 2 prior.
   #
-  # Returns:
-  #   * a populated `[memo context]` block on hits-above-threshold,
-  #   * an empty-state `[memo context]` block (telling the model
-  #     honestly "we checked, nothing found") on zero hits or no
-  #     hits above threshold,
-  #   * `nil` ONLY on retrieval infrastructure error (embed/search
-  #     RPC failure). The model then proceeds without any block,
-  #     matching pre-feature behavior.
+  # Returns `{memo_block, memo_hits}`:
+  #   * `memo_block` — the formatted `[memo context]` string for the
+  #                    Confidant LLM prompt; populated with all
+  #                    decrypted top-K hits (the framing tells the
+  #                    model "use any that are relevant; ignore the
+  #                    rest"). `nil` only on retrieval infrastructure
+  #                    error (embed / search RPC failure).
+  #   * `memo_hits`  — the same decrypted hits, used by the web-search
+  #                    planner (Rule 0 of `@confidant_prompt`) to skip
+  #                    web search when a memo already answers.
+  #                    Always a list — `[]` on no-key / empty / error.
   defp build_memo_context(current_content, recent_user_msgs, user_id) do
+    # Memo content is AES-GCM ciphertext at rest; we need the user's
+    # MMK to surface plaintext to the model. No key → user is offline
+    # / token expired / never logged in this BE process. Skip the
+    # whole `[memo context]` block in that case (fail soft — the
+    # Confidant turn just answers without memo grounding, exactly as
+    # if the user had no relevant memos saved).
+    case __MODULE__.get_memo_key(user_id) do
+      nil ->
+        {nil, []}
+
+      mmk ->
+        do_build_memo_context(current_content, recent_user_msgs, user_id, mmk)
+    end
+  end
+
+  defp do_build_memo_context(current_content, recent_user_msgs, user_id, mmk) do
     prior =
       recent_user_msgs
       |> Enum.drop(-1)
@@ -2725,28 +3023,62 @@ defmodule DmhAi.Agent.UserAgent do
 
         case VectorDB.search(:memo, embed_text, vec, top_k, {:user, user_id}) do
           {:ok, raw_hits} ->
-            threshold = AgentSettings.kb_score_threshold()
-            hits      = Enum.filter(raw_hits, fn h -> (h.score || 0.0) >= threshold end)
+            hits = Enum.map(raw_hits, &decrypt_memo_hit(&1, mmk)) |> Enum.reject(&is_nil/1)
 
-            score_summary =
-              raw_hits
-              |> Enum.map(fn h ->
-                s = if is_number(h.score), do: Float.round(h.score, 3), else: h.score
-                "#{s}|#{String.slice(h.chunk_text || "", 0, 40) |> String.replace("\n", " ")}"
-              end)
-              |> Enum.join("; ")
+            log_memo_retrieval(embed_text, raw_hits, hits)
 
-            Logger.info("[Memo auto] embed=#{inspect(String.slice(embed_text, 0, 80))} raw=#{length(raw_hits)} kept=#{length(hits)} threshold=#{threshold} hits=[#{score_summary}]")
-
-            format_memo_context_block(hits)
+            {format_memo_context_block(hits), hits}
 
           {:error, reason} ->
-            Logger.warning("[Memo auto] search failed: #{inspect(reason, limit: 80)}")
-            nil
+            line = "[Memo auto] search failed: #{inspect(reason, limit: 80)}"
+            Logger.warning(line)
+            DmhAi.SysLog.log(line)
+            {nil, []}
         end
 
       {:error, reason} ->
-        Logger.warning("[Memo auto] embed failed: #{inspect(reason, limit: 80)}")
+        line = "[Memo auto] embed failed: #{inspect(reason, limit: 80)}"
+        Logger.warning(line)
+        DmhAi.SysLog.log(line)
+        {nil, []}
+    end
+  end
+
+  # Diagnostic line for memo retrieval — mirrored to SysLog so
+  # operators can grep `system.log` to see actual cosine scores per
+  # hit when tuning embedders / debugging recall.
+  defp log_memo_retrieval(embed_text, raw_hits, hits) do
+    score_summary =
+      hits
+      |> Enum.map(fn h ->
+        s = if is_number(h.score), do: Float.round(h.score, 3), else: h.score
+        "#{s}|#{String.slice(h.chunk_text || "", 0, 40) |> String.replace("\n", " ")}"
+      end)
+      |> Enum.join("; ")
+
+    line =
+      "[Memo auto] embed=#{inspect(String.slice(embed_text, 0, 80))} " <>
+        "raw=#{length(raw_hits)} decrypted=#{length(hits)} hits=[#{score_summary}]"
+
+    Logger.info(line)
+    DmhAi.SysLog.log(line)
+  end
+
+  # Decrypt a single memo hit. Mirrors `Tools.FetchMemo.decrypt_hit` —
+  # tag mismatch drops the row (corruption / cross-user attempt);
+  # legacy plaintext (pre-encryption migration) is trusted as-is.
+  defp decrypt_memo_hit(hit, mmk) do
+    # Map.get/3 (NOT dot-access) — BM25-leg hits historically didn't
+    # carry chunk_idx; missing-key raises BadKeyError on `hit.chunk_idx`,
+    # which crashes the whole memo retrieval. Defensive fallback to 0
+    # means tag-mismatched rows just drop cleanly via :bad_key below.
+    src_id = Map.get(hit, :source_id) || ""
+    idx    = Map.get(hit, :chunk_idx) || 0
+    case DmhAi.MemoCrypto.decrypt_chunk(hit.chunk_text, mmk, src_id, idx) do
+      {:ok, plain}                  -> %{hit | chunk_text: plain}
+      {:error, :legacy_plaintext}   -> hit
+      {:error, :bad_key}            ->
+        Logger.warning("[Memo auto] decrypt failed for source_id=#{inspect(src_id)} idx=#{inspect(idx)} — row dropped")
         nil
     end
   end

@@ -59,6 +59,13 @@ function applyLanguage() {
         } else if (typeof UIManager._updateModeLabel === 'function') {
             UIManager._updateModeLabel();
         }
+        // Re-render the chat so the empty-session splash picks up the
+        // new locale's `splashConfidant` / `splashAssistant` strings.
+        // Non-empty sessions are unaffected (renderChat early-returns
+        // out of the splash branch when messages.length > 0).
+        if (typeof UIManager.renderChat === 'function' && UIManager.currentSession) {
+            UIManager.renderChat();
+        }
     }
 }
 
