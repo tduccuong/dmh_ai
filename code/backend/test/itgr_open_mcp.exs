@@ -122,10 +122,13 @@ defmodule Itgr.OpenMcp do
     end)
   end
 
-  # Stub helper: unauthed initialize returns 401 — server is gated.
+  # Stub helper: unauthed initialize returns 401 with a non-Bearer
+  # WWW-Authenticate scheme — server is API-key-gated. The 4th tuple
+  # element is the [{header, value}] list the live transport emits.
   defp stub_gated_server(server_url) do
     T.stub_mcp_transport(fn ^server_url, _req ->
-      {:error, {:status, 401, %{"error" => "unauthorized"}}}
+      {:error, {:status, 401, %{"error" => "unauthorized"},
+                [{"www-authenticate", "ApiKey realm=\"test\""}]}}
     end)
   end
 
@@ -230,32 +233,59 @@ defmodule Itgr.OpenMcp do
   # tool result. We simulate gated/error responses by stubbing the
   # initialize call.
 
+  # Pure-function unit tests for the auth-type classifier. The probe
+  # uses these to drive the connect_fresh routing — Bearer → :oauth,
+  # anything-else-with-a-scheme → :api_key, missing/malformed →
+  # :ambiguous (which causes connect_mcp to bail honestly rather
+  # than emit a setup form).
+  describe "Probe.classify_scheme/1 — WWW-Authenticate routing" do
+    alias DmhAi.MCP.Probe
+
+    test "Bearer scheme → :oauth" do
+      assert Probe.classify_scheme("Bearer realm=\"test\"")                       == :oauth
+      assert Probe.classify_scheme("bearer realm=\"test\"")                       == :oauth
+      assert Probe.classify_scheme("Bearer realm=\"x\", resource=\"https://y\"")  == :oauth
+    end
+
+    test "non-Bearer scheme → :api_key" do
+      assert Probe.classify_scheme("ApiKey realm=\"test\"")     == :api_key
+      assert Probe.classify_scheme("Token realm=\"test\"")      == :api_key
+      assert Probe.classify_scheme("X-API-Key realm=\"test\"")  == :api_key
+    end
+
+    test "missing or malformed → :ambiguous" do
+      assert Probe.classify_scheme(nil) == :ambiguous
+      assert Probe.classify_scheme("")  == :ambiguous
+    end
+  end
+
   describe "probe discrimination via stubbed initialize" do
-    test "initialize 401 → routes through gated path (api_key form)", c do
-      # We can't easily test the auto path's PRM 404 → probe branch
-      # without ALSO stubbing PRM. Instead, drive `auth_method:
-      # "none"` against a gated server and assert it errors out
-      # cleanly — the helper does NOT silently fall through to a
-      # form (that's the cascade's job, not the explicit-method
-      # path's). This gives confidence that the probe + handshake
-      # share predictable error semantics.
+    test "initialize 401 with non-Bearer scheme → api_key form (single-field paste-your-key)", c do
       url = "https://gated.example.test/" <> uid()
       stub_gated_server(url)
 
-      assert {:error, msg} =
-               ConnectMcp.execute(%{"url" => url, "auth_method" => "none"}, ctx(c))
+      assert {:ok, %{status: "needs_setup", form: form}} =
+               ConnectMcp.execute(%{"url" => url}, ctx(c))
 
-      assert msg =~ "no-auth connect failed"
+      # The :api_key path emits the small two-field form (api_key
+      # + auth_header dropdown), NOT the 5-field BYO-OAuth form
+      # (which is gone — admin catalog curation is the path now).
+      field_names = Enum.map(form["fields"], & &1["name"])
+      assert "api_key" in field_names
+      refute "authorization_endpoint" in field_names
+      refute "client_secret" in field_names
     end
 
-    test "initialize transport error → routes through gated path", c do
+    test "initialize transport error → :not_mcp → honest error to model", c do
       url = "https://gated.example.test/" <> uid()
       stub_network_error(url)
 
-      assert {:error, msg} =
-               ConnectMcp.execute(%{"url" => url, "auth_method" => "none"}, ctx(c))
+      assert {:error, msg} = ConnectMcp.execute(%{"url" => url}, ctx(c))
 
-      assert msg =~ "no-auth connect failed"
+      # The error tells the model truthfully that the URL didn't
+      # respond as MCP and it shouldn't retry.
+      assert msg =~ "did not respond as an MCP server"
+      assert msg =~ url
     end
   end
 

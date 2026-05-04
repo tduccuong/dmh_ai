@@ -47,7 +47,9 @@ defmodule DmhAi.Adapters.Http do
       reply_pid:        reply_pid,
       attachment_names: Keyword.get(opts, :attachment_names, []),
       files:            Keyword.get(opts, :files, []),
-      metadata:         Keyword.get(opts, :metadata, %{})
+      metadata:         Keyword.get(opts, :metadata, %{}),
+      timezone:         Keyword.get(opts, :timezone),
+      local_date:       Keyword.get(opts, :local_date)
     }
 
     UserAgent.dispatch_assistant(user_id, command)
@@ -71,7 +73,9 @@ defmodule DmhAi.Adapters.Http do
       image_names: Keyword.get(opts, :image_names, []),
       files:       Keyword.get(opts, :files, []),
       has_video:   Keyword.get(opts, :has_video, false),
-      metadata:    Keyword.get(opts, :metadata, %{})
+      metadata:    Keyword.get(opts, :metadata, %{}),
+      timezone:    Keyword.get(opts, :timezone),
+      local_date:  Keyword.get(opts, :local_date)
     }
 
     UserAgent.dispatch_confidant(user_id, command)

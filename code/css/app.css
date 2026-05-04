@@ -311,14 +311,24 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
 .attachment-chip { display: flex; align-items: center; gap: 5px; background: #141018; border: 1px solid #281e38; border-radius: 5px; padding: 4px 8px; font-size: 12px; color: #d8c0a0; max-width: 200px; }
 .attachment-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .attachment-chip button { background: none; border: none; color: #b098b8; cursor: pointer; font-size: 14px; line-height: 1; padding: 0; flex-shrink: 0; }
-.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.65); display: none; align-items: center; justify-content: center; z-index: 1000; }
+/* Modal overlay sits ABOVE both .settings-overlay (z-index 1000) and
+   .mgr-overlay (1100) so confirm/alert dialogs invoked from inside
+   those panels render on top of them, not underneath. */
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.65); display: none; align-items: center; justify-content: center; z-index: 1200; }
 .modal-overlay.visible { display: flex; }
-.modal { background: #1c1628; border: 1px solid #382850; border-radius: 10px; padding: 28px 24px 20px; width: 360px; max-width: 90vw; box-shadow: 0 16px 48px rgba(0,0,0,0.6); }
-.modal-title { font-size: 15px; font-weight: 600; color: #eee; margin-bottom: 10px; }
-.modal-message { font-size: 14px; color: #a898b8; line-height: 1.5; margin-bottom: 20px; }
-.modal-input { width: 100%; padding: 10px 12px; border-radius: 6px; border: 1px solid #382850; background: #141018; color: #eee; font-size: 14px; margin-bottom: 20px; outline: none; box-sizing: border-box; }
+/* Flex-column so .modal-message can flex: 1 and scroll while the
+   title + input + actions stay anchored. max-height caps the modal
+   to 90vh — content longer than that scrolls within .modal-message. */
+.modal { background: #1c1628; border: 1px solid #382850; border-radius: 10px; padding: 28px 24px 20px; width: 360px; max-width: 90vw; max-height: 90vh; display: flex; flex-direction: column; box-shadow: 0 16px 48px rgba(0,0,0,0.6); }
+/* Wider modal for multi-paragraph confirmations (e.g. browser-tools
+   consent, OAuth catalog editor). Desktop: ~720px so width/height > 1
+   against a typical body. Mobile: clamps to 92vw — near-full-width. */
+.modal.modal-wide { width: 720px; max-width: 92vw; }
+.modal-title { font-size: 15px; font-weight: 600; color: #eee; margin-bottom: 10px; flex: 0 0 auto; }
+.modal-message { font-size: 14px; color: #a898b8; line-height: 1.5; margin-bottom: 20px; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.modal-input { width: 100%; padding: 10px 12px; border-radius: 6px; border: 1px solid #382850; background: #141018; color: #eee; font-size: 14px; margin-bottom: 20px; outline: none; box-sizing: border-box; flex: 0 0 auto; }
 .modal-input:focus { border-color: #c87830; }
-.modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.modal-actions { display: flex; gap: 8px; justify-content: flex-end; flex: 0 0 auto; }
 .about-modal { width: 50vw; max-width: 50vw; }
 @media (max-width: 600px) { .about-modal { width: 100vw; max-width: 100vw; border-radius: 10px 10px 0 0; align-self: flex-end; } }
 .user-profiles-modal { width: 62vw; max-width: 720px; max-height: 80vh; display: flex; flex-direction: column; }
@@ -860,6 +870,23 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
 .mcp-catalog-actions { display: flex; align-items: flex-start; gap: 6px; flex-shrink: 0; }
 .mcp-catalog-add-row { display: flex; gap: 8px; }
 .mcp-catalog-add-row .settings-input { flex: 1 1 auto; }
+
+/* ─── OAuth Catalog admin (parallel structure to MCP) ──────────────────── */
+.oauth-catalog-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.oauth-catalog-row { display: flex; align-items: flex-start; gap: 12px; padding: 10px 12px; background: #1a1228; border: 1px solid #382850; border-radius: 8px; opacity: 0.75; }
+.oauth-catalog-row.enabled { opacity: 1; border-color: #4a3868; }
+.oauth-catalog-info { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.oauth-catalog-name-line { display: flex; align-items: baseline; gap: 8px; }
+.oauth-catalog-name { font-size: 13px; font-weight: 700; color: #e0d0f0; }
+.oauth-catalog-slug { font-size: 10px; color: #786888; font-family: ui-monospace, Menlo, Consolas, monospace; }
+.oauth-catalog-host { font-size: 11px; color: #b0a0c8; font-family: ui-monospace, Menlo, Consolas, monospace; }
+.oauth-catalog-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 2px; }
+.oauth-catalog-pill { font-size: 10px; padding: 2px 8px; border-radius: 10px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
+.oauth-catalog-pill-enabled  { background: #103a20; color: #60d090; border: 1px solid #185a30; }
+.oauth-catalog-pill-disabled { background: #2a1a3a; color: #786888; border: 1px solid #382850; }
+.oauth-catalog-pill-ok       { background: #103a20; color: #60d090; border: 1px solid #185a30; }
+.oauth-catalog-pill-warn     { background: #3a2410; color: #e0a060; border: 1px solid #5a3818; }
+.oauth-catalog-actions { display: flex; align-items: flex-start; gap: 6px; flex-shrink: 0; }
 
 /* ─── Import dialog (shared by Pools + MCP Catalog) ───────────────────── */
 .import-dialog-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 1100; align-items: center; justify-content: center; }

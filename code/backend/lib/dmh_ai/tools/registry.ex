@@ -50,7 +50,9 @@ defmodule DmhAi.Tools.Registry do
     DmhAi.Tools.ConnectMcp,
     DmhAi.Tools.ProvisionSshIdentity,
     DmhAi.Tools.FetchWiki,
-    DmhAi.Tools.FetchMemo
+    DmhAi.Tools.FetchMemo,
+    DmhAi.Tools.BrowserTask,
+    DmhAi.Tools.AuthorizeService
   ]
 
   # Save tools — runtime-only (invoked by `/wiki` and `/memo` commands

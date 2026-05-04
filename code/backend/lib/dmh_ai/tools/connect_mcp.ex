@@ -34,13 +34,17 @@ defmodule DmhAi.Tools.ConnectMcp do
     """
     Attach an MCP server (JSON-RPC `initialize`/`tools/list`/`tools/call`) to the current task.
 
-    Pass `url` for ad-hoc servers, or `slug` to attach an admin-curated catalog entry (see specs/mcp.md §Phase E). The slug path skips the discovery preflight by reusing the auth_kind already classified at admin Enable time. Pass exactly one of url / slug.
+    Pass `url` for ad-hoc connections (resolve the URL via fetch_wiki → web_search → ask the user; never invent URLs from service names), or `slug` for an admin-curated catalog entry. Pass exactly one of url / slug.
 
-    `auth_method` (default `"auto"`): `"auto"` (OAuth 2.1 + RFC 9728/8414 discovery), `"api_key"` (returns needs_setup form), `"oauth"` (manual, returns needs_setup form), `"none"` (no auth).
+    The runtime detects auth automatically by probing the server — you do NOT pick an auth method. The probe outcome routes the flow:
+    - server is open → connected immediately.
+    - server speaks OAuth 2.1 (Bearer challenge) → automatic OAuth flow with auth_url returned to the user.
+    - server uses a static API key (non-Bearer challenge) → single-field form prompts the user for the key.
+    - URL did not respond as MCP → `{:error, ...}` with an honest reason; tell the user the URL isn't an MCP server, don't retry.
 
-    Returns: `{status: "connected", alias, tools}` | `{status: "needs_auth", alias, auth_url}` | `{status: "needs_setup", alias, form}`. Last two are chain-terminating.
+    Returns: `{status: "connected", alias, tools}` | `{status: "needs_auth", alias, auth_url}` | `{status: "needs_setup", alias, form}` | `{:error, reason}`. The first three are chain-terminating.
 
-    Tools detach on `complete_task`/`cancel_task`; a new task re-calls `connect_mcp` (re-attach is fast).
+    Tools detach on `complete_task` / `cancel_task`; a new task re-calls `connect_mcp` (re-attach is fast).
     """
   end
 
@@ -54,20 +58,15 @@ defmodule DmhAi.Tools.ConnectMcp do
         properties: %{
           url: %{
             type: "string",
-            description: "MCP server URL. Use this for ad-hoc connections — pass `slug` instead to use a catalog entry."
+            description: "MCP server URL. Use this for ad-hoc connections — pass `slug` instead to use a catalog entry. Resolve the URL via fetch_wiki → web_search → ask the user. Never invent URLs from service names."
           },
           slug: %{
             type: "string",
-            description: "Slug of an admin-curated catalog entry (must be enabled). Resolves to the row's mcp_url; auth_method defaults from the catalog's auth_kind."
+            description: "Slug of an admin-curated catalog entry (must be enabled). Resolves to the row's mcp_url; the auth flow defaults from the catalog's auth_kind."
           },
           alias: %{
             type: "string",
             description: "Optional friendly label for this connection. Defaults to the slug, or a label derived from the URL."
-          },
-          auth_method: %{
-            type: "string",
-            enum: ["auto", "api_key", "oauth", "none"],
-            description: "How the server authenticates clients. Defaults to 'auto' (or the catalog's auth_kind when slug is given)."
           }
         }
       }
@@ -82,16 +81,14 @@ defmodule DmhAi.Tools.ConnectMcp do
     slug        = Map.get(args, "slug")
     raw_url     = Map.get(args, "url")
     alias_in    = Map.get(args, "alias")
-    auth_method_in = Map.get(args, "auth_method")
 
     # Slug → catalog lookup. Resolves to the row's `mcp_url` and
-    # defaults `auth_method` from `auth_kind` so the chat path
-    # walks straight into the right auth flow without re-probing.
-    with {:ok, url, auth_method} <- resolve_endpoint(slug, raw_url, auth_method_in),
-         :ok                      <- require_ctx(user_id, session_id),
-         :ok                      <- validate_url(url),
-         :ok                      <- validate_auth_method(auth_method),
-         {:ok, anchor_task_id}    <- resolve_anchor(session_id, anchor_n) do
+    # surfaces the catalog's pre-classified `auth_kind` so the chat
+    # path can skip re-probing.
+    with {:ok, url, catalog_auth_kind} <- resolve_endpoint(slug, raw_url),
+         :ok                            <- require_ctx(user_id, session_id),
+         :ok                            <- validate_url(url),
+         {:ok, anchor_task_id}          <- resolve_anchor(session_id, anchor_n) do
       alias_ = alias_or_default(alias_in, slug || url)
 
       case already_authorized_and_attach(user_id, anchor_task_id, alias_) do
@@ -99,27 +96,18 @@ defmodule DmhAi.Tools.ConnectMcp do
           {:ok, payload}
 
         :continue ->
-          case auth_method do
-            "auto"    -> connect_fresh(user_id, session_id, anchor_task_id, url, alias_)
-            "api_key" -> api_key_setup_form(anchor_task_id, url, alias_)
-            "oauth"   -> oauth_manual_setup_form(anchor_task_id, url, alias_)
-            "none"    -> no_auth_connect(user_id, anchor_task_id, alias_, url)
-          end
+          connect_fresh(user_id, session_id, anchor_task_id, url, alias_, catalog_auth_kind)
       end
     end
   end
 
-  defp validate_auth_method(m) when m in ["auto", "api_key", "oauth", "none"], do: :ok
-  defp validate_auth_method(other), do: {:error, "invalid auth_method: #{inspect(other)} (use auto | api_key | oauth | none)"}
-
-  # Resolve `(slug | url) + optional auth_method_in` to a concrete
-  # `{:ok, url, auth_method}` triple. Slug looks up the admin
-  # catalog; the row must exist AND be enabled. Auth method
-  # precedence: explicit arg > catalog's auth_kind > "auto".
-  defp resolve_endpoint(nil, nil, _),
+  # Resolve `(slug | url)` to a concrete `{:ok, url, catalog_auth_kind}`
+  # triple. Slug looks up the admin catalog; the row must exist AND be
+  # enabled. URL path returns nil for catalog_auth_kind (probe decides).
+  defp resolve_endpoint(nil, nil),
     do: {:error, "connect_mcp requires either `url` or `slug`"}
 
-  defp resolve_endpoint(slug, _url, auth_method_in) when is_binary(slug) and slug != "" do
+  defp resolve_endpoint(slug, _url) when is_binary(slug) and slug != "" do
     case DmhAi.MCP.Catalog.get_by_slug(slug) do
       nil ->
         {:error, "unknown catalog slug: #{inspect(slug)}"}
@@ -128,16 +116,15 @@ defmodule DmhAi.Tools.ConnectMcp do
         {:error, "catalog entry `#{slug}` is disabled — admin must Enable it first"}
 
       %{mcp_url: url, auth_kind: kind} ->
-        method = auth_method_in || kind || "auto"
-        {:ok, url, method}
+        {:ok, url, kind}
     end
   end
 
-  defp resolve_endpoint(_, url, auth_method_in) when is_binary(url) and url != "" do
-    {:ok, url, auth_method_in || "auto"}
+  defp resolve_endpoint(_, url) when is_binary(url) and url != "" do
+    {:ok, url, nil}
   end
 
-  defp resolve_endpoint(_, _, _),
+  defp resolve_endpoint(_, _),
     do: {:error, "connect_mcp requires a non-empty `url` or `slug`"}
 
   defp resolve_anchor(session_id, n) when is_binary(session_id) and is_integer(n) do
@@ -207,45 +194,67 @@ defmodule DmhAi.Tools.ConnectMcp do
 
   # ── fresh-connection cascade — probe-first ────────────────────────────
   #
-  # We don't know up front what kind of server lives at this URL: an
-  # open MCP, a gated OAuth-protected MCP, an MCP that needs an API
-  # key, or — sometimes — a non-MCP URL the user pasted by mistake.
-  # The cascade decides by ASKING the URL via an unauthenticated
-  # `initialize`:
+  # The runtime classifies the URL via an unauthenticated `initialize`:
   #
   #   * 200 + Mcp-Session-Id  → open MCP. Run `no_auth_connect`.
-  #   * 401                   → gated MCP. Inspect `WWW-Authenticate`
-  #     for the RFC 9728 §5.1 `resource_metadata=<PRM URL>` hint; that
-  #     URL takes us straight to the right PRM doc without guessing
-  #     the well-known location. Without the hint, fall back to the
-  #     RFC 8615 well-known construction.
+  #   * 401 + Bearer scheme   → OAuth-gated MCP. Run the OAuth flow
+  #     using PRM/ASM discovery (RFC 9728 / RFC 8414). The auth_type
+  #     comes straight from the WWW-Authenticate scheme — we never
+  #     guess from URL shape.
+  #   * 401 + non-Bearer scheme → static API key. Show a single-field
+  #     "paste your key" form.
+  #   * 401 + ambiguous header → bail honestly; admin curation can fix.
   #   * Anything else (404, 5xx, 200-with-non-MCP-body, transport error)
-  #     → this URL is not an MCP server. Fall to the api_key form,
-  #     where the message tells the model: if this is a regular REST
-  #     API or webhook, abandon `connect_mcp` and call it directly
-  #     with `run_script` + curl.
+  #     → URL is not an MCP server. Return an honest {:error, ...} so
+  #     the model can tell the user truthfully (per the resolution
+  #     cascade in system_prompt.ex § connect_mcp).
   #
-  # The OAuth-2 dance only fires when the server explicitly tells us
-  # it's OAuth-protected — we don't ASSUME OAuth from URL shape.
+  # When the user came in via a `slug` from the admin catalog, the
+  # catalog row already classified auth_kind once at admin Enable
+  # time — we honor it without re-probing.
 
-  defp connect_fresh(user_id, session_id, anchor_task_id, server_url, alias_) do
+  defp connect_fresh(user_id, session_id, anchor_task_id, server_url, alias_, catalog_auth_kind)
+
+  defp connect_fresh(user_id, _session_id, anchor_task_id, server_url, alias_, "none") do
+    no_auth_connect(user_id, anchor_task_id, alias_, server_url)
+  end
+
+  defp connect_fresh(user_id, session_id, anchor_task_id, server_url, alias_, "oauth") do
+    gated_oauth_flow(user_id, session_id, anchor_task_id, server_url, alias_, nil)
+  end
+
+  defp connect_fresh(_user_id, _session_id, anchor_task_id, server_url, alias_, "api_key") do
+    api_key_setup_form(anchor_task_id, server_url, alias_)
+  end
+
+  defp connect_fresh(user_id, session_id, anchor_task_id, server_url, alias_, _no_catalog) do
     case DmhAi.MCP.Probe.classify(server_url) do
       :open ->
         no_auth_connect(user_id, anchor_task_id, alias_, server_url)
 
-      {:gated, prm_hint_url} ->
-        gated_oauth_flow(user_id, session_id, anchor_task_id, server_url, alias_, prm_hint_url)
+      {:gated, %{auth_type: :oauth, prm_hint: prm_hint}} ->
+        gated_oauth_flow(user_id, session_id, anchor_task_id, server_url, alias_, prm_hint)
+
+      {:gated, %{auth_type: :api_key}} ->
+        api_key_setup_form(anchor_task_id, server_url, alias_)
+
+      {:gated, %{auth_type: :ambiguous}} ->
+        {:error,
+         "The server at #{server_url} responded with a 401 challenge that didn't identify its auth scheme. The runtime can't pick OAuth vs API-key automatically. Tell the user this URL appears to be an MCP server but uses a non-standard auth scheme; if they have credentials, they may need to provide a different URL or ask their admin to curate this server."}
 
       :not_mcp ->
-        api_key_setup_form(anchor_task_id, server_url, alias_)
+        {:error,
+         "The URL #{server_url} did not respond as an MCP server (the unauthenticated `initialize` probe failed or returned a non-MCP body). Tell the user truthfully that this URL isn't reachable as an MCP endpoint. Either the URL is wrong, the service doesn't expose MCP, or the server is down. Don't retry the same URL — ask the user for a different URL, search again, or suggest an alternative approach."}
     end
   end
 
   # OAuth dance: fetch PRM (using the hint URL when the server gave
   # one, otherwise falling back to the RFC 8615 well-known path),
   # then ASM, then DCR/CIMD/manual client identification, then
-  # `init_flow`. Falls through to the api_key form on any expected
-  # failure (PRM not found, ASM missing, no DCR, etc.).
+  # `init_flow`. Returns honest `{:error, ...}` on any failure rather
+  # than falling to a manual setup form — admin catalog curation is
+  # the proper home for in-house MCP servers that need BYO-OAuth
+  # endpoints.
   defp gated_oauth_flow(user_id, session_id, anchor_task_id, server_url, alias_, prm_hint_url) do
     with {:ok, prm}    <- fetch_prm_via_hint_or_well_known(server_url, prm_hint_url),
          auth_server    = hd(prm.authorization_servers),
@@ -261,15 +270,12 @@ defmodule DmhAi.Tools.ConnectMcp do
       }}
     else
       :needs_manual ->
-        api_key_setup_form(anchor_task_id, server_url, alias_)
+        {:error,
+         "The server at #{server_url} requires OAuth, but its authorization server does not support Dynamic Client Registration. The runtime can't auto-register a client. For in-house servers like this, ask an admin to add this server to the curated catalog (where OAuth client credentials can be configured once for all users)."}
 
-      # PRM unreachable / malformed / 404; ASM missing or non-spec.
-      # The server gated on us but doesn't publish enough metadata
-      # for the auto-OAuth path. Drop to the api_key form so the
-      # user can paste a key (or the model can re-call with
-      # `auth_method: "oauth"` for a manual OAuth dance).
       {:error, _reason} ->
-        api_key_setup_form(anchor_task_id, server_url, alias_)
+        {:error,
+         "The server at #{server_url} appears to be OAuth-gated, but auto-discovery failed (the Protected Resource Metadata document or the Authorization Server Metadata document was unreachable, missing, or malformed). The auto-OAuth path needs both. Ask the user to verify the URL, or have an admin add this server to the curated catalog."}
     end
   end
 
@@ -344,35 +350,6 @@ defmodule DmhAi.Tools.ConnectMcp do
       alias:   alias_,
       form:    form,
       message: "Paste this service's API key and pick which auth header it expects. If you pick the wrong one the server returns 401 and you can retry with another. If this URL isn't an MCP server but a regular REST API or webhook, abandon `connect_mcp` and call the API directly with `run_script` + `curl`."
-    }}
-  end
-
-  # ── oauth (manual) form (no-discovery OAuth servers) ──────────────────
-
-  defp oauth_manual_setup_form(anchor_task_id, url, alias_) do
-    form = build_setup_form(
-      [
-        %{name: "authorization_endpoint", label: "Authorization URL",         type: "text",     secret: false},
-        %{name: "token_endpoint",         label: "Token URL",                  type: "text",     secret: false},
-        %{name: "scopes",                  label: "Scopes (space-separated)",   type: "text",     secret: false},
-        %{name: "client_id",               label: "Client ID",                  type: "text",     secret: false},
-        %{name: "client_secret",           label: "Client Secret",              type: "password", secret: true}
-      ],
-      "Continue to authorize",
-      %{
-        "auth_method"        => "oauth",
-        "alias"              => alias_,
-        "server_url"         => url,
-        "canonical_resource" => url,
-        "anchor_task_id"     => anchor_task_id
-      }
-    )
-
-    {:ok, %{
-      status:  "needs_setup",
-      alias:   alias_,
-      form:    form,
-      message: "Provide this service's OAuth endpoints and client credentials. After submit, the form is replaced with an authorization link to click."
     }}
   end
 

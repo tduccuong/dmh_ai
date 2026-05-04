@@ -57,7 +57,9 @@ defmodule DmhAi.Agent.Police do
     "delete_creds",
     "request_input",
     "connect_mcp",
-    "provision_ssh_identity"
+    "provision_ssh_identity",
+    "browser_task",
+    "authorize_service"
   ]
 
   @abs_path_regex ~r{(?:^|\s|[=<>|;`'"(])(/[^\s"'`;&|<>()\$\\]+)}

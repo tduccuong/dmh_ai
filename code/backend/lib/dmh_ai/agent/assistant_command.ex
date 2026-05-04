@@ -49,6 +49,19 @@ defmodule DmhAi.Agent.AssistantCommand do
     files: [],
 
     # Adapter-specific extras (e.g. %{telegram_message_id: 42})
-    metadata: %{}
+    metadata: %{},
+
+    # User's IANA timezone string (e.g. "Europe/Berlin"), reported
+    # by the FE via the `X-Timezone` header on each request. nil
+    # for non-HTTP paths (periodic-task scheduler, Telegram adapter)
+    # that have no per-request browser context — those fall back to
+    # UTC in the system prompt, with a note to the model.
+    timezone: nil,
+
+    # User's local YYYY-MM-DD as the FE computed it in the user's
+    # zone, reported via `X-Local-Date`. The FE has full tz math
+    # (browser); the BE doesn't ship a tzdata DB and stays out of
+    # zone arithmetic. nil → fall back to UTC date.
+    local_date: nil
   ]
 end

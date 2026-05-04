@@ -29,7 +29,12 @@ const Modal = {
     },
 
     _close: function(value) {
-        document.getElementById('modal-overlay').classList.remove('visible');
+        var overlay = document.getElementById('modal-overlay');
+        overlay.classList.remove('visible');
+        // Reset transient body classes so the next open doesn't
+        // inherit modal-wide (or any future per-shape class).
+        var body = overlay.querySelector('.modal');
+        if (body) body.classList.remove('modal-wide');
         if (this._resolve) { this._resolve(value); this._resolve = null; }
     },
 
@@ -46,6 +51,32 @@ const Modal = {
         okBtn.className = 'modal-btn modal-btn-ok';
         document.getElementById('modal-cancel').style.display = 'none';
         document.getElementById('modal-overlay').classList.add('visible');
+        var self = this;
+        return new Promise(function(resolve) { self._resolve = resolve; });
+    },
+
+    // Like alertHtml but with a Cancel button; resolves with `true` on
+    // OK, `null` on Cancel/Escape/backdrop-click. Used for consent
+    // gates and similar legal-text confirmations where the body is
+    // multi-paragraph HTML and a one-button "OK" wouldn't capture the
+    // user's actual yes/no choice.
+    confirmHtml: function(title, html, okLabel, cancelLabel) {
+        var overlay = document.getElementById('modal-overlay');
+        document.getElementById('modal-title').textContent = title;
+        document.getElementById('modal-message').innerHTML = html;
+        document.getElementById('modal-input').style.display = 'none';
+        var okBtn = document.getElementById('modal-ok');
+        okBtn.textContent = okLabel || t('ok');
+        okBtn.className = 'modal-btn modal-btn-ok';
+        var cancelBtn = document.getElementById('modal-cancel');
+        cancelBtn.textContent = cancelLabel || t('cancel');
+        cancelBtn.style.display = '';
+        // Wider body for multi-paragraph confirmations — narrower
+        // 360px default makes legal text scroll endlessly. _close
+        // strips this class so subsequent alert/confirm don't inherit.
+        var body = overlay.querySelector('.modal');
+        if (body) body.classList.add('modal-wide');
+        overlay.classList.add('visible');
         var self = this;
         return new Promise(function(resolve) { self._resolve = resolve; });
     },

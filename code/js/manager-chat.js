@@ -248,6 +248,12 @@ function renderProgressRow(row) {
     } else if (row.kind === 'chain_aborted') {
         // ⏹ matches the sidebar Stop button the user just clicked.
         icon.textContent = '\u23F9';
+    } else if (row.kind === 'browser_consent_required') {
+        // \ud83d\udd12 \u2014 the full text + Accept/Cancel buttons live in a modal
+        // (auto-opened on first poll; re-openable via clicking the
+        // row). The chat-side row is a one-liner pointer, not the
+        // legal-text body.
+        icon.textContent = '\ud83d\udd12';
     } else {
         icon.textContent = '\u00b7';
     }
@@ -335,6 +341,19 @@ function renderProgressRow(row) {
         if (row.status === 'pending' && subs.length > winSize) {
             _ensureSubLabelSlider();
         }
+    }
+
+    // Browser-consent rows are clickable: re-opens the modal so the
+    // user can review and accept (or revoke) at any time after the
+    // first auto-pop has been dismissed.
+    if (row.kind === 'browser_consent_required') {
+        div.style.cursor = 'pointer';
+        div.title = 'Click to review and accept browser-tools terms';
+        div.addEventListener('click', function() {
+            if (typeof UIManager !== 'undefined' && typeof UIManager.openBrowserConsentModal === 'function') {
+                UIManager.openBrowserConsentModal();
+            }
+        });
     }
 
     return div;

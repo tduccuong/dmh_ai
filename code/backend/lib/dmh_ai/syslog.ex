@@ -24,8 +24,14 @@ defmodule DmhAi.SysLog do
 
   @spec log(String.t()) :: :ok
   def log(msg) when is_binary(msg) do
+    # Defense-in-depth: every line that hits system.log goes through
+    # secret redaction, so a careless `SysLog.log("token=#{tok}")`
+    # call site doesn't leak. The original `msg` is never persisted —
+    # only the redacted form. See `DmhAi.Util.Redact`.
+    redacted = DmhAi.Util.Redact.call(msg)
+
     if pid = Process.whereis(__MODULE__) do
-      GenServer.cast(pid, {:log, msg})
+      GenServer.cast(pid, {:log, redacted})
     end
     :ok
   end

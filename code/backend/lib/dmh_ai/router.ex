@@ -200,6 +200,32 @@ defmodule DmhAi.Router do
     end
   end
 
+  # ── Admin: curated OAuth services ────────────────────────────────────────
+
+  get "/admin/oauth_catalog" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      DmhAi.Handlers.AdminOAuthCatalog.list(conn, user)
+    end
+  end
+
+  post "/admin/oauth_catalog" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      DmhAi.Handlers.AdminOAuthCatalog.create(conn, user)
+    end
+  end
+
+  put "/admin/oauth_catalog/:id" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      DmhAi.Handlers.AdminOAuthCatalog.update(conn, user, id)
+    end
+  end
+
+  delete "/admin/oauth_catalog/:id" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      DmhAi.Handlers.AdminOAuthCatalog.delete(conn, user, id)
+    end
+  end
+
   get "/admin/wiki-seeds" do
     with {:ok, conn, user} <- check_auth(conn) do
       AdminSeeds.list(conn, user)
@@ -506,6 +532,31 @@ defmodule DmhAi.Router do
   put "/user/fact-counts" do
     with {:ok, conn, user} <- check_auth(conn) do
       Auth.put_user_fact_counts(conn, user)
+    end
+  end
+
+  # GET /auth/me/browser-consent — return current consent state +
+  # canonical text/hash for FE display.
+  get "/auth/me/browser-consent" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      Auth.get_browser_consent(conn, user)
+    end
+  end
+
+  # POST /auth/me/browser-consent — record acceptance. Body:
+  # `{"text_hash": "<sha256 hex>"}`. The hash MUST equal the current
+  # canonical hash; mismatch is rejected (the FE was showing stale text).
+  post "/auth/me/browser-consent" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      Auth.post_browser_consent(conn, user)
+    end
+  end
+
+  # DELETE /auth/me/browser-consent — revoke. Nulls both columns; the
+  # next browser_task invocation will re-prompt.
+  delete "/auth/me/browser-consent" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      Auth.delete_browser_consent(conn, user)
     end
   end
 

@@ -47,6 +47,10 @@ const I18n = {
     _strings: {
         en: {
             retry: 'Retry', clear: 'Clear', send: 'Send', cancel: 'Cancel', ok: 'OK', stopGen: 'Stop', onTask: 'on task',
+            browserConsentTitle: 'Browser tools — please read',
+            browserConsentAccept: 'I understand and accept',
+            browserConsentEnabled: 'Browser tools enabled.',
+            browserConsentError: 'Could not record acceptance. Please try again from Settings.',
             update: 'Update', rename: 'Rename', delete_: 'Delete', download: '⬇ Download',
             newSession: '+ New Session', newChat: 'New chat',
             typePlaceholder: 'Type a message and click Send or press Ctrl-Enter...', typePlaceholderShort: 'Type a message...', attachFile: 'Attach file',
@@ -95,6 +99,7 @@ const I18n = {
             aiModelSettings: 'AI Model Settings',
             wikiSeedsAdmin: 'Wiki Seeds',
             mcpCatalogAdmin: 'MCP Catalog',
+            oauthCatalogAdmin: 'Curated Services',
             multimediaSection: 'Multimedia', videoDetailLabel: 'Video analysis depth',
             videoDetailLow: 'Low (4 frames)', videoDetailMedium: 'Medium (8 frames)', videoDetailHigh: 'High (12 frames)',
             processingVideo: 'Processing video, may take a while…', analyzingVideo: 'Analyzing video, may take a while…',
@@ -129,6 +134,10 @@ const I18n = {
         },
         vi: {
             retry: 'Thử lại', clear: 'Xóa', send: 'Gửi', cancel: 'Hủy', ok: 'OK', stopGen: 'Dừng', onTask: 'trên task',
+            browserConsentTitle: 'Công cụ trình duyệt — vui lòng đọc',
+            browserConsentAccept: 'Tôi đã đọc và đồng ý',
+            browserConsentEnabled: 'Đã bật công cụ trình duyệt.',
+            browserConsentError: 'Không thể ghi nhận chấp thuận. Vui lòng thử lại từ Cài đặt.',
             update: 'Cập nhật', rename: 'Đổi tên', delete_: 'Xóa', download: '⬇ Tải về',
             newSession: '+ Phiên mới', newChat: 'Cuộc trò chuyện mới',
             typePlaceholder: 'Nhập tin nhắn và nhấn Gửi hoặc Ctrl-Enter...', typePlaceholderShort: 'Nhập tin nhắn...', attachFile: 'Đính kèm tệp',
@@ -177,6 +186,7 @@ const I18n = {
             aiModelSettings: 'Cài đặt mô hình AI',
             wikiSeedsAdmin: 'Hạt giống Wiki',
             mcpCatalogAdmin: 'Danh mục MCP',
+            oauthCatalogAdmin: 'Dịch vụ tích hợp',
             multimediaSection: 'Đa phương tiện', videoDetailLabel: 'Độ chi tiết phân tích video',
             videoDetailLow: 'Thấp (4 khung)', videoDetailMedium: 'Trung bình (8 khung)', videoDetailHigh: 'Cao (12 khung)',
             processingVideo: 'Đang xử lý video, có thể mất một lúc…', analyzingVideo: 'Đang phân tích video, có thể mất một lúc…',
@@ -211,6 +221,10 @@ const I18n = {
         },
         de: {
             retry: 'Wiederholen', clear: 'Löschen', send: 'Senden', cancel: 'Abbrechen', ok: 'OK', stopGen: 'Stopp', onTask: 'bei Aufgabe',
+            browserConsentTitle: 'Browser-Tools — bitte lesen',
+            browserConsentAccept: 'Ich verstehe und akzeptiere',
+            browserConsentEnabled: 'Browser-Tools aktiviert.',
+            browserConsentError: 'Bestätigung konnte nicht gespeichert werden. Bitte erneut über Einstellungen versuchen.',
             update: 'Aktualisieren', rename: 'Umbenennen', delete_: 'Löschen', download: '⬇ Herunterladen',
             newSession: '+ Neue Sitzung', newChat: 'Neuer Chat',
             typePlaceholder: 'Nachricht eingeben und auf Senden klicken oder Strg-Enter drücken...', typePlaceholderShort: 'Nachricht eingeben...', attachFile: 'Datei anhängen',
@@ -259,6 +273,7 @@ const I18n = {
             aiModelSettings: 'KI-Modell-Einstellungen',
             wikiSeedsAdmin: 'Wiki-Quellen',
             mcpCatalogAdmin: 'MCP-Katalog',
+            oauthCatalogAdmin: 'Kuratierte Dienste',
             multimediaSection: 'Multimedia', videoDetailLabel: 'Videoanalyse-Tiefe',
             videoDetailLow: 'Niedrig (4 Frames)', videoDetailMedium: 'Mittel (8 Frames)', videoDetailHigh: 'Hoch (12 Frames)',
             processingVideo: 'Video wird verarbeitet, das kann einen Moment dauern…', analyzingVideo: 'Video wird analysiert, das kann einen Moment dauern…',
@@ -293,6 +308,10 @@ const I18n = {
         },
         es: {
             retry: 'Reintentar', clear: 'Limpiar', send: 'Enviar', cancel: 'Cancelar', ok: 'OK', stopGen: 'Detener', onTask: 'en la tarea',
+            browserConsentTitle: 'Herramientas de navegador — léelo',
+            browserConsentAccept: 'Lo entiendo y acepto',
+            browserConsentEnabled: 'Herramientas de navegador activadas.',
+            browserConsentError: 'No se pudo registrar la aceptación. Inténtalo de nuevo desde Ajustes.',
             update: 'Actualizar', rename: 'Renombrar', delete_: 'Eliminar', download: '⬇ Descargar',
             newSession: '+ Nueva sesión', newChat: 'Nueva conversación',
             typePlaceholder: 'Escribe un mensaje y haz clic en Enviar o presiona Ctrl-Enter...', typePlaceholderShort: 'Escribe un mensaje...', attachFile: 'Adjuntar archivo',
@@ -341,6 +360,7 @@ const I18n = {
             aiModelSettings: 'Configuración de modelos IA',
             wikiSeedsAdmin: 'Semillas de Wiki',
             mcpCatalogAdmin: 'Catálogo MCP',
+            oauthCatalogAdmin: 'Servicios curados',
             multimediaSection: 'Multimedia', videoDetailLabel: 'Profundidad de análisis de vídeo',
             videoDetailLow: 'Baja (4 fotogramas)', videoDetailMedium: 'Media (8 fotogramas)', videoDetailHigh: 'Alta (12 fotogramas)',
             processingVideo: 'Procesando vídeo, puede tardar un momento…', analyzingVideo: 'Analizando vídeo, puede tardar un momento…',
@@ -375,6 +395,10 @@ const I18n = {
         },
         fr: {
             retry: 'Réessayer', clear: 'Effacer', send: 'Envoyer', cancel: 'Annuler', ok: 'OK', stopGen: 'Arrêter', onTask: 'sur la tâche',
+            browserConsentTitle: 'Outils navigateur — à lire',
+            browserConsentAccept: 'J\'ai compris et j\'accepte',
+            browserConsentEnabled: 'Outils navigateur activés.',
+            browserConsentError: 'Impossible d\'enregistrer l\'acceptation. Réessayez depuis Paramètres.',
             update: 'Mettre à jour', rename: 'Renommer', delete_: 'Supprimer', download: '⬇ Télécharger',
             newSession: '+ Nouvelle session', newChat: 'Nouvelle conversation',
             typePlaceholder: 'Tapez un message et cliquez sur Envoyer ou appuyez sur Ctrl-Entrée...', typePlaceholderShort: 'Tapez un message...', attachFile: 'Joindre un fichier',
@@ -423,6 +447,7 @@ const I18n = {
             aiModelSettings: 'Paramètres des modèles IA',
             wikiSeedsAdmin: 'Sources Wiki',
             mcpCatalogAdmin: 'Catalogue MCP',
+            oauthCatalogAdmin: 'Services curés',
             multimediaSection: 'Multimédia', videoDetailLabel: 'Profondeur d\'analyse vidéo',
             videoDetailLow: 'Faible (4 images)', videoDetailMedium: 'Moyen (8 images)', videoDetailHigh: 'Élevé (12 images)',
             processingVideo: 'Traitement de la vidéo, cela peut prendre un moment…', analyzingVideo: 'Analyse de la vidéo, cela peut prendre un moment…',
@@ -551,9 +576,22 @@ const Auth = {
 
 function apiFetch(url, options) {
     options = options || {};
+    options.headers = options.headers || {};
     if (Auth.token) {
-        options.headers = options.headers || {};
         options.headers['Authorization'] = 'Bearer ' + Auth.token;
+    }
+    // Send the browser's IANA timezone and locally-computed date on every
+    // request. The BE's chat handler reads X-Timezone / X-Local-Date and
+    // threads them into the system prompt so the model interprets clock
+    // times ("9:00 May 11") as the user's local time and uses the right
+    // timeZone parameter on calendar / scheduling APIs. The Sweden locale
+    // gives an unambiguous YYYY-MM-DD format — never US M/D/YYYY.
+    try {
+        var tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        if (tz) options.headers['X-Timezone'] = tz;
+        options.headers['X-Local-Date'] = new Date().toLocaleDateString('sv-SE');
+    } catch (e) {
+        // Older browsers / no Intl support → BE falls back to UTC date.
     }
     return fetch(url, options);
 }

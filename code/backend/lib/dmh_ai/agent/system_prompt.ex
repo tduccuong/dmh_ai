@@ -31,11 +31,12 @@ defmodule DmhAi.Agent.SystemPrompt do
     has_video          = Keyword.get(opts, :has_video, false)
     image_descriptions = Keyword.get(opts, :image_descriptions, [])
     video_descriptions = Keyword.get(opts, :video_descriptions, [])
-    date               = Date.utc_today() |> Date.to_string()
+    timezone           = Keyword.get(opts, :timezone)
+    local_date         = Keyword.get(opts, :local_date)
 
     [
       confidant_base(),
-      "\n\nToday's date: #{date}.",
+      time_context_section(timezone, local_date),
       if(has_video, do: video_hint(), else: ""),
       if(image_descriptions != [], do: image_descriptions_section(image_descriptions), else: ""),
       if(video_descriptions != [], do: video_descriptions_section(video_descriptions), else: ""),
@@ -52,12 +53,13 @@ defmodule DmhAi.Agent.SystemPrompt do
   """
   @spec generate_assistant(keyword()) :: String.t()
   def generate_assistant(opts \\ []) do
-    profile = Keyword.get(opts, :profile, "")
-    date    = Date.utc_today() |> Date.to_string()
+    profile    = Keyword.get(opts, :profile, "")
+    timezone   = Keyword.get(opts, :timezone)
+    local_date = Keyword.get(opts, :local_date)
 
     [
       assistant_base(),
-      "\n\nToday's date: #{date}.",
+      time_context_section(timezone, local_date),
       if(profile != "", do: profile_section(profile), else: "")
     ]
     |> IO.iodata_to_binary()
@@ -146,7 +148,7 @@ defmodule DmhAi.Agent.SystemPrompt do
     - **DO, DON'T TEACH** — when the user asks you to DO something, the only acceptable replies are: *"I did it [result]"*, *"I'm blocked: [specific block]"*, or *"I need to know: [specific question]"* (when proceeding requires a routing decision the user owns). Never substitute manual / UI / "here are the steps" instructions for actually using a tool. Sole exception: the user's literal message contains "how do I…", "show me how", "explain the steps to…".
     - **NO PHANTOM OUTCOMES** — never report a result (created / completed / paused / cancelled / sent / done) in text without first emitting the corresponding tool call in the same turn.
     - **NO BOOKKEEPING IN FINAL TEXT** — final reply is the ANSWER, not a system receipt. No `Task (N): …`, no `✓ Done`, no `[used: ...]`, no JSON echoes.
-    - **HONEST BLOCKERS** — distinguish *"the tool returned a definitive no"* (auth denied, scope missing, endpoint absent) from *"my call may be malformed"* (parameter mismatch, invented method). Different fixes for the user.
+    - **HONEST BLOCKERS** — distinguish a definitive *no* (auth denied, scope/service missing, endpoint absent) from a malformed call (parameter mismatch, invented method). On a definitive *no*: close with `complete_task`, blocker as `task_result` — no numbered *how to fix* walkthrough.
     - **DON'T REFRAME THE ASK** — if probes confirm you can't deliver what the user requested, STOP and surface it. Don't silently substitute a smaller version. A single failed probe doesn't "confirm" — try at least one alternative OR ask first.
     </hard_constraints>
 
@@ -165,10 +167,11 @@ defmodule DmhAi.Agent.SystemPrompt do
     </intent_matrix>
 
     <task_completion>
-    Before ending the chain, ask: *"Does the user need to reply before the objective can be delivered?"*
+    End the chain with one of:
+    - `complete_task(...)` — objective met, OR a definitive blocker hit. `task_result` is the one-line answer or named blocker.
+    - Plain text + `ongoing` — only when the user must reply IN-BAND (your prior turn asked a question or emitted `request_input`).
 
-    - **No** → MUST call `complete_task(task_num, task_result, task_title?)`. `task_result` is the one-line outcome for the sidebar.
-    - **Yes** → leave `ongoing`. The user's reply opens a new chain still scoped to this task.
+    Out-of-band homework (enable a setting in another console, install a package, get a key from someone) is NOT in-band — close with the blocker as `task_result`. An `ongoing` task with no in-band trigger never closes itself.
     </task_completion>
 
     <pivot_rule>
@@ -261,6 +264,14 @@ defmodule DmhAi.Agent.SystemPrompt do
     Retry the original action with what you learned. Cap: 2–3 lookup-retry rounds. After that, stop and ask the user ONE specific question — don't keep guessing.
     </research_loop>
 
+    <reading_tool_results>
+    Anchor every tool result against the user's original question. The tool returns DATA; the user asked a QUESTION; your job is the translation. After each result, ask yourself: *"given this, what is the answer the user wants?"*
+
+    An empty / null / zero / "no records" result is data — usually the literal answer to the question. Read it that way and don't retry the same call expecting something different.
+
+    Once you have enough across the tool calls to answer, compile the natural-language reply by combining what each result contributes. Never emit raw response bodies (`{}`, `[]`, JSON dumps) as final text — the user asked a question, not for a payload.
+    </reading_tool_results>
+
     <external_apis>
     **Order — use, ask, or search.** If the user gave you the entry point (URL / endpoint / command), use it directly. If not, ask for the one concrete piece you need. Only if the user doesn't know either: `web_search` for *how to start*.
 
@@ -316,23 +327,27 @@ defmodule DmhAi.Agent.SystemPrompt do
     </attachments>
 
     <connect_mcp>
-    `connect_mcp(url)` is ONLY for actual MCP servers (speaks JSON-RPC `initialize` / `tools/list` / `tools/call`).
+    `connect_mcp(url, alias?)` attaches an MCP server (services that speak JSON-RPC `initialize` / `tools/list` / `tools/call`) to the current task.
 
-    **Do NOT use for**:
-    - Webhooks (auth tokens in path, e.g. `…/rest/<id>/<webhook>/`).
-    - REST APIs / OAuth-protected endpoints that aren't MCP servers.
-    - Anything described as "REST API", "endpoint", "webhook" without the word "MCP".
+    **You must resolve a concrete URL before calling.** When the user names a service rather than typing a URL, run this resolution cascade — IN ORDER, stopping at the first that yields an authoritative URL:
 
-    → For those, drop to `<external_apis>`.
+    1. **`fetch_wiki`** — the operator's curated KB may already document the service's MCP endpoint for this deployment. Try this first.
+    2. **`web_search`** — search for the service's MCP endpoint. Trust only authoritative sources (the service's own documentation page, a well-known directory of MCP servers).
+    3. **Ask the user honestly.** Tell them you couldn't find a connect URL through your KB or the web; ask whether they have one. Explain *why* you're asking — *"I need a connect URL to authorize this service, but my searches didn't return a clear one"* — not just *"give me a URL"*.
 
-    For real MCP URLs, `connect_mcp(url, alias?)` returns:
-    - `{status: "needs_auth", auth_url}` → relay `auth_url` as a clickable link, end chain. OAuth callback auto-resumes.
+    **Never invent a URL from a service name.** Inventing leads to a non-MCP probe failure and wasted turns.
+
+    `connect_mcp` returns one of:
     - `{status: "connected", tools}` → tools are live this chain as `<alias>.<tool_name>`.
-    - `{status: "needs_setup", form}` → relay the inline form.
+    - `{status: "needs_auth", auth_url}` → relay `auth_url` as a clickable link, end chain. OAuth callback auto-resumes.
+    - `{status: "needs_setup", form}` → relay the inline form (single-field API-key prompt).
+    - `{:error, reason}` — the URL didn't probe as MCP, or auto-discovery failed. Tell the user honestly what happened (the reason explains it); don't retry the same URL.
 
-    Don't pair `connect_mcp` with other tool calls — `needs_auth` / `needs_setup` end the chain.
+    Don't pair `connect_mcp` with other tool calls — every non-`connected` shape is chain-terminating.
 
     **`[needs re-auth]`** in `## Authorized MCP services` — stale creds. Tools are NOT in your catalog. Call `connect_mcp(url: "<URL from that row>")` to redo OAuth. Don't try to invoke `<alias>.<tool>` from a `[needs re-auth]` row.
+
+    **When the service isn't MCP at all** (most consumer apps don't expose MCP today): don't use `connect_mcp`. Tell the user the service isn't reachable through your direct integration path, and offer alternatives — search the web for the public information they need, or wait for a different integration to be built.
     </connect_mcp>
 
     <ssh>
@@ -343,6 +358,18 @@ defmodule DmhAi.Agent.SystemPrompt do
       - **Authorized-keys path**: relay the public key + `mkdir/echo/chmod` snippet for the user to run on the remote.
     - Subsequent calls: `status: "ready"` + `private_key_path` → `ssh -i <path> <user>@<host>`.
     </ssh>
+
+    <authenticated_rest_apis>
+    For OAuth-protected REST APIs that aren't MCP — this is the common case for popular services with native APIs (the operator has wired up an OAuth catalog entry for them):
+
+    1. **Resolve the API URL.** Cascade: training → `fetch_wiki` → `web_search` → ask. Never invent URLs from service names.
+    2. **Try `lookup_creds(target: "oauth:<host>")` first.** When a fresh token exists, use it directly: `run_script` with curl + `Authorization: Bearer $access_token`.
+    3. **No token in lookup_creds → call `authorize_service(target: <host>)`.** The runtime checks the catalog. If the host is registered, it returns `{status: "needs_auth", auth_url}` — relay the auth_url as a clickable link, end the chain. The OAuth callback auto-resumes the chain after the user authorizes; on the next turn `lookup_creds` returns a fresh token.
+    4. **`authorize_service` returns `{:error, ...}` when the host isn't in the catalog** — most consumer services aren't pre-wired in fresh deployments. Tell the user honestly that this service isn't currently integrated, and offer alternatives (browser-driven access once those tools ship; web_search for public information; honest decline). Don't ask the user for OAuth endpoints or client secrets — operators set those up, not users.
+    5. **401 mid-call** (your stored token rejected the request): re-call `authorize_service(target: <host>)` to refresh / re-auth, then retry curl with the new token.
+
+    Never invent OAuth endpoints from a service's brand name. The catalog is the only source of truth for which services this deployment can authorize.
+    </authenticated_rest_apis>
 
     <output_formatting>
     Final reply is the ANSWER. Strip task numbers, tool names, status markers, and "Result:" prefixes before emitting.
@@ -386,6 +413,35 @@ defmodule DmhAi.Agent.SystemPrompt do
       "the user uploaded — not a photo collection. Never describe them as " <>
       "\"a series of images\", \"a collection of images\", or similar. " <>
       "Always refer to the subject as \"the video\" or \"this video\"."
+  end
+
+  # Date + timezone context. Both `timezone` (IANA name from
+  # `Intl.DateTimeFormat().resolvedOptions().timeZone`) and
+  # `local_date` (YYYY-MM-DD as the FE computed it in the user's
+  # zone) come from `X-Timezone` / `X-Local-Date` request headers.
+  # nil → fall back to UTC date with a note (periodic-task and
+  # non-HTTP adapter paths have no per-request browser context).
+  defp time_context_section(timezone, local_date) do
+    utc_date = Date.utc_today() |> Date.to_string()
+
+    cond do
+      is_binary(timezone) and is_binary(local_date) ->
+        "\n\nUser timezone: #{timezone}.\nToday's date in your local time: #{local_date}." <>
+          "\n\nWhen the user mentions a clock time without a timezone qualifier, " <>
+          "treat it as their local time (the timezone above). For calendar / scheduling " <>
+          "APIs that accept a `timeZone` parameter (Google Calendar's `events.list`, etc.), " <>
+          "pass the user's IANA zone so the server interprets the times correctly. " <>
+          "When you must convert to UTC manually, account for daylight-saving offsets " <>
+          "for the date in question."
+
+      is_binary(timezone) ->
+        "\n\nUser timezone: #{timezone}. Today's UTC date: #{utc_date}." <>
+          "\n\nWhen the user mentions a clock time without a timezone qualifier, " <>
+          "treat it as their local time (the timezone above)."
+
+      true ->
+        "\n\nToday's UTC date: #{utc_date}. (No client timezone — assume UTC unless the user specifies otherwise.)"
+    end
   end
 
   defp profile_section(profile) do

@@ -19,6 +19,7 @@ defmodule DmhAi.DB.Init do
     DmhAi.Agent.AgentSettings.migrate_legacy_model_keys()
     seed_admin()
     seed_pools()
+    seed_oauth_catalog()
   end
 
   # Additive schema migrations — idempotent. Safe on fresh installs because
@@ -92,6 +93,33 @@ defmodule DmhAi.DB.Init do
     # treats it as 0 and counts every user message as unprocessed on
     # first run.
     add_column_if_missing("users", "last_profile_extracted_msg_ts", "INTEGER")
+
+    # Browser-tools consent gate. NULL on both columns = user has never
+    # accepted; tool returns {:status, "needs_consent"} and emits a
+    # browser_consent_required progress row. `browser_consent_text_hash`
+    # is sha256 of the consent text the user accepted; if the canonical
+    # text changes hash, the user is re-prompted on the next browser
+    # action. Revoking from Settings nulls both columns. See Tools.BrowserTask.
+    add_column_if_missing("users", "browser_consent_at", "INTEGER")
+    add_column_if_missing("users", "browser_consent_text_hash", "TEXT")
+
+    # Generic OAuth orchestration: distinguish MCP-flavored OAuth (the
+    # original use case — token attaches to MCP.Registry on callback)
+    # from generic-service OAuth (token persists at oauth:<host> and
+    # the model picks it up via lookup_creds for run_script + curl).
+    # Pre-existing rows default to 'mcp' which matches their semantics.
+    add_column_if_missing("pending_oauth_states", "flow_kind", "TEXT NOT NULL DEFAULT 'mcp'")
+
+    # Per-provider OAuth quirks. Most OAuth 2.x providers share the
+    # same auth-URL + token-exchange shape, but each typically needs
+    # one or two extra parameters (Google's `access_type=offline`,
+    # Atlassian's `audience=api.atlassian.com`, Reddit's
+    # `duration=permanent`, Auth0/Okta's `audience=<api-id>`, etc.).
+    # Two JSON maps cover these:
+    #   extra_auth_params  → appended to the authorization URL
+    #   extra_token_params → appended to the token-exchange + refresh body
+    add_column_if_missing("oauth_catalog", "extra_auth_params",  "TEXT NOT NULL DEFAULT '{}'")
+    add_column_if_missing("oauth_catalog", "extra_token_params", "TEXT NOT NULL DEFAULT '{}'")
 
     # One-shot sweep of legacy memo entries from kb_fts. Memo writes
     # since the encryption deploy skip kb_fts (FTS over ciphertext is
@@ -173,6 +201,8 @@ defmodule DmhAi.DB.Init do
       role TEXT NOT NULL DEFAULT 'user',
       profile TEXT DEFAULT '',
       last_profile_extracted_msg_ts INTEGER,
+      browser_consent_at INTEGER,
+      browser_consent_text_hash TEXT,
       password_changed INTEGER DEFAULT 0,
       deleted INTEGER DEFAULT 0,
       created_at INTEGER
@@ -347,11 +377,39 @@ defmodule DmhAi.DB.Init do
       asm_json           TEXT NOT NULL,
       scopes             TEXT,
       redirect_uri       TEXT NOT NULL,
+      flow_kind          TEXT NOT NULL DEFAULT 'mcp',
       created_at         INTEGER NOT NULL,
       expires_at         INTEGER NOT NULL
     )
     """)
     query!(Repo, "CREATE INDEX IF NOT EXISTS idx_pending_oauth_states_user ON pending_oauth_states (user_id)")
+
+    # Curated OAuth-service catalog. Operator-managed: each row is a
+    # service the operator has registered an OAuth app with (Google
+    # Cloud Console, Slack app config, etc.). The model never sees the
+    # client_id/client_secret; it just calls authorize_service(<host>)
+    # and the runtime picks the right entry by `host_match`. Per-user
+    # tokens land in user_credentials at target="oauth:<host>" — no
+    # admin involvement per user.
+    query!(Repo, """
+    CREATE TABLE IF NOT EXISTS oauth_catalog (
+      id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+      slug                   TEXT NOT NULL UNIQUE,
+      display_name           TEXT NOT NULL,
+      host_match             TEXT NOT NULL,
+      authorization_endpoint TEXT NOT NULL,
+      token_endpoint         TEXT NOT NULL,
+      scopes_default         TEXT NOT NULL DEFAULT '[]',
+      client_id              TEXT NOT NULL DEFAULT '',
+      client_secret          TEXT,
+      extra_auth_params      TEXT NOT NULL DEFAULT '{}',
+      extra_token_params     TEXT NOT NULL DEFAULT '{}',
+      enabled                INTEGER NOT NULL DEFAULT 0,
+      created_ts             INTEGER NOT NULL,
+      updated_ts             INTEGER NOT NULL
+    )
+    """)
+    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_oauth_catalog_host ON oauth_catalog (host_match)")
 
     # Per-user authorized external services. One row per service the
     # user has ever authorized. Survives sessions, restarts, task
@@ -829,6 +887,130 @@ defmodule DmhAi.DB.Init do
         "accounts" => []
       }
     ]
+  end
+
+  # Curated OAuth catalog seed. Two-layer load:
+  #
+  #   1. priv/oauth_catalog_default.json — shipped with every release.
+  #      Pre-populates ~20 popular providers (Google, Microsoft,
+  #      GitHub, Slack, etc.), each with `enabled = 0` and empty
+  #      credentials. The operator opens the admin UI and fills in
+  #      client_id/secret to activate.
+  #   2. Optional operator override file (env var or /data path)
+  #      UPSERTed by slug — replaces the priv default for matching
+  #      slugs and adds new ones.
+  #
+  # Only runs when the table is empty (idempotent for redeploys).
+  # Subsequent edits go through the admin UI, not the seed loader.
+  defp seed_oauth_catalog do
+    %{rows: [[count]]} = query!(Repo, "SELECT COUNT(*) FROM oauth_catalog")
+    if count == 0, do: do_seed_oauth_catalog()
+  end
+
+  defp do_seed_oauth_catalog do
+    priv_seeds     = load_priv_oauth_catalog_seeds()
+    operator_seeds = load_operator_oauth_catalog_seeds()
+
+    # Operator overrides win on slug collision. Build a slug-keyed
+    # map so the order is irrelevant; final list preserves operator
+    # additions on top of priv defaults.
+    by_slug =
+      Enum.reduce(priv_seeds ++ operator_seeds, %{}, fn entry, acc ->
+        Map.put(acc, entry["slug"], entry)
+      end)
+
+    final = Map.values(by_slug)
+
+    if final == [] do
+      Logger.info("[DB.Init] no oauth_catalog seeds found; catalog starts empty")
+    else
+      now = System.os_time(:millisecond)
+
+      Enum.each(final, fn entry -> insert_oauth_catalog_row(entry, now) end)
+    end
+  end
+
+  defp insert_oauth_catalog_row(entry, now) do
+    scopes_json     = entry["scopes_default"] |> List.wrap() |> Jason.encode!()
+    extra_auth      = (entry["extra_auth_params"]  || %{}) |> Jason.encode!()
+    extra_token     = (entry["extra_token_params"] || %{}) |> Jason.encode!()
+
+    try do
+      query!(Repo, """
+      INSERT INTO oauth_catalog
+        (slug, display_name, host_match,
+         authorization_endpoint, token_endpoint,
+         scopes_default, client_id, client_secret,
+         extra_auth_params, extra_token_params,
+         enabled, created_ts, updated_ts)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      """, [
+        entry["slug"],
+        entry["display_name"],
+        entry["host_match"],
+        entry["authorization_endpoint"],
+        entry["token_endpoint"],
+        scopes_json,
+        entry["client_id"] || "",
+        entry["client_secret"],
+        extra_auth,
+        extra_token,
+        if(entry["enabled"] == true, do: 1, else: 0),
+        now,
+        now
+      ])
+
+      Logger.info("[DB.Init] seeded oauth_catalog: #{entry["slug"]}")
+    rescue
+      e ->
+        Logger.warning("[DB.Init] oauth_catalog seed `#{entry["slug"]}` failed: #{Exception.message(e)}")
+    end
+  end
+
+  # Read the always-shipped seed file from `priv/`. Lives inside the
+  # release artifact so every fresh install has the popular providers
+  # pre-listed (disabled, no secrets).
+  defp load_priv_oauth_catalog_seeds do
+    path = Path.join(:code.priv_dir(:dmh_ai), "oauth_catalog_default.json")
+    read_oauth_catalog_seed_file(path, log_missing: false)
+  end
+
+  # Look for an OPTIONAL operator-managed override file. Path order:
+  #   1. $DMHAI_OAUTH_CATALOG_SEED — explicit override
+  #   2. /data/oauth_catalog.json — operator file bind-mounted into the container
+  #   3. ./temp/oauth_catalog.json — repo-local copy used in dev
+  # Operators normally use the admin UI; this file path is for
+  # bulk imports / disaster recovery. Returns [] when no file is found.
+  defp load_operator_oauth_catalog_seeds do
+    [
+      System.get_env("DMHAI_OAUTH_CATALOG_SEED"),
+      "/data/oauth_catalog.json",
+      "temp/oauth_catalog.json"
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.find(&File.exists?/1)
+    |> case do
+      nil  -> []
+      path -> read_oauth_catalog_seed_file(path, log_missing: true)
+    end
+  end
+
+  defp read_oauth_catalog_seed_file(path, opts) do
+    if File.exists?(path) do
+      try do
+        %{"services" => services} = path |> File.read!() |> Jason.decode!()
+        List.wrap(services)
+      rescue
+        e ->
+          Logger.warning("[DB.Init] oauth_catalog seed file #{path} unreadable (#{Exception.message(e)})")
+          []
+      end
+    else
+      if Keyword.get(opts, :log_missing, false) do
+        Logger.info("[DB.Init] oauth_catalog seed file #{path} not present; skipping")
+      end
+      []
+    end
   end
 
   defp seed_admin do

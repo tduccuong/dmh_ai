@@ -48,6 +48,12 @@ defmodule DmhAi.Agent.ConfidantCommand do
     has_video: false,
 
     # Adapter-specific extras (e.g. %{telegram_message_id: 42})
-    metadata: %{}
+    metadata: %{},
+
+    # User's IANA timezone (e.g. "Europe/Berlin") and local
+    # YYYY-MM-DD, reported by the FE via `X-Timezone` and
+    # `X-Local-Date` headers. nil for non-HTTP paths.
+    timezone: nil,
+    local_date: nil
   ]
 end

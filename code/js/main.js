@@ -565,6 +565,10 @@ const UIManager = {
             document.getElementById('user-dropdown').classList.remove('open');
             SettingsModal.open('page-mcp-catalog');
         });
+        document.getElementById('user-oauth-catalog-btn').addEventListener('click', function() {
+            document.getElementById('user-dropdown').classList.remove('open');
+            SettingsModal.open('page-oauth-catalog');
+        });
 
         // Manage users close
         document.getElementById('mgr-close').addEventListener('click', function() {
@@ -599,6 +603,7 @@ const UIManager = {
             document.getElementById('user-conv-settings-btn').style.display = isAdmin ? '' : 'none';
             document.getElementById('user-wiki-seeds-btn').style.display = isAdmin ? '' : 'none';
             document.getElementById('user-mcp-catalog-btn').style.display = isAdmin ? '' : 'none';
+            document.getElementById('user-oauth-catalog-btn').style.display = isAdmin ? '' : 'none';
             document.getElementById('user-settings-sep').style.display = isAdmin ? '' : 'none';
         }
         this.updatePwWarning();

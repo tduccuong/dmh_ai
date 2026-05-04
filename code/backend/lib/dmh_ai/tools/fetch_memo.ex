@@ -9,8 +9,12 @@ defmodule DmhAi.Tools.FetchMemo do
   `user_id` comes from execution context, never from the model. Cross-
   user memo leakage is impossible by construction.
 
-  Dynamically gated — only present in the catalog on turns whose user
-  message starts with `/memo`. See specs/commands.md.
+  Available on every Assistant turn — the model retrieves stored
+  memos whenever they're relevant to the user's question, no
+  slash-prefix required. The browser-tools consent flow surfaces
+  this so users know memo content is reachable from automated
+  flows. (Confidant has its own automatic memo retrieval pre-step in
+  `ContextEngine.build_memo_context/3`, separate from this tool.)
   """
 
   @behaviour DmhAi.Tools.Behaviour

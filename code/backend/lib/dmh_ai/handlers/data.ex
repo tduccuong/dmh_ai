@@ -838,6 +838,9 @@ defmodule DmhAi.Handlers.Data do
   end
 
   defp do_oauth_callback(conn, state, code) do
+    DmhAi.SysLog.log("[OAUTH] callback hit state=#{shorten(state)} code=#{shorten(code)}")
+    Logger.info("[OAuth.callback] state=#{shorten(state)} code=#{shorten(code)}")
+
     case DmhAi.Auth.OAuth2.complete_flow(state, code) do
       {:ok, %{
         user_id:            user_id,
@@ -847,24 +850,41 @@ defmodule DmhAi.Handlers.Data do
         canonical_resource: resource,
         server_url:         server_url,
         asm:                asm,
-        tokens:             tokens
+        tokens:             tokens,
+        flow_kind:          flow_kind
       }} ->
-        finalize_connection(user_id, session_id, anchor_task_id, alias_, resource, server_url, asm, tokens)
+        DmhAi.SysLog.log("[OAUTH] callback exchange OK flow_kind=#{flow_kind} alias=#{alias_} user=#{user_id} session=#{session_id}")
+
+        case flow_kind do
+          "oauth_service" ->
+            finalize_oauth_service(user_id, session_id, alias_, resource, server_url, asm, tokens)
+
+          _ ->
+            finalize_connection(user_id, session_id, anchor_task_id, alias_, resource, server_url, asm, tokens)
+        end
+
         oauth_html_response(conn, 200, "✓ Authorized — return to your chat.")
 
       {:error, :not_found} ->
+        DmhAi.SysLog.log("[OAUTH] callback FAIL state=#{shorten(state)} reason=not_found (state row gone)")
         oauth_html_response(conn, 404, "Unknown or already-used state. Start the authorization again from chat.")
 
       {:error, :expired} ->
+        DmhAi.SysLog.log("[OAUTH] callback FAIL state=#{shorten(state)} reason=expired (state TTL elapsed)")
         oauth_html_response(conn, 410, "The authorization request expired. Start again from chat.")
 
       {:error, reason} when is_binary(reason) ->
+        DmhAi.SysLog.log("[OAUTH] callback FAIL state=#{shorten(state)} reason=#{reason}")
         oauth_html_response(conn, 500, "Authorization failed: #{reason}")
 
       {:error, reason} ->
+        DmhAi.SysLog.log("[OAUTH] callback FAIL state=#{shorten(state)} reason=#{inspect(reason)}")
         oauth_html_response(conn, 500, "Authorization failed: #{inspect(reason)}")
     end
   end
+
+  defp shorten(s) when is_binary(s) and byte_size(s) > 12, do: String.slice(s, 0, 8) <> "…"
+  defp shorten(s), do: s
 
   defp finalize_connection(user_id, session_id, anchor_task_id, alias_, resource, server_url, asm, tokens) do
     cred_payload = %{
@@ -930,6 +950,110 @@ defmodule DmhAi.Handlers.Data do
     case DmhAi.Agent.Supervisor.ensure_started(user_id) do
       {:ok, pid} -> send(pid, {:auto_resume_assistant, session_id})
       _          -> :ok
+    end
+  end
+
+  # Finalizer for generic-service OAuth (flow_kind = "oauth_service").
+  # Same callback URL as MCP, different shape after token exchange:
+  # store at oauth:<host_match>, kind oauth2_service, no MCP Registry
+  # attach. The model picks tokens up via lookup_creds and uses them
+  # in run_script + curl. `resource` here carries the catalog's
+  # host_match (the unique key the runtime uses for lookups).
+  defp finalize_oauth_service(user_id, session_id, alias_, host_match, server_url, asm, tokens) do
+    # The catalog row is the source of truth for client_id /
+    # client_secret AND the per-provider extra_token_params
+    # (refresh-time quirks like Auth0's `audience`). Stash both on
+    # the credential so the refresh hook (`OAuth2.do_refresh`) has
+    # everything it needs without re-querying the catalog mid-refresh.
+    catalog_row = DmhAi.OAuth.Catalog.get_by_host(host_match)
+
+    {client_id, client_secret, extra_token_params} =
+      case catalog_row do
+        %{client_id: cid, client_secret: csec, extra_token_params: etp} ->
+          {cid, csec, (if is_map(etp), do: etp, else: %{})}
+
+        _ ->
+          DmhAi.SysLog.log("[OAUTH] finalize_oauth_service: catalog miss for host=#{host_match} — refresh will likely fail without client credentials")
+          {nil, nil, %{}}
+      end
+
+    cred_payload = %{
+      "access_token"       => tokens.access_token,
+      "refresh_token"      => tokens.refresh_token,
+      "scope"              => tokens.scope,
+      "token_type"         => tokens.token_type,
+      "server_url"         => server_url,
+      "alias"              => alias_,
+      "host_match"         => host_match,
+      "asm_json"           => Jason.encode!(asm),
+      "extra_token_params" => extra_token_params,
+      "client_id"          => client_id,
+      "client_secret"      => client_secret
+    }
+
+    DmhAi.Auth.Credentials.save(
+      user_id,
+      "oauth:" <> host_match,
+      "oauth2_service",
+      cred_payload,
+      notes: "OAuth connection: #{alias_}",
+      expires_at: tokens.expires_at
+    )
+
+    DmhAi.SysLog.log("[OAUTH] finalize_oauth_service: stored cred user=#{user_id} target=oauth:#{host_match} expires_at=#{inspect(tokens.expires_at)}")
+
+    append_oauth_service_connected_message(session_id, user_id, alias_, host_match)
+
+    case DmhAi.Agent.Supervisor.ensure_started(user_id) do
+      {:ok, pid} ->
+        send(pid, {:auto_resume_assistant, session_id})
+        DmhAi.SysLog.log("[OAUTH] auto_resume dispatched session=#{session_id}")
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp append_oauth_service_connected_message(session_id, user_id, alias_, host_match) do
+    cred_target = "oauth:" <> host_match
+
+    # The content tells the model EXACTLY where its access_token
+    # lives. Without this hint the model often reaches for
+    # `lookup_creds(target: "oauth:<alias>")` (slug-keyed) on its
+    # first try and gets nothing back, then has to re-run
+    # authorize_service to discover that targets are host-keyed.
+    # Naming the cred_target here saves a wasted round-trip.
+    content =
+      "[#{alias_} authorized] Access token is now stored at " <>
+      "`#{cred_target}`. Call `lookup_creds(target: \"#{cred_target}\")` " <>
+      "to read it, then use it as `Authorization: Bearer <access_token>` " <>
+      "in your `run_script` curl."
+
+    case query!(Repo, "SELECT messages FROM sessions WHERE id=? AND user_id=?",
+                [session_id, user_id]) do
+      %{rows: [[msgs_json]]} ->
+        msgs = Jason.decode!(msgs_json || "[]")
+
+        msg = %{
+          "role"    => "user",
+          "content" => content,
+          "ts"      => System.os_time(:millisecond),
+          "kind"    => "service_connected",
+          "service_connected" => %{
+            "alias"       => alias_,
+            "host_match"  => host_match,
+            "cred_target" => cred_target
+          }
+        }
+
+        new_msgs = msgs ++ [msg]
+        now = System.os_time(:millisecond)
+
+        query!(Repo,
+          "UPDATE sessions SET messages=?, updated_at=? WHERE id=? AND user_id=?",
+          [Jason.encode!(new_msgs), now, session_id, user_id])
+
+      _ -> :ok
     end
   end
 
@@ -1167,11 +1291,14 @@ defmodule DmhAi.Handlers.Data do
   defp do_connect_mcp_setup(session_id, user_id, form, values, prog_id) do
     setup = form["setup_payload"] || %{}
 
+    # The only setup form `connect_mcp` emits today is the api_key
+    # form (single-field paste-your-key + auth-header dropdown). The
+    # BYO-OAuth setup form is gone — admin catalog curation is the
+    # path for in-house servers needing manual OAuth endpoints.
     result =
       case setup["auth_method"] do
         "api_key" -> finalize_api_key_setup(setup, values, user_id)
-        "oauth"   -> finalize_oauth_setup(setup, values, user_id, session_id)
-        other     -> {:error, "auth_method '#{inspect(other)}' not yet supported"}
+        other     -> {:error, "auth_method '#{inspect(other)}' not supported"}
       end
 
     DmhAi.Agent.SessionProgress.mark_tool_done(prog_id)
@@ -1179,18 +1306,7 @@ defmodule DmhAi.Handlers.Data do
     msg = build_service_connected_msg(setup, result)
     append_session_user_msg(session_id, user_id, msg)
 
-    # The api_key + error paths are terminal: the chain can resume
-    # with the result. The oauth-manual `:ok` path is NOT terminal —
-    # the user still has to visit auth_url and authorize. The OAuth
-    # callback handler (`finalize_connection`) triggers auto_resume
-    # itself after the token exchange completes, so kicking the
-    # assistant here would either spam an empty turn or race the
-    # callback. Skip it for the auth_url shape.
-    case result do
-      {:ok, %{auth_url: _}} -> :ok
-      _                      -> trigger_auto_resume(user_id, session_id)
-    end
-
+    trigger_auto_resume(user_id, session_id)
     :ok
   rescue
     e ->
@@ -1317,95 +1433,6 @@ defmodule DmhAi.Handlers.Data do
   # path uses. Returns `{:ok, %{alias, auth_url}}` on success — the
   # caller renders the auth_url to the user; the OAuth callback at
   # `/oauth/callback` finishes the token exchange + handshake.
-  def finalize_oauth_setup(setup, values, user_id, session_id) do
-    alias_         = setup["alias"]
-    server_url     = setup["server_url"]
-    canonical      = setup["canonical_resource"] || server_url
-    anchor_task_id = setup["anchor_task_id"]
-
-    auth_endpoint  = trim_or_empty(values["authorization_endpoint"])
-    token_endpoint = trim_or_empty(values["token_endpoint"])
-    scopes_str     = trim_or_empty(values["scopes"])
-    client_id      = trim_or_empty(values["client_id"])
-    client_secret  = trim_or_empty(values["client_secret"])
-
-    cond do
-      auth_endpoint == "" ->
-        {:error, "Authorization URL is required"}
-
-      token_endpoint == "" ->
-        {:error, "Token URL is required"}
-
-      client_id == "" ->
-        {:error, "Client ID is required"}
-
-      not is_binary(anchor_task_id) ->
-        {:error, "setup payload missing anchor_task_id"}
-
-      true ->
-        scopes = if scopes_str == "", do: [], else: String.split(scopes_str, ~r/\s+/, trim: true)
-        secret = if client_secret == "", do: nil, else: client_secret
-
-        # Synthesised ASM — atom keys, matching the shape `Auth.Discovery.fetch_asm/1`
-        # produces, so init_flow + complete_flow + callback are happy.
-        asm = %{
-          issuer:                            auth_endpoint,
-          authorization_endpoint:            auth_endpoint,
-          token_endpoint:                    token_endpoint,
-          scopes_supported:                  scopes,
-          code_challenge_methods_supported:  ["S256"],
-          registration_endpoint:             nil,
-          revocation_endpoint:               nil,
-          grant_types_supported:             ["authorization_code", "refresh_token"]
-        }
-
-        # Save the manual oauth_client row. `finalize_connection` (in
-        # the OAuth callback) reads this back via the
-        # `oauth_client:<auth-server>` target so it can stash
-        # client_id/secret on the token credential payload for
-        # refresh-time use.
-        DmhAi.Auth.Credentials.save(
-          user_id,
-          "oauth_client:" <> auth_endpoint,
-          "oauth_client",
-          %{"client_id" => client_id, "client_secret" => secret},
-          notes: "Manual oauth_client for #{alias_}"
-        )
-
-        redirect_uri = build_oauth_redirect_uri()
-
-        # init_flow either returns `{:ok, %{auth_url, ...}}` or
-        # raises (DB writes go through query!). Exceptions land in
-        # `do_connect_mcp_setup`'s outer rescue, which renders a
-        # clean error message — no extra error branch needed here.
-        {:ok, %{auth_url: auth_url}} =
-          DmhAi.Auth.OAuth2.init_flow(%{
-            user_id:            user_id,
-            session_id:         session_id,
-            anchor_task_id:     anchor_task_id,
-            alias:              alias_,
-            canonical_resource: canonical,
-            server_url:         server_url,
-            asm:                asm,
-            client_id:          client_id,
-            client_secret:      secret,
-            redirect_uri:       redirect_uri,
-            scopes:             scopes
-          })
-
-        {:ok, %{alias: alias_, auth_url: auth_url}}
-    end
-  end
-
-  defp trim_or_empty(nil), do: ""
-  defp trim_or_empty(s) when is_binary(s), do: String.trim(s)
-  defp trim_or_empty(_), do: ""
-
-  defp build_oauth_redirect_uri do
-    DmhAi.Agent.AgentSettings.oauth_redirect_base_url()
-    |> String.trim_trailing("/")
-    |> Kernel.<>("/oauth/callback")
-  end
 
   defp build_service_connected_msg(_setup, {:ok, %{alias: alias_, tools_count: n}}) do
     %{

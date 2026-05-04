@@ -25,6 +25,12 @@ defmodule DmhAi.Agent.LogTrace do
   The model field is filled in by the LLM module.
 
   Enabled/disabled via the `logTrace` admin setting (default: false).
+
+  Tool executions are also captured here when the same setting is
+  enabled — each tool call writes a `[TOOL EXEC]` block with the tool
+  name, args, raw result content, and wall-clock duration. Lets
+  operators correlate "model emitted X tool_call → got Y result"
+  without parsing the next LLM call's message history.
   """
 
   @doc """
@@ -45,6 +51,32 @@ defmodule DmhAi.Agent.LogTrace do
       File.write!(path, entry, [:append])
     rescue
       e -> require(Logger); Logger.warning("[LogTrace] write failed: #{Exception.message(e)}")
+    end
+    :ok
+  end
+
+  @doc """
+  Append one tool-execution block to the global trace log. Mirrors
+  `write/5`'s output format so a grep-friendly timeline of the
+  chain (LLM call → tool exec → LLM call → tool exec → …) reads
+  top-to-bottom.
+
+  `meta`        — map with :origin, :path, :role (typically the chain's
+                  meta with role overridden to "ToolExec")
+  `name`        — tool name string (e.g. "run_script")
+  `args`        — decoded args map
+  `result`      — {:ok, term} | {:error, reason}
+  `duration_ms` — wall-clock milliseconds the tool took
+  """
+  def write_tool(meta, name, args, result, duration_ms) do
+    try do
+      path = log_path()
+      File.mkdir_p!(Path.dirname(path))
+
+      entry = format_tool_entry(meta, name, args, result, duration_ms)
+      File.write!(path, entry, [:append])
+    rescue
+      e -> require(Logger); Logger.warning("[LogTrace] tool write failed: #{Exception.message(e)}")
     end
     :ok
   end
@@ -70,11 +102,16 @@ defmodule DmhAi.Agent.LogTrace do
     tools_block = format_tools(tools)
     resp_block  = format_result(result)
 
-    header <>
+    body =
       "\n[MESSAGES]\n#{msgs_block}\n" <>
       "\n[TOOLS]\n#{tools_block}\n" <>
-      "\n[RESPONSE]\n#{resp_block}\n" <>
-      "\n---\n\n"
+      "\n[RESPONSE]\n#{resp_block}\n"
+
+    # Redact secrets from the message / tool / response blocks before
+    # writing — covers tokens that may be embedded in tool_call args,
+    # tool results, or assistant final text. Header is left
+    # untouched (no secrets there).
+    header <> DmhAi.Util.Redact.call(body) <> "\n---\n\n"
   end
 
   defp format_messages(messages) do
@@ -127,6 +164,51 @@ defmodule DmhAi.Agent.LogTrace do
   defp format_result({:ok, text}) when is_binary(text), do: text
   defp format_result({:error, reason}), do: "ERROR: #{inspect(reason)}"
   defp format_result(other), do: inspect(other)
+
+  defp format_tool_entry(meta, name, args, result, duration_ms) do
+    origin = meta[:origin] || "?"
+    path   = meta[:path]   || "?"
+    role   = meta[:role]   || "ToolExec"
+
+    header =
+      "=== #{iso_now()} " <>
+      "[Origin: #{origin}] [Path: #{path}] [Role: #{role}] [Tool: #{name}] [Duration: #{duration_ms}ms] ===\n"
+
+    args_block   = format_tool_args(args)
+    result_block = format_tool_result(result)
+
+    body =
+      "\n[ARGS]\n#{args_block}\n" <>
+      "\n[RESULT]\n#{result_block}\n"
+
+    # Redact secrets from args (e.g. `TOKEN="ya29.…"` in run_script
+    # scripts) and results (e.g. tokens echoed back by an upstream
+    # API). Header has no secrets.
+    header <> DmhAi.Util.Redact.call(body) <> "\n---\n\n"
+  end
+
+  defp format_tool_args(args) when is_map(args) do
+    case Jason.encode(args, pretty: true) do
+      {:ok, json} -> sanitize_content(json)
+      _           -> inspect(args)
+    end
+  end
+
+  defp format_tool_args(args), do: inspect(args)
+
+  defp format_tool_result({:ok, content}) when is_binary(content), do: sanitize_content(content)
+
+  defp format_tool_result({:ok, content}) when is_map(content) or is_list(content) do
+    case Jason.encode(content, pretty: true) do
+      {:ok, json} -> sanitize_content(json)
+      _           -> inspect(content)
+    end
+  end
+
+  defp format_tool_result({:ok, other}), do: inspect(other)
+  defp format_tool_result({:error, reason}) when is_binary(reason), do: "ERROR: " <> sanitize_content(reason)
+  defp format_tool_result({:error, reason}), do: "ERROR: #{inspect(reason)}"
+  defp format_tool_result(other), do: inspect(other)
 
   defp iso_now do
     DateTime.utc_now() |> DateTime.to_iso8601() |> String.slice(0, 19)

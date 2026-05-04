@@ -11,6 +11,130 @@ defmodule DmhAi.Tools.RunScript do
 
   @max_output 50_000
 
+  # Prepended to every shell script before execution. Three guards:
+  #
+  #   1. `set -o pipefail` — pipeline exit = rightmost non-zero
+  #      stage. Required so the model's `curl … | jq '.field'`
+  #      surfaces curl's HTTP-error exit instead of silently
+  #      collapsing to jq's 0 and stranding the runtime with
+  #      `{:ok, "null"}`.
+  #
+  #   2. `curl()` wrapper — replaces the binary with a shell
+  #      function that:
+  #        a. invokes `command curl --fail-with-body --silent
+  #           --show-error "$@"` so HTTP 4xx/5xx exits 22 with the
+  #           error body still produced (not suppressed by `--fail`).
+  #        b. captures curl's stdout into a tempfile, NOT into the
+  #           outer pipeline. On exit 0, replays the tempfile to
+  #           stdout (so downstream pipes see the body normally).
+  #           On non-zero exit, replays the tempfile to STDERR with a
+  #           `[curl exit N — response body below]` marker. This
+  #           ensures the error envelope reaches the runtime log
+  #           even when the model wrote `… | jq '.field'`, where
+  #           jq would otherwise filter `{"error":...}` to `null`.
+  #
+  #      Why the tempfile (not `tee`): a `tee`-based design races
+  #      against `pipefail` if a downstream stage closes early
+  #      (`… | head -N`), turning curl's success into an exit-141
+  #      SIGPIPE. The tempfile pattern moves capture out of the
+  #      shell pipeline entirely — only curl's own exit code is
+  #      observed.
+  #
+  #      Why the wrapper doesn't fight `-o file` flags: we redirect
+  #      curl's stdout, not its `-o`. If the user passed `-o foo`
+  #      curl writes the body to `foo` and produces nothing on
+  #      stdout, so our tempfile is empty, our `cat` outputs
+  #      nothing, and the user's file has the body — exactly what
+  #      they asked for. Same for `-O`, `-OJ`, `-o-`, etc.
+  #
+  #   3. `wget()` wrapper — same pattern with
+  #      `--content-on-error --tries=1`, which makes 4xx/5xx exit 8
+  #      with the body still produced (and blocks wasteful retries
+  #      on definitive failures).
+  #
+  # ### Opt-outs (model-visible, advertised in `description/0`):
+  #
+  #   - One-call bypass — invoke the binary directly:
+  #         `command curl …`   `/usr/bin/curl …`
+  #         `command wget …`   `/usr/bin/wget …`
+  #     Skips both `--fail-with-body` and the tempfile capture.
+  #     Use when you intentionally want curl to exit 0 on a 404
+  #     (e.g. probing whether a resource exists).
+  #
+  #   - Whole-script bypass for `pipefail` only:
+  #         `set +o pipefail` at the top of the model's script.
+  #     Restores the default pipeline-exit semantics (rightmost
+  #     command's exit code wins). The wrapper functions stay in
+  #     effect — only the `pipefail` interaction is suspended.
+  #
+  # ### Caveats (documented for spec parity with isolation.md):
+  #
+  #   - **`pipefail` + early-close pipelines.** Patterns like
+  #     `cmd | head -N`, `cmd | grep -m1`, `cmd | sed -n '1p; q'`
+  #     will return SIGPIPE-141 instead of 0 when the LEFT side
+  #     produces more data than the RIGHT side reads. This is
+  #     inherent to `pipefail`, not specific to the wrappers.
+  #     In production traces of agentic LLM scripts the pattern
+  #     does not occur — models reach for semantic extraction
+  #     (`jq`, `awk`, `grep` full-read) rather than positional
+  #     truncation. If a script genuinely needs early-close
+  #     truncation, prepend `set +o pipefail` to that script.
+  #
+  #   - **Body buffering on success.** `curl url | tar -xz` no
+  #     longer streams — curl's body is fully buffered to a
+  #     tempfile in `/tmp` before being cat'd into `tar`. Disk
+  #     pressure for multi-GB downloads (sandbox `/tmp` isn't
+  #     sized for bulk transfers); throughput is unchanged for
+  #     the typical small-JSON case. Use `command curl …` for
+  #     bulk streaming.
+  #
+  #   - **Mixed stdout from `--write-out` without `-o`.** A model
+  #     writing `curl -w '%{http_code}' url` (no `-o`) gets the
+  #     body PLUS the write-out template on stdout, in that
+  #     order. Same as bare curl — no behavior change.
+  #
+  #   - **Language-level HTTP clients are not wrapped.** Python
+  #     `requests`, Node `fetch`, etc. need their own status
+  #     handling (`r.raise_for_status()` / equivalent). The
+  #     wrapper is shell-only.
+  #
+  #   - **Non-shell shebangs are not affected.** The prelude is
+  #     skipped for `#!/usr/bin/env python3`, `#!/usr/bin/env
+  #     node`, `#!/usr/bin/env perl`, and any shebang whose
+  #     interpreter is not `sh` / `bash` / `dash` / `ash` /
+  #     `ksh` / `zsh`. See `shebang_kind/1`.
+  @safety_prelude """
+  set -o pipefail
+  curl() {
+    __dmh_body=$(mktemp 2>/dev/null || echo "/tmp/_dmh_curl_$$")
+    command curl --fail-with-body --silent --show-error "$@" >"$__dmh_body"
+    __dmh_rc=$?
+    if [ "$__dmh_rc" -ne 0 ]; then
+      echo "[curl exit $__dmh_rc — response body below]" >&2
+      cat "$__dmh_body" >&2 2>/dev/null
+      rm -f "$__dmh_body"
+      return $__dmh_rc
+    fi
+    cat "$__dmh_body"
+    rm -f "$__dmh_body"
+    return 0
+  }
+  wget() {
+    __dmh_body=$(mktemp 2>/dev/null || echo "/tmp/_dmh_wget_$$")
+    command wget --content-on-error --tries=1 "$@" >"$__dmh_body"
+    __dmh_rc=$?
+    if [ "$__dmh_rc" -ne 0 ]; then
+      echo "[wget exit $__dmh_rc — response body below]" >&2
+      cat "$__dmh_body" >&2 2>/dev/null
+      rm -f "$__dmh_body"
+      return $__dmh_rc
+    fi
+    cat "$__dmh_body"
+    rm -f "$__dmh_body"
+    return 0
+  }
+  """
+
   # Absolute hang guard. Whatever max_runtime the operator set, we
   # will NEVER stay in the poll loop past `max_runtime + this`. The
   # extra grace lets the kill-and-drain dance complete even on a
@@ -38,6 +162,8 @@ defmodule DmhAi.Tools.RunScript do
     Sandbox: Alpine Linux, root. Output cap 50 KB. Pre-installed: #{pre_installed}, plus BusyBox basics. Package manager is `apk` (NOT apt / yum / dnf): install missing with `apk add --no-cache <pkg>`; Python extras via `pip install <pkg>`. On `<cmd>: command not found`, install via `apk` and retry — don't pivot.
 
     Remote SSH: commands BEFORE `ssh` run in the Alpine sandbox (use `apk`); commands INSIDE `ssh "<cmd>"` run on the remote (use that distro's manager).
+
+    HTTP-error visibility: shell scripts run with `set -o pipefail`. `curl` and `wget` are shell-function-wrapped so 4xx/5xx exits non-zero (curl: 22, wget: 8) with the response body replayed on STDERR. A failing pipeline surfaces to you as `exit N` — never extract a field with `jq` and assume `null` means "no records" without first seeing a successful response shape. Opt-outs: `command curl …` / `/usr/bin/curl …` bypass the wrapper for one call (use when a 4xx is the expected probe outcome); `set +o pipefail` at the top of your script restores default pipe semantics (use only if your script needs `cmd | head -N` style early-close pipelines, which would otherwise SIGPIPE-141 under `pipefail`). Language clients (Python `requests`, Node `fetch`, …) are NOT wrapped — call `r.raise_for_status()` or its equivalent before extracting fields.
     """
   end
 
@@ -189,7 +315,7 @@ defmodule DmhAi.Tools.RunScript do
   # `user_workspaces` bind mount; everything outside is RO or
   # blocked by the per-user 0700 fence.
   defp launch(command, run_ctx) do
-    b64 = Base.encode64(command)
+    b64 = Base.encode64(harden(command))
     run_id = :crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)
 
     # mkdir -p the sandbox cwd just in case (idempotent). The
@@ -231,6 +357,40 @@ defmodule DmhAi.Tools.RunScript do
   end
 
   defp shell_escape(s), do: String.replace(to_string(s), "'", "'\\''")
+
+  # Inject `@safety_prelude` so HTTP errors fail loudly. Three branches
+  # by shebang shape: shell-shebang scripts get the prelude inserted
+  # right after the shebang line (so the interpreter still picks the
+  # right shell); shebang-less scripts get it prepended; non-shell
+  # interpreters (python, node, perl, …) are left untouched — the
+  # prelude is shell-only and would crash a Python parser.
+  defp harden(script) when is_binary(script) do
+    case shebang_kind(script) do
+      :none ->
+        @safety_prelude <> script
+
+      :shell ->
+        case String.split(script, "\n", parts: 2) do
+          [shebang, rest] -> shebang <> "\n" <> @safety_prelude <> rest
+          [only]          -> only <> "\n" <> @safety_prelude
+        end
+
+      :other ->
+        script
+    end
+  end
+
+  defp shebang_kind(script) do
+    case String.split(script, "\n", parts: 2) do
+      ["#!" <> rest | _] ->
+        if Regex.match?(~r/\b(sh|bash|dash|ash|ksh|zsh)\b/, rest),
+          do: :shell,
+          else: :other
+
+      _ ->
+        :none
+    end
+  end
 
   # Wrap `System.cmd("docker", ["exec", ...])` in a Task with a hard
   # timeout. Without this, a stuck docker daemon would freeze the
@@ -434,6 +594,10 @@ defmodule DmhAi.Tools.RunScript do
   # `run_script (Ns) → <preview>` decoration during execution. Keep
   # this short — FE truncates further with CSS ellipsis, so the BE
   # only needs to drop obviously useless leading whitespace.
+  #
+  # Redacted via `DmhAi.Util.Redact` before truncation so a
+  # `TOKEN="ya29.…"` first line doesn't render the raw bearer in
+  # the FE's running-tool indicator.
   defp script_preview(command) when is_binary(command) do
     command
     |> String.split("\n", trim: false)
@@ -441,6 +605,7 @@ defmodule DmhAi.Tools.RunScript do
       stripped = String.trim(line)
       if stripped != "", do: stripped, else: nil
     end)
+    |> DmhAi.Util.Redact.call()
     |> String.slice(0, 200)
   end
 end

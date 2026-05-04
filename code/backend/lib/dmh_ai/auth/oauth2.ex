@@ -162,18 +162,20 @@ defmodule DmhAi.Auth.OAuth2 do
           {:ok, %{auth_url: String.t(), state: String.t(), redirect_uri: String.t()}}
           | {:error, term()}
   def init_flow(params) when is_map(params) do
-    user_id        = fetch!(params, :user_id)
-    session_id     = fetch!(params, :session_id)
-    anchor_task_id = fetch!(params, :anchor_task_id)
-    alias_         = fetch!(params, :alias)
-    canonical      = fetch!(params, :canonical_resource)
-    server_url     = fetch!(params, :server_url)
-    asm            = fetch!(params, :asm)
-    client_id      = fetch!(params, :client_id)
-    redirect_uri   = fetch!(params, :redirect_uri)
-    client_secret  = Map.get(params, :client_secret)
-    scopes         = Map.get(params, :scopes) || asm[:scopes_supported] || []
-    ttl_secs       = Map.get(params, :ttl_secs) || DmhAi.Agent.AgentSettings.oauth_state_ttl_secs()
+    user_id           = fetch!(params, :user_id)
+    session_id        = fetch!(params, :session_id)
+    anchor_task_id    = fetch!(params, :anchor_task_id)
+    alias_            = fetch!(params, :alias)
+    canonical         = fetch!(params, :canonical_resource)
+    server_url        = fetch!(params, :server_url)
+    asm               = fetch!(params, :asm)
+    client_id         = fetch!(params, :client_id)
+    redirect_uri      = fetch!(params, :redirect_uri)
+    client_secret     = Map.get(params, :client_secret)
+    scopes            = Map.get(params, :scopes) || asm[:scopes_supported] || []
+    ttl_secs          = Map.get(params, :ttl_secs) || DmhAi.Agent.AgentSettings.oauth_state_ttl_secs()
+    flow_kind         = Map.get(params, :flow_kind, "mcp")
+    extra_auth_params = Map.get(params, :extra_auth_params, %{})
 
     state    = mint_token(32)
     verifier = mint_token(64)
@@ -184,21 +186,23 @@ defmodule DmhAi.Auth.OAuth2 do
     INSERT INTO pending_oauth_states
       (state, user_id, session_id, anchor_task_id, alias, canonical_resource,
        server_url, pkce_verifier, client_id, client_secret, asm_json, scopes,
-       redirect_uri, created_at, expires_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       redirect_uri, flow_kind, created_at, expires_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, [
       state, user_id, session_id, anchor_task_id, alias_, canonical, server_url,
       verifier, client_id, client_secret, Jason.encode!(asm), Jason.encode!(scopes),
-      redirect_uri, now, now + ttl_secs * 1_000
+      redirect_uri, flow_kind, now, now + ttl_secs * 1_000
     ])
 
     auth_url = build_auth_url(asm, %{
-      client_id:     client_id,
-      redirect_uri:  redirect_uri,
-      code_challenge: challenge,
-      state:         state,
-      scopes:        scopes,
-      resource:      canonical
+      client_id:          client_id,
+      redirect_uri:       redirect_uri,
+      code_challenge:     challenge,
+      state:              state,
+      scopes:             scopes,
+      resource:           canonical,
+      flow_kind:          flow_kind,
+      extra_auth_params:  extra_auth_params
     })
 
     {:ok, %{auth_url: auth_url, state: state, redirect_uri: redirect_uri}}
@@ -213,15 +217,34 @@ defmodule DmhAi.Auth.OAuth2 do
       {"redirect_uri",          qp.redirect_uri},
       {"code_challenge",        qp.code_challenge},
       {"code_challenge_method", "S256"},
-      {"state",                 qp.state},
-      {"resource",              qp.resource}
+      {"state",                 qp.state}
     ]
+
+    # `resource` is MCP-spec-mandated (RFC 8707 Resource Indicators).
+    # Generic OAuth providers (Google, Slack, GitHub, etc.) reject it
+    # as an unknown parameter, so we only emit it for the "mcp" flow.
+    params =
+      case Map.get(qp, :flow_kind, "mcp") do
+        "mcp" -> params ++ [{"resource", qp.resource}]
+        _     -> params
+      end
 
     params =
       case qp.scopes do
         []    -> params
         scopes -> params ++ [{"scope", Enum.join(scopes, " ")}]
       end
+
+    # Provider-specific quirks ride on the URL via the catalog row's
+    # extra_auth_params (e.g. Google's access_type=offline,
+    # Atlassian's audience=api.atlassian.com, Reddit's
+    # duration=permanent). Empty map = no-op.
+    params =
+      qp
+      |> Map.get(:extra_auth_params, %{})
+      |> Enum.reduce(params, fn {k, v}, acc ->
+        acc ++ [{to_string(k), to_string(v)}]
+      end)
 
     sep = if String.contains?(base, "?"), do: "&", else: "?"
     base <> sep <> URI.encode_query(params)
@@ -273,7 +296,8 @@ defmodule DmhAi.Auth.OAuth2 do
                 canonical_resource: pending.canonical_resource,
                 server_url:         pending.server_url,
                 asm:                asm,
-                tokens:             tokens
+                tokens:             tokens,
+                flow_kind:          pending.flow_kind
               }}
 
             {:error, _} = err ->
@@ -342,23 +366,23 @@ defmodule DmhAi.Auth.OAuth2 do
 
   @doc """
   Proactive auto-refresh wrapper around `Credentials.lookup/2` for
-  `oauth2_mcp` rows. Saves the 401 round-trip when the access token
-  is known to be expired by reading `is_expired` straight from the
+  any OAuth2-shaped credential — MCP (`oauth2_mcp`, target
+  `mcp:<canonical>`) or generic service (`oauth2_service`, target
+  `oauth:<host>`). Saves the 401 round-trip when the access token is
+  known to be expired by reading `is_expired` straight from the
   credential record.
 
   Behavior:
     * Row missing → `{:error, :missing}`.
-    * Wrong kind (not `oauth2_mcp`) → returns the credential as-is via
-      `{:ok, cred}` (caller decides; e.g. `api_key_mcp` doesn't expire).
-    * `oauth2_mcp` with `is_expired == false` → `{:ok, cred}`.
-    * `oauth2_mcp` with `is_expired == true` → fires `refresh/2`. On
-      success: `{:ok, refreshed_cred}`. On failure: flips the
-      registry to `needs_auth` (consistent with the reactive 401 path
-      in `MCP.Client.handle_401_refresh`) and returns
-      `{:error, {:refresh_failed, reason}}` so the caller can surface
-      a model-readable error. The flip needs the alias, which we
-      derive from the credential's `target = "mcp:<canonical>"` via
-      `MCP.Registry.find_authorized_by_resource/2`.
+    * Non-OAuth kind (e.g. `api_key_mcp`) → returns the credential
+      as-is — those don't expire.
+    * OAuth-shaped + fresh → `{:ok, cred}`.
+    * OAuth-shaped + expired → fires `refresh/2`. On success
+      `{:ok, fresh}`; on failure `{:error, {:refresh_failed, reason}}`.
+      For MCP credentials the registry flips to `needs_auth` as a
+      side effect (parallel to the reactive 401 path in MCP.Client);
+      for generic-service credentials the caller surfaces the error
+      directly to the model.
 
   Living in `Auth.OAuth2` rather than `Auth.Credentials` to avoid the
   circular dependency Credentials → OAuth2 → Credentials.
@@ -371,7 +395,7 @@ defmodule DmhAi.Auth.OAuth2 do
       nil ->
         {:error, :missing}
 
-      %{kind: "oauth2_mcp", is_expired: true} ->
+      %{kind: kind, is_expired: true} when kind in ["oauth2_mcp", "oauth2_service"] ->
         case refresh(user_id, target) do
           {:ok, fresh} ->
             {:ok, fresh}
@@ -413,10 +437,11 @@ defmodule DmhAi.Auth.OAuth2 do
           {:ok, map()} | {:error, term()}
   def refresh(user_id, target) when is_binary(user_id) and is_binary(target) do
     case Credentials.lookup(user_id, target) do
-      %{kind: "oauth2_mcp", payload: %{"refresh_token" => rt} = payload} when is_binary(rt) ->
-        do_refresh(user_id, target, payload, rt)
+      %{kind: kind, payload: %{"refresh_token" => rt} = payload}
+      when kind in ["oauth2_mcp", "oauth2_service"] and is_binary(rt) ->
+        do_refresh(user_id, target, kind, payload, rt)
 
-      %{kind: "oauth2_mcp"} ->
+      %{kind: kind} when kind in ["oauth2_mcp", "oauth2_service"] ->
         {:error, :no_refresh_token}
 
       _ ->
@@ -424,24 +449,48 @@ defmodule DmhAi.Auth.OAuth2 do
     end
   end
 
-  defp do_refresh(user_id, target, payload, refresh_token) do
+  defp do_refresh(user_id, target, kind, payload, refresh_token) do
     asm = decode_asm(payload["asm_json"])
     client_id     = payload["client_id"]
     client_secret = payload["client_secret"]
-    canonical     = payload["canonical_resource"]
 
     body = [
       {"grant_type",    "refresh_token"},
       {"refresh_token", refresh_token},
-      {"client_id",     client_id},
-      {"resource",      canonical}
+      {"client_id",     client_id}
     ]
+
+    # `resource` is RFC 8707, MCP-spec-mandated. Generic OAuth providers
+    # (Google, Slack, GitHub, etc.) reject it as an unknown parameter on
+    # refresh same as on the initial flow.
+    body =
+      case kind do
+        "oauth2_mcp" -> body ++ [{"resource", payload["canonical_resource"]}]
+        _            -> body
+      end
 
     body = if is_binary(client_secret) and client_secret != "" do
       body ++ [{"client_secret", client_secret}]
     else
       body
     end
+
+    # Provider-specific quirks on refresh: Auth0/Okta need `audience`
+    # repeated, Salesforce wants `format=json`, etc. Stored on the
+    # credential's payload at token-exchange time so the catalog
+    # doesn't need a second lookup here.
+    body =
+      payload
+      |> Map.get("extra_token_params", %{})
+      |> case do
+        %{} = map ->
+          Enum.reduce(map, body, fn {k, v}, acc ->
+            acc ++ [{to_string(k), to_string(v)}]
+          end)
+
+        _ ->
+          body
+      end
 
     case Req.post(asm[:token_endpoint],
            form: body,
@@ -459,7 +508,7 @@ defmodule DmhAi.Auth.OAuth2 do
               "scope"         => tokens.scope || payload["scope"]
             })
 
-            Credentials.save(user_id, target, "oauth2_mcp", new_payload,
+            Credentials.save(user_id, target, kind, new_payload,
               notes: "refreshed",
               expires_at: tokens.expires_at
             )
@@ -499,10 +548,10 @@ defmodule DmhAi.Auth.OAuth2 do
     case query!(Repo, """
          SELECT user_id, session_id, anchor_task_id, alias, canonical_resource,
                 server_url, pkce_verifier, client_id, client_secret, asm_json,
-                scopes, redirect_uri, created_at, expires_at
+                scopes, redirect_uri, flow_kind, created_at, expires_at
          FROM pending_oauth_states WHERE state=?
          """, [state]) do
-      %{rows: [[uid, sid, atid, al, cres, surl, pv, cid, csec, asm_j, sc, ruri, cat, eat]]} ->
+      %{rows: [[uid, sid, atid, al, cres, surl, pv, cid, csec, asm_j, sc, ruri, fk, cat, eat]]} ->
         {:ok, %{
           user_id:            uid,
           session_id:         sid,
@@ -516,6 +565,7 @@ defmodule DmhAi.Auth.OAuth2 do
           asm_json:           asm_j,
           scopes:             sc,
           redirect_uri:       ruri,
+          flow_kind:          fk || "mcp",
           created_at:         cat,
           expires_at:         eat
         }}

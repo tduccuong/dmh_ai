@@ -498,6 +498,19 @@ UIManager.startProgressPolling = function() {
                         changed = true;
                     }
                     if (typeof p.id === 'number' && p.id > progSince) progSince = p.id;
+
+                    // Auto-open the consent modal the first time a
+                    // browser_consent_required row arrives. Tracked by
+                    // row id so a re-render or a duplicate poll-delta
+                    // doesn't re-pop the modal. Re-opening after
+                    // dismissal is via the 🔒 row click (manager-chat.js).
+                    if (p && p.kind === 'browser_consent_required' && typeof p.id === 'number') {
+                        if (!self._consentRowsShown) self._consentRowsShown = new Set();
+                        if (!self._consentRowsShown.has(p.id)) {
+                            self._consentRowsShown.add(p.id);
+                            self.openBrowserConsentModal();
+                        }
+                    }
                 });
 
                 isWorking = !!data.is_working;
@@ -694,6 +707,95 @@ UIManager.autoNameSession = async function(session, opts) {
     } finally {
         this._namingInProgress.delete(session.id);
         if (this._namingController === controller) this._namingController = null;
+    }
+};
+
+// ─── Browser-tools consent ────────────────────────────────────────────────
+//
+// When the BE emits a kind="browser_consent_required" session_progress row
+// (because Tools.BrowserTask hit a missing/stale consent), the FE's poll
+// handler calls openBrowserConsentModal() ONCE per row id. The modal
+// fetches the canonical text + hash from the server (so the text shown
+// and the hash POSTed always come from the same fresh GET — no race
+// with consent_text.ex edits landing between row emission and modal
+// open), then POSTs accept on confirmation.
+//
+// Re-opening the modal after dismissal is supported by clicking the
+// 🔒 progress row in chat (see manager-chat.js renderProgressRow).
+UIManager._consentRowsShown = null;
+
+UIManager.openBrowserConsentModal = async function() {
+    try {
+        var stateRes = await apiFetch('/auth/me/browser-consent');
+        if (!stateRes.ok) throw new Error('failed to load consent state');
+        var state = await stateRes.json();
+        if (state.consented === true) {
+            // Already accepted in another tab / session; nothing to do.
+            syslog('[CONSENT] already accepted — skipping modal');
+            return true;
+        }
+
+        // Render multi-paragraph plain text as <p> blocks so the
+        // modal body doesn't squish it onto one line.
+        var paragraphs = (state.current_text || '').split(/\n\n+/).map(function(p) {
+            // Escape HTML; preserve newlines within a paragraph as <br>.
+            var safe = p
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/\n/g, '<br>');
+            return '<p style="margin:0 0 12px 0;line-height:1.5;text-align:left;">' + safe + '</p>';
+        }).join('');
+
+        // .modal-message itself is now flex: 1 + overflow-y:auto, so
+        // long content scrolls inside the modal naturally — no need
+        // for a nested max-height wrapper here.
+        var html = '<div style="padding:4px 8px 0 8px;font-size:0.95em;">'
+            + paragraphs + '</div>';
+
+        var ok = await Modal.confirmHtml(
+            t('browserConsentTitle') || 'Browser tools — please read',
+            html,
+            t('browserConsentAccept') || 'I understand and accept',
+            t('cancel') || 'Cancel'
+        );
+
+        if (ok !== true) {
+            syslog('[CONSENT] cancelled by user');
+            return false;
+        }
+
+        // session_id forwards the originating chain to the BE so it
+        // can fire {:auto_resume_assistant, session_id} after the
+        // watermark write — same pattern as the OAuth/MCP callback.
+        // Without this, the chain that hit needs_consent stays ended
+        // and the user sees a stale "blocked" message until they
+        // type a new turn.
+        var sessionId = (this.currentSession && this.currentSession.id) || null;
+
+        var postRes = await apiFetch('/auth/me/browser-consent', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text_hash: state.current_hash, session_id: sessionId })
+        });
+
+        if (!postRes.ok) {
+            syslog('[CONSENT] POST failed status=' + postRes.status);
+            await Modal.alert(
+                t('browserConsentTitle') || 'Browser tools',
+                t('browserConsentError') ||
+                    'Could not record acceptance. Please try again from Settings.'
+            );
+            return false;
+        }
+
+        syslog('[CONSENT] accepted');
+        UIManager.setStatus(t('browserConsentEnabled') || 'Browser tools enabled.');
+        setTimeout(function() { UIManager.setStatus(''); }, 4000);
+        return true;
+    } catch (e) {
+        syslog('[CONSENT] error=' + e.message);
+        return false;
     }
 };
 

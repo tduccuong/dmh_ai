@@ -156,12 +156,15 @@ defmodule DmhAi.Handlers.AgentChat do
               _                     -> message
             end
 
+          {tz, local_date} = client_tz(conn)
           case DmhAi.Agent.UserAgentMessages.append(session_id, user.id, message) do
             {:ok, user_ts} ->
               fire_and_forget(conn, user_ts, fn ->
                 Http.dispatch_assistant(user.id, session_id, content, self(),
                   attachment_names: attachment_names,
-                  files:            files
+                  files:            files,
+                  timezone:         tz,
+                  local_date:       local_date
                 )
               end)
 
@@ -198,6 +201,7 @@ defmodule DmhAi.Handlers.AgentChat do
           # BE-owned writes (CLAUDE.md rule #9). Store text only — image base64
           # payloads flow through the current request and feed the LLM inline;
           # they are not persisted on the stored message.
+          {tz, local_date} = client_tz(conn)
           case DmhAi.Agent.UserAgentMessages.append(session_id, user.id,
                   %{role: "user", content: content}) do
             {:ok, user_ts} ->
@@ -206,7 +210,9 @@ defmodule DmhAi.Handlers.AgentChat do
                   images:      images,
                   image_names: image_names,
                   files:       files,
-                  has_video:   has_video
+                  has_video:   has_video,
+                  timezone:    tz,
+                  local_date:  local_date
                 )
               end)
 
@@ -309,6 +315,36 @@ defmodule DmhAi.Handlers.AgentChat do
   # in `Commands.Memo` validates against the supported set.
   defp request_lang(%{"lang" => l}) when is_binary(l) and l != "", do: l
   defp request_lang(_), do: "en"
+
+  # Read the client's timezone + locally-computed date from the
+  # `X-Timezone` and `X-Local-Date` request headers. Both come from
+  # `apiFetch` in `core.js`, which fills them with
+  # `Intl.DateTimeFormat().resolvedOptions().timeZone` and a Sweden-
+  # locale `toLocaleDateString` (always YYYY-MM-DD). Returns
+  # `{tz, local_date}` with `nil` for any header the FE didn't send.
+  # The system prompt builder treats nils as "fall back to UTC."
+  #
+  # IANA name length is bounded (longest known is ~30 chars,
+  # "America/Argentina/Buenos_Aires"); we cap at 64 to avoid log
+  # noise on garbage headers. Date is shape-validated as
+  # YYYY-MM-DD; anything else → nil.
+  defp client_tz(conn) do
+    tz =
+      case get_req_header(conn, "x-timezone") do
+        [s | _] when is_binary(s) and byte_size(s) > 0 and byte_size(s) <= 64 -> s
+        _ -> nil
+      end
+
+    local_date =
+      case get_req_header(conn, "x-local-date") do
+        [s | _] ->
+          if Regex.match?(~r/^\d{4}-\d{2}-\d{2}$/, s), do: s, else: nil
+        _ ->
+          nil
+      end
+
+    {tz, local_date}
+  end
 
   defp json(conn, status, data) do
     conn

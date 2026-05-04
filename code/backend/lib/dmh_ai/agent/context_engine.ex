@@ -78,13 +78,17 @@ defmodule DmhAi.Agent.ContextEngine do
     video_descriptions = Keyword.get(opts, :video_descriptions, [])
     web_context        = Keyword.get(opts, :web_context)
     memo_context       = Keyword.get(opts, :memo_context)
+    timezone           = Keyword.get(opts, :timezone)
+    local_date         = Keyword.get(opts, :local_date)
 
     system_msg = %{role: "system",
                    content: SystemPrompt.generate_confidant(
                      profile:            profile,
                      has_video:          has_video,
                      image_descriptions: image_descriptions,
-                     video_descriptions: video_descriptions
+                     video_descriptions: video_descriptions,
+                     timezone:           timezone,
+                     local_date:         local_date
                    )}
 
     {prefix, history_llm, relevant_msgs, last_msgs} =
@@ -114,9 +118,15 @@ defmodule DmhAi.Agent.ContextEngine do
     recent_done  = Keyword.get(opts, :recent_done, [])
     files        = Keyword.get(opts, :files, [])
     user_id      = Keyword.get(opts, :user_id)
+    timezone     = Keyword.get(opts, :timezone)
+    local_date   = Keyword.get(opts, :local_date)
 
     system_msg = %{role: "system",
-                   content: SystemPrompt.generate_assistant(profile: profile)}
+                   content: SystemPrompt.generate_assistant(
+                     profile:    profile,
+                     timezone:   timezone,
+                     local_date: local_date
+                   )}
 
     {prefix, history_llm, relevant_msgs, last_msgs} =
       build_core(session_data, [], files, nil, nil)

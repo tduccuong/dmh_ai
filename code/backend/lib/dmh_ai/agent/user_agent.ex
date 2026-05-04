@@ -1268,7 +1268,9 @@ defmodule DmhAi.Agent.UserAgent do
         image_descriptions: image_descriptions,
         video_descriptions: video_descriptions,
         web_context:        web_context,
-        memo_context:       memo_context
+        memo_context:       memo_context,
+        timezone:           command.timezone,
+        local_date:         command.local_date
       )
 
     DmhAi.SysLog.log("[CONFIDANT] user=#{user_id} session=#{session_id} msg=#{String.slice(command.content, 0, 200)} web_search=#{web_context != nil} memo_context=#{memo_context != nil}")
@@ -1468,7 +1470,9 @@ defmodule DmhAi.Agent.UserAgent do
         profile:      profile,
         active_tasks: active_tasks,
         recent_done:  recent_done,
-        files:        command.files
+        files:        command.files,
+        timezone:     command.timezone,
+        local_date:   command.local_date
       )
 
     data_dir      = DmhAi.Constants.session_data_dir(email, session_id)
@@ -2419,6 +2423,18 @@ defmodule DmhAi.Agent.UserAgent do
             exec_started_ms = System.system_time(:millisecond)
             exec_result = DmhAi.Tools.Registry.execute(name, args, tool_ctx)
             duration_ms = System.system_time(:millisecond) - exec_started_ms
+
+            # Trace the tool execution (gated on the same `logTrace`
+            # admin setting that traces LLM calls). Captures the
+            # exact `{name, args, result, duration}` so operators can
+            # debug "model emitted X → got Y" without grepping for it
+            # in the next LLM call's message history.
+            if DmhAi.Agent.AgentSettings.log_trace() do
+              DmhAi.Agent.LogTrace.write_tool(
+                %{origin: "assistant", path: "UserAgent.execute_tools", role: "ToolExec"},
+                name, args, exec_result, duration_ms
+              )
+            end
 
             # Flip to 'done' on BOTH success and error. A non-zero exit
             # from `run_script` (or any other tool error) is still a

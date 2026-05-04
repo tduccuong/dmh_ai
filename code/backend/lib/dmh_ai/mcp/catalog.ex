@@ -176,9 +176,22 @@ defmodule DmhAi.MCP.Catalog do
               persist_probe(row.id, true, "none", %{}, "open", nil, now)
               {:ok, get(row.id)}
 
-            {:gated, prm_hint} ->
-              meta = %{"prm_hint" => prm_hint}
-              persist_probe(row.id, true, "oauth", meta, "gated", nil, now)
+            {:gated, %{prm_hint: prm_hint, auth_type: auth_type}} ->
+              # auth_type comes straight from the WWW-Authenticate
+              # scheme classification — :oauth for Bearer challenges,
+              # :api_key for non-Bearer schemes, :ambiguous when the
+              # header is malformed or absent. Admin curation stores
+              # this so the chat-time `connect_mcp(slug: …)` walks
+              # straight into the right flow.
+              auth_kind =
+                case auth_type do
+                  :oauth     -> "oauth"
+                  :api_key   -> "api_key"
+                  :ambiguous -> "oauth"
+                end
+
+              meta = %{"prm_hint" => prm_hint, "auth_type" => Atom.to_string(auth_type)}
+              persist_probe(row.id, true, auth_kind, meta, "gated", nil, now)
               {:ok, get(row.id)}
 
             :not_mcp ->

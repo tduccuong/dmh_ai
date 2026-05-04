@@ -208,10 +208,11 @@ const SettingsModal = {
         var targetPage = page || 'page-model';
         document.querySelectorAll('.settings-page').forEach(function(p) { p.classList.remove('active'); });
         document.getElementById(targetPage).classList.add('active');
-        var titleKey = targetPage === 'page-conversation' ? 'convSettings'
-                     : targetPage === 'page-ai-models'    ? 'aiModelSettings'
-                     : targetPage === 'page-wiki-seeds'   ? 'wikiSeedsAdmin'
-                     : targetPage === 'page-mcp-catalog'  ? 'mcpCatalogAdmin'
+        var titleKey = targetPage === 'page-conversation'  ? 'convSettings'
+                     : targetPage === 'page-ai-models'     ? 'aiModelSettings'
+                     : targetPage === 'page-wiki-seeds'    ? 'wikiSeedsAdmin'
+                     : targetPage === 'page-mcp-catalog'   ? 'mcpCatalogAdmin'
+                     : targetPage === 'page-oauth-catalog' ? 'oauthCatalogAdmin'
                      : 'sysSettings';
         document.getElementById('settings-modal-title').textContent = t(titleKey);
         document.getElementById('settings-overlay').classList.add('open');
@@ -225,6 +226,10 @@ const SettingsModal = {
         if (targetPage === 'page-mcp-catalog' && typeof McpCatalogAdmin !== 'undefined') {
             McpCatalogAdmin.init();
             McpCatalogAdmin.render();
+        }
+        if (targetPage === 'page-oauth-catalog' && typeof OAuthCatalogAdmin !== 'undefined') {
+            OAuthCatalogAdmin.init();
+            OAuthCatalogAdmin.render();
         }
     },
     close: function() {
