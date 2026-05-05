@@ -917,7 +917,7 @@ defmodule TestLLM.Runner do
     try do
       query!(Repo, "DELETE FROM session_progress WHERE session_id=?", [session_id])
       query!(Repo,
-             "DELETE FROM task_turn_archive WHERE task_id IN (SELECT task_id FROM tasks WHERE session_id=?)",
+             "DELETE FROM task_chain_archive WHERE task_id IN (SELECT task_id FROM tasks WHERE session_id=?)",
              [session_id])
       query!(Repo, "DELETE FROM tasks WHERE session_id=?", [session_id])
       query!(Repo, "DELETE FROM sessions WHERE id=?", [session_id])
@@ -1429,38 +1429,40 @@ defmodule TestLLM.Runner do
           # Tag this turn's tool messages into tool_history so
           # `## Recently-extracted files` fires AND the raw tool content
           # is re-injected into the next chain's context.
-          ToolHistory.save_turn(
+          ToolHistory.save_tools_result_of_chain(
             session_id,
             user_id,
             System.os_time(:millisecond),
             [
-              %{
-                role: "assistant",
-                content: "",
-                tool_calls: [%{
-                  "id" => "call_extract_001",
-                  "type" => "function",
-                  "function" => %{
-                    "name" => "extract_content",
-                    "arguments" => %{"path" => path}
-                  }
-                }]
-              },
-              %{
-                role: "tool",
-                tool_call_id: "call_extract_001",
-                content:
-                  "QUARTERLY REPORT — Q3.\n" <>
-                    "Headlines: revenue +12% YoY, headcount up 8 hires, edge runtime ships v2.\n\n" <>
-                    "Body sections covered (beyond the headline blurb):\n" <>
-                    "1. Operating margins by segment.\n" <>
-                    "2. Customer churn breakdown by tier.\n" <>
-                    "3. Forward-looking risks: regulatory in EU, hiring pipeline thinning.\n" <>
-                    "4. Capital allocation: 60% R&D, 25% sales, 15% buyback.\n" <>
-                    "5. Roadmap detail: edge runtime v2, OAuth2.1 compliance, multi-region rollout."
-              }
-            ],
-            1
+              {1,
+               [
+                 %{
+                   role: "assistant",
+                   content: "",
+                   tool_calls: [%{
+                     "id" => "call_extract_001",
+                     "type" => "function",
+                     "function" => %{
+                       "name" => "extract_content",
+                       "arguments" => %{"path" => path}
+                     }
+                   }]
+                 },
+                 %{
+                   role: "tool",
+                   tool_call_id: "call_extract_001",
+                   content:
+                     "QUARTERLY REPORT — Q3.\n" <>
+                       "Headlines: revenue +12% YoY, headcount up 8 hires, edge runtime ships v2.\n\n" <>
+                       "Body sections covered (beyond the headline blurb):\n" <>
+                       "1. Operating margins by segment.\n" <>
+                       "2. Customer churn breakdown by tier.\n" <>
+                       "3. Forward-looking risks: regulatory in EU, hiring pipeline thinning.\n" <>
+                       "4. Capital allocation: 60% R&D, 25% sales, 15% buyback.\n" <>
+                       "5. Roadmap detail: edge runtime v2, OAuth2.1 compliance, multi-region rollout."
+                 }
+               ]}
+            ]
           )
 
           Tasks.mark_done(task_id, "summarized — covers Q3 revenue, headcount, product roadmap")

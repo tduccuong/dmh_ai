@@ -136,7 +136,7 @@ defmodule DmhAi.Agent.ContextEngine do
     # model answer immediate follow-ups ("elaborate on section 3")
     # without re-running the tool — the raw tool output is back in
     # context. Older turns' tool messages age out per the N-turn and
-    # byte caps enforced by ToolHistory.save_turn.
+    # byte caps enforced by ToolHistory.save_tools_result_of_chain.
     #
     # `session_data["id"]` is REQUIRED — a missing id here silently
     # disables both the tool_history injection AND the Recently-extracted
@@ -659,7 +659,7 @@ defmodule DmhAi.Agent.ContextEngine do
       to_summarize = Enum.slice(msgs, (cutoff + 1)..(keep_from - 1))
 
       # Before running the compactor LLM, snapshot any task-tagged
-      # messages in `to_summarize` to `task_turn_archive` grouped by
+      # messages in `to_summarize` to `task_chain_archive` grouped by
       # `task_num`. Preserves verbatim per-task history even as the
       # master session summary compresses the range away from the
       # LLM's working context. Untagged messages (pure chat) are
@@ -721,7 +721,7 @@ defmodule DmhAi.Agent.ContextEngine do
 
   # Archive hook — called by `compact!/3` before summarisation.
   # Partitions `to_summarize` by `task_num` tag and persists verbatim
-  # snapshots to `task_turn_archive` per task. Untagged messages are
+  # snapshots to `task_chain_archive` per task. Untagged messages are
   # dropped here (they'll live on only in the master session summary).
   defp archive_to_summarize_per_task(session_id, to_summarize) do
     to_summarize
@@ -731,7 +731,7 @@ defmodule DmhAi.Agent.ContextEngine do
       {task_num, msgs} when is_integer(task_num) ->
         case DmhAi.Agent.Tasks.resolve_num(session_id, task_num) do
           {:ok, task_id} ->
-            DmhAi.Agent.TaskTurnArchive.append_raw(task_id, session_id, msgs)
+            DmhAi.Agent.TaskChainArchive.append_raw(task_id, session_id, msgs)
             Logger.info("[ContextEngine] archived #{length(msgs)} msg(s) for task=(#{task_num}) session=#{session_id}")
 
           {:error, :not_found} ->

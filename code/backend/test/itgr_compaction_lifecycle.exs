@@ -10,14 +10,14 @@
 #   - tool_call ↔ tool_result pairing survives every cutoff
 #   - markers planted early survive through the [Previous summary] chain
 #   - context byte size stays bounded across rounds
-#   - task_turn_archive partitions tagged turns correctly
+#   - task_chain_archive partitions tagged turns correctly
 #
 # Run with: MIX_ENV=test mix test test/itgr_compaction_lifecycle.exs
 
 defmodule Itgr.CompactionLifecycle do
   use ExUnit.Case, async: false
 
-  alias DmhAi.Agent.{ContextEngine, Tasks, TaskTurnArchive}
+  alias DmhAi.Agent.{ContextEngine, Tasks, TaskChainArchive}
   alias DmhAi.Repo
   import Ecto.Adapters.SQL, only: [query!: 3]
 
@@ -193,7 +193,7 @@ defmodule Itgr.CompactionLifecycle do
     task_num = s.next_task_num
 
     # Optionally persist a real task row so resolve_num works (needed for
-    # task_turn_archive tests). Most rounds skip this for speed.
+    # task_chain_archive tests). Most rounds skip this for speed.
     task_id =
       if s.register_tasks_in_db? do
         Tasks.insert(%{
@@ -630,9 +630,9 @@ defmodule Itgr.CompactionLifecycle do
     end
   end
 
-  # ─── Tests — task_turn_archive partitioning ──────────────────────────────
+  # ─── Tests — task_chain_archive partitioning ──────────────────────────────
 
-  describe "task_turn_archive across rounds" do
+  describe "task_chain_archive across rounds" do
     test "tagged turns archived per task on compaction" do
       session_id = T.uid()
       user_id    = T.uid()
@@ -666,8 +666,8 @@ defmodule Itgr.CompactionLifecycle do
 
       _ = run_round(s, "round1")
 
-      archive_a = TaskTurnArchive.fetch_for_task(task_a_id)
-      archive_b = TaskTurnArchive.fetch_for_task(task_b_id)
+      archive_a = TaskChainArchive.fetch_for_task(task_a_id)
+      archive_b = TaskChainArchive.fetch_for_task(task_b_id)
 
       assert length(archive_a) > 0, "task A should have archived turns after compaction"
       assert length(archive_b) > 0, "task B should have archived turns after compaction"
@@ -707,7 +707,7 @@ defmodule Itgr.CompactionLifecycle do
       s = simulate_round(s, 12)   # pad with other chains
       _ = run_round(s, "round1")
 
-      r1_archive = TaskTurnArchive.fetch_for_task(l_id)
+      r1_archive = TaskChainArchive.fetch_for_task(l_id)
       r1_count   = length(r1_archive)
       assert r1_count > 0
 
@@ -723,7 +723,7 @@ defmodule Itgr.CompactionLifecycle do
       s = simulate_round(s, 12)
       _ = run_round(s, "round2")
 
-      r2_archive = TaskTurnArchive.fetch_for_task(l_id)
+      r2_archive = TaskChainArchive.fetch_for_task(l_id)
       assert length(r2_archive) > r1_count,
              "task L's archive must grow across rounds (round 1: #{r1_count}, round 2: #{length(r2_archive)})"
     end

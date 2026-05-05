@@ -159,7 +159,7 @@ defmodule DmhAi.Tools.RunScript do
     """
     Run a shell script (bash / python / node / …).
 
-    Sandbox: Alpine Linux, root. Output cap 50 KB. Pre-installed: #{pre_installed}, plus BusyBox basics. Package manager is `apk` (NOT apt / yum / dnf): install missing with `apk add --no-cache <pkg>`; Python extras via `pip install <pkg>`. On `<cmd>: command not found`, install via `apk` and retry — don't pivot.
+    Sandbox: Debian 22.04 (Ubuntu jammy underneath), root. Output cap 50 KB. Pre-installed: #{pre_installed}, plus standard GNU userland. Package manager is `apt` (NOT apk / yum / dnf): install missing with `apt-get install -y <pkg>`; Python extras via `pip install --break-system-packages <pkg>`. On `<cmd>: command not found`, install via `apt` and retry — don't pivot.
 
     Remote SSH: commands BEFORE `ssh` run in the Alpine sandbox (use `apk`); commands INSIDE `ssh "<cmd>"` run on the remote (use that distro's manager).
 
@@ -359,21 +359,39 @@ defmodule DmhAi.Tools.RunScript do
   defp shell_escape(s), do: String.replace(to_string(s), "'", "'\\''")
 
   # Inject `@safety_prelude` so HTTP errors fail loudly. Three branches
-  # by shebang shape: shell-shebang scripts get the prelude inserted
-  # right after the shebang line (so the interpreter still picks the
-  # right shell); shebang-less scripts get it prepended; non-shell
-  # interpreters (python, node, perl, …) are left untouched — the
-  # prelude is shell-only and would crash a Python parser.
+  # by shebang shape:
+  #
+  #   - **No shebang** — kernel falls back to `/bin/sh` for `exec`,
+  #     which on Debian (the post-#219 sandbox) is **dash**. dash does
+  #     not support `set -o pipefail` and exits 2 immediately. We
+  #     therefore force `#!/bin/bash` ourselves so the prelude
+  #     actually executes.
+  #
+  #   - **Shell shebang** (`#!/bin/sh`, `#!/bin/bash`, `#!/bin/dash`,
+  #     `#!/usr/bin/env bash`, …) — the user's shebang is REPLACED
+  #     with `#!/bin/bash` for the same reason: a `#!/bin/sh` line
+  #     routes to dash on Debian and breaks the prelude. bash
+  #     accepts every POSIX-sh script the user might have written,
+  #     so the substitution is functionally invisible to scripts
+  #     that didn't rely on shell-specific quirks.
+  #
+  #   - **Non-shell interpreter** (`#!/usr/bin/env python3`, node,
+  #     perl, …) — the script is shell-only and the prelude is
+  #     skipped entirely. Python/Node parsers would crash on the
+  #     shell function definitions.
   defp harden(script) when is_binary(script) do
     case shebang_kind(script) do
       :none ->
-        @safety_prelude <> script
+        "#!/bin/bash\n" <> @safety_prelude <> script
 
       :shell ->
-        case String.split(script, "\n", parts: 2) do
-          [shebang, rest] -> shebang <> "\n" <> @safety_prelude <> rest
-          [only]          -> only <> "\n" <> @safety_prelude
-        end
+        rest =
+          case String.split(script, "\n", parts: 2) do
+            [_shebang, r] -> r
+            [_shebang]    -> ""
+          end
+
+        "#!/bin/bash\n" <> @safety_prelude <> rest
 
       :other ->
         script

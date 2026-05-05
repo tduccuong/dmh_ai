@@ -165,6 +165,38 @@ defmodule DmhAi.DB.Init do
     end
   end
 
+  # In-place rename of legacy `task_turn_archive` → `task_chain_archive`.
+  # Idempotent across all states:
+  #   - Fresh install: neither table exists → both queries fail
+  #     silently, the CREATE TABLE IF NOT EXISTS afterwards lays
+  #     the new name down.
+  #   - Upgraded install: only `task_turn_archive` exists → RENAME
+  #     succeeds, index RENAME succeeds, CREATE TABLE IF NOT EXISTS
+  #     no-ops.
+  #   - Already migrated: only `task_chain_archive` exists → both
+  #     RENAMEs fail silently (the source table doesn't exist),
+  #     CREATE TABLE IF NOT EXISTS no-ops.
+  defp rename_legacy_task_archive do
+    try do
+      query!(Repo, "ALTER TABLE task_turn_archive RENAME TO task_chain_archive")
+      Logger.info("[DB.Init] renamed table task_turn_archive → task_chain_archive")
+    rescue
+      _ -> :ok
+    end
+
+    # SQLite < 3.25 lacks `ALTER INDEX RENAME`; even on newer SQLite,
+    # `ALTER TABLE RENAME` already migrates ALL of the table's
+    # indexes (it rewrites the column/table refs but not the index
+    # NAME itself). Drop the legacy-named index unconditionally —
+    # the `CREATE INDEX IF NOT EXISTS` that follows lays down the
+    # canonical new name.
+    try do
+      query!(Repo, "DROP INDEX IF EXISTS idx_task_turn_archive_task_ts")
+    rescue
+      _ -> :ok
+    end
+  end
+
   defp create_tables do
     query!(Repo, """
     CREATE TABLE IF NOT EXISTS sessions (
@@ -502,13 +534,23 @@ defmodule DmhAi.DB.Init do
     query!(Repo,
       "CREATE INDEX IF NOT EXISTS idx_model_behavior_stats_model ON model_behavior_stats (model, count DESC)")
 
-    # Per-task raw message archive. Compaction writes turns here before
-    # summarising them away from session.messages, so fetch_task can
-    # replay a task's history verbatim even after the master session
-    # has been compacted. See architecture.md §Task state continuity
-    # across chains.
+    # Per-task raw message archive. Compaction + tool_history flush
+    # write chain-produced messages here, keyed by task, so
+    # `fetch_task(N)` can replay a task's history verbatim even after
+    # the master session has been compacted and the rolling
+    # tool_history window evicted them. See architecture.md §Task
+    # state continuity across chains.
+    #
+    # In-place rename of the legacy `task_chain_archive` table — the
+    # original name implied an LLM "turn" granularity that the table
+    # never had. SQLite supports RENAME TO since 3.25; the IF EXISTS
+    # makes this idempotent across fresh installs (where the legacy
+    # table never existed) and upgraded ones (where it did). Drop
+    # this block once every deployment has migrated.
+    rename_legacy_task_archive()
+
     query!(Repo, """
-    CREATE TABLE IF NOT EXISTS task_turn_archive (
+    CREATE TABLE IF NOT EXISTS task_chain_archive (
       id            INTEGER PRIMARY KEY AUTOINCREMENT,
       task_id       TEXT NOT NULL,               -- cryptic BE id (FK to tasks.task_id)
       session_id    TEXT NOT NULL,
@@ -522,7 +564,7 @@ defmodule DmhAi.DB.Init do
     """)
 
     query!(Repo,
-      "CREATE INDEX IF NOT EXISTS idx_task_turn_archive_task_ts ON task_turn_archive (task_id, original_ts)")
+      "CREATE INDEX IF NOT EXISTS idx_task_chain_archive_task_ts ON task_chain_archive (task_id, original_ts)")
 
     # Vector knowledge base — see specs/vector_kb.md.
     #

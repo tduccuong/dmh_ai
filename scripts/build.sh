@@ -65,6 +65,63 @@ echo ""
 echo "Docker images:"
 docker images --format "  {{.Repository}}:{{.Tag}}  {{.Size}}" | grep -E "dmh-ai|dmh-ai-sandbox|searxng/searxng"
 
+#  NIF smoke test
+# Cross-build catastrophe-stop. The master image carries two
+# architecture-sensitive NIFs that load at runtime — `vec0.so`
+# (sqlite_vec, fetched precompiled from upstream releases via
+# octo_fetch) and `sqlite3_nif.so` (exqlite, compiled in the
+# elixir:alpine builder). Either being the wrong libc / arch for
+# the runtime image surfaces only when the BEAM tries to load it,
+# typically as a chain crash on first DB query — a confusing
+# failure to debug post-deploy.
+#
+# Fast pre-flight: spawn an ephemeral container against the just-
+# built image and verify each NIF's ldd output names the same
+# loader (ld-musl-*-x86_64 / ld-linux-aarch64-... / etc.) the
+# container's own libc uses. ~100ms, catches musl⇄glibc swaps and
+# x86⇄ARM cross-build mistakes well before runtime.
+echo ""
+echo "Smoke test: NIFs link against the master image's libc..."
+SMOKE_OUTPUT=$(docker run --rm --entrypoint sh dmh-ai:latest -c '
+    set -e
+    CONTAINER_LDSO=$(ls /lib/ld-musl-* /lib/ld-linux-* /lib64/ld-linux-* 2>/dev/null | head -1)
+    if [ -z "$CONTAINER_LDSO" ]; then
+        echo "FAIL: no ld.so found in container"
+        exit 1
+    fi
+    CONTAINER_LDSO_BASE=$(basename "$CONTAINER_LDSO")
+    echo "  container loader: $CONTAINER_LDSO_BASE"
+
+    for nif in /app/lib/sqlite_vec-*/priv/*/vec0.so /app/lib/exqlite-*/priv/sqlite3_nif.so; do
+        if [ ! -f "$nif" ]; then
+            echo "FAIL: missing $nif"
+            exit 1
+        fi
+        if ! ldd "$nif" 2>&1 | grep -q "$CONTAINER_LDSO_BASE"; then
+            echo "FAIL: $nif does not link against $CONTAINER_LDSO_BASE"
+            ldd "$nif" 2>&1 | head -5
+            exit 1
+        fi
+        echo "  $(basename "$nif"): linked ${CONTAINER_LDSO_BASE}"
+    done
+    echo "ALL_OK"
+' 2>&1) || true
+
+if ! echo "$SMOKE_OUTPUT" | grep -q "ALL_OK"; then
+    echo ""
+    echo "ERROR: NIF smoke test failed:"
+    echo "$SMOKE_OUTPUT" | sed "s/^/  /"
+    echo ""
+    echo "Likely causes:"
+    echo "  - Cross-build mismatch (built on x86, deploying to ARM, or vice versa)."
+    echo "    Fix: docker buildx build --platform linux/\${target_arch}"
+    echo "  - sqlite_vec upstream missing a precompiled binary for this arch+libc."
+    echo "    Fix: pin a specific sqlite_vec version, OR vendor vec0.so locally."
+    exit 1
+fi
+echo "$SMOKE_OUTPUT" | grep -E "container loader|linked" | sed "s/^/  /"
+echo "  NIFs OK."
+
 #  Save images as tarballs
 if $NO_EXPORT; then
     echo "Skipping image export ($($STAGE && echo --stage || echo --no-export))"
@@ -93,6 +150,13 @@ services:
       - ${DMHAI_HOME:-.}/user_assets:/data/user_assets
       - ${DMHAI_HOME:-.}/user_workspaces:/data/user_workspaces
       - ${DMHAI_HOME:-.}/system_logs:/data/system_logs
+      # Browser-daemon Unix socket. The sandbox container binds the
+      # socket here; bind-mounting on the master side too lets the
+      # host-side Elixir process connect directly via
+      # :gen_tcp.connect({:local, "/data/run/dmh-browser/daemon.sock"})
+      # without paying `docker exec` overhead per turn. See
+      # arch_wiki/dmh_ai/architecture.md §Browser tools.
+      - ${DMHAI_HOME:-.}/run/dmh-browser:/data/run/dmh-browser
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       searxng:
@@ -105,20 +169,26 @@ services:
   sandbox:
     image: dmh-ai-sandbox:latest
     container_name: __SANDBOX_NAME__
-    # Sandbox is OFF host networking now — the iptables fence in
+    # Sandbox is OFF host networking — the iptables fence in
     # /sandbox-start.sh REJECTs RFC1918 outbound for non-admin UIDs.
     # Default bridge networking gives the container its own netns.
     restart: unless-stopped
     cap_add:
       - NET_ADMIN
     volumes:
-      # Two-tree split per specs/permissions.md.
+      # Two-tree split per arch_wiki/dmh_ai/isolation.md.
       # /assets is read-only; uploads + _keystore live here. /work is
       # the only writable surface for sandbox processes.
       - ${DMHAI_HOME:-.}/user_assets:/assets:ro
       - ${DMHAI_HOME:-.}/user_workspaces:/work
-    # /sandbox-start.sh sets sysctl + iptables, then `tail -f /dev/null`.
-    # Scripts arrive via `docker exec -u dmh_ai-u<uid> -w /work/<email>/<session>/`.
+      # Browser-daemon socket directory. Daemon binds
+      # /var/run/dmh-browser/daemon.sock at boot; same dir is bind-
+      # mounted on the master side at /data/run/dmh-browser for
+      # host-side Elixir IPC (see master volumes above).
+      - ${DMHAI_HOME:-.}/run/dmh-browser:/var/run/dmh-browser
+    # /sandbox-start.sh sets sysctl + iptables, spawns browser_daemon
+    # under a supervisor loop, then `tail -f /dev/null`. Scripts
+    # arrive via `docker exec -u dmh_ai-u<uid> -w /work/<email>/<session>/`.
 
   searxng:
     image: searxng/searxng:latest
@@ -185,15 +255,20 @@ if [ "$MODE" = "stage" ]; then
     echo "Using images from local Docker registry (built by build.sh --stage)"
 
     #  Set up install directory
+    # Pre-create all bind-mount targets so docker compose doesn't
+    # auto-create them as root — the existing dirs would otherwise
+    # work but the browser-daemon socket dir MUST exist before the
+    # sandbox container starts (the daemon binds the socket on boot).
     mkdir -p "$INSTALL_DIR"
-    mkdir -p "$INSTALL_DIR/db" "$INSTALL_DIR/user_assets" "$INSTALL_DIR/user_workspaces" "$INSTALL_DIR/system_logs"
+    mkdir -p "$INSTALL_DIR/db" "$INSTALL_DIR/user_assets" "$INSTALL_DIR/user_workspaces" \
+             "$INSTALL_DIR/system_logs" "$INSTALL_DIR/run/dmh-browser"
     rm -rf "$INSTALL_DIR/searxng-settings.yml"
     cp "$DIST/searxng-settings.yml" "$INSTALL_DIR/searxng-settings.yml"
     # No chown -R: master runs as root post-#190 and doesn't need a
     # specific host UID. Per-user subdirs under user_workspaces/ are
     # owned by per-user UIDs (10001+) for the OS-level isolation
     # fence — clobbering them with `chown -R 1000:1000` on reinstall
-    # would break that. See specs/permissions.md.
+    # would break that. See arch_wiki/dmh_ai/isolation.md.
 
     #  Generate docker-compose for stage
     cat > "$INSTALL_DIR/docker-compose.yml" << COMPOSE
@@ -208,6 +283,7 @@ services:
       - ${INSTALL_DIR}/user_assets:/data/user_assets
       - ${INSTALL_DIR}/user_workspaces:/data/user_workspaces
       - ${INSTALL_DIR}/system_logs:/data/system_logs
+      - ${INSTALL_DIR}/run/dmh-browser:/data/run/dmh-browser
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       searxng:
@@ -226,6 +302,7 @@ services:
     volumes:
       - ${INSTALL_DIR}/user_assets:/assets:ro
       - ${INSTALL_DIR}/user_workspaces:/work
+      - ${INSTALL_DIR}/run/dmh-browser:/var/run/dmh-browser
 
   searxng:
     image: searxng/searxng:latest
@@ -347,17 +424,19 @@ else
     fi
 
     #  Set up install directory
-    # Pre-create bind-mount targets so docker compose doesn't auto-create
-    # them as root — the container runs as UID 1000 and would otherwise
-    # hit EACCES on first write to /data/db, /data/system_logs, etc.
-    mkdir -p "$INSTALL_DIR/db" "$INSTALL_DIR/user_assets" "$INSTALL_DIR/user_workspaces" "$INSTALL_DIR/system_logs"
+    # Pre-create ALL bind-mount targets so docker compose doesn't
+    # auto-create them as root. Critical ones beyond the data dirs:
+    #   run/dmh-browser — daemon binds its Unix socket here on boot;
+    #     dir must exist before sandbox container starts.
+    mkdir -p "$INSTALL_DIR/db" "$INSTALL_DIR/user_assets" "$INSTALL_DIR/user_workspaces" \
+             "$INSTALL_DIR/system_logs" "$INSTALL_DIR/run/dmh-browser"
     rm -rf "$INSTALL_DIR/searxng-settings.yml"
     cp "$DIST/searxng-settings.yml" "$INSTALL_DIR/searxng-settings.yml"
     # No chown -R: master runs as root post-#190 and doesn't need a
     # specific host UID. Per-user subdirs under user_workspaces/ are
     # owned by per-user UIDs (10001+) for the OS-level isolation
     # fence — `chown -R 1000:1000` on reinstall would silently
-    # flatten that. See specs/permissions.md.
+    # flatten that. See arch_wiki/dmh_ai/isolation.md.
 
     #  Create dmh_ai service user
     if ! getent passwd dmh_ai &>/dev/null; then

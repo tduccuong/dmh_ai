@@ -107,7 +107,7 @@ defmodule DmhAi.Agent.AgentSettings do
   @tool_result_retention_turns_default 5
   @tool_result_retention_bytes_default 120_000
 
-  # Per-task archive sliding window. Caps `task_turn_archive` to the
+  # Per-task archive sliding window. Caps `task_chain_archive` to the
   # last N rows OR B bytes per task, whichever is tighter. Oldest
   # rows beyond either cap are dropped at append time. No LLM
   # summarisation of archived content — sliding-window eviction only.
@@ -142,6 +142,16 @@ defmodule DmhAi.Agent.AgentSettings do
   @browser_max_runtime_ms_default 1_800_000
   @browser_max_turns_per_task_default 50
   @browser_concurrency_per_user_default 1
+  # Browser daemon idle-shutdown timer. The Playwright daemon
+  # self-terminates after this many ms of no traffic so Pi-class
+  # hosts reclaim Chromium memory; start.sh's supervisor relaunches
+  # it on next demand.
+  @browser_daemon_idle_shutdown_ms_default 1_800_000
+  # Per-turn screenshot capture for the FE's browser_step rows.
+  # Operators on tighter Pi storage can flip this off — the loop
+  # then runs without screenshots and progress rows still render
+  # the action label, just no thumbnail.
+  @browser_screenshot_enabled_default true
 
   # LLM-account rotation throttle durations. Applied by
   # `DmhAi.Agent.LLM` when an account hits a rate-limit (HTTP 429 or
@@ -464,6 +474,16 @@ defmodule DmhAi.Agent.AgentSettings do
   def browser_concurrency_per_user,
     do: int_setting("browserConcurrencyPerUser", @browser_concurrency_per_user_default)
 
+  @doc "Browser daemon idle-shutdown threshold (ms). Read by `start.sh` and exported as BROWSER_IDLE_SHUTDOWN_S to the daemon at boot — changes here require a sandbox container restart."
+  @spec browser_daemon_idle_shutdown_ms() :: pos_integer()
+  def browser_daemon_idle_shutdown_ms,
+    do: int_setting("browserDaemonIdleShutdownMs", @browser_daemon_idle_shutdown_ms_default)
+
+  @doc "Capture per-turn screenshots into `<workspace>/.browser/step_<N>.png`. Off → no PNGs, but progress rows still render."
+  @spec browser_screenshot_enabled() :: boolean()
+  def browser_screenshot_enabled,
+    do: bool_setting("browserScreenshotEnabled", @browser_screenshot_enabled_default)
+
   @doc "Runtime poll cadence (ms) for in-flight `run_script` processes."
   @spec tool_run_poll_interval_ms() :: pos_integer()
   def tool_run_poll_interval_ms,
@@ -502,7 +522,7 @@ defmodule DmhAi.Agent.AgentSettings do
     do: int_setting("toolResultRetentionBytes", @tool_result_retention_bytes_default)
 
   @doc """
-  Per-task archive row cap. Each `task_turn_archive` grouping is
+  Per-task archive row cap. Each `task_chain_archive` grouping is
   trimmed to this many rows at append time; oldest beyond the cap are
   dropped. Row = one persisted message (user OR assistant OR tool),
   so ~30 user+assistant pairs fit in the default 60.

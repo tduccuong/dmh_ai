@@ -184,7 +184,7 @@ defmodule DmhAi.Agent.Tasks do
     end
 
     # Flush this task's entries from the rolling tool_history window
-    # into task_turn_archive — completed work stops paying LLM
+    # into task_chain_archive — completed work stops paying LLM
     # context-rent on subsequent chains. fetch_task(N) still
     # surfaces the data from the archive when needed. See
     # architecture.md §Tool-result retention.
@@ -220,7 +220,7 @@ defmodule DmhAi.Agent.Tasks do
     # the per-turn tool catalog reverts on the next chain.
     DmhAi.MCP.Registry.detach_all_for_task(task_id)
 
-    # Flush this task's tool_history entries into task_turn_archive
+    # Flush this task's tool_history entries into task_chain_archive
     # so the cancelled task stops shipping its tool results to the
     # LLM on subsequent chains. See architecture.md §Tool-result retention.
     if task do
@@ -244,7 +244,7 @@ defmodule DmhAi.Agent.Tasks do
     """, [now, task_id])
     DmhAi.Agent.TaskRuntime.cancel_pickup(task_id)
 
-    # Flush this task's tool_history entries into task_turn_archive
+    # Flush this task's tool_history entries into task_chain_archive
     # so a paused task stops shipping its tool results to the LLM
     # on every subsequent chain. fetch_task(N) recovers them on
     # resume. See architecture.md §Tool-result retention.

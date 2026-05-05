@@ -934,6 +934,13 @@ defmodule DmhAi.Agent.UserAgent do
       # architecture.md §Anchor mutation via back_to_when_done.
       anchor_task_num: Map.get(task, :task_num),
       last_rendered_anchor_task_num: Map.get(task, :task_num),
+      # Per-call task_num attribution — every tool_call_id that runs in
+      # this chain gets stamped with the task_num it operated on, so
+      # `save_tools_result_of_chain` can split the chain's pairs into
+      # one tool_history entry per task. Prevents the orphan-task_num
+      # bug where chain-spanning operations (cancel→auto-create) would
+      # leave entries unflushable. See `execute_tools/3`.
+      tool_call_task_nums: %{},
       role:          "assistant",
       model:         model
     }
@@ -1523,6 +1530,10 @@ defmodule DmhAi.Agent.UserAgent do
       # LLM call and syncs this field, keeping the prompt-side anchor
       # coherent with the runtime ctx.
       last_rendered_anchor_task_num: anchor_task_num,
+      # Per-call task_num attribution — see periodic-pickup branch above
+      # for the full rationale; same field, same downstream consumer
+      # (`save_tools_result_of_chain` at chain end).
+      tool_call_task_nums: %{},
       # Model-behaviour telemetry inputs — every Police rejection bumps a
       # counter row for this (role, model, issue_type, tool_name).
       role:          "assistant",
@@ -1884,32 +1895,43 @@ defmodule DmhAi.Agent.UserAgent do
                   # into the session's rolling tool-history window so the
                   # NEXT chain's context builder can inject them back and
                   # answer immediate follow-ups without re-running tools.
-                  # Passes the anchor's `task_num` so entries rolling out
-                  # of retention get archived per-task.
+                  #
+                  # The chain's pairs are pre-split per task_num before
+                  # save (see `group_pairs_by_task_num/2`), so a chain
+                  # that spans multiple tasks (e.g. cancel→auto-create)
+                  # produces ONE tool_history entry per task. That makes
+                  # `flush_for_task(N)` evict cleanly when N closes —
+                  # without per-call attribution, mid-chain anchor
+                  # transitions left chain-end task_num=nil orphans that
+                  # never flushed.
                   #
                   # IMPORTANT: slice by `chain_start_idx` FIRST. `messages`
                   # at this point contains (a) the tool_history re-injected
                   # from prior chains by `ContextEngine.build_assistant_messages`
                   # PLUS (b) this chain's own new tool_calls. Without the
                   # slice, `collect_tool_messages` would capture (a) too,
-                  # and subsequent save_turn entries would accumulate
-                  # prior-chain history — causing messages to appear
-                  # duplicated in future context builds (entry 1 and the
-                  # bloated entry 2 would both re-inject the same
-                  # chain-1 tool_calls, splitting across two assistant_ts
-                  # anchors). The slice ensures one chain's entry contains
-                  # only THAT chain's work. `chain_start_idx` is the
-                  # length of `llm_messages` captured when `run_assistant`
-                  # (or `run_assistant_silent`) entered the loop — so
-                  # everything after index is what this chain produced.
+                  # and subsequent entries would accumulate prior-chain
+                  # history — causing messages to appear duplicated in
+                  # future context builds. The slice ensures one chain's
+                  # entries contain only THAT chain's work.
+                  # `chain_start_idx` is the length of `llm_messages`
+                  # captured when `run_assistant` (or
+                  # `run_assistant_silent`) entered the loop — everything
+                  # after index is what this chain produced.
                   tool_msgs =
                     messages
                     |> Enum.drop(ctx.chain_start_idx)
                     |> collect_tool_messages()
 
-                  DmhAi.Agent.ToolHistory.save_turn(
-                    ctx.session_id, ctx.user_id, assistant_ts, tool_msgs,
-                    Map.get(ctx, :anchor_task_num))
+                  groups =
+                    group_pairs_by_task_num(
+                      tool_msgs,
+                      Map.get(ctx, :tool_call_task_nums, %{})
+                    )
+
+                  DmhAi.Agent.ToolHistory.save_tools_result_of_chain(
+                    ctx.session_id, ctx.user_id, assistant_ts, groups
+                  )
                   # Runtime auto-close: if the model worked on any task this
                   # turn but forgot to call `complete_task`, close them
                   # now using the final answer as task_result. Keeps the
@@ -2162,6 +2184,68 @@ defmodule DmhAi.Agent.UserAgent do
         true -> false
       end
     end)
+  end
+
+  # Group `collect_tool_messages/1`'s alternating
+  # `[assistant_tool_call, tool_result, assistant_tool_call, tool_result, ...]`
+  # list into per-task_num chunks for `ToolHistory.save_tools_result_of_chain`.
+  #
+  # Each (assistant_tool_call, tool_result) pair was stamped in
+  # `execute_tools/3` via `stamp_tool_call_task_num/4`; we look up
+  # the stamp by the assistant message's tool_call_id and chunk
+  # consecutive same-stamp pairs together. Returns a list of
+  # `{task_num, [message]}` tuples in chain order — empty list when
+  # the chain ran no tools.
+  defp group_pairs_by_task_num([], _stamps), do: []
+  defp group_pairs_by_task_num(tool_msgs, stamps) when is_map(stamps) do
+    tool_msgs
+    |> pair_assistant_with_result()
+    |> Enum.map(fn {a, t} ->
+      {Map.get(stamps, first_tool_call_id(a)), {a, t}}
+    end)
+    |> Enum.chunk_by(fn {tn, _} -> tn end)
+    |> Enum.map(fn group ->
+      {task_num, _} = hd(group)
+      msgs = Enum.flat_map(group, fn {_, {a, t}} -> [a, t] end)
+      {task_num, msgs}
+    end)
+  end
+
+  defp pair_assistant_with_result([]), do: []
+  defp pair_assistant_with_result([_only]), do: []
+
+  defp pair_assistant_with_result([a, t | rest]) do
+    cond do
+      assistant_with_tool_calls?(a) and tool_result?(t) ->
+        [{a, t} | pair_assistant_with_result(rest)]
+
+      true ->
+        # Defensive: the in-chain message stream shouldn't have
+        # orphans, but if a message slipped in out of order, drop the
+        # leftmost item and continue rather than mis-pair downstream.
+        pair_assistant_with_result([t | rest])
+    end
+  end
+
+  defp assistant_with_tool_calls?(m) do
+    role = m[:role] || m["role"]
+    tcs  = m[:tool_calls] || m["tool_calls"] || []
+    role == "assistant" and is_list(tcs) and tcs != []
+  end
+
+  defp tool_result?(m) do
+    role = m[:role] || m["role"]
+    id   = m[:tool_call_id] || m["tool_call_id"]
+    role == "tool" and is_binary(id) and id != ""
+  end
+
+  defp first_tool_call_id(msg) do
+    tcs = msg[:tool_calls] || msg["tool_calls"] || []
+    case tcs do
+      [%{"id" => id} | _] -> id
+      [%{id:    id} | _]  -> id
+      _                    -> nil
+    end
   end
 
   # Escalation threshold — the model gets this many chances to fix a
@@ -2502,6 +2586,14 @@ defmodule DmhAi.Agent.UserAgent do
         # architecture.md §Anchor mutation via back_to_when_done back-stack.
         new_ctx = maybe_mutate_anchor(ctx, name, args, tool_msg)
 
+        # Per-call task_num attribution. The (assistant_tool_call,
+        # tool_result) pair we just produced is stamped with the
+        # task_num it operated on, looked up later by tool_call_id at
+        # chain end so `save_tools_result_of_chain` can split the
+        # chain into one tool_history entry per task. See `tool_num_for_pair/3`.
+        new_ctx =
+          stamp_tool_call_task_num(new_ctx, tool_call_id, name, args)
+
         # Auto-create-task hook: if this call was a successful
         # `pause_task` or `cancel_task` AND the session has a pending
         # pivot stashed by Police's Oracle gate, synthesize a fresh
@@ -2513,6 +2605,17 @@ defmodule DmhAi.Agent.UserAgent do
         {extra_pairs, extra_pseudos, new_ctx} =
           maybe_auto_create_task(name, tool_msg, new_ctx)
 
+        # Stamp every extra (synthetic auto-create_task) pair too —
+        # its post-mutation anchor is the just-created task, which is
+        # the right tag for the pair.
+        new_ctx =
+          Enum.reduce(extra_pairs, new_ctx, fn {_extra_msg, extra_call}, acc ->
+            extra_id   = Map.get(extra_call, "id") || Map.get(extra_call, :id) || ""
+            extra_name = get_in(extra_call, ["function", "name"]) || ""
+            extra_args = get_in(extra_call, ["function", "arguments"]) || %{}
+            stamp_tool_call_task_num(acc, extra_id, extra_name, extra_args)
+          end)
+
         pairs    = [{tool_msg, tagged_call}] ++ extra_pairs
         pseudos  = [pseudo] ++ extra_pseudos
 
@@ -2523,6 +2626,47 @@ defmodule DmhAi.Agent.UserAgent do
     tagged_calls = Enum.map(pairs, fn {_, c} -> c end)
 
     {tool_msgs, tagged_calls, final_ctx}
+  end
+
+  # Stamp the (assistant_tool_call, tool_result) pair we just produced
+  # with the task_num it operated on. Looked up later (by tool_call_id)
+  # at chain end by `save_tools_result_of_chain` so the chain's pairs
+  # split into one tool_history entry per task.
+  #
+  # Caller MUST invoke this AFTER `maybe_mutate_anchor/4`, so that for
+  # `create_task` the post-mutation `ctx.anchor_task_num` is the
+  # newly-created task (and the default-branch task_num lookup picks
+  # that up).
+  defp stamp_tool_call_task_num(ctx, "", _name, _args), do: ctx
+  defp stamp_tool_call_task_num(ctx, nil, _name, _args), do: ctx
+  defp stamp_tool_call_task_num(ctx, tool_call_id, name, args)
+       when is_binary(tool_call_id) do
+    task_num = tool_num_for_pair(name, args, ctx)
+    put_in(ctx, [:tool_call_task_nums, tool_call_id], task_num)
+  end
+
+  # Decide which task_num the pair belongs to:
+  #
+  #   * Task-acting verbs (`complete_task` / `cancel_task` / `pause_task`
+  #     / `pickup_task` / `fetch_task`) — the pair's contribution belongs
+  #     to the task NAMED IN THE ARGS, not the post-mutation anchor.
+  #     `complete_task(N)`'s pair is the closing action of N's work, so
+  #     it should be tagged N — even though after the call the anchor
+  #     resets to `back_to_when_done` (often nil).
+  #
+  #   * Everything else (including `create_task`) — the pair's contribution
+  #     belongs to whatever the anchor is AFTER the call. For
+  #     `create_task` that's the newly-created task. For execution tools
+  #     (`run_script`, `web_search`, …) the anchor is unchanged, so the
+  #     active task gets its work attributed correctly.
+  defp tool_num_for_pair(name, args, post_ctx) do
+    case name do
+      n when n in ~w(complete_task cancel_task pause_task pickup_task fetch_task) ->
+        Map.get(args, "task_num") || Map.get(args, :task_num)
+
+      _ ->
+        Map.get(post_ctx, :anchor_task_num)
+    end
   end
 
   # Apply anchor transitions based on tool verb + outcome. Only mutates

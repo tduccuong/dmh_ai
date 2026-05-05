@@ -59,23 +59,25 @@ defmodule Itgr.ToolHistory do
 
   # ─── save + load ─────────────────────────────────────────────────────────
 
-  test "save_turn + load: round-trips messages with expected structure" do
+  test "save_tools_result_of_chain + load: round-trips messages with expected structure" do
     sid = uid(); uid_ = uid()
     insert_session(sid, uid_)
 
     msgs = stub_extract_messages("t_" <> uid(), "workspace/foo.pdf", "extracted content")
-    :ok = ToolHistory.save_turn(sid, uid_, 1_776_946_063_050, msgs)
+    :ok = ToolHistory.save_tools_result_of_chain(sid, uid_, 1_776_946_063_050, [{nil, msgs}])
 
     [entry] = ToolHistory.load(sid)
     assert entry["assistant_ts"] == 1_776_946_063_050
     assert length(entry["messages"]) == 4
+    assert entry["task_num"] == nil
   end
 
-  test "save_turn is a no-op for empty message list (pure-chat turn)" do
+  test "save_tools_result_of_chain is a no-op when every group's messages are empty (pure-chat turn)" do
     sid = uid(); uid_ = uid()
     insert_session(sid, uid_)
 
-    :ok = ToolHistory.save_turn(sid, uid_, 1_776_946_063_050, [])
+    :ok = ToolHistory.save_tools_result_of_chain(sid, uid_, 1_776_946_063_050, [])
+    :ok = ToolHistory.save_tools_result_of_chain(sid, uid_, 1_776_946_063_050, [{nil, []}])
     assert ToolHistory.load(sid) == []
   end
 
@@ -95,7 +97,7 @@ defmodule Itgr.ToolHistory do
 
   # ─── Turn-cap eviction ───────────────────────────────────────────────────
 
-  test "save_turn trims to toolResultRetentionTurns (oldest-first)" do
+  test "save_tools_result_of_chain trims to toolResultRetentionTurns (oldest-first)" do
     sid = uid(); uid_ = uid()
     insert_session(sid, uid_)
 
@@ -104,7 +106,7 @@ defmodule Itgr.ToolHistory do
     # Write N+2 entries; oldest two should be evicted by the turn cap.
     for i <- 1..(n + 2) do
       msgs = stub_extract_messages("t#{i}", "workspace/f#{i}.pdf", "c#{i}")
-      :ok = ToolHistory.save_turn(sid, uid_, 1_000 + i, msgs)
+      :ok = ToolHistory.save_tools_result_of_chain(sid, uid_, 1_000 + i, [{nil, msgs}])
     end
 
     entries = ToolHistory.load(sid)
@@ -117,7 +119,7 @@ defmodule Itgr.ToolHistory do
 
   # ─── Byte-budget eviction ────────────────────────────────────────────────
 
-  test "save_turn byte-budget evicts oldest when combined size exceeds cap" do
+  test "save_tools_result_of_chain byte-budget evicts oldest when combined size exceeds cap" do
     sid = uid(); uid_ = uid()
     insert_session(sid, uid_)
 
@@ -128,7 +130,7 @@ defmodule Itgr.ToolHistory do
 
     for i <- 1..3 do
       msgs = stub_extract_messages("t#{i}", "workspace/f#{i}.pdf", big_payload)
-      :ok = ToolHistory.save_turn(sid, uid_, 2_000 + i, msgs)
+      :ok = ToolHistory.save_tools_result_of_chain(sid, uid_, 2_000 + i, [{nil, msgs}])
     end
 
     entries = ToolHistory.load(sid)
@@ -215,9 +217,9 @@ defmodule Itgr.ToolHistory do
     assert a1_idx == 1 + length(th1)
   end
 
-  # ─── fetch_task pair stripping in save_turn ─────────────────────────────
+  # ─── fetch_task pair stripping in save_tools_result_of_chain ────────────
 
-  describe "save_turn strips fetch_task pairs" do
+  describe "save_tools_result_of_chain strips fetch_task pairs" do
     test "drops a fetch_task tool_call and its matching tool_result" do
       sid = uid(); uid_ = uid()
       insert_session(sid, uid_)
@@ -233,7 +235,7 @@ defmodule Itgr.ToolHistory do
         %{role: "tool", tool_call_id: "ft1", content: "TASK_2_ARCHIVE_CONTENT (large)"}
       ]
 
-      :ok = ToolHistory.save_turn(sid, uid_, 1_777_100_000_000, msgs)
+      :ok = ToolHistory.save_tools_result_of_chain(sid, uid_, 1_777_100_000_000, [{nil, msgs}])
       assert ToolHistory.load(sid) == [], "pure-fetch chain leaves nothing to save"
     end
 
@@ -253,7 +255,7 @@ defmodule Itgr.ToolHistory do
         %{role: "tool", tool_call_id: "ft1", content: "TASK_3_ARCHIVE (would dup)"}
       ]
 
-      :ok = ToolHistory.save_turn(sid, uid_, 1_777_101_000_000, msgs)
+      :ok = ToolHistory.save_tools_result_of_chain(sid, uid_, 1_777_101_000_000, [{nil, msgs}])
       [entry] = ToolHistory.load(sid)
       stored = entry["messages"]
 
@@ -288,7 +290,7 @@ defmodule Itgr.ToolHistory do
         %{role: "tool", tool_call_id: "rs1", content: "hi"}
       ]
 
-      :ok = ToolHistory.save_turn(sid, uid_, 1_777_102_000_000, msgs)
+      :ok = ToolHistory.save_tools_result_of_chain(sid, uid_, 1_777_102_000_000, [{nil, msgs}])
       [entry] = ToolHistory.load(sid)
       stored = entry["messages"]
 
@@ -307,7 +309,7 @@ defmodule Itgr.ToolHistory do
       insert_session(sid, uid_)
 
       msgs = stub_extract_messages("t_" <> uid(), "workspace/x.pdf", "extracted")
-      :ok = ToolHistory.save_turn(sid, uid_, 1_777_103_000_000, msgs)
+      :ok = ToolHistory.save_tools_result_of_chain(sid, uid_, 1_777_103_000_000, [{nil, msgs}])
       [entry] = ToolHistory.load(sid)
       assert length(entry["messages"]) == 4, "non-fetch chain stored verbatim"
     end
@@ -316,7 +318,7 @@ defmodule Itgr.ToolHistory do
   # ─── flush_for_task ──────────────────────────────────────────────────────
 
   describe "flush_for_task/2" do
-    alias DmhAi.Agent.{Tasks, TaskTurnArchive}
+    alias DmhAi.Agent.{Tasks, TaskChainArchive}
 
     defp insert_task(sid, uid_) do
       Tasks.insert(%{
@@ -329,23 +331,23 @@ defmodule Itgr.ToolHistory do
       })
     end
 
-    test "moves matching task's entries from rolling window to task_turn_archive" do
+    test "moves matching task's entries from rolling window to task_chain_archive" do
       sid = uid(); uid_ = uid()
       insert_session(sid, uid_)
       task_id = insert_task(sid, uid_)
       task = Tasks.get(task_id)
 
       msgs = stub_extract_messages(task_id, "workspace/foo.pdf", "extracted content")
-      :ok = ToolHistory.save_turn(sid, uid_, 1_777_000_000_000, msgs, task.task_num)
+      :ok = ToolHistory.save_tools_result_of_chain(sid, uid_, 1_777_000_000_000, [{task.task_num, msgs}])
 
       assert length(ToolHistory.load(sid)) == 1
-      assert TaskTurnArchive.fetch_for_task(task_id) == []
+      assert TaskChainArchive.fetch_for_task(task_id) == []
 
       :ok = ToolHistory.flush_for_task(sid, task.task_num)
 
       assert ToolHistory.load(sid) == [], "task's entries should be removed from rolling window"
-      archive = TaskTurnArchive.fetch_for_task(task_id)
-      assert length(archive) == 4, "task's tool messages should land in task_turn_archive"
+      archive = TaskChainArchive.fetch_for_task(task_id)
+      assert length(archive) == 4, "task's tool messages should land in task_chain_archive"
     end
 
     test "leaves entries from other tasks in place" do
@@ -354,10 +356,10 @@ defmodule Itgr.ToolHistory do
       task_a = Tasks.get(insert_task(sid, uid_))
       task_b = Tasks.get(insert_task(sid, uid_))
 
-      :ok = ToolHistory.save_turn(sid, uid_, 1_777_001_000_000,
-              stub_extract_messages(task_a.task_id, "a.pdf", "A content"), task_a.task_num)
-      :ok = ToolHistory.save_turn(sid, uid_, 1_777_002_000_000,
-              stub_extract_messages(task_b.task_id, "b.pdf", "B content"), task_b.task_num)
+      :ok = ToolHistory.save_tools_result_of_chain(sid, uid_, 1_777_001_000_000,
+              [{task_a.task_num, stub_extract_messages(task_a.task_id, "a.pdf", "A content")}])
+      :ok = ToolHistory.save_tools_result_of_chain(sid, uid_, 1_777_002_000_000,
+              [{task_b.task_num, stub_extract_messages(task_b.task_id, "b.pdf", "B content")}])
 
       assert length(ToolHistory.load(sid)) == 2
 
@@ -367,16 +369,16 @@ defmodule Itgr.ToolHistory do
       assert length(retained) == 1, "task B's entry should still be in rolling window"
       assert hd(retained)["task_num"] == task_b.task_num
 
-      assert length(TaskTurnArchive.fetch_for_task(task_a.task_id)) == 4
-      assert TaskTurnArchive.fetch_for_task(task_b.task_id) == []
+      assert length(TaskChainArchive.fetch_for_task(task_a.task_id)) == 4
+      assert TaskChainArchive.fetch_for_task(task_b.task_id) == []
     end
 
     test "no-op when nil task_num" do
       sid = uid(); uid_ = uid()
       insert_session(sid, uid_)
       task = Tasks.get(insert_task(sid, uid_))
-      :ok = ToolHistory.save_turn(sid, uid_, 1_777_003_000_000,
-              stub_extract_messages(task.task_id, "x.pdf", "x"), task.task_num)
+      :ok = ToolHistory.save_tools_result_of_chain(sid, uid_, 1_777_003_000_000,
+              [{task.task_num, stub_extract_messages(task.task_id, "x.pdf", "x")}])
 
       :ok = ToolHistory.flush_for_task(sid, nil)
 
@@ -387,8 +389,8 @@ defmodule Itgr.ToolHistory do
       sid = uid(); uid_ = uid()
       insert_session(sid, uid_)
       task = Tasks.get(insert_task(sid, uid_))
-      :ok = ToolHistory.save_turn(sid, uid_, 1_777_004_000_000,
-              stub_extract_messages(task.task_id, "x.pdf", "x"), task.task_num)
+      :ok = ToolHistory.save_tools_result_of_chain(sid, uid_, 1_777_004_000_000,
+              [{task.task_num, stub_extract_messages(task.task_id, "x.pdf", "x")}])
 
       :ok = ToolHistory.flush_for_task(sid, 9999)
 
@@ -399,7 +401,7 @@ defmodule Itgr.ToolHistory do
   # ─── Tasks.mark_done / mark_cancelled wire-through ──────────────────────
 
   describe "task close → flush integration" do
-    alias DmhAi.Agent.{Tasks, TaskTurnArchive}
+    alias DmhAi.Agent.{Tasks, TaskChainArchive}
 
     test "mark_done flushes the task's tool_history into the archive" do
       sid = uid(); uid_ = uid()
@@ -411,14 +413,14 @@ defmodule Itgr.ToolHistory do
       })
       task = Tasks.get(task_id)
 
-      :ok = ToolHistory.save_turn(sid, uid_, 1_777_005_000_000,
-              stub_extract_messages(task_id, "doc.pdf", "x"), task.task_num)
+      :ok = ToolHistory.save_tools_result_of_chain(sid, uid_, 1_777_005_000_000,
+              [{task.task_num, stub_extract_messages(task_id, "doc.pdf", "x")}])
       assert length(ToolHistory.load(sid)) == 1
 
       Tasks.mark_done(task_id, "completed")
 
       assert ToolHistory.load(sid) == []
-      assert length(TaskTurnArchive.fetch_for_task(task_id)) == 4
+      assert length(TaskChainArchive.fetch_for_task(task_id)) == 4
     end
 
     test "mark_cancelled flushes the task's tool_history into the archive" do
@@ -431,14 +433,14 @@ defmodule Itgr.ToolHistory do
       })
       task = Tasks.get(task_id)
 
-      :ok = ToolHistory.save_turn(sid, uid_, 1_777_006_000_000,
-              stub_extract_messages(task_id, "doc.pdf", "x"), task.task_num)
+      :ok = ToolHistory.save_tools_result_of_chain(sid, uid_, 1_777_006_000_000,
+              [{task.task_num, stub_extract_messages(task_id, "doc.pdf", "x")}])
       assert length(ToolHistory.load(sid)) == 1
 
       Tasks.mark_cancelled(task_id, "user stopped")
 
       assert ToolHistory.load(sid) == []
-      assert length(TaskTurnArchive.fetch_for_task(task_id)) == 4
+      assert length(TaskChainArchive.fetch_for_task(task_id)) == 4
     end
 
     test "mark_paused flushes the task's tool_history into the archive" do
@@ -451,14 +453,14 @@ defmodule Itgr.ToolHistory do
       })
       task = Tasks.get(task_id)
 
-      :ok = ToolHistory.save_turn(sid, uid_, 1_777_008_000_000,
-              stub_extract_messages(task_id, "doc.pdf", "x"), task.task_num)
+      :ok = ToolHistory.save_tools_result_of_chain(sid, uid_, 1_777_008_000_000,
+              [{task.task_num, stub_extract_messages(task_id, "doc.pdf", "x")}])
       assert length(ToolHistory.load(sid)) == 1
 
       Tasks.mark_paused(task_id)
 
       assert ToolHistory.load(sid) == []
-      assert length(TaskTurnArchive.fetch_for_task(task_id)) == 4
+      assert length(TaskChainArchive.fetch_for_task(task_id)) == 4
       # And the task is paused (resumable via pickup_task; data recoverable via fetch_task).
       assert Tasks.get(task_id).task_status == "paused"
     end
@@ -473,15 +475,15 @@ defmodule Itgr.ToolHistory do
       })
       task = Tasks.get(task_id)
 
-      :ok = ToolHistory.save_turn(sid, uid_, 1_777_007_000_000,
-              stub_extract_messages(task_id, "doc.pdf", "x"), task.task_num)
+      :ok = ToolHistory.save_tools_result_of_chain(sid, uid_, 1_777_007_000_000,
+              [{task.task_num, stub_extract_messages(task_id, "doc.pdf", "x")}])
       assert length(ToolHistory.load(sid)) == 1
 
       Tasks.mark_done(task_id, "cycle 1 complete")
 
       # Periodic re-arm: status flipped to pending, but tool_history flushed.
       assert ToolHistory.load(sid) == []
-      assert length(TaskTurnArchive.fetch_for_task(task_id)) == 4
+      assert length(TaskChainArchive.fetch_for_task(task_id)) == 4
       # And the task is still alive (re-armed for next cycle).
       assert Tasks.get(task_id).task_status == "pending"
     end

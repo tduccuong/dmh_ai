@@ -9,7 +9,7 @@ defmodule DmhAi.Tools.FetchTask do
   chronological replay of the task's prior work, assembled from three
   sources (see architecture.md §Task state continuity across chains):
 
-    1. **archive** — verbatim turns in `task_turn_archive`, written when
+    1. **archive** — verbatim turns in `task_chain_archive`, written when
        `ContextEngine.compact!` summarised the oldest slice of
        `session.messages` or when `tool_history` retention evicted
        chains tagged with this task_num. Survives compaction.
@@ -25,7 +25,7 @@ defmodule DmhAi.Tools.FetchTask do
 
   @behaviour DmhAi.Tools.Behaviour
 
-  alias DmhAi.Agent.{ContextEngine, SessionProgress, Tasks, TaskTurnArchive, ToolHistory, UserAgentMessages}
+  alias DmhAi.Agent.{ContextEngine, SessionProgress, Tasks, TaskChainArchive, ToolHistory, UserAgentMessages}
 
   # Cap for the session_progress activity-log tail (preserved label +
   # status; raw content lives in tool_bodies).
@@ -54,8 +54,8 @@ defmodule DmhAi.Tools.FetchTask do
          :ok <- require_session(session_id),
          {:ok, task_id} <- Tasks.resolve_num(session_id, task_num),
          %{} = task     <- Tasks.get(task_id) do
-      archive           = TaskTurnArchive.fetch_for_task(task_id)
-      latest_archive_ts = TaskTurnArchive.latest_archived_ts(task_id)
+      archive           = TaskChainArchive.fetch_for_task(task_id)
+      latest_archive_ts = TaskChainArchive.latest_archived_ts(task_id)
 
       live_conv = UserAgentMessages.messages_for_task_num(session_id, task_num, latest_archive_ts)
       tool_bodies = ToolHistory.load_for_task_num(session_id, task_num)

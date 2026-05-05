@@ -9,16 +9,23 @@ defmodule DmhAi.Tools.BrowserTask do
   authenticated, multi-step tasks on the user's behalf — *"go to
   shop-apotheke.com, find ibuprofen 400mg, add it to the cart"* style.
 
-  ## Phase 1 (this file)
+  ## Implementation (v0 — #215, #219, #220)
 
-  Phase 1 lands the consent gate, the tool definition, and the
-  Police entry. The action loop and Playwright daemon are Phase 2 +
-  Phase 3 — see specs/architecture.md §Browser tools.
+  Three pieces:
 
-  In Phase 1, every successful consent check returns
-  `{:error, "browser_task: action loop not yet enabled..."}` so a
-  user who has consented gets an honest "the daemon isn't built
-  yet" message rather than silently nothing happening.
+    - **Consent gate** in this module — `users.browser_consent_at`
+      must be set AND `users.browser_consent_text_hash` must equal
+      `DmhAi.Browser.ConsentText.hash/0`. Misses emit a
+      `kind: "browser_consent_required"` `session_progress` row and
+      return `{:ok, %{status: "needs_consent"}}`.
+
+    - **Sandbox Playwright daemon**
+      (`code/sandbox/browser_daemon.py`) — one Chromium per
+      deployment, BrowserContext-per-user, Unix-socket IPC.
+
+    - **Action loop** (`DmhAi.Browser.Loop`) — observe→ask→act with
+      `browserAgentModel`, capped by `browserMaxTurnsPerTask` and
+      `browserMaxRuntimeMs`.
 
   ## Consent gate
 
@@ -40,7 +47,8 @@ defmodule DmhAi.Tools.BrowserTask do
        the runtime's perspective.
 
   After the user accepts via `POST /auth/me/browser-consent`, the
-  next `browser_task` invocation passes the gate.
+  next `browser_task` invocation passes the gate and dispatches to
+  `Browser.Loop.run/4`.
   """
 
   @behaviour DmhAi.Tools.Behaviour
@@ -104,19 +112,12 @@ defmodule DmhAi.Tools.BrowserTask do
       true ->
         case consent_state(user_id) do
           :consented ->
-            # Phase 1: consent is recorded but the action loop +
-            # Playwright daemon don't exist yet. Distinct
-            # `{:ok, %{status: ...}}` shape so the model can tell
-            # this apart from the `needs_consent` shape — without it,
-            # a user who just accepted would see "still blocked"-style
-            # messaging that's indistinguishable from the
-            # consent-block.
-            {:ok,
-             %{
-               status: "browser_action_loop_pending",
-               reason:
-                 "Consent recorded — browser tools are enabled for this user. The action loop that actually drives the browser ships in a follow-up phase. Tell the user that browser support is enabled and ask them to retry once the navigation engine is deployed."
-             }}
+            DmhAi.Browser.Loop.run(
+              args["url"],
+              args["goal"],
+              args["constraints"],
+              ctx
+            )
 
           reason ->
             emit_consent_progress_row(ctx)

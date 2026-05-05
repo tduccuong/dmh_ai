@@ -3,7 +3,7 @@
 # See the LICENSE file in the repository root for full details.
 # For commercial inquiries, contact: tduccuong@gmail.com
 
-defmodule DmhAi.Agent.TaskTurnArchive do
+defmodule DmhAi.Agent.TaskChainArchive do
   @moduledoc """
   Per-task, append-only raw archive of messages aged out of the master
   session context by `ContextEngine.compact!` or evicted from
@@ -63,7 +63,7 @@ defmodule DmhAi.Agent.TaskTurnArchive do
           end
 
         query!(Repo, """
-        INSERT INTO task_turn_archive
+        INSERT INTO task_chain_archive
           (task_id, session_id, original_ts, role, content,
            tool_calls, tool_call_id, archived_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -75,7 +75,7 @@ defmodule DmhAi.Agent.TaskTurnArchive do
       :ok
     rescue
       e ->
-        Logger.error("[TaskTurnArchive] append_raw failed task=#{task_id}: #{Exception.message(e)}")
+        Logger.error("[TaskChainArchive] append_raw failed task=#{task_id}: #{Exception.message(e)}")
         :error
     end
   end
@@ -101,14 +101,14 @@ defmodule DmhAi.Agent.TaskTurnArchive do
         delete_old(task_id, to_keep)
     end
   rescue
-    e -> Logger.warning("[TaskTurnArchive] prune failed task=#{task_id}: #{Exception.message(e)}")
+    e -> Logger.warning("[TaskChainArchive] prune failed task=#{task_id}: #{Exception.message(e)}")
   end
 
   # Rows sorted newest → oldest with their content byte size.
   defp fetch_rows_with_bytes(task_id) do
     %{rows: rows} = query!(Repo, """
     SELECT id, COALESCE(LENGTH(content), 0)
-      FROM task_turn_archive
+      FROM task_chain_archive
      WHERE task_id=?
      ORDER BY id DESC
     """, [task_id])
@@ -141,7 +141,7 @@ defmodule DmhAi.Agent.TaskTurnArchive do
     min_keep = Enum.min(to_keep)
 
     query!(Repo,
-      "DELETE FROM task_turn_archive WHERE task_id=? AND id < ?",
+      "DELETE FROM task_chain_archive WHERE task_id=? AND id < ?",
       [task_id, min_keep])
 
     :ok
@@ -162,7 +162,7 @@ defmodule DmhAi.Agent.TaskTurnArchive do
     try do
       %{rows: rows} = query!(Repo, """
       SELECT role, content, tool_calls, tool_call_id, original_ts
-        FROM task_turn_archive
+        FROM task_chain_archive
        WHERE task_id=?
        ORDER BY original_ts ASC, id ASC
       """, [task_id])
@@ -186,7 +186,7 @@ defmodule DmhAi.Agent.TaskTurnArchive do
       end)
     rescue
       e ->
-        Logger.error("[TaskTurnArchive] fetch_for_task failed task=#{task_id}: #{Exception.message(e)}")
+        Logger.error("[TaskChainArchive] fetch_for_task failed task=#{task_id}: #{Exception.message(e)}")
         []
     end
   end
@@ -200,7 +200,7 @@ defmodule DmhAi.Agent.TaskTurnArchive do
   @spec latest_archived_ts(String.t()) :: integer()
   def latest_archived_ts(task_id) when is_binary(task_id) do
     case query!(Repo,
-           "SELECT COALESCE(MAX(original_ts), 0) FROM task_turn_archive WHERE task_id=?",
+           "SELECT COALESCE(MAX(original_ts), 0) FROM task_chain_archive WHERE task_id=?",
            [task_id]) do
       %{rows: [[n]]} when is_integer(n) -> n
       _ -> 0
