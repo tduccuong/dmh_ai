@@ -24,7 +24,7 @@
 #       cached Oracle verdict was forced to :related so any
 #       subsequent in-chain tool would pass.
 #
-# All offline. The Oracle classifier, the assistant model, the
+# All offline. The Swift classifier, the assistant model, the
 # naming flow, and the profile extractor are all stubbed via the
 # existing `LLM.call` / `LLM.stream` hooks.
 
@@ -86,8 +86,8 @@ defmodule Itgr.PivotTwoChains do
   # bindings) cross process boundaries cleanly when the closure is
   # later invoked in another process.
   #
-  # `verdict` is the Oracle's canned response for this install.
-  # Captured in the closure → travels with it into the Oracle Task
+  # `verdict` is Swift's canned response for this install.
+  # Captured in the closure → travels with it into the Swift Task
   # process. No Application env / process dict for cross-process
   # signalling — closure capture is idiomatic and avoids the
   # global-mutable-state anti-pattern the Application env hack
@@ -113,7 +113,7 @@ defmodule Itgr.PivotTwoChains do
 
     T.stub_llm_call(fn model_str, _messages, _opts ->
       cond do
-        # Oracle classifier (ministral). Verdict captured in this
+        # Swift classifier (ministral). Verdict captured in this
         # closure — works cross-process because the closure carries
         # its bindings.
         String.contains?(model_str, "ministral") ->
@@ -157,7 +157,7 @@ defmodule Itgr.PivotTwoChains do
 
     on_exit(fn ->
       PendingPivots.clear(sid)
-      Process.delete(:dmh_ai_oracle_verdict_cached)
+      Process.delete(:dmh_ai_swift_verdict_cached)
     end)
 
     {:ok,
@@ -199,9 +199,9 @@ defmodule Itgr.PivotTwoChains do
       install_stubs(script, "UNRELATED")
 
       command = build_command(c, c.off_topic_msg)
-      assert {:chain_done, _watermark} = drive_chain(c, command)
+      assert {:chain_done, _watermark, _auto_pivot} = drive_chain(c, command)
 
-      # PendingPivots stashed (set as side effect of the Oracle Task).
+      # PendingPivots stashed (set as side effect of the Swift Task).
       stash = PendingPivots.get(c.sid)
       assert is_map(stash), "expected a pending pivot; got nil"
       assert stash.user_msg == c.off_topic_msg
@@ -232,7 +232,7 @@ defmodule Itgr.PivotTwoChains do
       install_stubs(script, "UNRELATED")
 
       command = build_command(c, c.off_topic_msg)
-      assert {:chain_done, _} = drive_chain(c, command)
+      assert {:chain_done, _, _} = drive_chain(c, command)
 
       # The Oracle verdict still stashed the pending pivot (the
       # Task body fires the side effect regardless of which tools
@@ -258,8 +258,18 @@ defmodule Itgr.PivotTwoChains do
         "ts" => System.os_time(:millisecond)
       })
 
-      # Stream stub: turn 0 emits pause_task; turn 1 (after the
-      # synthesised create_task lands) emits final text.
+      # Stream stub script across TWO chains under the close-verb
+      # chain-termination rule (Y rule):
+      #
+      #   Chain 1 (driven by "yes pause"):
+      #     turn 0 → pause_task → close-verb success → chain ENDS.
+      #             auto-pivot synthesises create_task → :auto_resume_assistant
+      #             signal sent (a no-op in this test process; we drive the
+      #             follow-up chain manually below).
+      #
+      #   Chain 2 (the auto-resumed chain — driven explicitly here with an
+      #   empty-content command, mirroring `handle_info({:auto_resume_assistant, _})`):
+      #     turn 0 → final text on the new task. No tool_calls → chain ends naturally.
       script = [
         {:tool_calls, [tool_call("pause_task", %{"task_num" => c.anchor_task_num})]},
         {:text, "Paused (#{c.anchor_task_num}). Now answering your stock-market question (placeholder for the test)."}
@@ -268,13 +278,14 @@ defmodule Itgr.PivotTwoChains do
       install_stubs(script, "RELATED")
 
       command = build_command(c, "yes pause")
-      assert {:chain_done, _} = drive_chain(c, command)
+      assert {:chain_done, _, _} = drive_chain(c, command)
 
       # Original anchor task is now PAUSED.
       assert Tasks.get(c.anchor_task_id).task_status == "paused"
 
       # A NEW task was created for the off-topic message via the
-      # auto-create-task hook.
+      # auto-create-task hook (synthesised inside the pause chain
+      # before it terminated under the Y rule).
       active_in_session = Tasks.active_for_session(c.sid)
       new_tasks =
         active_in_session
@@ -289,7 +300,16 @@ defmodule Itgr.PivotTwoChains do
       # PendingPivots cleared.
       assert PendingPivots.get(c.sid) == nil
 
-      # Final assistant text persisted.
+      # Drive the auto-resumed chain. In production the
+      # `:auto_resume_assistant` message hits `UserAgent.handle_info/2`,
+      # which builds a synthetic AssistantCommand with empty content
+      # and runs it. We replicate that here by issuing an empty-content
+      # command — the streaming stub then consumes the second script
+      # entry (the final text) and the chain ends naturally on the
+      # text-only turn.
+      assert {:chain_done, _, _} = drive_chain(c, build_command(c, ""))
+
+      # Final assistant text persisted by the auto-resumed chain.
       msgs = load_messages(c.sid)
       last = List.last(msgs)
       assert last["role"] == "assistant"
@@ -313,7 +333,7 @@ defmodule Itgr.PivotTwoChains do
       install_stubs(script, "RELATED")
 
       command = build_command(c, "actually pause this for now")
-      assert {:chain_done, _} = drive_chain(c, command)
+      assert {:chain_done, _, _} = drive_chain(c, command)
 
       # Anchor task paused.
       assert Tasks.get(c.anchor_task_id).task_status == "paused"
@@ -338,7 +358,7 @@ defmodule Itgr.PivotTwoChains do
       install_stubs(script_chain0, "UNRELATED")
 
       command0 = build_command(c, c.off_topic_msg)
-      assert {:chain_done, _} = drive_chain(c, command0)
+      assert {:chain_done, _, _} = drive_chain(c, command0)
 
       assert PendingPivots.get(c.sid) != nil
       assert Tasks.get(c.anchor_task_id).task_status == "ongoing"
@@ -350,7 +370,7 @@ defmodule Itgr.PivotTwoChains do
       })
 
       # Reset the per-chain Oracle cache so chain 1 awaits a fresh verdict.
-      Process.delete(:dmh_ai_oracle_verdict_cached)
+      Process.delete(:dmh_ai_swift_verdict_cached)
 
       script_chain1 = [
         {:tool_calls, [tool_call("pause_task", %{"task_num" => c.anchor_task_num})]},
@@ -360,7 +380,22 @@ defmodule Itgr.PivotTwoChains do
       install_stubs(script_chain1, "RELATED")
 
       command1 = build_command(c, "yes pause")
-      assert {:chain_done, _} = drive_chain(c, command1)
+      result = drive_chain(c, command1)
+
+      # The auto_pivot signal MUST carry the freshly-created task's id —
+      # the chain-complete hook in UserAgent depends on it to route
+      # through the silent-pickup path. Past regression: `Map.get(ctx,
+      # :anchor_task_id)` used in the chain-end branch returned nil
+      # (because :anchor_task_id was never a stored ctx field — the
+      # codebase uses a derived getter instead), the hook's guard
+      # `when is_binary(task_id)` failed, the case fell through to a
+      # defensive catch-all and routed via normal user-msg auto-resume.
+      # The replayed trailing user message ("yes pause") was then
+      # interpreted as a fresh ask, making the model close-verb the
+      # auto-pivoted task. Pin the shape so this can never silently
+      # break again.
+      assert {:chain_done, _watermark, {:auto_pivot, new_task_id}} = result
+      assert is_binary(new_task_id)
 
       # Original anchor paused, new anchor ongoing, pending pivot cleared.
       assert Tasks.get(c.anchor_task_id).task_status == "paused"
@@ -374,6 +409,9 @@ defmodule Itgr.PivotTwoChains do
       [new_task] = new_tasks
       assert new_task.task_spec == c.off_topic_msg
       assert new_task.task_status == "ongoing"
+      # The id in the auto_pivot signal MUST point at the freshly-
+      # created task — not the prior anchor, not a stale resolve.
+      assert new_task_id == new_task.task_id
     end
   end
 end

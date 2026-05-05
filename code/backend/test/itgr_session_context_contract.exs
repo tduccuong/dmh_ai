@@ -790,6 +790,140 @@ defmodule Itgr.SessionContextContract do
     end
   end
 
+  # ─── Single-ongoing-one_off-per-session Police gate ──────────────────────
+
+  describe "Police.check_no_duplicate_one_off_task_in_session/3" do
+    alias DmhAi.Agent.Tasks
+
+    test ":ok when no active one_off exists (first one_off in the session)" do
+      sid = uid(); uid_ = uid(); seed_plain_session(sid, uid_)
+
+      assert :ok = Police.check_no_duplicate_one_off_task_in_session(
+                     "create_task",
+                     %{"task_type" => "one_off", "task_title" => "anything"},
+                     %{session_id: sid})
+    end
+
+    test ":ok when task_type is periodic (gate only guards one_off creation)" do
+      sid = uid(); uid_ = uid(); seed_plain_session(sid, uid_)
+      tid = Tasks.insert(user_id: uid_, session_id: sid,
+                         task_title: "active", task_spec: "x",
+                         task_type: "one_off")
+      Tasks.mark_ongoing(tid)
+
+      assert :ok = Police.check_no_duplicate_one_off_task_in_session(
+                     "create_task",
+                     %{"task_type" => "periodic", "task_title" => "scheduled"},
+                     %{session_id: sid})
+    end
+
+    test ":ok for non-create_task calls (gate only guards creation)" do
+      sid = uid(); uid_ = uid(); seed_plain_session(sid, uid_)
+      tid = Tasks.insert(user_id: uid_, session_id: sid,
+                         task_title: "active", task_spec: "x",
+                         task_type: "one_off")
+      Tasks.mark_ongoing(tid)
+
+      assert :ok = Police.check_no_duplicate_one_off_task_in_session(
+                     "pickup_task",
+                     %{"task_num" => 1},
+                     %{session_id: sid})
+    end
+
+    test ":ok when ctx lacks session_id" do
+      assert :ok = Police.check_no_duplicate_one_off_task_in_session(
+                     "create_task",
+                     %{"task_type" => "one_off"},
+                     %{})
+    end
+
+    test ":ok when existing one_off is paused (paused does NOT block — context already shelved)" do
+      sid = uid(); uid_ = uid(); seed_plain_session(sid, uid_)
+      tid = Tasks.insert(user_id: uid_, session_id: sid,
+                         task_title: "shelved", task_spec: "x",
+                         task_type: "one_off")
+      Tasks.mark_ongoing(tid)
+      Tasks.mark_paused(tid)
+
+      assert :ok = Police.check_no_duplicate_one_off_task_in_session(
+                     "create_task",
+                     %{"task_type" => "one_off", "task_title" => "fresh start"},
+                     %{session_id: sid})
+    end
+
+    test ":ok when existing one_off is done / cancelled" do
+      sid = uid(); uid_ = uid(); seed_plain_session(sid, uid_)
+      tid_done = Tasks.insert(user_id: uid_, session_id: sid,
+                              task_title: "delivered", task_spec: "x",
+                              task_type: "one_off")
+      Tasks.mark_done(tid_done, "ok")
+
+      assert :ok = Police.check_no_duplicate_one_off_task_in_session(
+                     "create_task",
+                     %{"task_type" => "one_off", "task_title" => "next"},
+                     %{session_id: sid})
+    end
+
+    test "rejects second one_off when session has an ONGOING one_off" do
+      sid = uid(); uid_ = uid(); seed_plain_session(sid, uid_)
+      tid = Tasks.insert(user_id: uid_, session_id: sid,
+                         task_title: "stock market news", task_spec: "x",
+                         task_type: "one_off")
+      Tasks.mark_ongoing(tid)
+
+      assert {:rejected, {:duplicate_one_off_task_in_session, reason}} =
+               Police.check_no_duplicate_one_off_task_in_session(
+                 "create_task",
+                 %{"task_type" => "one_off", "task_title" => "google calendar"},
+                 %{session_id: sid})
+
+      # Educational nudge must:
+      #   - name the existing task by its (N) and short title,
+      #   - explain WHY (single-active-one_off invariant + context bleed),
+      #   - tell the model to ASK the user with three options.
+      assert reason =~ "already has an ongoing one_off task"
+      assert reason =~ "stock market news"
+      assert reason =~ "at most ONE active one_off"
+      assert reason =~ ~r/task \(\d+\)/
+      assert reason =~ "Finish"
+      assert reason =~ "Pause"
+      assert reason =~ "Cancel"
+      # Must NOT leak literal arg-list templates the model would imitate
+      # (the bug we just fixed in police.ex's other nudges).
+      refute reason =~ ~r/complete_task\s*\(\s*task_num\s*:/
+      refute reason =~ ~r/pause_task\s*\(\s*task_num\s*:/
+      refute reason =~ ~r/cancel_task\s*\(\s*task_num\s*:/
+    end
+
+    test "rejects even when task_type is omitted (one_off is the implicit default)" do
+      sid = uid(); uid_ = uid(); seed_plain_session(sid, uid_)
+      tid = Tasks.insert(user_id: uid_, session_id: sid,
+                         task_title: "active", task_spec: "x",
+                         task_type: "one_off")
+      Tasks.mark_ongoing(tid)
+
+      assert {:rejected, {:duplicate_one_off_task_in_session, _}} =
+               Police.check_no_duplicate_one_off_task_in_session(
+                 "create_task",
+                 %{"task_title" => "no type given"},
+                 %{session_id: sid})
+    end
+
+    test ":ok after the existing one_off is closed (mark_done frees the slot)" do
+      sid = uid(); uid_ = uid(); seed_plain_session(sid, uid_)
+      tid = Tasks.insert(user_id: uid_, session_id: sid,
+                         task_title: "going away", task_spec: "x",
+                         task_type: "one_off")
+      Tasks.mark_ongoing(tid)
+      Tasks.mark_done(tid, "delivered")
+
+      assert :ok = Police.check_no_duplicate_one_off_task_in_session(
+                     "create_task",
+                     %{"task_type" => "one_off", "task_title" => "replacement"},
+                     %{session_id: sid})
+    end
+  end
+
   # ─── Silent-turn scope Police gate (rule #9) ─────────────────────────────
 
   describe "Police.check_silent_turn_scope/3" do

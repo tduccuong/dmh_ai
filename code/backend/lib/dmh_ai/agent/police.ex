@@ -279,14 +279,15 @@ defmodule DmhAi.Agent.Police do
         reason =
           "Error: you haven't started a task in THIS chain, so `#{name}` " <>
             "is rejected. Every user ask needs an active task. Two paths:\n" <>
-            "  (a) NEW objective → `create_task(...)`. This both registers " <>
-            "AND starts the task (auto-pickup) — your next call can be " <>
-            "`#{name}` directly. No separate `pickup_task` needed.\n" <>
+            "  (a) NEW objective → call `create_task` (it both registers " <>
+            "AND auto-picks up the new task; your next call can be " <>
+            "`#{name}` directly — no separate `pickup_task` needed).\n" <>
             "  (b) RESUMING an existing task from the Task list (done / " <>
-            "paused / cancelled, or ongoing but context was lost) → " <>
-            "`pickup_task(task_num: N)`.\n" <>
-            "Then retry `#{name}`. When finished, `complete_task(task_num: " <>
-            "N, task_result: ...)`."
+            "paused / cancelled, or ongoing but context was lost) → call " <>
+            "`pickup_task` for that task.\n" <>
+            "Then retry `#{name}`. When the user's request is satisfied, " <>
+            "close the task with `complete_task` — passing the task's " <>
+            "number and a one-line outcome summary."
 
         Logger.warning("[Police] REJECTED task_discipline: tool=#{name} session=#{inspect(ctx[:session_id])}")
         DmhAi.SysLog.log("[POLICE] REJECTED task_discipline: tool=#{name} session=#{inspect(ctx[:session_id])}")
@@ -642,11 +643,11 @@ defmodule DmhAi.Agent.Police do
       reason =
         "Error: you have `[newly attached]` attachments in the current user " <>
           "message that you didn't read this turn:\n#{joined}\n" <>
-          "You must call `extract_content(path: <workspace/...>)` on each of " <>
-          "them — the user re-attached them because they want another look. " <>
-          "Retry the turn: if you haven't created a task yet, call `create_task` " <>
-          "first, then `extract_content` per attachment, then produce your " <>
-          "final answer."
+          "You must call `extract_content` once per attachment, passing the " <>
+          "workspace path shown above — the user re-attached them because " <>
+          "they want another look. Retry the turn: if you haven't created " <>
+          "a task yet, call `create_task` first, then `extract_content` per " <>
+          "attachment, then produce your final answer."
 
       Logger.warning("[Police] REJECTED fresh_attachments_unread: missed=#{inspect(missed)}")
       DmhAi.SysLog.log("[POLICE] REJECTED fresh_attachments_unread: missed=#{inspect(missed)}")
@@ -921,10 +922,11 @@ defmodule DmhAi.Agent.Police do
                 "forbidden here: creating a new task in a scheduler-triggered " <>
                 "turn would hijack the pickup's scope. If a user asked for a " <>
                 "new task in an earlier conversational turn, they will re-ask " <>
-                "on their next message — wait for that. Right now, produce the " <>
-                "pickup's output via execution tools, then call " <>
-                "`complete_task(task_num: #{inspect(pickup_num)}, " <>
-                "task_result: \"…\")` and emit your final text."
+                "on their next message — wait for that. Right now, produce " <>
+                "the pickup's output via execution tools, then close " <>
+                "(#{inspect(pickup_num)}) with `complete_task` — passing " <>
+                "the task's number and a one-line outcome summary — " <>
+                "and emit your final text."
 
             Logger.warning(
               "[Police] REJECTED silent_turn_create_task: pickup_num=#{inspect(pickup_num)}"
@@ -985,8 +987,8 @@ defmodule DmhAi.Agent.Police do
   ))
 
   @doc """
-  Per-tool-call gate backed by the Oracle classifier. Reads
-  `ctx.oracle_task` (a `Task` struct kicked off at chain start in
+  Per-tool-call gate backed by the Swift classifier. Reads
+  `ctx.swift_task` (a `Task` struct kicked off at chain start in
   `run_assistant`) and decides:
 
     * `:related`   → pass.
@@ -1003,11 +1005,11 @@ defmodule DmhAi.Agent.Police do
   Cache: the verdict is awaited at most once per chain. The first
   call to this gate awaits, parks the verdict in the process
   dictionary, and subsequent calls in the same chain read from
-  there. The Oracle Task is shut down right after the await so it
+  there. The Swift Task is shut down right after the await so it
   doesn't outlive its usefulness.
 
-  Pending-pivot stashing happens INSIDE the Oracle Task itself
-  (see `DmhAi.Agent.UserAgent.maybe_start_oracle/3`) — fired as a
+  Pending-pivot stashing happens INSIDE the Swift Task itself
+  (see `DmhAi.Agent.UserAgent.maybe_start_swift/3`) — fired as a
   side effect when the verdict resolves to `:unrelated`. That way
   the stash happens whether or not Police's gate ever runs (e.g.
   the model went text-only on the off-topic chain), so the
@@ -1018,7 +1020,7 @@ defmodule DmhAi.Agent.Police do
           :ok | {:rejected, {atom(), String.t()}}
   def check_pivot(name, args, ctx)
       when is_binary(name) and is_map(args) and is_map(ctx) do
-    case oracle_verdict(ctx) do
+    case swift_verdict(ctx) do
       :related ->
         :ok
 
@@ -1038,7 +1040,7 @@ defmodule DmhAi.Agent.Police do
       :done ->
         # User asked to close the active task. Same exempt list as
         # :unrelated (model is allowed to call cancel/pause/complete/
-        # request_input/etc.), but the upstream maybe_start_oracle
+        # request_input/etc.), but the upstream maybe_start_swift
         # branch on :done does NOT stash PendingPivots — so the
         # auto-create-task hook stays silent. See specs/architecture.md
         # §Oracle DONE verdict.
@@ -1051,28 +1053,49 @@ defmodule DmhAi.Agent.Police do
   end
   def check_pivot(_, _, _), do: :ok
 
-  @oracle_await_ms 3_000
+  @swift_await_ms 3_000
 
-  defp oracle_verdict(ctx) do
-    case Process.get(:dmh_ai_oracle_verdict_cached) do
+  defp swift_verdict(ctx) do
+    case Process.get(:dmh_ai_swift_verdict_cached) do
       {:resolved, v} ->
         v
 
       _ ->
-        v = await_oracle(Map.get(ctx, :oracle_task))
-        Process.put(:dmh_ai_oracle_verdict_cached, {:resolved, v})
+        v = await_swift(Map.get(ctx, :swift_task))
+        Process.put(:dmh_ai_swift_verdict_cached, {:resolved, v})
         v
     end
   end
 
-  defp await_oracle(nil), do: :related
-  defp await_oracle(%Task{} = task) do
-    case Task.yield(task, @oracle_await_ms) || Task.shutdown(task, :brutal_kill) do
+  defp await_swift(nil), do: :related
+
+  defp await_swift(%Task{} = task) do
+    # Quick-yield only; do NOT shutdown the task on timeout. The
+    # Swift Task's body has a load-bearing side-effect when the
+    # verdict is `:unrelated` — it writes the user's pivot message to
+    # `PendingPivots`, which `maybe_auto_create_task/3` later reads
+    # when the user confirms the pivot via `pause_task` / `cancel_task`
+    # to synthesise the new task. Killing the task here on a 3s
+    # timeout would lose that stash entirely → user says "pause it"
+    # → no auto-pivot fires → user stranded with no follow-up chain.
+    #
+    # If the verdict isn't ready in time, this gate falls through to
+    # `:error` → `check_pivot` treats as `:related` → the chain's
+    # tool_calls go to subsequent gates. The
+    # `check_no_duplicate_one_off_task_in_session` gate (which runs
+    # AFTER us) will catch the model's `create_task` if it tried to
+    # branch, surfacing the same pivot-prompt UX. By the time the
+    # user types "pause it" (multi-second typing latency), the
+    # Swift Task has almost certainly completed and written the
+    # stash; `do_auto_create_task` waits one more time before reading
+    # `PendingPivots` to close the residual fast-typing window.
+    case Task.yield(task, @swift_await_ms) do
       {:ok, v} when v in [:related, :unrelated, :knowledge, :done, :error] -> v
       _ -> :error
     end
   end
-  defp await_oracle(_), do: :error
+
+  defp await_swift(_), do: :error
 
   defp reject_unrelated(name, ctx) do
     anchor_num = Map.get(ctx, :anchor_task_num)
@@ -1163,6 +1186,93 @@ defmodule DmhAi.Agent.Police do
   end
   def check_no_duplicate_periodic_task_in_session(_, _, _), do: :ok
 
+  @doc """
+  Per-tool-call gate enforcing the "at most one ongoing one_off task
+  per chat session" policy. Rejects `create_task` (default `task_type:
+  "one_off"`) when the session already has an ONGOING one_off task —
+  the model must surface the conflict to the user, not silently
+  branch off a second task that competes for context.
+
+  Why this matters: an unclosed one_off task's tool_history (often
+  containing 20-30 KB of `web_search` / `web_fetch` / `extract_content`
+  results) stays in the rolling retention window. Every subsequent
+  chain in the session pays that bloat as input tokens until the task
+  is closed/paused/cancelled. A model that quietly creates a second
+  one_off task on a tangential request leaves the original to bleed
+  context indefinitely. This gate forces an explicit user decision.
+
+  Mirror image of the single-periodic gate.
+
+  Only fires on `create_task` with `task_type` either `"one_off"` or
+  unset (one_off is the implicit default). Periodic creates bypass
+  here — those are governed by `check_no_duplicate_periodic_task_in_session/3`.
+
+  `ctx[:session_id]` is required (non-session callers bypass).
+  """
+  @spec check_no_duplicate_one_off_task_in_session(String.t(), map(), map()) ::
+          :ok | {:rejected, {atom(), String.t()}}
+  def check_no_duplicate_one_off_task_in_session("create_task", args, ctx)
+      when is_map(args) and is_map(ctx) do
+    cond do
+      args["task_type"] not in [nil, "", "one_off"] ->
+        :ok
+
+      not Map.has_key?(ctx, :session_id) ->
+        :ok
+
+      true ->
+        case DmhAi.Agent.Tasks.session_active_one_off(ctx[:session_id]) do
+          nil ->
+            :ok
+
+          existing ->
+            reason = build_duplicate_one_off_reason(existing)
+
+            Logger.warning(
+              "[Police] REJECTED duplicate_one_off_task_in_session: " <>
+                "session=#{inspect(ctx[:session_id])} existing=#{existing.task_id}"
+            )
+
+            DmhAi.SysLog.log(
+              "[POLICE] REJECTED duplicate_one_off_task_in_session: " <>
+                "session=#{inspect(ctx[:session_id])} existing=#{existing.task_id}"
+            )
+
+            {:rejected, {:duplicate_one_off_task_in_session, reason}}
+        end
+    end
+  end
+  def check_no_duplicate_one_off_task_in_session(_, _, _), do: :ok
+
+  defp build_duplicate_one_off_reason(existing) do
+    num = existing.task_num || "?"
+    title = existing.task_title || "(untitled)"
+
+    "Error: this chat session already has an ongoing one_off task — " <>
+      "task (#{num}) — #{title}. " <>
+      "DMH-AI keeps at most ONE active one_off task per session at a " <>
+      "time, so this `create_task` is rejected. The user's attention " <>
+      "is currently on (#{num}); silently branching off a second task " <>
+      "would leave (#{num})'s context bleeding into every subsequent " <>
+      "chain.\n\n" <>
+      "What to do this turn — IN PLAIN TEXT, no tool calls — ask the " <>
+      "user to choose between three paths and WAIT for their answer:\n" <>
+      "  (a) Finish (#{num}) first, then handle the new request.\n" <>
+      "  (b) Pause (#{num}) and start the new request now (resume later).\n" <>
+      "  (c) Cancel (#{num}) and start the new request now.\n\n" <>
+      "Phrase the question naturally in the user's language; name the " <>
+      "current task by its `(#{num})` and short title so the choice is " <>
+      "concrete. On their next message:\n" <>
+      "  - \"finish (#{num}) first\" → continue working on it; close " <>
+      "with `complete_task` when the answer is delivered.\n" <>
+      "  - \"pause it\" → call `pause_task` for (#{num}), then call " <>
+      "`create_task` for the new request.\n" <>
+      "  - \"cancel it\" → call `cancel_task` for (#{num}), then call " <>
+      "`create_task` for the new request.\n" <>
+      "  - \"already done\" → close (#{num}) with `complete_task` " <>
+      "first, then call `create_task` for the new request."
+  end
+
   defp build_duplicate_periodic_reason(existing) do
     num = existing.task_num || "?"
     title = existing.task_title || "(untitled)"
@@ -1170,7 +1280,7 @@ defmodule DmhAi.Agent.Police do
     "Error: this chat session already has an active periodic task — " <>
       "task (#{num}) — #{title}. " <>
       "DMH-AI supports at most ONE periodic task per chat session, " <>
-      "so this `create_task(task_type: \"periodic\", ...)` is rejected.\n\n" <>
+      "so a second periodic `create_task` is rejected.\n\n" <>
       "What to do next:\n" <>
       "  (a) If the user ASKED for a different periodic schedule, do NOT " <>
       "create a new one silently. Reply to them IN THEIR LANGUAGE with " <>
@@ -1180,14 +1290,14 @@ defmodule DmhAi.Agent.Police do
       "then set up the new one — want me to do that?\" Then WAIT for " <>
       "their answer; do not act unilaterally.\n" <>
       "  (b) If the user is asking a regular question, call " <>
-      "`create_task(task_type: \"one_off\", ...)` instead — not " <>
-      "periodic.\n" <>
+      "`create_task` for a one-off task instead — not periodic.\n" <>
       "  (c) If you were trying to PROGRESS the existing periodic task " <>
       "(this happens during a `[Task due: ...]` pickup), use the " <>
-      "verb API against the existing (N): `pickup_task(task_num: #{num})` " <>
-      "→ produce output via execution tools → " <>
-      "`complete_task(task_num: #{num}, task_result: \"…\")`. " <>
-      "Do NOT call `create_task`. A second periodic row is always a bug."
+      "existing periodic task (#{num}) directly: call `pickup_task` " <>
+      "for it → produce output via execution tools → close it with " <>
+      "`complete_task` (passing the task's number and a one-line " <>
+      "outcome summary). Do NOT call `create_task`. A second " <>
+      "periodic row is always a bug."
   end
 
   @doc """

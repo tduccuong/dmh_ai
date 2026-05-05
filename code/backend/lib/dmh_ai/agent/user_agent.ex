@@ -425,10 +425,10 @@ defmodule DmhAi.Agent.UserAgent do
 
         # Notify any synchronous waiter on the original dispatch
         # call. Caller may already be gone (HTTP conn died on
-        # FE force-reload); send is a no-op for dead pids.
-        if is_pid(reply_pid) do
-          send(reply_pid, {:cancelled, "Stopped by user."})
-        end
+        # FE force-reload), or be `nil` for non-user-initiated
+        # dispatches (auto-resume, silent turn) — `safe_reply/2`
+        # is a no-op in both cases.
+        safe_reply(reply_pid, {:cancelled, "Stopped by user."})
 
         _ = StreamBuffer.clear(session_id, state.user_id)
         _ = ThinkingBuffer.clear(session_id, state.user_id)
@@ -459,6 +459,24 @@ defmodule DmhAi.Agent.UserAgent do
       end
 
     {:reply, sid, state, @idle_timeout}
+  end
+
+  # Auto-chain pickup, synchronous-confirmed path. TaskRuntime calls
+  # this from its periodic timer instead of `send/2`, because the
+  # bare-send pattern is racy: between `Supervisor.ensure_started`
+  # returning the pid and the message being enqueued, the GenServer
+  # can finish processing its idle :timeout and stop, leaving the
+  # message destined for a defunct mailbox. `GenServer.call/3` raises
+  # `:exit` on dead-pid contact so the caller can retry, AND the
+  # mailbox is guaranteed to receive the message before the call
+  # returns (or the call exits — never silently drops). Reply is
+  # `:ok` regardless of busy/idle: the caller's only contract is
+  # "did my message land". Idle → start_silent_turn; busy → the
+  # post-completion `maybe_trigger_next_due/1` path picks it up
+  # naturally on the next chain-complete, so no re-queue needed.
+  def handle_call({:task_due, task_id}, _from, state) do
+    {reply, new_state} = do_task_due(task_id, state)
+    {:reply, reply, new_state, @idle_timeout}
   end
 
   @impl true
@@ -498,11 +516,34 @@ defmodule DmhAi.Agent.UserAgent do
   #      `{:task_due, task_id}` for a silent periodic pickup.
   #
   # `result` shape:
-  #   * `{:chain_done, watermark_ts}` — Assistant session_chain_loop
-  #     (every terminal branch — success, error, empty — returns this)
+  #   * `{:chain_done, watermark_ts, auto_pivot_signal}` — Assistant
+  #     session_chain_loop. Every terminal branch returns this 3-tuple.
+  #     `auto_pivot_signal` is one of:
+  #       - `false` — normal chain end. Auto-resume only when a new user
+  #         message arrived after the chain's watermark.
+  #       - `{:auto_pivot, task_id}` — close-verb chain synthesised a
+  #         `create_task` for a stashed pivot. The trailing user-role
+  #         message in session.messages was the runtime trigger and is
+  #         already consumed; the next chain MUST go through the
+  #         silent-pickup path so a synthetic kicker overrides the
+  #         trailing chat tail. Without this, a normal auto-resume
+  #         replays the consumed trigger as a fresh ask and the model
+  #         close-verbs the freshly-created task.
   #   * anything else — Confidant path; only `:ok`-like returns reach
   #     here on the error branch. The mode-aware match below skips
   #     auto-resume entirely for Confidant.
+  #
+  # Auto-resume routing (Assistant only):
+  #   - normal user-msg auto-resume → `{:auto_resume_assistant, sid}`
+  #     (the existing 2-arity message; rebuilds context from session
+  #     and treats the trailing user message as the fresh ask).
+  #   - auto-pivot pickup → `{:auto_resume_assistant, sid, {:pickup, task_id}}`
+  #     (3-arity; routes to `run_assistant_silent` with kind=:auto_pivot).
+  #
+  # Both decisions live in the GenServer (this callback) so the
+  # message always lands in the right mailbox; the chain Task itself
+  # never sends `:auto_resume_assistant` (its `self()` is the Task pid,
+  # not the GenServer).
   #
   # The 5-tuple `{ref, pid, reply_pid, session_id, mode}` carries the
   # dispatched mode forward so the hook never has to guess. Auto-resume
@@ -515,31 +556,58 @@ defmodule DmhAi.Agent.UserAgent do
 
     case mode do
       "assistant" ->
-        has_newer_user_msg? =
+        decision =
           case result do
-            {:chain_done, watermark_ts} when is_integer(watermark_ts) ->
-              DmhAi.Agent.UserAgentMessages.user_msgs_since(session_id, watermark_ts) != []
+            {:chain_done, _watermark_ts, {:auto_pivot, task_id}} when is_binary(task_id) ->
+              {:pickup, task_id}
 
-            _ ->
-              # Defensive fallback for unexpected return shapes from a
-              # mode="assistant" task (silent turn etc). Last-message
-              # check is correct here because the mode gate above
-              # guarantees we're in Assistant territory.
-              DmhAi.Agent.UserAgentMessages.has_unanswered_user_msg?(session_id)
+            {:chain_done, watermark_ts, false} when is_integer(watermark_ts) ->
+              if DmhAi.Agent.UserAgentMessages.user_msgs_since(session_id, watermark_ts) != [],
+                do: :resume,
+                else: :idle
           end
 
-        if has_newer_user_msg? do
-          send(self(), {:auto_resume_assistant, session_id})
-        else
-          maybe_trigger_next_due(session_id)
+        # No catch-all. The two clauses above cover EVERY legitimate
+        # return from `session_chain_loop` / `run_assistant_silent`.
+        # Anything else is a shape regression — most recently
+        # `{:chain_done, _, {:auto_pivot, nil}}` slipped through the
+        # old defensive catch-all and routed to the wrong path,
+        # causing the model to close-verb the auto-pivoted task. Let
+        # the missing match raise: the supervisor restarts the
+        # GenServer (state is small, boot_scan recovers it on next
+        # dispatch), the stack trace lands in Logger.error AND the
+        # SysLog tail-file, and the bug is loud instead of subtle.
+        # If a future return shape becomes legitimate, ADD a clause
+        # here — do not paper over with a wildcard.
+
+        case decision do
+          :resume ->
+            send(self(), {:auto_resume_assistant, session_id})
+
+          {:pickup, task_id} ->
+            send(self(), {:auto_resume_assistant, session_id, {:pickup, task_id}})
+
+          :idle ->
+            maybe_trigger_next_due(session_id)
         end
 
-      _ ->
-        # Confidant or any future non-Assistant mode: no auto-resume
-        # semantics. Persisting a reply (or an error placeholder, see
-        # `run_confidant`'s `{:error, _}` arm) is the pipeline's own
-        # responsibility; the chain hook never retries on its behalf.
+      "confidant" ->
+        # Confidant is single-turn. Persisting a reply (or an error
+        # placeholder, see `run_confidant`'s `{:error, _}` arm) is
+        # the pipeline's own responsibility; the chain hook never
+        # retries on its behalf.
         :ok
+
+      other ->
+        # Unknown mode landing here is a wiring bug — `dispatch_run`
+        # only ever stores "assistant" or "confidant" in the
+        # current_task tuple, and the HTTP handler validates mode
+        # before dispatch. Fail loud so a future mode-add can't
+        # silently skip auto-resume.
+        msg = "[UserAgent] unknown mode in chain-complete hook: #{inspect(other)} session=#{session_id}"
+        Logger.error(msg)
+        DmhAi.SysLog.log(msg)
+        raise "unknown chain-complete mode: #{inspect(other)}"
     end
 
     {:noreply, state, @idle_timeout}
@@ -583,7 +651,7 @@ defmodule DmhAi.Agent.UserAgent do
     Logger.error(crash_summary)
     DmhAi.SysLog.log(crash_summary)
 
-    send(reply_pid, {:error, "Internal error — please try again"})
+    safe_reply(reply_pid, {:error, "Internal error — please try again"})
 
     _ = StreamBuffer.clear(session_id, state.user_id)
     _ = ThinkingBuffer.clear(session_id, state.user_id)
@@ -601,28 +669,14 @@ defmodule DmhAi.Agent.UserAgent do
     {:noreply, state, @idle_timeout}
   end
 
-  # Auto-chain pickup: either fired by TaskRuntime's periodic timer or
-  # self-sent by `maybe_trigger_next_due/1` after the previous turn
-  # completed. If the agent is idle, run a silent turn for this task —
-  # no user waiting, so progress streams to a throwaway pid while
-  # session_progress + the final assistant message persist to DB. FE
-  # picks them up via polling.
-  def handle_info({:task_due, task_id}, %{current_task: nil} = state) do
-    case Tasks.get(task_id) do
-      %{task_status: "pending", session_id: session_id} = task ->
-        start_silent_turn(task, session_id, state)
-
-      _ ->
-        # Task disappeared, already done, or flipped to paused/cancelled.
-        {:noreply, state, @idle_timeout}
-    end
-  end
-
-  # Agent is busy — drop the message. The post-completion
-  # `maybe_trigger_next_due/1` path will pick it up after the current
-  # turn finishes, so we don't need to re-queue.
-  def handle_info({:task_due, _task_id}, state) do
-    {:noreply, state, @idle_timeout}
+  # Auto-chain pickup, async path. Fired in-process by
+  # `maybe_trigger_next_due/1` (self-send after the previous turn
+  # completed). External callers (TaskRuntime) MUST use the
+  # `handle_call({:task_due, _}, ...)` clause instead — see comment
+  # there for why.
+  def handle_info({:task_due, task_id}, state) do
+    {_reply, new_state} = do_task_due(task_id, state)
+    {:noreply, new_state, @idle_timeout}
   end
 
   # Auto-resume: after a chain finished while the DB shows an
@@ -634,13 +688,15 @@ defmodule DmhAi.Agent.UserAgent do
   # a new auto_resume_assistant on the next completion, so no re-queue is
   # needed here.
   def handle_info({:auto_resume_assistant, session_id}, %{current_task: nil} = state) do
-    dummy_pid = spawn(fn -> :ok end)
-
+    # Auto-resume is fire-and-forget; there is no synchronous waiter
+    # for `{:error, ...}` / `{:cancelled, ...}` replies. `safe_reply/2`
+    # treats `nil` as a no-op, so leaving reply_pid unset costs nothing
+    # and avoids the wasted process-spawn-then-die cycle.
     command = %AssistantCommand{
       type:             :chat,
       content:          "",
       session_id:       session_id,
-      reply_pid:        dummy_pid,
+      reply_pid:        nil,
       attachment_names: [],
       files:            [],
       metadata:         %{auto_resume: true}
@@ -660,6 +716,34 @@ defmodule DmhAi.Agent.UserAgent do
     # Busy — silent drop. When the current turn completes its chain-
     # complete hook will re-check `has_unanswered_user_msg?` and fire
     # another :auto_resume_assistant at that time.
+    {:noreply, state, @idle_timeout}
+  end
+
+  # Auto-pivot pickup variant. Fired by the chain-complete hook when
+  # the previous chain ended with `{:auto_pivot, task_id}`. Routes
+  # through the silent-pickup path (kind: :auto_pivot) so the next
+  # chain's context build appends a synthetic kicker that names the
+  # new task as the directive — overriding the trailing user-role
+  # message in session.messages, which was the runtime trigger for
+  # the pivot and is already consumed. Skipping this routing makes
+  # the model close-verb the freshly-created task because the
+  # trailing chat tail looks like a fresh ask.
+  def handle_info({:auto_resume_assistant, session_id, {:pickup, task_id}}, %{current_task: nil} = state) do
+    case Tasks.get(task_id) do
+      %{} = task ->
+        DmhAi.SysLog.log("[ASSISTANT:pickup] user=#{state.user_id} session=#{session_id} task=#{task_id} kind=auto_pivot")
+        start_silent_turn(task, session_id, state, kind: :auto_pivot)
+
+      nil ->
+        Logger.warning("[UserAgent] auto-pivot pickup target task=#{task_id} not found — skipping")
+        {:noreply, state, @idle_timeout}
+    end
+  end
+
+  def handle_info({:auto_resume_assistant, _session_id, {:pickup, _task_id}}, state) do
+    # Busy — silent drop, same recovery path as the 2-arity variant.
+    # Match the EXACT pickup tag rather than a wildcard `_opts` — any
+    # other shape is a wiring bug we'd rather see crash than swallow.
     {:noreply, state, @idle_timeout}
   end
 
@@ -796,10 +880,41 @@ defmodule DmhAi.Agent.UserAgent do
     end
   end
 
-  # Start an auto-triggered turn for a task picked off the pending queue.
-  # Output lands in DB (session_progress, sessions.messages, stream_buffer)
-  # exactly as for a user-initiated turn; FE polling renders it.
-  defp start_silent_turn(task, session_id, state) do
+  # Shared body for the two `:task_due` entry points (handle_info from
+  # internal self-sends, handle_call from TaskRuntime). Returns
+  # `{reply, new_state}`. Reply is `:ok` so external callers can
+  # confirm delivery; the busy/idle distinction is resolved here.
+  defp do_task_due(task_id, %{current_task: nil} = state) do
+    case Tasks.get(task_id) do
+      %{task_status: "pending", session_id: session_id} = task ->
+        {:noreply, new_state, _timeout} = start_silent_turn(task, session_id, state)
+        {:ok, new_state}
+
+      _ ->
+        # Task disappeared, already done, or flipped to paused/cancelled.
+        {:ok, state}
+    end
+  end
+
+  # Agent is busy — drop the message. The post-completion
+  # `maybe_trigger_next_due/1` path will pick it up after the current
+  # turn finishes, so we don't need to re-queue.
+  defp do_task_due(_task_id, state), do: {:ok, state}
+
+  # Start an auto-triggered turn for a task picked off the pending
+  # queue OR for an auto-pivot freshly-created task. Output lands in
+  # DB (session_progress, sessions.messages, stream_buffer) exactly
+  # as for a user-initiated turn; FE polling renders it.
+  #
+  # Options:
+  #   * `:kind` — `:periodic` (default; periodic-task scheduler pickup)
+  #     or `:auto_pivot` (one_off task synthesised by the runtime
+  #     after a confirmed pivot). Forwarded to `run_assistant_silent`,
+  #     which selects the synthetic kicker accordingly. Both kinds
+  #     share the same Police-gate scope (silent_turn_task_id) and the
+  #     same context-build pipeline; only the kicker prose differs.
+  defp start_silent_turn(task, session_id, state, opts \\ []) do
+    kind    = Keyword.get(opts, :kind, :periodic)
     task_id = task.task_id
 
     spawned =
@@ -807,7 +922,7 @@ defmodule DmhAi.Agent.UserAgent do
         case load_session(session_id, state.user_id) do
           {:ok, _model, session_data} ->
             if (session_data["mode"] || "confidant") == "assistant" do
-              run_assistant_silent(task, session_data, state.user_id)
+              run_assistant_silent(task, session_data, state.user_id, kind: kind)
             else
               Logger.warning("[UserAgent] skipping auto task-due for non-assistant session=#{session_id}")
             end
@@ -817,15 +932,16 @@ defmodule DmhAi.Agent.UserAgent do
         end
       end)
 
-    # reply_pid has no purpose in fire-and-forget / polling architecture;
-    # we still carry a dummy value in the state tuple for structural
-    # consistency with user-initiated turns (see :handle_info({ref, _})).
+    # reply_pid is `nil` for silent turns: there is no synchronous
+    # waiter for the busy / cancelled / error replies that the
+    # user-initiated path emits. `safe_reply/2` no-ops on nil so the
+    # cancel-current-turn and DOWN handlers keep working unchanged.
     # Mode is hard-coded "assistant" — silent turns are scheduler-driven
-    # task pickups, which only exist for Assistant-mode sessions
-    # (start_silent_turn skips non-assistant sessions explicitly).
-    dummy_pid = spawn(fn -> :ok end)
+    # or runtime-synthesised pickups, which only exist for
+    # Assistant-mode sessions (start_silent_turn skips non-assistant
+    # sessions explicitly).
     {:noreply,
-     %{state | current_task: {spawned.ref, spawned.pid, dummy_pid, session_id, "assistant"}},
+     %{state | current_task: {spawned.ref, spawned.pid, nil, session_id, "assistant"}},
      @idle_timeout}
   end
 
@@ -835,7 +951,8 @@ defmodule DmhAi.Agent.UserAgent do
   # that says "[Task due: …] — pick it up now". The model then responds
   # as it would to a real user ask. The final assistant text IS persisted
   # so next turn's LLM context carries the audit trail.
-  defp run_assistant_silent(task, session_data, user_id) do
+  defp run_assistant_silent(task, session_data, user_id, opts) do
+    kind   = Keyword.fetch!(opts, :kind)
     model   = AgentSettings.assistant_model()
     profile = load_user_profile(user_id)
     email   = Tasks.lookup_user_email(user_id)
@@ -857,51 +974,23 @@ defmodule DmhAi.Agent.UserAgent do
         silent_turn_task_id: task.task_id
       )
 
-    # Append synthetic "task due" instruction as the last user-role turn
-    # so the model knows what to act on. Not persisted — it's an internal
-    # prompt, not user input. The model's final assistant text IS persisted
-    # via append_session_message below.
+    # Append synthetic kicker as the last user-role turn so the model
+    # knows what to act on. Not persisted — it's an internal prompt,
+    # not user input. The model's final assistant text IS persisted
+    # via append_session_message below. Kicker prose varies by `kind`:
     #
-    # Two instructions land hard here because they target recurring
-    # compliance failures on weak models:
+    #   :periodic — scheduler-driven pickup of an existing periodic
+    #     task. Tells the model to deliver this cycle's output and
+    #     close with complete_task; runtime auto-reschedules.
     #
-    #   1. "This is a PICKUP of the EXISTING task `<id>` — use
-    #      complete_task, not create_task." Prevents each pickup from
-    #      spawning a fresh periodic row (Police gate 6 is the runtime
-    #      safety net).
-    #
-    #   2. "Your final text IS the task output. No 'Joke delivered:',
-    #      'Task complete', or similar meta-prefix." Prevents weak
-    #      models from producing a real reply plus a bookkeeping-style
-    #      line, both persisted, cluttering the session timeline.
-    task_num = Map.get(task, :task_num)
-
-    synthetic = %{role: "user",
-                  content:
-                    "[Task due: (#{task_num}) — #{task.task_title}]\n\n" <>
-                    "This is a PICKUP of the EXISTING periodic task (#{task_num}). " <>
-                    "The runtime has already flipped it to `ongoing` for you — " <>
-                    "you do NOT need to call `pickup_task`. (Calling it is a harmless " <>
-                    "no-op; skipping it is preferred to save a turn.)\n\n" <>
-                    "STAY IN LANE — a silent pickup is scoped to THIS ONE TASK. " <>
-                    "Even if the user asked about a different task in an earlier " <>
-                    "conversational turn, do NOT act on that here. The user will " <>
-                    "re-ask on their next message; wait for it. Forbidden this turn: " <>
-                    "`create_task` (any type), `pickup_task` / `complete_task` / " <>
-                    "`pause_task` / `cancel_task` on ANY task_num other than " <>
-                    "#{task_num}, and cancelling (#{task_num}) itself to " <>
-                    "free the periodic slot.\n\n" <>
-                    "Workflow:\n" <>
-                    "  1. Run whatever execution tools you need (web_fetch, run_script, etc.) " <>
-                    "to produce this cycle's fresh output.\n" <>
-                    "  2. Call `complete_task(task_num: #{task_num}, " <>
-                    "task_result: \"<short summary>\")` — this auto-reschedules the next cycle.\n" <>
-                    "  3. Your final text IS the task output (the joke, the quote, the status — " <>
-                    "whatever this task produces). Write it directly in the user's language. " <>
-                    "NO meta-prefix like \"Joke delivered:\", \"Task complete\", \"Here is your...\", " <>
-                    "\"Your update:\". The user just wants the content."}
-
-    llm_messages = llm_messages ++ [synthetic]
+    #   :auto_pivot — runtime-synthesised one_off task created from a
+    #     user pivot that was just confirmed by a close-verb. Tells
+    #     the model to treat the new task's spec as the directive
+    #     and ignore the trailing chat tail (which was the runtime
+    #     trigger, already consumed). Without this redirect, the
+    #     model would misinterpret the trailing close-verb message
+    #     as a fresh ask and close-verb the freshly-created task.
+    llm_messages = llm_messages ++ [silent_pickup_kicker(task, kind)]
 
     data_dir      = DmhAi.Constants.session_data_dir(email, session_id)
     workspace_dir = DmhAi.Constants.session_workspace_dir(email, session_id)
@@ -985,6 +1074,64 @@ defmodule DmhAi.Agent.UserAgent do
     result
   end
 
+  # Build the synthetic trailing user-role message that drives a
+  # silent pickup. The same message structure for both kinds; the
+  # prose differs because the two pickup contexts impose different
+  # workflow expectations on the model.
+  defp silent_pickup_kicker(task, :periodic) do
+    task_num = Map.get(task, :task_num)
+
+    %{role: "user",
+      content:
+        "[Task due: (#{task_num}) — #{task.task_title}]\n\n" <>
+        "This is a PICKUP of the EXISTING periodic task (#{task_num}). " <>
+        "The runtime has already flipped it to `ongoing` for you — " <>
+        "you do NOT need to call `pickup_task`. (Calling it is a harmless " <>
+        "no-op; skipping it is preferred to save a turn.)\n\n" <>
+        "STAY IN LANE — a silent pickup is scoped to THIS ONE TASK. " <>
+        "Even if the user asked about a different task in an earlier " <>
+        "conversational turn, do NOT act on that here. The user will " <>
+        "re-ask on their next message; wait for it. Forbidden this turn: " <>
+        "`create_task` (any type), `pickup_task` / `complete_task` / " <>
+        "`pause_task` / `cancel_task` on ANY task_num other than " <>
+        "#{task_num}, and cancelling (#{task_num}) itself to " <>
+        "free the periodic slot.\n\n" <>
+        "Workflow:\n" <>
+        "  1. Run whatever execution tools you need (web_fetch, run_script, etc.) " <>
+        "to produce this cycle's fresh output.\n" <>
+        "  2. Close (#{task_num}) with `complete_task` — passing the task's " <>
+        "number and a one-line short summary. The runtime auto-reschedules the next cycle.\n" <>
+        "  3. Your final text IS the task output (the joke, the quote, the status — " <>
+        "whatever this task produces). Write it directly in the user's language. " <>
+        "NO meta-prefix like \"Joke delivered:\", \"Task complete\", \"Here is your...\", " <>
+        "\"Your update:\". The user just wants the content."}
+  end
+
+  defp silent_pickup_kicker(task, :auto_pivot) do
+    task_num = Map.get(task, :task_num)
+    spec     = String.slice(task.task_spec || "", 0, 400)
+
+    %{role: "user",
+      content:
+        "[Auto-pivot pickup: anchor moved to (#{task_num}) — #{inspect(spec)}]\n\n" <>
+        "The previous chain consumed the user's pivot signal by closing the prior " <>
+        "anchor. The trailing user-role message in your context above is the " <>
+        "runtime's already-handled trigger, NOT a fresh ask. Treat (#{task_num})'s " <>
+        "spec as the directive and begin execution work on it.\n\n" <>
+        "STAY IN LANE — a runtime-synthesised pickup is scoped to THIS ONE TASK. " <>
+        "Forbidden this turn: any close-verb on (#{task_num}) before producing " <>
+        "real work for it; `create_task` (any type); `pickup_task` / " <>
+        "`complete_task` / `pause_task` / `cancel_task` on any other task_num. " <>
+        "Do NOT respond to the trailing chat-tail — it is consumed.\n\n" <>
+        "Workflow:\n" <>
+        "  1. Run whatever execution tools the spec requires (web_fetch, " <>
+        "run_script, MCP integrations, etc.) to deliver the answer.\n" <>
+        "  2. Close (#{task_num}) with `complete_task` — passing the task's " <>
+        "number and a one-line short result.\n" <>
+        "  3. Your final text IS the answer. Write it directly in the user's " <>
+        "language. No meta-prefix, no bookkeeping line."}
+  end
+
   # Mid-chain splice: return `messages` with any newly-arrived user
   # messages appended. "Newly arrived" = rows in `session.messages`
   # whose role="user" and whose `ts` is greater than the greatest `ts`
@@ -1009,9 +1156,9 @@ defmodule DmhAi.Agent.UserAgent do
 
   # Max `ts` of any user-role message in a message list. Used both as
   # the splice-floor in `splice_mid_chain_user_msgs` and as the chain
-  # watermark returned with `{:chain_done, ts}`. Entries without a `ts`
-  # (synthetic injections — Police nudges, `[Task due: ...]` markers)
-  # are ignored.
+  # watermark returned with `{:chain_done, ts, auto_pivot?}`. Entries
+  # without a `ts` (synthetic injections — Police nudges,
+  # `[Task due: ...]` markers) are ignored.
   defp max_user_ts_in_messages(messages) do
     messages
     |> Enum.reduce(0, fn m, acc ->
@@ -1145,13 +1292,13 @@ defmodule DmhAi.Agent.UserAgent do
         # the chain finishes before the LLM call picks it up. Either
         # way, the FE gets a 202-like ack here. See architecture.md
         # §Mid-chain user message injection.
-        send(reply_pid, {:error, :queued})
+        safe_reply(reply_pid, {:error, :queued})
         {{:error, :queued}, state}
 
       state.current_task ->
         # Confidant still uses a synchronous busy reject (its one-shot
         # streaming contract has no chain to fold messages into).
-        send(reply_pid, {:error, :busy})
+        safe_reply(reply_pid, {:error, :busy})
         {{:error, :busy}, state}
 
       true ->
@@ -1167,11 +1314,11 @@ defmodule DmhAi.Agent.UserAgent do
                   # Shouldn't happen — the HTTP handler checks mode before
                   # building the command. Refuse loudly if it does.
                   Logger.error("[UserAgent] mode mismatch: session=#{actual_mode} dispatch=#{required_mode}")
-                  send(reply_pid, {:error, :mode_mismatch})
+                  safe_reply(reply_pid, {:error, :mode_mismatch})
                 end
 
               {:error, reason} ->
-                send(reply_pid, {:error, reason})
+                safe_reply(reply_pid, {:error, reason})
             end
           end)
 
@@ -1179,6 +1326,17 @@ defmodule DmhAi.Agent.UserAgent do
          %{state | current_task: {task.ref, task.pid, reply_pid, command.session_id, required_mode}}}
     end
   end
+
+  # Send a reply to a `reply_pid` slot that may be a live pid, a dead
+  # pid (HTTP conn died), or `nil` (auto-resume / silent turn — no
+  # synchronous waiter). All three are valid: live pids receive the
+  # message, dead pids drop it (Erlang `send` is a no-op for dead
+  # pids), nil takes the no-op clause here. Use this anywhere
+  # `command.reply_pid` or the `reply_pid` slot of `current_task` is
+  # contacted, so changing the "no waiter" representation never has
+  # to touch every send site.
+  defp safe_reply(pid, msg) when is_pid(pid), do: send(pid, msg)
+  defp safe_reply(_, _), do: :ok
 
   # ─── Confidant pipeline ─────────────────────────────────────────────────
   # Fire-and-forget: detect web search → maybe fetch → stream LLM tokens
@@ -1542,20 +1700,23 @@ defmodule DmhAi.Agent.UserAgent do
 
     DmhAi.SysLog.log("[ASSISTANT] user=#{user_id} session=#{session_id} msg=#{String.slice(command.content, 0, 200)} fresh_attachments=#{inspect(fresh_attachment_paths)} anchor=#{inspect(anchor_task_num)}")
 
-    # Fire the Oracle classifier in parallel with the chain so its
+    # Fire the Swift classifier in parallel with the chain so its
     # latency overlaps the first assistant LLM call. Skipped when no
     # anchor is set (RELATED/UNRELATED would be meaningless), and
     # also when the anchor's task_spec can't be resolved (e.g. the
     # anchored row was deleted between resolve and dispatch — soft
     # fail). The verdict is awaited lazily inside Police's pivot
-    # gate; if the model goes text-only, the task is shut down at
-    # chain end without ever being awaited. Pending-pivot stashing
-    # is a side effect inside the task body (see
-    # `maybe_start_oracle/3`) so it fires regardless of whether
-    # Police's gate runs.
-    {oracle_task, _anchor_task_spec} = maybe_start_oracle(anchor, command.content, ctx)
+    # gate. If no gate ever awaits it (e.g. the model only emitted
+    # exempt verbs, or went text-only on a fast LLM), the Task is
+    # left running on its own — its body is bounded by `LLM.call`'s
+    # HTTP timeout and `Task.Supervisor` reaps it on exit. The
+    # pending-pivot stash side effect inside `maybe_start_swift/3`
+    # MUST be allowed to complete on `:unrelated` chains; killing
+    # the Task at chain end races that write and strands the user.
+    # See the cleanup block below for the full rationale.
+    {swift_task, _anchor_task_spec} = maybe_start_swift(anchor, command.content, ctx)
 
-    ctx = Map.put(ctx, :oracle_task, oracle_task)
+    ctx = Map.put(ctx, :swift_task, swift_task)
 
     # Mark the chain as in-flight so /poll exposes it to the FE; the
     # FE's pollTurnToCompletion uses this to avoid tearing down the
@@ -1570,12 +1731,28 @@ defmodule DmhAi.Agent.UserAgent do
         DmhAi.Agent.ChainInFlight.clear(session_id)
       end
 
-    # Make sure the classifier task can't outlive the chain; harmless
-    # if it's already done. Police's pivot gate may have shut it
-    # down already (cached the verdict) — Task.shutdown is idempotent.
-    if is_struct(oracle_task, Task) do
-      Task.shutdown(oracle_task, :brutal_kill)
-    end
+    # Do NOT kill the Swift Task here even if it's still running. Its
+    # body has a load-bearing side effect — when the verdict resolves
+    # to `:unrelated`, it writes the user's pivot message to
+    # `PendingPivots`, which the NEXT chain's `do_auto_create_task`
+    # reads to synthesise an auto-pivot `create_task`. A brutal_kill
+    # at chain end races that write whenever the chain finished
+    # without ever awaiting Swift via Police's gate (e.g. the model
+    # only emitted exempt verbs like `pause_task`, or went text-only
+    # on a fast LLM). Killing wins → stash never written → user types
+    # "pause it" → no auto-pivot → user frozen.
+    #
+    # Letting Swift outlive the chain is safe:
+    #   * `Task.Supervisor.async_nolink/2` is unlinked, so the chain
+    #     Task's exit doesn't propagate.
+    #   * The Task body is bounded by `LLM.call`'s HTTP timeout —
+    #     can't run forever.
+    #   * The `{ref, result}` message is destined for the chain Task's
+    #     mailbox, which is gone by the time Swift completes; the
+    #     unread message is GC'd with the dead mailbox. No leak.
+    #   * `DmhAi.Agent.TaskSupervisor` reaps the process on exit.
+    #
+    # See architecture.md §Auto-pivot stash for the full chain.
 
     Task.start(fn ->
       maybe_compact(session_id, user_id)
@@ -1603,12 +1780,16 @@ defmodule DmhAi.Agent.UserAgent do
   # session.messages — the FE picks it up on its next poll — and the
   # chain is done.
   #
-  # Returns `{:chain_done, watermark_ts}` from every terminal branch.
-  # `watermark_ts` is the max user-ts in the final messages list the
-  # chain worked with — i.e. the highest user-message ts the chain's
-  # LLM calls actually saw. The GenServer's chain-complete hook uses
-  # it against DB state to detect "a new user message arrived AFTER
-  # the chain had finished consuming input" and needs an auto-resume.
+  # Returns `{:chain_done, watermark_ts, auto_pivot?}` from every
+  # terminal branch. `watermark_ts` is the max user-ts in the final
+  # messages list the chain worked with — i.e. the highest user-message
+  # ts the chain's LLM calls actually saw. The GenServer's chain-complete
+  # hook uses it against DB state to detect "a new user message arrived
+  # AFTER the chain had finished consuming input" and needs an auto-resume.
+  # `auto_pivot?` is `true` ONLY on the close-verb branch when the chain
+  # synthesised a `create_task` for a stashed pivot — that flag tells the
+  # GenServer to fire `:auto_resume_assistant` directly even though no
+  # new user message arrived.
   defp session_chain_loop(messages, model, ctx, turn) do
     max_turns = AgentSettings.max_assistant_turns_per_chain()
 
@@ -1649,14 +1830,14 @@ defmodule DmhAi.Agent.UserAgent do
       }
       {:ok, _} = DmhAi.Agent.SessionProgress.append(
         progress_ctx, "chain_aborted", "Stopped by user.")
-      {:chain_done, max_user_ts_in_messages(messages)}
+      {:chain_done, max_user_ts_in_messages(messages), false}
     else
 
     if turn >= max_turns do
       msg = DmhAi.I18n.t("turn_cap_reached", "en", %{max: max_turns})
       cap_msg = maybe_tag_task_num(%{role: "assistant", content: msg}, ctx)
       {:ok, _} = append_session_message(ctx.session_id, ctx.user_id, cap_msg)
-      {:chain_done, max_user_ts_in_messages(messages)}
+      {:chain_done, max_user_ts_in_messages(messages), false}
     else
       tools = DmhAi.Tools.Registry.all_definitions(ctx.user_id, anchor_task_id_from_ctx(ctx))
 
@@ -1759,6 +1940,31 @@ defmodule DmhAi.Agent.UserAgent do
 
           form = if may_emit_form?, do: extract_form_from_results(tool_result_msgs), else: nil
 
+          # Close-verb chain termination (Y rule). Detect successful close-verb
+          # tool calls (Police-rejected ones don't count). The chain ends right
+          # here — next user (or auto_resume) chain starts with a clean
+          # tool_history because the verb's `mark_*` already flushed the
+          # closed task's entries to task_chain_archive.
+          #
+          #   pause_task / cancel_task → end immediately. Persist any
+          #     narration as the final assistant message (an explicit
+          #     acknowledgment from the model). If auto-pivot synthesised
+          #     a create_task as a side-effect, fire :auto_resume_assistant
+          #     so a fresh chain spawns to work on the new task with
+          #     clean context.
+          #
+          #   complete_task with NON-empty narration → end immediately.
+          #     The narration IS the answer (Y rule trusts what the model
+          #     wrote alongside the close-verb).
+          #
+          #   complete_task with EMPTY narration → fall through to normal
+          #     recursion. The next LLM turn delivers the answer; chain
+          #     ends naturally when the model emits no tool_calls. This is
+          #     the only case under Y where a complete_task chain pays
+          #     one extra LLM call — paid on the delivery turn.
+          successful_close_verbs = successful_close_verbs(tagged_calls)
+          close_terminates_chain? = close_verbs_terminate_chain?(successful_close_verbs, clean_narration)
+
           cond do
             form != nil ->
               # Persist a single assistant message carrying both the
@@ -1787,7 +1993,73 @@ defmodule DmhAi.Agent.UserAgent do
               {:ok, _} = append_session_message(ctx.session_id, ctx.user_id, msg)
               DmhAi.SysLog.log("[ASSISTANT] turn=#{turn} form persisted (kind=#{form["kind"] || "request_input"} token=#{form["token"] || form[:token]})")
 
-              {:chain_done, max_user_ts_in_messages(messages)}
+              {:chain_done, max_user_ts_in_messages(messages), false}
+
+            close_terminates_chain? ->
+              # Persist whatever narration the model wrote alongside the
+              # close-verb (Y rule: trust it as the answer / acknowledgment).
+              # `clean_narration` may be empty for pause/cancel — that's OK,
+              # the progress row already shows the verb fired.
+              final_assistant_ts =
+                if String.trim(clean_narration) != "" do
+                  msg = maybe_tag_task_num(%{role: "assistant", content: clean_narration}, ctx)
+                  case append_session_message(ctx.session_id, ctx.user_id, msg) do
+                    {:ok, ts} -> ts
+                    _         -> System.os_time(:millisecond)
+                  end
+                else
+                  System.os_time(:millisecond)
+                end
+
+              StreamBuffer.clear(ctx.session_id, ctx.user_id)
+              ThinkingBuffer.clear(ctx.session_id, ctx.user_id)
+
+              finalise_chain_tool_history(messages, ctx, final_assistant_ts, clean_narration)
+
+              # If pause/cancel triggered the auto-pivot's synthetic
+              # `create_task`, signal it to the GenServer's chain-complete
+              # hook via the return tuple. The hook routes the next chain
+              # through the silent-pickup path (NOT a normal user-message
+              # auto-resume), because the trailing user-role message in
+              # session.messages was the runtime trigger for the pivot
+              # and has already been consumed — replaying it as a fresh
+              # ask would make the model close-verb the freshly-created
+              # task. The silent-pickup path appends a synthetic kicker
+              # naming the new task as the directive, overriding the
+              # trailing chat tail.
+              #
+              # The new task's id rides along in the tuple so the GenServer
+              # can `Tasks.get(task_id)` without re-deriving from session
+              # state. After auto-pivot fires, `execute_tools` has already
+              # called `maybe_mutate_anchor("create_task", ...)` for the
+              # synthesised create_task, so `ctx.anchor_task_num` points
+              # at the freshly-created task. We resolve the row id via
+              # `anchor_task_id_from_ctx/1` (the same derived-getter the
+              # rest of the codebase uses — `:anchor_task_id` is NOT a
+              # stored ctx field). DB resolves at this hop are cheap;
+              # caching the id in ctx would be a separate refactor.
+              #
+              # The signal MUST flow through the return tuple, not via
+              # `send(self(), ...)` from inside the chain Task — `self()`
+              # here is the Task pid (spawned by `dispatch_run`), not the
+              # GenServer, so a direct send lands in the dying Task's
+              # mailbox and is silently lost. See the
+              # `handle_info({ref, result}, ...)` callback for how the
+              # GenServer turns this flag into an auto-resume.
+              auto_pivot_signal =
+                if auto_pivot_fired?(tagged_calls) do
+                  {:auto_pivot, anchor_task_id_from_ctx(ctx)}
+                else
+                  false
+                end
+
+              DmhAi.SysLog.log(
+                "[ASSISTANT] turn=#{turn} chain ends on close-verb " <>
+                  "#{inspect(successful_close_verbs)} (narration_chars=#{String.length(clean_narration)}, " <>
+                  "auto_pivot=#{inspect(auto_pivot_signal)})"
+              )
+
+              {:chain_done, max_user_ts_in_messages(messages), auto_pivot_signal}
 
             true ->
               case maybe_abort_on_model_behavior_issue(ctx, model) do
@@ -1796,7 +2068,7 @@ defmodule DmhAi.Agent.UserAgent do
                   session_chain_loop(new_messages, model, ctx, turn + 1)
 
                 :aborted ->
-                  {:chain_done, max_user_ts_in_messages(messages)}
+                  {:chain_done, max_user_ts_in_messages(messages), false}
               end
           end
 
@@ -1828,7 +2100,7 @@ defmodule DmhAi.Agent.UserAgent do
 
               case maybe_abort_on_model_behavior_issue(ctx, model) do
                 :continue -> session_chain_loop(new_messages, model, ctx, turn + 1)
-                :aborted  -> {:chain_done, max_user_ts_in_messages(messages)}
+                :aborted  -> {:chain_done, max_user_ts_in_messages(messages), false}
               end
 
             :ok ->
@@ -1860,7 +2132,7 @@ defmodule DmhAi.Agent.UserAgent do
 
                   case maybe_abort_on_model_behavior_issue(ctx, model) do
                     :continue -> session_chain_loop(new_messages, model, ctx, turn + 1)
-                    :aborted  -> {:chain_done, max_user_ts_in_messages(messages)}
+                    :aborted  -> {:chain_done, max_user_ts_in_messages(messages), false}
                   end
 
                 :ok ->
@@ -1918,27 +2190,9 @@ defmodule DmhAi.Agent.UserAgent do
                   # captured when `run_assistant` (or
                   # `run_assistant_silent`) entered the loop — everything
                   # after index is what this chain produced.
-                  tool_msgs =
-                    messages
-                    |> Enum.drop(ctx.chain_start_idx)
-                    |> collect_tool_messages()
+                  finalise_chain_tool_history(messages, ctx, assistant_ts, clean_text)
 
-                  groups =
-                    group_pairs_by_task_num(
-                      tool_msgs,
-                      Map.get(ctx, :tool_call_task_nums, %{})
-                    )
-
-                  DmhAi.Agent.ToolHistory.save_tools_result_of_chain(
-                    ctx.session_id, ctx.user_id, assistant_ts, groups
-                  )
-                  # Runtime auto-close: if the model worked on any task this
-                  # turn but forgot to call `complete_task`, close them
-                  # now using the final answer as task_result. Keeps the
-                  # task list clean without relying on model compliance.
-                  auto_close_ongoing_tasks(ctx.session_id, clean_text)
-
-                  {:chain_done, max_user_ts_in_messages(messages)}
+                  {:chain_done, max_user_ts_in_messages(messages), false}
               end
           end
 
@@ -1946,7 +2200,7 @@ defmodule DmhAi.Agent.UserAgent do
           DmhAi.SysLog.log("[ASSISTANT] turn=#{turn} empty response — no message persisted")
           StreamBuffer.clear(ctx.session_id, ctx.user_id)
           ThinkingBuffer.clear(ctx.session_id, ctx.user_id)
-          {:chain_done, max_user_ts_in_messages(messages)}
+          {:chain_done, max_user_ts_in_messages(messages), false}
 
         {:error, reason} ->
           DmhAi.SysLog.log("[ASSISTANT] turn=#{turn} ERROR: #{inspect(reason)}")
@@ -1972,7 +2226,7 @@ defmodule DmhAi.Agent.UserAgent do
 
           err_msg = maybe_tag_task_num(err_msg_payload, ctx)
           {:ok, _} = append_session_message(ctx.session_id, ctx.user_id, err_msg)
-          {:chain_done, max_user_ts_in_messages(messages)}
+          {:chain_done, max_user_ts_in_messages(messages), false}
       end
     end
     end
@@ -2186,67 +2440,107 @@ defmodule DmhAi.Agent.UserAgent do
     end)
   end
 
-  # Group `collect_tool_messages/1`'s alternating
-  # `[assistant_tool_call, tool_result, assistant_tool_call, tool_result, ...]`
-  # list into per-task_num chunks for `ToolHistory.save_tools_result_of_chain`.
+  # Slice the chain's tool messages, partition into call blocks, group
+  # by per-call task_num, persist via `ToolHistory.save_tools_result_of_chain`,
+  # and run the periodic auto-close sweep. Called from every chain-end
+  # path (close-verb termination + text-only-final-turn).
   #
-  # Each (assistant_tool_call, tool_result) pair was stamped in
-  # `execute_tools/3` via `stamp_tool_call_task_num/4`; we look up
-  # the stamp by the assistant message's tool_call_id and chunk
-  # consecutive same-stamp pairs together. Returns a list of
-  # `{task_num, [message]}` tuples in chain order — empty list when
-  # the chain ran no tools.
-  defp group_pairs_by_task_num([], _stamps), do: []
-  defp group_pairs_by_task_num(tool_msgs, stamps) when is_map(stamps) do
-    tool_msgs
-    |> pair_assistant_with_result()
-    |> Enum.map(fn {a, t} ->
-      {Map.get(stamps, first_tool_call_id(a)), {a, t}}
-    end)
-    |> Enum.chunk_by(fn {tn, _} -> tn end)
-    |> Enum.map(fn group ->
-      {task_num, _} = hd(group)
-      msgs = Enum.flat_map(group, fn {_, {a, t}} -> [a, t] end)
-      {task_num, msgs}
+  # `final_text` feeds `auto_close_ongoing_tasks` as the task_result for
+  # any periodic task the model worked on but forgot to close.
+  defp finalise_chain_tool_history(messages, ctx, assistant_ts, final_text) do
+    tool_msgs =
+      messages
+      |> Enum.drop(ctx.chain_start_idx)
+      |> collect_tool_messages()
+
+    groups =
+      tool_msgs
+      |> DmhAi.Agent.ToolMessageGrouper.partition_into_call_blocks()
+      |> DmhAi.Agent.ToolMessageGrouper.group_blocks_by_task_num(
+        Map.get(ctx, :tool_call_task_nums, %{})
+      )
+
+    DmhAi.Agent.ToolHistory.save_tools_result_of_chain(
+      ctx.session_id, ctx.user_id, assistant_ts, groups
+    )
+
+    # Runtime auto-close: if the model worked on any periodic task this
+    # turn but forgot to call `complete_task`, close them now using the
+    # final answer as task_result. One_off tasks intentionally NOT swept
+    # — the user's `<task_completion>` rule says they may legitimately
+    # span multiple chains (e.g. clarifying-question pauses).
+    auto_close_ongoing_tasks(ctx.session_id, final_text)
+    :ok
+  end
+
+  # ── close-verb chain termination helpers (Y rule) ─────────────────────
+
+  @close_verbs ~w(complete_task cancel_task pause_task)
+
+  # List the close-verbs from `tagged_calls` that ran successfully (i.e.
+  # weren't stamped with `_rejected: true` by Police). Returns a list of
+  # tool-call name strings; empty list when no close-verb ran or all
+  # were rejected.
+  defp successful_close_verbs(tagged_calls) when is_list(tagged_calls) do
+    Enum.flat_map(tagged_calls, fn c ->
+      rejected = Map.get(c, "_rejected", false)
+      name = get_in(c, ["function", "name"]) || ""
+      if not rejected and name in @close_verbs, do: [name], else: []
     end)
   end
 
-  defp pair_assistant_with_result([]), do: []
-  defp pair_assistant_with_result([_only]), do: []
+  defp successful_close_verbs(_), do: []
 
-  defp pair_assistant_with_result([a, t | rest]) do
+  # Decide whether a chain should terminate immediately given which
+  # close-verbs succeeded and the model's narration this turn.
+  #
+  #   pause_task / cancel_task in any combination → terminate (no answer
+  #     to deliver; progress row carries the acknowledgment).
+  #
+  #   complete_task with non-empty narration → terminate (Y rule: trust
+  #     the narration as the final answer).
+  #
+  #   complete_task with empty narration → DON'T terminate; the chain
+  #     recurses for one more LLM turn so the model can deliver the
+  #     answer it didn't include in the close-verb turn.
+  #
+  #   No close-verbs succeeded → don't terminate.
+  defp close_verbs_terminate_chain?([], _narration), do: false
+
+  defp close_verbs_terminate_chain?(verbs, narration) when is_list(verbs) do
+    has_pause_or_cancel? =
+      Enum.any?(verbs, &(&1 in ["pause_task", "cancel_task"]))
+
+    has_complete? = "complete_task" in verbs
+    narration_non_empty? = String.trim(narration || "") != ""
+
     cond do
-      assistant_with_tool_calls?(a) and tool_result?(t) ->
-        [{a, t} | pair_assistant_with_result(rest)]
-
-      true ->
-        # Defensive: the in-chain message stream shouldn't have
-        # orphans, but if a message slipped in out of order, drop the
-        # leftmost item and continue rather than mis-pair downstream.
-        pair_assistant_with_result([t | rest])
+      has_pause_or_cancel? -> true
+      has_complete? and narration_non_empty? -> true
+      true -> false
     end
   end
 
-  defp assistant_with_tool_calls?(m) do
-    role = m[:role] || m["role"]
-    tcs  = m[:tool_calls] || m["tool_calls"] || []
-    role == "assistant" and is_list(tcs) and tcs != []
+  # Detect whether `maybe_auto_create_task/3` synthesised a `create_task`
+  # in this turn — those carry a `tool_call_id` prefixed `auto_pivot_*`
+  # (see `do_auto_create_task/1`). Used by the close-verb termination
+  # branch to decide whether to fire `:auto_resume_assistant` so a fresh
+  # chain spawns to progress the newly-created task.
+  defp auto_pivot_fired?(tagged_calls) when is_list(tagged_calls) do
+    Enum.any?(tagged_calls, fn c ->
+      id = Map.get(c, "id") || Map.get(c, :id) || ""
+      is_binary(id) and String.starts_with?(id, "auto_pivot_")
+    end)
   end
 
-  defp tool_result?(m) do
-    role = m[:role] || m["role"]
-    id   = m[:tool_call_id] || m["tool_call_id"]
-    role == "tool" and is_binary(id) and id != ""
-  end
+  defp auto_pivot_fired?(_), do: false
 
-  defp first_tool_call_id(msg) do
-    tcs = msg[:tool_calls] || msg["tool_calls"] || []
-    case tcs do
-      [%{"id" => id} | _] -> id
-      [%{id:    id} | _]  -> id
-      _                    -> nil
-    end
-  end
+  # NOTE: tool-message partitioning + per-task grouping moved to
+  # `DmhAi.Agent.ToolMessageGrouper`. The old positional pair_up logic
+  # silently dropped tool_results when an assistant message carried
+  # >1 tool_calls (e.g. the auto-pivot's compound `cancel_task` +
+  # synthesised `create_task`). The new walker matches by
+  # `tool_call_id`, not position. See that module's @moduledoc.
 
   # Escalation threshold — the model gets this many chances to fix a
   # tagged Police misbehavior within a single turn before we give up
@@ -2471,11 +2765,34 @@ defmodule DmhAi.Agent.UserAgent do
                # check. A small classifier model runs in parallel with
                # the assistant LLM at chain start; this gate consults
                # its verdict. UNRELATED tool calls are rejected with a
-               # nudge to confirm the pivot first (auto-create-task
-               # fires after pause/cancel). KNOWLEDGE-class messages
-               # are rejected for ALL tools — those should be answered
-               # in plain text from training. RELATED passes through.
-               :ok <- DmhAi.Agent.Police.check_pivot(name, args, ctx) do
+               # nudge to confirm the pivot first AND stash the user's
+               # pivot message in `PendingPivots` so a later
+               # `pause_task` / `cancel_task` triggers `maybe_auto_create_task`
+               # which synthesises the new `create_task` from the
+               # stashed message. KNOWLEDGE-class messages are
+               # rejected for ALL tools — those should be answered in
+               # plain text from training. RELATED passes through.
+               :ok <- DmhAi.Agent.Police.check_pivot(name, args, ctx),
+               # Police gate 9 — one ongoing one_off task per session.
+               # Mirror image of the single-periodic gate (gate 6).
+               # Rejects a new `create_task` (default `task_type:
+               # "one_off"`) when the session already has an ONGOING
+               # one_off task — but ONLY for the residual case where
+               # the Swift pivot gate above didn't already catch it
+               # (i.e. Swift classified RELATED yet the model still
+               # tried to branch off a second task). The pivot gate's
+               # auto-pivot path (stash → user confirms with pause/
+               # cancel → synthetic create_task) is the canonical
+               # branching flow; this gate just nudges the model to
+               # ask the user when neither path applied.
+               #
+               # ORDERING IS LOAD-BEARING: this gate MUST run AFTER
+               # `check_pivot`. If it ran first on a UNRELATED message,
+               # the pivot stash would never be written and the
+               # subsequent pause/cancel would have nothing to auto-
+               # create from — leaving the user stranded after they
+               # said "pause it" with no follow-up chain spawned.
+               :ok <- DmhAi.Agent.Police.check_no_duplicate_one_off_task_in_session(name, args, ctx) do
             progress_label = DmhAi.Agent.ProgressLabel.format(name, args)
             # `complete_task` is pure cleanup — the final assistant
             # message IS the completion event from the user's
@@ -2772,20 +3089,57 @@ defmodule DmhAi.Agent.UserAgent do
             # Clear the back-ref on the closed task so a future
             # re-pickup starts clean.
             case Tasks.resolve_num(ctx.session_id, n) do
-              {:ok, task_id} -> Tasks.set_back_ref(task_id, nil)
-              _ -> :ok
+              {:ok, task_id} ->
+                Tasks.set_back_ref(task_id, nil)
+
+              {:error, _} = err ->
+                # The task we just closed ALSO can't be re-resolved by
+                # number? Either the row was deleted mid-chain (race) or
+                # the session_id is wrong. Log loudly — this contradicts
+                # the success? path having just passed.
+                Logger.error("[UserAgent] anchor #{verb}: resolve_num failed for current anchor (#{n}) session=#{ctx.session_id} err=#{inspect(err)}")
+                DmhAi.SysLog.log("[ASSISTANT] anchor #{verb} resolve_num failed task_num=(#{n}) — back_ref left dangling")
             end
             Map.put(ctx, :anchor_task_num, back)
 
-          _ ->
+          nil ->
+            # `lookup_by_num` returns nil when the row was deleted mid-
+            # chain — extremely rare race. Best-effort: drop the anchor
+            # so the next chain doesn't act on a dangling task_num.
+            Logger.warning("[UserAgent] anchor #{verb}: lookup_by_num returned nil for (#{n}) session=#{ctx.session_id} — dropping anchor")
             Map.put(ctx, :anchor_task_num, nil)
+
+          other ->
+            # Anything else from lookup_by_num is a contract violation
+            # (Tasks.lookup_by_num is documented to return %Task{} | nil).
+            # Fail loud so the schema regression surfaces in tests, not
+            # in prod after subtle anchor corruption.
+            raise "Tasks.lookup_by_num returned unexpected shape #{inspect(other)} for session=#{ctx.session_id} num=#{n}"
         end
 
       _ ->
+        # Either the verb was rejected / Police-blocked (success? = false),
+        # or it targeted some OTHER task_num (c != n) which is allowed —
+        # the model can close non-anchor rows without disturbing focus.
+        # Both are legitimate; ctx passes through unchanged.
         ctx
     end
   end
 
+  # Absolute fallback for `maybe_mutate_anchor`. We only reach here
+  # for verbs OUTSIDE the dispatch table above — execution tools
+  # (web_search, run_script, ...), MCP-namespaced tools, fetch_task,
+  # request_input, etc. None of them mutate the anchor, so passing
+  # ctx through is correct.
+  #
+  # If a NEW task-management verb gets added (e.g. resume_task,
+  # archive_task), wire it into the dispatch above with explicit
+  # mutation rules; do not rely on this fallback. To keep the
+  # invariant tight, a future audit can constrain `name` here to a
+  # pattern-match on the known non-mutating verbs and raise on
+  # genuinely-unknown ones, but that requires a single source of
+  # truth for verb names which doesn't exist today (tools are
+  # plugin-registered).
   defp maybe_mutate_anchor(ctx, _name, _args, _tool_msg), do: ctx
 
   @doc false
@@ -2818,6 +3172,21 @@ defmodule DmhAi.Agent.UserAgent do
   end
   def maybe_auto_create_task(_, _, ctx), do: {[], [], ctx}
 
+  # Wait up to ~5 s for the chain's Oracle classification Task to
+  # finish, so its `:unrelated` side-effect (writing the pivot stash
+  # to `PendingPivots`) lands before we read the stash. Bounded to
+  # avoid hanging the chain if Oracle is genuinely down. No-op when
+  # the chain didn't start an Oracle (no anchor) or when the task
+  # has already completed.
+  @auto_pivot_oracle_await_ms 5_000
+
+  defp await_pending_swift(%{swift_task: %Task{} = task}) do
+    _ = Task.yield(task, @auto_pivot_oracle_await_ms)
+    :ok
+  end
+
+  defp await_pending_swift(_), do: :ok
+
   @doc false
   # Public for unit testing in `itgr_oracle_pivot.exs`. Not part of
   # the module's user-facing API; subject to change without notice.
@@ -2844,6 +3213,18 @@ defmodule DmhAi.Agent.UserAgent do
   defp do_auto_create_task(ctx) do
     session_id = Map.get(ctx, :session_id)
 
+    # If the chain's Oracle classification Task is still in flight,
+    # wait briefly for it before reading PendingPivots. The stash is
+    # written inside the Swift Task's body when the verdict is
+    # `:unrelated`. Police's earlier `check_pivot` gate uses a quick
+    # yield (3s) and does NOT shut down the task on timeout — this
+    # means the stash CAN still arrive after the chain's tool-call
+    # decision but before the user's pause/cancel handler runs.
+    # However, a fast user typing "pause" within milliseconds of
+    # "check my X" could outrun the Oracle. Yielding here once more
+    # closes that window.
+    await_pending_swift(ctx)
+
     case DmhAi.Agent.PendingPivots.get(session_id) do
       %{user_msg: user_msg} when is_binary(user_msg) and user_msg != "" ->
         args = %{
@@ -2853,7 +3234,9 @@ defmodule DmhAi.Agent.UserAgent do
           "language"   => "en"
         }
 
-        synthetic_tool_call_id = "auto_pivot_" <> :crypto.strong_rand_bytes(6) |> Base.url_encode64(padding: false)
+        synthetic_tool_call_id =
+          "auto_pivot_" <>
+            (:crypto.strong_rand_bytes(6) |> Base.url_encode64(padding: false))
 
         # Surface the auto-create as a real progress row so the FE
         # timeline shows it next to the pause_task / cancel_task that
@@ -2892,8 +3275,8 @@ defmodule DmhAi.Agent.UserAgent do
             # Verdict against the OLD anchor is now stale (the
             # anchor just flipped). Clear the cache so subsequent
             # tool calls in this chain pass through Police's pivot
-            # gate (no oracle_task → :related fallback).
-            Process.put(:dmh_ai_oracle_verdict_cached, {:resolved, :related})
+            # gate (no swift_task → :related fallback).
+            Process.put(:dmh_ai_swift_verdict_cached, {:resolved, :related})
 
             DmhAi.SysLog.log(
               "[ASSISTANT] auto-create-task: session=#{session_id} " <>
@@ -2929,15 +3312,15 @@ defmodule DmhAi.Agent.UserAgent do
     |> String.slice(0, 60)
   end
 
-  # Kick off the Oracle classifier in the background when an anchor
+  # Kick off the Swift classifier in the background when an anchor
   # is set. Returns `{task | nil, anchor_task_spec | nil}`. The
   # task body classifies AND, on `:unrelated`, stashes a pending
   # pivot record in `PendingPivots` as a side effect — so the
   # auto-create-task hook fires later even if the model went text-
   # only on the off-topic chain (no Police gate ever ran). Police
   # awaits the same task value lazily inside its pivot gate.
-  defp maybe_start_oracle(nil, _user_msg, _ctx), do: {nil, nil}
-  defp maybe_start_oracle(%{task_id: task_id, task_num: anchor_task_num}, user_msg, ctx)
+  defp maybe_start_swift(nil, _user_msg, _ctx), do: {nil, nil}
+  defp maybe_start_swift(%{task_id: task_id, task_num: anchor_task_num}, user_msg, ctx)
        when is_binary(task_id) and is_binary(user_msg) and user_msg != "" do
     case Tasks.get(task_id) do
       %{task_spec: spec} when is_binary(spec) and spec != "" ->
@@ -2969,7 +3352,7 @@ defmodule DmhAi.Agent.UserAgent do
         {nil, nil}
     end
   end
-  defp maybe_start_oracle(_, _, _), do: {nil, nil}
+  defp maybe_start_swift(_, _, _), do: {nil, nil}
 
   # Read the most recent assistant message from the session — Oracle's
   # pivot classifier uses it to recognise "user is answering my prior

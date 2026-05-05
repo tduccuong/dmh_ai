@@ -111,7 +111,7 @@ defmodule DmhAi.Tools.CompleteTask do
   defp require_not_terminal(%{task_status: s}, n) when s in ["done", "cancelled"] do
     {:error,
      "complete_task: task (#{n}) is already '#{s}'. Cannot re-complete a terminal task. " <>
-       "If the user is asking for more work, call `pickup_task(task_num: #{n})` to reopen " <>
+       "If the user is asking for more work, call `pickup_task` for (#{n}) to reopen " <>
        "it (ongoing again) or `create_task` for a new row."}
   end
   defp require_not_terminal(_, _), do: :ok

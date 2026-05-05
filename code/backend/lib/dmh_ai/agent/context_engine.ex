@@ -287,13 +287,12 @@ defmodule DmhAi.Agent.ContextEngine do
         "- Your recent activity on this task (prior tool calls, " <>
         "results, narration) is already present in the conversation " <>
         "above. Answer / act from it directly.\n" <>
-        "- Call `fetch_task(task_num: #{n})` ONLY as a fallback: if " <>
-        "you need a specific past decision or tool output that was " <>
+        "- Call `fetch_task` for (#{n}) ONLY as a fallback: if you " <>
+        "need a specific past decision or tool output that was " <>
         "compacted away (older turns no longer visible in your " <>
         "context).\n" <>
-        "- Once the task is done, make sure to close it with " <>
-        "`complete_task(task_num: #{n}, task_result: " <>
-        "\"<one-line outcome summary>\")`."
+        "- Once the task is done, close it with `complete_task` — " <>
+        "passing the task's number and a one-line outcome summary."
 
     [
       %{role: "user",      content: body},

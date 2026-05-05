@@ -20,7 +20,7 @@
 #
 #   mix test test/itgr_oracle_pivot.exs --only network
 
-defmodule Itgr.OraclePivot do
+defmodule Itgr.SwiftPivot do
   use ExUnit.Case, async: false
 
   alias DmhAi.Agent.{Swift, PendingPivots, Police}
@@ -217,18 +217,18 @@ defmodule Itgr.OraclePivot do
     setup do
       # Each test runs in its own process; clear any cached verdict
       # left by a sibling test that ran in the same VM.
-      Process.delete(:dmh_ai_oracle_verdict_cached)
+      Process.delete(:dmh_ai_swift_verdict_cached)
       :ok
     end
 
     # Fake `Task` struct that resolves immediately to the given
     # verdict. We can't synthesise a real `%Task{}` cheaply across
     # tests, so exercise the explicit bypass: when ctx has NO
-    # oracle_task, the await fallback is `:related`. To test the
+    # swift_task, the await fallback is `:related`. To test the
     # other verdicts we plant the cache directly — Police's gate
     # reads from the cache before touching the task.
     defp ctx_with_cached(verdict, anchor_num \\ 1) do
-      Process.put(:dmh_ai_oracle_verdict_cached, {:resolved, verdict})
+      Process.put(:dmh_ai_swift_verdict_cached, {:resolved, verdict})
       %{anchor_task_num: anchor_num, session_id: "s_" <> T.uid()}
     end
 
@@ -292,10 +292,10 @@ defmodule Itgr.OraclePivot do
       end
     end
 
-    test "no oracle_task in ctx → :related fallback (gate skipped)" do
-      Process.delete(:dmh_ai_oracle_verdict_cached)
+    test "no swift_task in ctx → :related fallback (gate skipped)" do
+      Process.delete(:dmh_ai_swift_verdict_cached)
       ctx = %{anchor_task_num: 1, session_id: "s_" <> T.uid()}
-      # Without an oracle_task and no cached verdict, await_oracle/1
+      # Without an swift_task and no cached verdict, await_swift/1
       # returns :related (no anchor case from Swift's perspective).
       assert Police.check_pivot("web_search", %{}, ctx) == :ok
     end
@@ -311,7 +311,7 @@ defmodule Itgr.OraclePivot do
       # every call — so flipping the cache flips the gate. This test
       # documents that current behavior; if we ever move to a per-
       # ctx-private cache, flip the assertion.
-      Process.put(:dmh_ai_oracle_verdict_cached, {:resolved, :unrelated})
+      Process.put(:dmh_ai_swift_verdict_cached, {:resolved, :unrelated})
       assert {:rejected, _} = Police.check_pivot("web_search", %{}, ctx)
     end
 
@@ -419,7 +419,7 @@ defmodule Itgr.OraclePivot do
 
       # Reset process-dict cache so Police.check_pivot doesn't read a
       # stale verdict from a sibling test.
-      Process.delete(:dmh_ai_oracle_verdict_cached)
+      Process.delete(:dmh_ai_swift_verdict_cached)
 
       on_exit(fn -> PendingPivots.clear(sid) end)
 
@@ -492,7 +492,7 @@ defmodule Itgr.OraclePivot do
       # 6. Cached Swift verdict forced to :related so subsequent
       #    Police gate calls in this chain pass through (anchor moved,
       #    old verdict is stale).
-      assert Process.get(:dmh_ai_oracle_verdict_cached) == {:resolved, :related}
+      assert Process.get(:dmh_ai_swift_verdict_cached) == {:resolved, :related}
     end
 
     test "cancel_task success with pending pivot fires the same auto-create path", ctx do

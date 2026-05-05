@@ -176,13 +176,43 @@ defmodule DmhAi.Agent.TaskRuntime do
     end
   end
 
-  # Ensure the user's agent GenServer is started, then poke it with
-  # {:task_due, task_id}. The session turn will pick it up next.
+  # Ensure the user's agent GenServer is started, then synchronously
+  # hand it `{:task_due, task_id}`. The session's next turn (silent or
+  # the next chain-complete hook) acts on the message.
+  #
+  # Why GenServer.call instead of send/2: there is a microscopic race
+  # between `Supervisor.ensure_started` returning the pid and a bare
+  # `send` enqueueing the message — the GenServer can complete its
+  # idle :timeout handler and stop in that window, dropping the
+  # message into a defunct mailbox. `call/3` raises `:exit` on dead
+  # contact, which we catch and retry through `ensure_started` (which
+  # re-spawns the GenServer if needed). `:ok` confirms the message
+  # was enqueued; `:exit` after retries is logged and abandoned (the
+  # next BEAM-restart `do_rehydrate/1` re-arms from DB state, and
+  # `maybe_trigger_next_due/1` recovers the missed pickup at the next
+  # natural chain-complete).
+  @deliver_call_timeout 5_000
+  @deliver_max_retries 2
+
   defp deliver_pickup(user_id, _session_id, task_id) do
+    do_deliver_pickup(user_id, task_id, @deliver_max_retries)
+  end
+
+  defp do_deliver_pickup(user_id, task_id, retries_left) do
     case DmhAi.Agent.Supervisor.ensure_started(user_id) do
       {:ok, pid} ->
-        send(pid, {:task_due, task_id})
-        :ok
+        try do
+          GenServer.call(pid, {:task_due, task_id}, @deliver_call_timeout)
+          :ok
+        catch
+          :exit, reason when retries_left > 0 ->
+            Logger.warning("[TaskRuntime] task_due call exited (#{inspect(reason)}); retrying user=#{user_id} task=#{task_id} retries_left=#{retries_left - 1}")
+            do_deliver_pickup(user_id, task_id, retries_left - 1)
+
+          :exit, reason ->
+            Logger.error("[TaskRuntime] task_due delivery failed after retries user=#{user_id} task=#{task_id} reason=#{inspect(reason)}")
+            :error
+        end
 
       {:error, reason} ->
         Logger.error("[TaskRuntime] failed to start UserAgent for pickup user=#{user_id} reason=#{inspect(reason)}")

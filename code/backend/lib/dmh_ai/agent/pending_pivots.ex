@@ -5,7 +5,7 @@
 
 defmodule DmhAi.Agent.PendingPivots do
   @moduledoc """
-  In-memory store for "pending pivots" — when the Oracle classifies a
+  In-memory store for "pending pivots" — when the Swift classifies a
   chain-start user message as `:unrelated` to the active anchor, the
   assistant is supposed to ask the user whether to pause / cancel /
   stop the anchor before switching. We stash the off-topic user

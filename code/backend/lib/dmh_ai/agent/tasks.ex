@@ -409,6 +409,38 @@ defmodule DmhAi.Agent.Tasks do
   end
 
   @doc """
+  Return the session's currently-ONGOING `one_off` task, or `nil` when
+  none. Used by `Police.check_no_duplicate_one_off_task_in_session/3` —
+  the runtime enforces "at most one ongoing one_off per session" the
+  same way it enforces the single-periodic invariant. A running one_off
+  has the user's attention; spawning a second one without first
+  closing/pausing/cancelling the existing one is treated as a model
+  mistake worth pushing back on with a nudge.
+
+  Filter is `task_status = 'ongoing'` only — `paused` and `pending`
+  one_offs do NOT block a new create_task (the existing one is
+  already shelved, so context isn't competing). Returns the oldest
+  match by `created_at ASC` for stability.
+  """
+  @spec session_active_one_off(String.t()) :: map() | nil
+  def session_active_one_off(session_id) when is_binary(session_id) do
+    r = query!(Repo, """
+    SELECT #{@select_cols}
+    FROM tasks
+    WHERE session_id=?
+      AND task_type='one_off'
+      AND task_status='ongoing'
+    ORDER BY created_at ASC
+    LIMIT 1
+    """, [session_id])
+
+    case r.rows do
+      [row] -> row_to_map(row)
+      _     -> nil
+    end
+  end
+
+  @doc """
   Tasks that were ongoing when the app went down — on boot we revert them
   to pending so the next session turn can pick up where the log left off.
   """
