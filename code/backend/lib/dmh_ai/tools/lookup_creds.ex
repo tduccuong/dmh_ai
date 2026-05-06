@@ -15,9 +15,11 @@ defmodule DmhAi.Tools.LookupCreds do
   def description do
     """
     Fetch saved credential(s) for a target. Returns an ARRAY shape:
-    `{found, target, credentials: [{account, kind, payload, expires_at, is_expired, notes}, ...]}`. Multiple entries mean the user has authorized this service from multiple accounts.
+    `{found, target, credentials: [{account, kind, payload, expires_at, is_expired, notes, auth_target?}, ...]}`. Multiple entries mean the user has authorized this service from multiple accounts.
 
     When `credentials` has more than one entry AND the user did not name a specific account in their ask, perform the requested action against EACH account in parallel and merge the results in your final reply, attributing each section to its account. Use the optional `account` arg to filter to a single entry once the user picks one (or for follow-up turns where the user named an account).
+
+    Each entry may carry `auth_target` — the stable handle to pass to the credential's lifecycle tool when re-auth is needed (e.g. a stored OAuth token gets HTTP 401 mid-call). Copy `auth_target` verbatim into `authorize_service(target: <auth_target>)`; do NOT re-derive the auth identifier from the credential `target` string (it carries a vault namespace prefix the catalog doesn't recognise).
 
     Without `target`: returns the metadata list of every saved credential — one row per (target, account) tuple — so you can choose which to fetch in detail.
     """
@@ -89,11 +91,32 @@ defmodule DmhAi.Tools.LookupCreds do
       is_expired: cred.is_expired
     }
 
+    base =
+      case auth_target_for(cred) do
+        nil    -> base
+        target -> Map.put(base, :auth_target, target)
+      end
+
     case Map.get(cred, :refresh_error) do
       nil   -> base
       reason -> Map.put(base, :refresh_error, reason)
     end
   end
+
+  # Stable handle the model copies into the credential's lifecycle
+  # tool when re-auth is needed (e.g. a 401 mid-call). See
+  # arch_wiki/dmh_ai/integrations.md §`auth_target`. Reads from
+  # payload.auth_target, populated at credential write time.
+  # Pre-#231 rows without the field are nil — operator runs the
+  # one-shot backfill SQL to populate them.
+  defp auth_target_for(%{payload: %{} = payload}) do
+    case Map.get(payload, "auth_target") do
+      s when is_binary(s) and s != "" -> s
+      _ -> nil
+    end
+  end
+
+  defp auth_target_for(_), do: nil
 
   defp trim_or_nil(s) when is_binary(s) do
     case String.trim(s) do

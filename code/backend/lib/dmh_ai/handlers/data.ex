@@ -999,6 +999,19 @@ defmodule DmhAi.Handlers.Data do
           ""
       end
 
+    # `auth_target` is the stable handle the model copies from
+    # lookup_creds output into authorize_service input when the token
+    # is rejected mid-call (provider-side revocation; `is_expired` can
+    # lie because we only check expires_at). The catalog slug is the
+    # most stable / shortest identifier — short of carrying the
+    # catalog row id directly, which would couple the credential
+    # vault to a specific DB layout. See arch_wiki §auth_target.
+    auth_target =
+      case catalog_row do
+        %{slug: slug} when is_binary(slug) and slug != "" -> slug
+        _ -> alias_
+      end
+
     cred_payload = %{
       "access_token"       => tokens.access_token,
       "refresh_token"      => tokens.refresh_token,
@@ -1008,6 +1021,7 @@ defmodule DmhAi.Handlers.Data do
       "alias"              => alias_,
       "host_match"         => host_match,
       "account"            => account,
+      "auth_target"        => auth_target,
       "asm_json"           => Jason.encode!(asm),
       "extra_token_params" => extra_token_params,
       "client_id"          => client_id,
