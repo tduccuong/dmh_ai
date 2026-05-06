@@ -37,11 +37,13 @@ defmodule Itgr.OauthLookupWithRefresh do
   end
 
   defp save_oauth2_mcp(user_id, target, payload, expires_at) do
-    Credentials.save(user_id, target, "oauth2_mcp", payload, expires_at: expires_at)
+    Credentials.save(user_id, target, "oauth2_mcp", payload,
+      account: "", expires_at: expires_at)
   end
 
   defp save_api_key_mcp(user_id, target, payload) do
-    Credentials.save(user_id, target, "api_key_mcp", payload, expires_at: nil)
+    Credentials.save(user_id, target, "api_key_mcp", payload,
+      account: "", expires_at: nil)
   end
 
   defp valid_oauth_payload(opts \\ []) do
@@ -79,7 +81,7 @@ defmodule Itgr.OauthLookupWithRefresh do
       future = System.os_time(:millisecond) + 60 * 60 * 1000  # +1h
       save_oauth2_mcp(user_id, target, valid_oauth_payload(), future)
 
-      assert {:ok, cred} = OAuth2.lookup_with_refresh(user_id, target)
+      assert {:ok, cred} = OAuth2.lookup_with_refresh(user_id, target, "")
       assert cred.kind == "oauth2_mcp"
       assert cred.is_expired == false
       assert cred.payload["access_token"] != ""
@@ -98,7 +100,7 @@ defmodule Itgr.OauthLookupWithRefresh do
         "canonical_resource" => "https://example.com/api"
       })
 
-      assert {:ok, cred} = OAuth2.lookup_with_refresh(user_id, target)
+      assert {:ok, cred} = OAuth2.lookup_with_refresh(user_id, target, "")
       assert cred.kind == "api_key_mcp"
     end
   end
@@ -108,7 +110,7 @@ defmodule Itgr.OauthLookupWithRefresh do
   describe "missing credentials" do
     test "returns {:error, :missing}", %{user_id: user_id} do
       assert {:error, :missing} =
-               OAuth2.lookup_with_refresh(user_id, "mcp:never_seen_" <> uid())
+               OAuth2.lookup_with_refresh(user_id, "mcp:never_seen_" <> uid(), "")
     end
   end
 
@@ -138,15 +140,15 @@ defmodule Itgr.OauthLookupWithRefresh do
       assert Registry.find_authorized(ctx.user_id, ctx.alias).status == "authorized"
 
       assert {:error, {:refresh_failed, _reason}} =
-               OAuth2.lookup_with_refresh(ctx.user_id, ctx.target)
+               OAuth2.lookup_with_refresh(ctx.user_id, ctx.target, "")
 
       # Side effect: registry flipped on the failure path.
       assert Registry.find_authorized(ctx.user_id, ctx.alias).status == "needs_auth"
     end
 
     test "the credential row is left intact for inspection / re-auth", ctx do
-      assert {:error, _} = OAuth2.lookup_with_refresh(ctx.user_id, ctx.target)
-      cred = Credentials.lookup(ctx.user_id, ctx.target)
+      assert {:error, _} = OAuth2.lookup_with_refresh(ctx.user_id, ctx.target, "")
+      cred = Credentials.lookup(ctx.user_id, ctx.target, "")
       assert cred != nil
       assert cred.kind == "oauth2_mcp"
     end
@@ -162,7 +164,7 @@ defmodule Itgr.OauthLookupWithRefresh do
       save_oauth2_mcp(user_id, orphan_target, valid_oauth_payload(canonical: orphan_canonical), past)
 
       assert {:error, {:refresh_failed, _}} =
-               OAuth2.lookup_with_refresh(user_id, orphan_target)
+               OAuth2.lookup_with_refresh(user_id, orphan_target, "")
 
       # No spurious authorized_services row created.
       assert Registry.find_authorized_by_resource(user_id, orphan_canonical) == nil
@@ -177,7 +179,7 @@ defmodule Itgr.OauthLookupWithRefresh do
       past   = System.os_time(:millisecond) - 60 * 1000
       save_oauth2_mcp(user_id, target, valid_oauth_payload(), past)
 
-      assert {:error, {:refresh_failed, _}} = OAuth2.lookup_with_refresh(user_id, target)
+      assert {:error, {:refresh_failed, _}} = OAuth2.lookup_with_refresh(user_id, target, "")
       # The mark_resource_needs_auth helper is `mcp:` prefix gated.
       # No registry row at all for a non-`mcp:` target — and the
       # call is a no-op rather than a crash.

@@ -584,8 +584,14 @@
             <div class="pool-form-modal">
                 <div class="pool-form-title">Add API Pool</div>
                 <div class="pool-form-fields">
-                    <div class="pool-field"><label>Name</label><input id="pool-form-name" placeholder="e.g. ollama-cloud, miner"></div>
-                    <div class="pool-field"><label>Provider</label><input id="pool-form-provider" value="ollama"></div>
+                    <div class="pool-field"><label>Name</label><input id="pool-form-name" placeholder="e.g. ollama-cloud, miner, minimax"></div>
+                    <div class="pool-field"><label>Protocol</label>
+                        <select id="pool-form-protocol">
+                            <option value="openai" selected>openai</option>
+                            <option value="ollama">ollama</option>
+                            <option value="anthropic">anthropic</option>
+                        </select>
+                    </div>
                     <div class="pool-field" style="grid-column: 1 / -1;"><label>Base URL</label><input id="pool-form-base-url" placeholder="https://example.com/v1"></div>
                     <div class="pool-field"><label>Strategy</label>
                         <select id="pool-form-strategy">

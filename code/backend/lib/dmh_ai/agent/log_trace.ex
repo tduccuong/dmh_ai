@@ -18,7 +18,7 @@ defmodule DmhAi.Agent.LogTrace do
     [Role:   <role>]    — what this LLM call does: assistant, confidant, ImageDescriber,
                           VideoDescriber, Compactor, Summarizer, WebSearch, ProfileExtractor,
                           Namer, etc.
-    [Model:  <model>]   — provider::pool::model string
+    [Model:  <model>]   — pool::model string
     [Phase:  <phase>]   — turn / classify / compact / detect / describe / etc.
 
   Callers pass a `trace: %{origin:, path:, role:, phase:}` keyword to LLM.call/stream.

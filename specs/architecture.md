@@ -113,8 +113,11 @@ or task rows.
 All calls go through `DmhAi.Agent.LLM`. Models are addressed by
 canonical `<pool>::<model>` strings; `Pools.resolve/1` looks up the
 endpoint config and picks an account from the pool's rotation
-strategy. Adapter dispatch (Ollama `/api/chat` vs OpenAI-compat `/v1`)
-is provider-driven.
+strategy. Adapter dispatch is protocol-driven — every pool declares
+its wire `protocol` (`openai` | `ollama` | `anthropic`) and
+`adapter_for/1` maps that to one of three behaviour-implementing
+modules. Adding a new wire format is a new adapter module + one
+clause; adding a new endpoint of an existing protocol is a row insert.
 
 The system uses six tier-shaped settings — `confidantModel`,
 `assistantModel`, `swiftModel` (short/fast classifications),

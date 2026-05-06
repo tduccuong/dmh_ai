@@ -1505,7 +1505,8 @@ UIManager.handleFileSelect = async function(files) {
                                     if (v.name === videoFile.name && !v.fileId) v.fileId = d.id;
                                 });
                             });
-                            // Local patch only — BE owns session.messages (CLAUDE.md rule #9).
+                            // Local patch only — BE owns session.messages and the FE
+                            // never PUTs message-shaped state back.
                             if (!self.isStreaming) self.renderChat();
                         }
                     })
@@ -1857,9 +1858,9 @@ UIManager.stopCurrentTurn = async function() {
 };
 
 // No-op retained for call-site compatibility (visibility/beforeunload hooks).
-// In the BE-owned-state model (CLAUDE.md rule #9) the BE persists the
-// assistant message itself when the turn completes; reload re-fetches
-// the canonical state. Partial streaming state is ephemeral — losing it
+// The BE owns persisted message state — it persists the assistant
+// message itself when the turn completes; reload re-fetches the
+// canonical state. Partial streaming state is ephemeral — losing it
 // on tab close is expected.
 UIManager.saveStreamingProgress = function() {};
 

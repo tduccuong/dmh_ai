@@ -491,6 +491,21 @@ const SettingsModal = {
                 sugg.innerHTML = '';
                 sugg.classList.remove('open');
                 input.blur();
+                return;
+            }
+            // Enter commits a free-form `<pool>::<model>` typed in the
+            // input — useful when the pool's endpoint doesn't expose a
+            // listing route (e.g. some Anthropic-compat hosts) so the
+            // model never appears in the suggestion list. Plain words
+            // without `::` are still treated as a search query and
+            // ignored on Enter.
+            if (e.key === 'Enter') {
+                var raw = (input.value || '').trim();
+                if (raw.indexOf('::') > 0) {
+                    e.preventDefault();
+                    clearTimeout(self._roleSearchTimers[role]);
+                    self._setRoleModel(role, raw);
+                }
             }
         });
     },
@@ -635,7 +650,7 @@ const PoolsAdmin = {
         var self = this;
         ImportDialog.show({
             title:   'Import API Pools',
-            example: '[\n  {"name": "openai", "provider": "openai",\n   "base_url": "https://api.openai.com/v1",\n   "accounts": [{"name": "main", "api_key": "sk-..."}]}\n]',
+            example: '[\n  {"name": "openai", "protocol": "openai",\n   "base_url": "https://api.openai.com/v1",\n   "accounts": [{"name": "main", "api_key": "sk-..."}]},\n  {"name": "minimax", "protocol": "anthropic",\n   "base_url": "https://api.minimax.io/anthropic",\n   "accounts": [{"name": "main", "api_key": "sk-cp-..."}]}\n]',
             onSubmit: async function(rows) {
                 var res = await apiFetch('/admin/pools/import', {
                     method: 'POST',
@@ -695,7 +710,7 @@ const PoolsAdmin = {
         header.innerHTML =
             '<span class="pool-card-chev">▶</span>' +
             '<span class="pool-card-name">' + escapeHtml(pool.name) + '</span>' +
-            '<span class="pool-card-meta">' + escapeHtml(pool.provider) + ' · ' +
+            '<span class="pool-card-meta">' + escapeHtml(pool.protocol) + ' · ' +
             (pool.accounts || []).length + ' account' + ((pool.accounts || []).length === 1 ? '' : 's') + '</span>';
         header.addEventListener('click', function() {
             self._expanded[pool.id] = !self._expanded[pool.id];
@@ -711,7 +726,12 @@ const PoolsAdmin = {
         fields.className = 'pool-fields';
         fields.innerHTML =
             '<div class="pool-field"><label>Name</label><input data-field="name" value="' + escapeAttr(pool.name) + '"></div>' +
-            '<div class="pool-field"><label>Provider</label><input data-field="provider" value="' + escapeAttr(pool.provider) + '"></div>' +
+            '<div class="pool-field"><label>Protocol</label>' +
+              '<select data-field="protocol">' +
+                ['openai','ollama','anthropic'].map(function(p) {
+                  return '<option value="' + p + '"' + (pool.protocol === p ? ' selected' : '') + '>' + p + '</option>';
+                }).join('') +
+              '</select></div>' +
             '<div class="pool-field"><label>Base URL</label><input data-field="base_url" value="' + escapeAttr(pool.base_url) + '"></div>' +
             '<div class="pool-field"><label>Strategy</label>' +
               '<select data-field="strategy">' +
@@ -720,7 +740,10 @@ const PoolsAdmin = {
                 }).join('') +
               '</select></div>' +
             '<div class="pool-field"><label>Cooldown (s)</label><input data-field="cooldown_seconds" type="number" value="' + (pool.cooldown_seconds || 300) + '"></div>' +
-            '<div class="pool-field"><label>num_ctx <span style="opacity:.6">(Ollama only)</span></label><input data-field="num_ctx" type="number" placeholder="blank = server default" value="' + (pool.num_ctx == null ? '' : pool.num_ctx) + '"></div>';
+            '<div class="pool-field"><label>num_ctx <span style="opacity:.6">(Ollama only)</span></label><input data-field="num_ctx" type="number" placeholder="blank = server default" value="' + (pool.num_ctx == null ? '' : pool.num_ctx) + '"></div>' +
+            '<div class="pool-field" style="grid-column: 1 / -1;"><label>Models <span style="opacity:.6">(one per line; leave blank to discover via /models)</span></label>' +
+              '<textarea data-field="models" rows="4" style="font-family: ui-monospace, monospace; font-size: 12px;" placeholder="MiniMax-M2.7&#10;MiniMax-M2.5">' +
+              escapeHtml(((pool.models || []).join('\n'))) + '</textarea></div>';
         body.appendChild(fields);
 
         // Accounts section
@@ -785,6 +808,10 @@ const PoolsAdmin = {
                     var trimmed = (val || '').trim();
                     val = trimmed === '' ? null : (parseInt(trimmed) || null);
                 }
+                if (key === 'models') {
+                    // Textarea: split on newline OR comma, trim, drop blanks.
+                    val = (val || '').split(/[\n,]/).map(function(s) { return s.trim(); }).filter(function(s) { return s !== ''; });
+                }
                 attrs[key] = val;
             });
 
@@ -798,7 +825,7 @@ const PoolsAdmin = {
             // tell the difference.
             saveBtn.disabled = true;
             saveBtn.textContent = 'Probing…';
-            var probe = await PoolsAdmin._probe(attrs.base_url, '');
+            var probe = await PoolsAdmin._probe(attrs.base_url, '', attrs.protocol || pool.protocol);
             saveBtn.disabled = false;
             saveBtn.textContent = 'Save changes';
 
@@ -833,7 +860,7 @@ const PoolsAdmin = {
 
         // Reset fields to defaults each open
         document.getElementById('pool-form-name').value         = '';
-        document.getElementById('pool-form-provider').value     = 'ollama';
+        document.getElementById('pool-form-protocol').value     = 'openai';
         document.getElementById('pool-form-base-url').value     = '';
         document.getElementById('pool-form-strategy').value     = 'least_used';
         document.getElementById('pool-form-cooldown').value     = '300';
@@ -874,7 +901,7 @@ const PoolsAdmin = {
 
         document.getElementById('pool-form-create').addEventListener('click', async function() {
             var name      = document.getElementById('pool-form-name').value.trim();
-            var provider  = document.getElementById('pool-form-provider').value.trim() || 'ollama';
+            var protocol  = document.getElementById('pool-form-protocol').value || 'openai';
             var baseUrl   = document.getElementById('pool-form-base-url').value.trim();
             var strategy  = document.getElementById('pool-form-strategy').value || 'least_used';
             var cooldown  = parseInt(document.getElementById('pool-form-cooldown').value) || 300;
@@ -889,7 +916,7 @@ const PoolsAdmin = {
             btn.textContent = 'Probing…';
             self._showFormError('');
 
-            var probe = await self._probe(baseUrl, '');
+            var probe = await self._probe(baseUrl, '', protocol);
 
             if (!probe.ok && probe.status !== '401' && probe.status !== '403') {
                 btn.disabled = false;
@@ -901,7 +928,7 @@ const PoolsAdmin = {
             btn.textContent = 'Creating…';
             var result = await self._createPool({
                 name: name,
-                provider: provider,
+                protocol: protocol,
                 base_url: baseUrl,
                 strategy: strategy,
                 cooldown_seconds: cooldown,
@@ -919,15 +946,22 @@ const PoolsAdmin = {
         });
     },
 
-    // Probe an OpenAI-compat /models endpoint. Returns {ok, error?, status?}.
+    // Probe a pool's /models endpoint. Returns {ok, error?, status?}.
     // 401/403 are treated as "URL alive but auth issue" by callers — they
     // confirm the host is reachable, which is what URL validation needs.
-    _probe: async function(base_url, api_key) {
+    // `protocol` controls the auth-header shape (Bearer for openai/ollama,
+    // x-api-key for anthropic). Defaults to 'openai' so existing callers
+    // don't have to update.
+    _probe: async function(base_url, api_key, protocol) {
         try {
             var res = await apiFetch('/admin/pools/probe', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ base_url: base_url, api_key: api_key || '' })
+                body: JSON.stringify({
+                    base_url: base_url,
+                    api_key:  api_key || '',
+                    protocol: protocol || 'openai'
+                })
             });
             if (!res || !res.ok) return { ok: false, error: 'probe endpoint failed' };
             var d = await res.json();

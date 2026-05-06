@@ -119,10 +119,10 @@ defmodule DmhAi.Handlers.AgentChat do
         end
       end
 
-      # Build and persist the user message ourselves (CLAUDE.md rule #9).
-      # FE no longer PUTs session.messages; the BE is the sole writer from
-      # this entry point on. Attachment paths are inlined into content so the
-      # stored message is canonical.
+      # Build and persist the user message ourselves. The FE never PUTs
+      # session.messages; the BE is the sole writer of session-message
+      # state from this entry point on. Attachment paths are inlined
+      # into content so the stored message is canonical.
       stored_content =
         if attachment_names == [] do
           content
@@ -198,9 +198,10 @@ defmodule DmhAi.Handlers.AgentChat do
           json(conn, 200, %{user_ts: user_ts, handled: true})
 
         :not_a_command ->
-          # BE-owned writes (CLAUDE.md rule #9). Store text only — image base64
-          # payloads flow through the current request and feed the LLM inline;
-          # they are not persisted on the stored message.
+          # BE owns every persisted message write. Store text only —
+          # image base64 payloads flow through the current request and
+          # feed the LLM inline; they are not persisted on the stored
+          # message.
           {tz, local_date} = client_tz(conn)
           case DmhAi.Agent.UserAgentMessages.append(session_id, user.id,
                   %{role: "user", content: content}) do

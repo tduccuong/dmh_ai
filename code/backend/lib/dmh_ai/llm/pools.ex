@@ -8,11 +8,12 @@ defmodule DmhAi.LLM.Pools do
   Pool registry — owns reads/writes to the `pools` table and the
   `<pool>::<model>` resolution path used by `DmhAi.Agent.LLM`.
 
-  See `specs/api_pools.md` for the conceptual model. A *pool* bundles
-  the endpoint config (base_url, provider, account list, rotation
-  strategy); a *model* string is opaque and passed through to the
-  upstream provider. The wire protocol is determined by `provider`
-  alone — see `DmhAi.LLM.Adapter` and `DmhAi.Agent.LLM.adapter_for/1`.
+  See `arch_wiki/dmh_ai/integrations.md` §API Pools for the conceptual
+  model. A *pool* bundles the endpoint config (base_url, protocol,
+  account list, rotation strategy); a *model* string is opaque and
+  passed through to the upstream service. The wire protocol is
+  declared by `protocol` (one of `"openai"`, `"ollama"`, `"anthropic"`)
+  — see `DmhAi.LLM.Adapter` and `DmhAi.Agent.LLM.adapter_for/1`.
 
   Resolution shape:
 
@@ -21,7 +22,7 @@ defmodule DmhAi.LLM.Pools do
            pool_name:    "miner",
            model:        "qwen3-embedding:0.6b",
            base_url:     "http://192.168.178.49:11434/v1",
-           provider:     "ollama",
+           protocol:     "ollama",
            num_ctx:      16384,           # nil when not set
            account_name: "local",
            api_key:      "sk-local"
@@ -38,15 +39,18 @@ defmodule DmhAi.LLM.Pools do
   import Ecto.Adapters.SQL, only: [query!: 3]
   require Logger
 
+  @valid_protocols ~w(openai ollama anthropic)
+
   @type pool :: %{
           id: integer(),
           name: String.t(),
-          provider: String.t(),
+          protocol: String.t(),
           base_url: String.t(),
           strategy: String.t(),
           cooldown_seconds: non_neg_integer(),
           num_ctx: pos_integer() | nil,
           accounts: [map()],
+          models: [String.t()],
           rr_cursor: non_neg_integer()
         }
 
@@ -54,11 +58,15 @@ defmodule DmhAi.LLM.Pools do
           pool_name: String.t(),
           model: String.t(),
           base_url: String.t(),
-          provider: String.t(),
+          protocol: String.t(),
           num_ctx: pos_integer() | nil,
           account_name: String.t(),
           api_key: String.t()
         }
+
+  @doc "The complete set of accepted protocol values."
+  @spec valid_protocols() :: [String.t()]
+  def valid_protocols, do: @valid_protocols
 
   # ─── Public API ────────────────────────────────────────────────────────────
 
@@ -80,7 +88,7 @@ defmodule DmhAi.LLM.Pools do
          pool_name:    pool.name,
          model:        model,
          base_url:     pool.base_url,
-         provider:     pool.provider,
+         protocol:     pool.protocol,
          num_ctx:      pool.num_ctx,
          account_name: account["name"] || "",
          api_key:      account["api_key"] || ""
@@ -105,8 +113,8 @@ defmodule DmhAi.LLM.Pools do
   @spec list() :: [pool()]
   def list do
     r = query!(Repo, """
-    SELECT id, name, provider, base_url, strategy, cooldown_seconds,
-           num_ctx, accounts, rr_cursor, created_ts, updated_ts
+    SELECT id, name, protocol, base_url, strategy, cooldown_seconds,
+           num_ctx, accounts, models, rr_cursor, created_ts, updated_ts
     FROM pools
     ORDER BY id ASC
     """, [])
@@ -127,8 +135,8 @@ defmodule DmhAi.LLM.Pools do
   @spec fetch(String.t()) :: {:ok, pool()} | {:error, :unknown_pool}
   def fetch(name) when is_binary(name) do
     r = query!(Repo, """
-    SELECT id, name, provider, base_url, strategy, cooldown_seconds,
-           num_ctx, accounts, rr_cursor, created_ts, updated_ts
+    SELECT id, name, protocol, base_url, strategy, cooldown_seconds,
+           num_ctx, accounts, models, rr_cursor, created_ts, updated_ts
     FROM pools WHERE name=?
     """, [name])
 
@@ -139,29 +147,31 @@ defmodule DmhAi.LLM.Pools do
   end
 
   @doc """
-  Create a new pool. `attrs` keys: name, provider, base_url, strategy,
-  cooldown_seconds, accounts. Returns `{:ok, pool}` or
-  `{:error, :name_taken}` / `{:error, :missing_fields}`.
+  Create a new pool. `attrs` keys: name, protocol, base_url, strategy,
+  cooldown_seconds, accounts. Returns `{:ok, pool}`,
+  `{:error, :missing_fields}`, `{:error, {:invalid_protocol, value}}`,
+  or `{:error, :name_taken}`.
   """
-  @spec create(map()) :: {:ok, pool()} | {:error, atom()}
+  @spec create(map()) :: {:ok, pool()} | {:error, atom() | {atom(), term()}}
   def create(attrs) do
     with {:ok, normalised} <- validate(attrs),
          :ok               <- check_name_free(normalised["name"]) do
       now = System.os_time(:millisecond)
 
       query!(Repo, """
-      INSERT INTO pools (name, provider, base_url, strategy,
-                         cooldown_seconds, num_ctx, accounts, rr_cursor,
-                         created_ts, updated_ts)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+      INSERT INTO pools (name, protocol, base_url, strategy,
+                         cooldown_seconds, num_ctx, accounts, models,
+                         rr_cursor, created_ts, updated_ts)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
       """, [
         normalised["name"],
-        normalised["provider"],
+        normalised["protocol"],
         normalised["base_url"],
         normalised["strategy"],
         normalised["cooldown_seconds"],
         normalised["num_ctx"],
         Jason.encode!(normalised["accounts"]),
+        Jason.encode!(normalised["models"]),
         now, now
       ])
 
@@ -283,8 +293,8 @@ defmodule DmhAi.LLM.Pools do
 
   defp fetch_by_id(id) do
     r = query!(Repo, """
-    SELECT id, name, provider, base_url, strategy, cooldown_seconds,
-           num_ctx, accounts, rr_cursor, created_ts, updated_ts
+    SELECT id, name, protocol, base_url, strategy, cooldown_seconds,
+           num_ctx, accounts, models, rr_cursor, created_ts, updated_ts
     FROM pools WHERE id=?
     """, [id])
 
@@ -296,29 +306,33 @@ defmodule DmhAi.LLM.Pools do
 
   defp validate(attrs) do
     name = trim_str(attrs["name"] || attrs[:name])
-    provider = trim_str(attrs["provider"] || attrs[:provider])
+    protocol = trim_str(attrs["protocol"] || attrs[:protocol])
     base_url = trim_str(attrs["base_url"] || attrs[:base_url])
 
     cond do
-      name == "" or provider == "" or base_url == "" ->
+      name == "" or protocol == "" or base_url == "" ->
         {:error, :missing_fields}
+
+      protocol not in @valid_protocols ->
+        {:error, {:invalid_protocol, protocol}}
 
       true ->
         {:ok,
          %{
            "name" => name,
-           "provider" => provider,
+           "protocol" => protocol,
            "base_url" => base_url,
            "strategy" => trim_str(attrs["strategy"] || attrs[:strategy] || "least_used"),
            "cooldown_seconds" => attrs["cooldown_seconds"] || attrs[:cooldown_seconds] || 300,
            "num_ctx" => normalise_num_ctx(attrs["num_ctx"] || attrs[:num_ctx]),
-           "accounts" => normalise_accounts(attrs["accounts"] || attrs[:accounts] || [])
+           "accounts" => normalise_accounts(attrs["accounts"] || attrs[:accounts] || []),
+           "models" => normalise_models(attrs["models"] || attrs[:models] || [])
          }}
     end
   end
 
   defp normalise_partial(attrs) do
-    keys = ~w(name provider base_url strategy cooldown_seconds num_ctx accounts)
+    keys = ~w(name protocol base_url strategy cooldown_seconds num_ctx accounts models)
 
     Enum.reduce(keys, %{}, fn k, acc ->
       v = Map.get(attrs, k) || Map.get(attrs, String.to_atom(k))
@@ -326,12 +340,34 @@ defmodule DmhAi.LLM.Pools do
       cond do
         is_nil(v) -> acc
         k == "accounts" -> Map.put(acc, k, normalise_accounts(v))
+        k == "models" -> Map.put(acc, k, normalise_models(v))
         k == "num_ctx" -> Map.put(acc, k, normalise_num_ctx(v))
         is_binary(v) -> Map.put(acc, k, String.trim(v))
         true -> Map.put(acc, k, v)
       end
     end)
   end
+
+  # Normalise the static-models field. Accepts a list of strings, a
+  # newline/comma-separated string, or nil. Trims, drops blanks, dedups.
+  defp normalise_models(nil), do: []
+
+  defp normalise_models(list) when is_list(list) do
+    list
+    |> Enum.map(fn v -> v |> to_string() |> String.trim() end)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+  end
+
+  defp normalise_models(s) when is_binary(s) do
+    s
+    |> String.split(~r/[\n,]/, trim: true)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+  end
+
+  defp normalise_models(_), do: []
 
   # `num_ctx` accepts integers, integer-looking strings, or anything
   # else (which we treat as "blank → NULL"). Empty strings, "null",
@@ -365,26 +401,29 @@ defmodule DmhAi.LLM.Pools do
   defp existing_to_attrs(pool) do
     %{
       "name" => pool.name,
-      "provider" => pool.provider,
+      "protocol" => pool.protocol,
       "base_url" => pool.base_url,
       "strategy" => pool.strategy,
       "cooldown_seconds" => pool.cooldown_seconds,
       "num_ctx" => pool.num_ctx,
-      "accounts" => pool.accounts
+      "accounts" => pool.accounts,
+      "models" => pool.models
     }
   end
 
   defp do_update(id, attrs) do
     now = System.os_time(:millisecond)
     query!(Repo, """
-    UPDATE pools SET name=?, provider=?, base_url=?,
+    UPDATE pools SET name=?, protocol=?, base_url=?,
                      strategy=?, cooldown_seconds=?, num_ctx=?,
-                     accounts=?, updated_ts=?
+                     accounts=?, models=?, updated_ts=?
     WHERE id=?
     """, [
-      attrs["name"], attrs["provider"], attrs["base_url"],
+      attrs["name"], attrs["protocol"], attrs["base_url"],
       attrs["strategy"], attrs["cooldown_seconds"], attrs["num_ctx"],
-      Jason.encode!(attrs["accounts"]), now, id
+      Jason.encode!(attrs["accounts"]),
+      Jason.encode!(attrs["models"] || []),
+      now, id
     ])
   end
 
@@ -423,29 +462,38 @@ defmodule DmhAi.LLM.Pools do
   defp maybe_put(map, _k, nil), do: map
   defp maybe_put(map, k, v),    do: Map.put(map, k, v)
 
-  defp row_to_map([id, name, provider, base_url, strategy, cooldown_seconds,
-                   num_ctx, accounts_json, rr_cursor, created_ts, updated_ts]) do
+  defp row_to_map([id, name, protocol, base_url, strategy, cooldown_seconds,
+                   num_ctx, accounts_json, models_json, rr_cursor,
+                   created_ts, updated_ts]) do
     %{
       id: id,
       name: name,
-      provider: provider,
+      protocol: protocol,
       base_url: base_url,
       strategy: strategy,
       cooldown_seconds: cooldown_seconds,
       num_ctx: num_ctx,
-      accounts: decode_accounts(accounts_json),
+      accounts: decode_json_list(accounts_json),
+      models: decode_models(models_json),
       rr_cursor: rr_cursor,
       created_ts: created_ts,
       updated_ts: updated_ts
     }
   end
 
-  defp decode_accounts(nil), do: []
-  defp decode_accounts(""),  do: []
-  defp decode_accounts(json) when is_binary(json) do
+  defp decode_json_list(nil), do: []
+  defp decode_json_list(""),  do: []
+  defp decode_json_list(json) when is_binary(json) do
     case Jason.decode(json) do
       {:ok, list} when is_list(list) -> list
       _                              -> []
     end
+  end
+
+  # `models` is a list of strings; defensively skip non-string entries.
+  defp decode_models(json) do
+    json
+    |> decode_json_list()
+    |> Enum.filter(&is_binary/1)
   end
 end

@@ -158,7 +158,8 @@ defmodule Itgr.OpenMcp do
           "alias" => alias_,
           "canonical_resource" => canonical,
           "server_url" => canonical
-        }
+        },
+        account: ""
       )
 
       # Drive a tool call against the stubbed open server so it goes
@@ -191,7 +192,7 @@ defmodule Itgr.OpenMcp do
       assert {:ok, %{status: "connected", alias: alias_}} =
                ConnectMcp.execute(%{"url" => url, "auth_method" => "none"}, ctx(c))
 
-      cred = Credentials.lookup(c.user_id, "mcp:" <> url)
+      cred = Credentials.lookup(c.user_id, "mcp:" <> url, "")
       assert cred != nil
       assert cred.kind == "none_mcp"
       assert cred.payload["alias"] == alias_
@@ -222,7 +223,7 @@ defmodule Itgr.OpenMcp do
       assert {:ok, %{status: "connected"}} =
                ConnectMcp.execute(%{"url" => url, "auth_method" => "none"}, ctx(c))
 
-      assert Credentials.lookup(c.user_id, "mcp:" <> url).kind == "none_mcp"
+      assert Credentials.lookup(c.user_id, "mcp:" <> url, "").kind == "none_mcp"
     end
   end
 

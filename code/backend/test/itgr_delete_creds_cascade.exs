@@ -75,7 +75,8 @@ defmodule Itgr.DeleteCredsCascade do
         "asm_json"           => Jason.encode!(asm),
         "client_id"          => "client_id_x",
         "client_secret"      => "client_secret_x"
-      }
+      },
+      account: ""
     )
   end
 
@@ -92,7 +93,8 @@ defmodule Itgr.DeleteCredsCascade do
         "api_key_header"     => "Authorization",
         "alias"              => alias_,
         "canonical_resource" => canonical
-      }
+      },
+      account: ""
     )
   end
 
@@ -107,7 +109,7 @@ defmodule Itgr.DeleteCredsCascade do
   describe "non-mcp targets" do
     test "ad-hoc credential delete returns the original shape — no cascade fields", %{user_id: user_id} do
       target = "adhoc_pw_" <> uid()
-      Credentials.save(user_id, target, "user_pass", %{"username" => "u", "password" => "p"})
+      Credentials.save(user_id, target, "user_pass", %{"username" => "u", "password" => "p"}, account: "")
 
       assert {:ok, result} = DeleteCreds.execute(%{"target" => target}, %{user_id: user_id})
 
@@ -116,7 +118,7 @@ defmodule Itgr.DeleteCredsCascade do
       refute Map.has_key?(result, :disconnected)
       refute Map.has_key?(result, :revoked)
 
-      assert Credentials.lookup(user_id, target) == nil
+      assert Credentials.lookup_all(user_id, target) == []
     end
   end
 
@@ -147,7 +149,7 @@ defmodule Itgr.DeleteCredsCascade do
       assert result.disconnected == true
       assert result.alias        == ctx.alias
 
-      assert Credentials.lookup(ctx.user_id, target) == nil
+      assert Credentials.lookup_all(ctx.user_id, target) == []
       assert Registry.find_authorized(ctx.user_id, ctx.alias) == nil
       assert count_attachments(ctx.user_id, ctx.alias) == 0
     end
@@ -177,7 +179,7 @@ defmodule Itgr.DeleteCredsCascade do
 
       assert result.disconnected == true
       assert result.deleted      == true
-      assert Credentials.lookup(ctx.user_id, target) == nil
+      assert Credentials.lookup_all(ctx.user_id, target) == []
       assert Registry.find_authorized(ctx.user_id, ctx.alias) == nil
     end
 
@@ -190,7 +192,7 @@ defmodule Itgr.DeleteCredsCascade do
       assert result.revoked == false
       assert result.revoke_reason =~ "kind=api_key_mcp"
       assert result.disconnected == true
-      assert Credentials.lookup(ctx.user_id, target) == nil
+      assert Credentials.lookup_all(ctx.user_id, target) == []
       assert Registry.find_authorized(ctx.user_id, ctx.alias) == nil
     end
 
@@ -221,6 +223,164 @@ defmodule Itgr.DeleteCredsCascade do
       {:ok, _} = DeleteCreds.execute(%{"target" => target}, %{user_id: ctx.user_id})
 
       assert count_attachments(ctx.user_id, ctx.alias) == 0
+    end
+  end
+
+  # ─── ssh:<host> targets — keystore cleanup ────────────────────────────
+
+  describe "ssh:<host> targets" do
+    setup do
+      keystore = Path.join(System.tmp_dir!(), "dmh_ai_ks_" <> uid())
+      File.mkdir_p!(Path.join(keystore, ".ssh"))
+      on_exit(fn -> File.rm_rf!(keystore) end)
+      {:ok, keystore: keystore}
+    end
+
+    test "default-user identity: removes the materialised private + public key files",
+         %{user_id: user_id, keystore: keystore} do
+      host_part = "test_#{uid()}.example"
+      target = "ssh:" <> host_part
+
+      {priv_path, pub_path} =
+        DmhAi.Tools.ProvisionSshIdentity.materialised_paths(keystore, "", host_part)
+
+      File.write!(priv_path, "FAKE-PRIV")
+      File.chmod!(priv_path, 0o600)
+      File.write!(pub_path, "FAKE-PUB")
+      File.chmod!(pub_path, 0o644)
+
+      Credentials.save(user_id, target, "ssh_identity",
+        %{"private_key" => "FAKE-PRIV", "public_key" => "FAKE-PUB",
+          "host" => host_part, "remote_user" => ""},
+        account: "")
+
+      assert File.exists?(priv_path)
+      assert File.exists?(pub_path)
+
+      assert {:ok, result} =
+               DeleteCreds.execute(%{"target" => target},
+                 %{user_id: user_id, keystore_dir: keystore})
+
+      assert result.deleted == true
+      assert priv_path in result.removed_keystore_files
+      assert pub_path  in result.removed_keystore_files
+      refute File.exists?(priv_path)
+      refute File.exists?(pub_path)
+      assert Credentials.lookup_all(user_id, target) == []
+    end
+
+    test "multi-account on the same host: delete one account leaves the other intact",
+         %{user_id: user_id, keystore: keystore} do
+      host_part = "multi_#{uid()}.example"
+      target = "ssh:" <> host_part
+
+      for {remote_user, body} <- [{"cuong", "PRIV-A"}, {"root", "PRIV-B"}] do
+        {priv, pub} =
+          DmhAi.Tools.ProvisionSshIdentity.materialised_paths(keystore, remote_user, host_part)
+
+        File.write!(priv, body)
+        File.write!(pub, body <> "-pub")
+
+        Credentials.save(user_id, target, "ssh_identity",
+          %{"private_key" => body, "public_key" => body <> "-pub",
+            "host" => host_part, "remote_user" => remote_user},
+          account: remote_user)
+      end
+
+      assert {:ok, result} =
+               DeleteCreds.execute(%{"target" => target, "account" => "cuong"},
+                 %{user_id: user_id, keystore_dir: keystore})
+
+      assert result.deleted == true
+      {priv_cuong, pub_cuong} =
+        DmhAi.Tools.ProvisionSshIdentity.materialised_paths(keystore, "cuong", host_part)
+
+      {priv_root, pub_root} =
+        DmhAi.Tools.ProvisionSshIdentity.materialised_paths(keystore, "root", host_part)
+
+      assert priv_cuong in result.removed_keystore_files
+      assert pub_cuong  in result.removed_keystore_files
+      refute priv_root in result.removed_keystore_files
+      refute pub_root  in result.removed_keystore_files
+
+      refute File.exists?(priv_cuong)
+      assert File.exists?(priv_root)
+
+      remaining = Credentials.lookup_all(user_id, target)
+      assert length(remaining) == 1
+      assert hd(remaining).account == "root"
+    end
+
+    test "delete-all (no account) clears every account row + every file pair",
+         %{user_id: user_id, keystore: keystore} do
+      host_part = "all_#{uid()}.example"
+      target = "ssh:" <> host_part
+
+      paths_seen =
+        for {remote_user, body} <- [{"alice", "A"}, {"bob", "B"}, {"", "DEFAULT"}] do
+          {priv, pub} =
+            DmhAi.Tools.ProvisionSshIdentity.materialised_paths(keystore, remote_user, host_part)
+
+          File.write!(priv, body)
+          File.write!(pub, body <> "-pub")
+
+          Credentials.save(user_id, target, "ssh_identity",
+            %{"private_key" => body, "public_key" => body <> "-pub",
+              "host" => host_part, "remote_user" => remote_user},
+            account: remote_user)
+
+          [priv, pub]
+        end
+        |> List.flatten()
+
+      assert {:ok, result} =
+               DeleteCreds.execute(%{"target" => target},
+                 %{user_id: user_id, keystore_dir: keystore})
+
+      assert result.deleted == true
+      for path <- paths_seen do
+        assert path in result.removed_keystore_files,
+               "expected #{path} in removed_keystore_files"
+        refute File.exists?(path)
+      end
+
+      assert Credentials.lookup_all(user_id, target) == []
+    end
+
+    test "missing keystore files are tolerated (best-effort)",
+         %{user_id: user_id, keystore: keystore} do
+      host_part = "noremnants_#{uid()}.example"
+      target = "ssh:" <> host_part
+
+      Credentials.save(user_id, target, "ssh_identity",
+        %{"private_key" => "p", "public_key" => "P",
+          "host" => host_part, "remote_user" => ""},
+        account: "")
+
+      assert {:ok, result} =
+               DeleteCreds.execute(%{"target" => target},
+                 %{user_id: user_id, keystore_dir: keystore})
+
+      assert result.deleted == true
+      assert result.removed_keystore_files == []
+    end
+
+    test "no keystore_dir in ctx still deletes the row (cleanup just no-ops)",
+         %{user_id: user_id} do
+      host_part = "noctx_#{uid()}.example"
+      target = "ssh:" <> host_part
+
+      Credentials.save(user_id, target, "ssh_identity",
+        %{"private_key" => "p", "public_key" => "P",
+          "host" => host_part, "remote_user" => ""},
+        account: "")
+
+      assert {:ok, result} =
+               DeleteCreds.execute(%{"target" => target}, %{user_id: user_id})
+
+      assert result.deleted == true
+      assert result.removed_keystore_files == []
+      assert Credentials.lookup_all(user_id, target) == []
     end
   end
 

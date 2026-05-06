@@ -15,276 +15,14 @@ defmodule DmhAi.DB.Init do
     File.mkdir_p(DmhAi.Constants.assets_dir())
 
     create_tables()
-    migrate_columns()
-    migrate_user_credentials_account()
-    DmhAi.Agent.AgentSettings.migrate_legacy_model_keys()
     seed_admin()
     seed_pools()
     seed_oauth_catalog()
   end
 
-  # Additive schema migrations — idempotent. Safe on fresh installs because
-  # CREATE TABLE above already has the new columns; the ALTER here catches
-  # older DBs where the column is missing.
-  # SQLite has no `ADD COLUMN IF NOT EXISTS` so we catch the duplicate-column
-  # error and move on.
-  defp migrate_columns do
-    add_column_if_missing("session_progress", "sub_labels", "TEXT DEFAULT NULL")
-    # Per-session human-readable task number: (1), (2), (3), … Surfaced in
-    # the task-list block + FE sidebar so the user can say "tell me more
-    # about task 1" and the model can map it to the internal task_id.
-    add_column_if_missing("tasks", "task_num", "INTEGER")
-    # First-class attachments column — JSON array of workspace/data paths.
-    # Previously derived via regex from task_spec text; that was fragile
-    # (model collapses newlines → regex misses 📎). Structured column is
-    # the source of truth for fetch_task, the task-list block, and dedup.
-    add_column_if_missing("tasks", "attachments", "TEXT DEFAULT NULL")
-    # Per-session tool-result retention window (last N turns' tool_call /
-    # tool_result messages, JSON). Lets the model answer follow-up
-    # questions immediately after a tool run without re-extracting,
-    # while still capped so extraction marathons can't balloon context.
-    add_column_if_missing("sessions", "tool_history", "TEXT DEFAULT NULL")
-    # Anchor back-reference. Set at pickup_task time when a DIFFERENT
-    # task was the current anchor; read at complete / cancel / pause
-    # time to restore that prior anchor. See architecture.md §Anchor
-    # mutation via back_to_when_done back-stack.
-    add_column_if_missing("tasks", "back_to_when_done_task_num", "INTEGER")
-    # Creds primitives — Phase 1 schema bump. `cred_type` → `kind`
-    # (free-form label, no enum) and a new optional `expires_at`
-    # (unix ms) so OAuth2-style time-bounded creds can co-exist with
-    # static ones in the same table. SQLite RENAME COLUMN is 3.25+.
-    rename_column_if_present("user_credentials", "cred_type", "kind")
-    add_column_if_missing("user_credentials", "expires_at", "INTEGER")
-    # Wall-clock duration of a tool execution in ms. Stamped by
-    # `SessionProgress.mark_tool_done/2`. Null for non-tool rows
-    # ('thinking' / 'summary' / 'chain_aborted'). FE renders a
-    # "(Ns)" suffix on completed tool bubbles. See architecture.md
-    # §Long-running tool execution.
-    add_column_if_missing("session_progress", "duration_ms", "INTEGER")
-    # Streaming-time chain-of-thought buffer. Populated alongside
-    # `stream_buffer` while an LLM is generating; cleared at chain
-    # end. Lets the FE render a live `Thinking…` block during the
-    # streaming phase. See architecture.md §Polling-based delivery.
-    add_column_if_missing("sessions", "thinking_buffer", "TEXT")
-    add_column_if_missing("sessions", "thinking_buffer_ts", "INTEGER")
-    # Per-user Linux UID inside the sandbox container — see
-    # specs/permissions.md §Per-user Linux accounts in the sandbox.
-    # Allocated lazily on first sandbox use (DmhAi.Permissions.SandboxUser),
-    # ≥ 10001. NULL until first allocation. Uniqueness enforced by the
-    # index below — SQLite ALTER TABLE can't add a UNIQUE constraint to
-    # an existing column directly, so we use a UNIQUE INDEX (NULLs
-    # don't collide in standard SQLite indices, which is what we want).
-    add_column_if_missing("users", "unix_uid", "INTEGER")
-    query!(Repo,
-      "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_unix_uid ON users (unix_uid) WHERE unix_uid IS NOT NULL")
-    # Memo encryption — see specs/memo_encryption.md.
-    # `memo_kdf_salt` (16 raw bytes) is the per-user PBKDF2 salt for
-    # deriving the memo wrap-key from the login password (separate
-    # salt purpose from auth's password hash). `memo_wrapped_mmk` is
-    # the user's master memo key wrapped with the wrap-key — wire
-    # format `0x01 ‖ iv ‖ tag ‖ ct`. Both NULL until the user's first
-    # post-deploy login, which generates+stores them and re-encrypts
-    # any pre-existing plaintext memo rows.
-    add_column_if_missing("users", "memo_kdf_salt", "BLOB")
-    add_column_if_missing("users", "memo_wrapped_mmk", "BLOB")
-
-    # Profile-extraction watermark — see ProfileExtractor. Holds the ts
-    # of the last user message folded into users.profile by the
-    # batched extractor. NULL means "never extracted"; the extractor
-    # treats it as 0 and counts every user message as unprocessed on
-    # first run.
-    add_column_if_missing("users", "last_profile_extracted_msg_ts", "INTEGER")
-
-    # Browser-tools consent gate. NULL on both columns = user has never
-    # accepted; tool returns {:status, "needs_consent"} and emits a
-    # browser_consent_required progress row. `browser_consent_text_hash`
-    # is sha256 of the consent text the user accepted; if the canonical
-    # text changes hash, the user is re-prompted on the next browser
-    # action. Revoking from Settings nulls both columns. See Tools.BrowserTask.
-    add_column_if_missing("users", "browser_consent_at", "INTEGER")
-    add_column_if_missing("users", "browser_consent_text_hash", "TEXT")
-
-    # Per-user UI-controlled preferences (JSON blob). Distinct from the
-    # global `admin_cloud_settings` row in the `settings` table — that
-    # holds runtime configuration tunable by admins; this column holds
-    # personal toggles every user can flip (token-saving mode, future
-    # display preferences, etc.). NULL is treated as the default
-    # (all-keys-off) by readers, so an unmigrated row keeps the
-    # current behaviour.
-    add_column_if_missing("users", "preferences", "TEXT")
-
-    # Generic OAuth orchestration: distinguish MCP-flavored OAuth (the
-    # original use case — token attaches to MCP.Registry on callback)
-    # from generic-service OAuth (token persists at oauth:<host> and
-    # the model picks it up via lookup_creds for run_script + curl).
-    # Pre-existing rows default to 'mcp' which matches their semantics.
-    add_column_if_missing("pending_oauth_states", "flow_kind", "TEXT NOT NULL DEFAULT 'mcp'")
-
-    # Per-provider OAuth quirks. Most OAuth 2.x providers share the
-    # same auth-URL + token-exchange shape, but each typically needs
-    # one or two extra parameters (Google's `access_type=offline`,
-    # Atlassian's `audience=api.atlassian.com`, Reddit's
-    # `duration=permanent`, Auth0/Okta's `audience=<api-id>`, etc.).
-    # Two JSON maps cover these:
-    #   extra_auth_params  → appended to the authorization URL
-    #   extra_token_params → appended to the token-exchange + refresh body
-    add_column_if_missing("oauth_catalog", "extra_auth_params",  "TEXT NOT NULL DEFAULT '{}'")
-    add_column_if_missing("oauth_catalog", "extra_token_params", "TEXT NOT NULL DEFAULT '{}'")
-    # Userinfo discovery columns drive the multi-account OAuth callback
-    # flow. NULL on either column means the provider has no userinfo
-    # endpoint we can call to identify the account; the callback then
-    # stores the credential with `account=''` (the legacy default).
-    # See architecture.md §Multi-account OAuth.
-    add_column_if_missing("oauth_catalog", "userinfo_endpoint",   "TEXT")
-    add_column_if_missing("oauth_catalog", "userinfo_field_path", "TEXT")
-
-    # One-shot sweep of legacy memo entries from kb_fts. Memo writes
-    # since the encryption deploy skip kb_fts (FTS over ciphertext is
-    # useless, FTS over plaintext defeats encryption — see
-    # specs/memo_encryption.md). Older memo rows from before that
-    # skip still have plaintext shadows in kb_fts that BM25 returns
-    # on retrieval; the bm25 hits then drive `decrypt_memo_hit`,
-    # which expects ciphertext and crashes on the stale plaintext
-    # row's missing chunk_idx. Idempotent: subsequent runs see no
-    # memo rows in kb_fts and the DELETE is a no-op.
-    cleanup_memo_fts()
-  end
-
-  defp cleanup_memo_fts do
-    try do
-      query!(Repo, """
-      DELETE FROM kb_fts
-      WHERE rowid IN (SELECT id FROM kb_chunks_meta WHERE scope='memo')
-      """)
-    rescue
-      _ -> :ok  # kb_fts may not exist on a brand-new install pre-create_tables
-    end
-  end
-
-  # SQLite 3.25+ supports `ALTER TABLE … RENAME COLUMN`. The rename
-  # is a no-op when the source column doesn't exist (fresh DB created
-  # via the new schema, or migration already applied).
-  defp rename_column_if_present(table, old, new) do
-    try do
-      query!(Repo, "ALTER TABLE #{table} RENAME COLUMN #{old} TO #{new}")
-      Logger.info("[DB.Init] renamed #{table}.#{old} → #{new}")
-    rescue
-      _ -> :ok
-    end
-  end
-
-  defp add_column_if_missing(table, column, type_and_default) do
-    try do
-      query!(Repo, "ALTER TABLE #{table} ADD COLUMN #{column} #{type_and_default}")
-      Logger.info("[DB.Init] added #{table}.#{column}")
-    rescue
-      _ -> :ok
-    end
-  end
-
-  # `user_credentials` schema migration to add per-account support:
-  #
-  #   * ADD COLUMN `account TEXT NOT NULL DEFAULT ''`
-  #   * REPLACE `UNIQUE(user_id, target)` with `UNIQUE(user_id, target, account)`
-  #
-  # SQLite makes the inline-`UNIQUE` clause an autoindex that can't be
-  # dropped in place, so we rebuild the table when the `account`
-  # column is missing. Idempotent across all states:
-  #
-  #   * Fresh install → `create_tables/0` already laid down the new
-  #     schema; the column-presence check below short-circuits.
-  #   * Pre-account install → the column is missing, the rebuild
-  #     fires once. Existing rows migrate to `account = ''` (the
-  #     legacy "default account") so older OAuth credentials keep
-  #     working unchanged. Operators get a single log line on the
-  #     transition; subsequent restarts see the column and no-op.
-  #
-  # Wrapped in a transaction so a crash mid-rebuild leaves the DB on
-  # the OLD schema instead of half-migrated. The CREATE TABLE inside
-  # creates the new shape with the new constraint; the INSERT moves
-  # data; the DROP removes the holdover; the rename swaps in the new
-  # table under the canonical name.
-  defp migrate_user_credentials_account do
-    cols = user_credentials_columns()
-
-    if not Enum.member?(cols, "account") do
-      Logger.info("[DB.Init] migrating user_credentials → multi-account schema")
-
-      Repo.transaction(fn ->
-        query!(Repo, "ALTER TABLE user_credentials RENAME TO user_credentials_old")
-
-        query!(Repo, """
-        CREATE TABLE user_credentials (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          user_id TEXT NOT NULL,
-          target TEXT NOT NULL,
-          account TEXT NOT NULL DEFAULT '',
-          kind TEXT NOT NULL,
-          payload TEXT NOT NULL,
-          notes TEXT,
-          expires_at INTEGER,
-          created_at INTEGER NOT NULL,
-          updated_at INTEGER NOT NULL,
-          UNIQUE(user_id, target, account)
-        )
-        """)
-
-        query!(Repo, """
-        INSERT INTO user_credentials
-          (id, user_id, target, account, kind, payload, notes, expires_at, created_at, updated_at)
-        SELECT id, user_id, target, '', kind, payload, notes, expires_at, created_at, updated_at
-        FROM user_credentials_old
-        """)
-
-        query!(Repo, "DROP TABLE user_credentials_old")
-        query!(Repo, "CREATE INDEX idx_user_credentials_user ON user_credentials (user_id)")
-      end)
-
-      Logger.info("[DB.Init] user_credentials multi-account migration done")
-    end
-  end
-
-  defp user_credentials_columns do
-    case query!(Repo, "PRAGMA table_info(user_credentials)") do
-      %{rows: rows} ->
-        Enum.map(rows, fn [_cid, name | _rest] -> name end)
-
-      _ ->
-        []
-    end
-  end
-
-  # In-place rename of legacy `task_turn_archive` → `task_chain_archive`.
-  # Idempotent across all states:
-  #   - Fresh install: neither table exists → both queries fail
-  #     silently, the CREATE TABLE IF NOT EXISTS afterwards lays
-  #     the new name down.
-  #   - Upgraded install: only `task_turn_archive` exists → RENAME
-  #     succeeds, index RENAME succeeds, CREATE TABLE IF NOT EXISTS
-  #     no-ops.
-  #   - Already migrated: only `task_chain_archive` exists → both
-  #     RENAMEs fail silently (the source table doesn't exist),
-  #     CREATE TABLE IF NOT EXISTS no-ops.
-  defp rename_legacy_task_archive do
-    try do
-      query!(Repo, "ALTER TABLE task_turn_archive RENAME TO task_chain_archive")
-      Logger.info("[DB.Init] renamed table task_turn_archive → task_chain_archive")
-    rescue
-      _ -> :ok
-    end
-
-    # SQLite < 3.25 lacks `ALTER INDEX RENAME`; even on newer SQLite,
-    # `ALTER TABLE RENAME` already migrates ALL of the table's
-    # indexes (it rewrites the column/table refs but not the index
-    # NAME itself). Drop the legacy-named index unconditionally —
-    # the `CREATE INDEX IF NOT EXISTS` that follows lays down the
-    # canonical new name.
-    try do
-      query!(Repo, "DROP INDEX IF EXISTS idx_task_turn_archive_task_ts")
-    rescue
-      _ -> :ok
-    end
-  end
+  # NOTE — this module describes the schema as a fresh install only.
+  # Schema changes between releases are applied as one-off operator-
+  # run DB scripts; never as auto-running migrations on boot.
 
   defp create_tables do
     query!(Repo, """
@@ -321,14 +59,20 @@ defmodule DmhAi.DB.Init do
       password_hash TEXT NOT NULL,
       role TEXT NOT NULL DEFAULT 'user',
       profile TEXT DEFAULT '',
-      last_profile_extracted_msg_ts INTEGER,
-      browser_consent_at INTEGER,
-      browser_consent_text_hash TEXT,
+      preferences TEXT,                       -- per-user JSON blob: token-saving toggle, future personal prefs
+      last_profile_extracted_msg_ts INTEGER,  -- ProfileExtractor watermark
+      browser_consent_at INTEGER,             -- consent gate for browser_task tool
+      browser_consent_text_hash TEXT,         -- sha256 of accepted consent text; mismatch re-prompts
+      memo_kdf_salt BLOB,                     -- per-user PBKDF2 salt for the memo wrap-key
+      memo_wrapped_mmk BLOB,                  -- master memo key wrapped under the wrap-key (0x01 ‖ iv ‖ tag ‖ ct)
+      unix_uid INTEGER,                       -- per-user Linux UID inside the sandbox (≥ 10001); allocated lazily
       password_changed INTEGER DEFAULT 0,
       deleted INTEGER DEFAULT 0,
       created_at INTEGER
     )
     """)
+    query!(Repo,
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_unix_uid ON users (unix_uid) WHERE unix_uid IS NOT NULL")
 
     query!(Repo, """
     CREATE TABLE IF NOT EXISTS auth_tokens (
@@ -532,8 +276,8 @@ defmodule DmhAi.DB.Init do
       -- `userinfo_field_path` to populate `user_credentials.account`.
       -- Both NULL = the provider has no userinfo endpoint we know how
       -- to call; the credential row is stored with `account=''` (the
-      -- legacy default account). Operators can edit these via the
-      -- admin catalog UI when adding new providers.
+      -- unlabelled default). Operators can edit these via the admin
+      -- catalog UI when adding new providers.
       userinfo_endpoint      TEXT,
       userinfo_field_path    TEXT,
       enabled                INTEGER NOT NULL DEFAULT 0,
@@ -640,15 +384,6 @@ defmodule DmhAi.DB.Init do
     # the master session has been compacted and the rolling
     # tool_history window evicted them. See architecture.md §Task
     # state continuity across chains.
-    #
-    # In-place rename of the legacy `task_chain_archive` table — the
-    # original name implied an LLM "turn" granularity that the table
-    # never had. SQLite supports RENAME TO since 3.25; the IF EXISTS
-    # makes this idempotent across fresh installs (where the legacy
-    # table never existed) and upgraded ones (where it did). Drop
-    # this block once every deployment has migrated.
-    rename_legacy_task_archive()
-
     query!(Repo, """
     CREATE TABLE IF NOT EXISTS task_chain_archive (
       id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -711,16 +446,13 @@ defmodule DmhAi.DB.Init do
 
     # vec0 virtual tables. Dimension is hard-coded; distance metric
     # is cosine (semantic similarity, magnitude-invariant — see
-    # specs/vector_kb.md). Changing dim or metric means dropping +
-    # reindexing both tables; `migrate_vec_tables_to_cosine/0`
-    # handles the L2 → cosine migration on boot for existing dbs.
+    # specs/vector_kb.md). Distance metric is fixed at table creation.
     query!(Repo, "CREATE VIRTUAL TABLE IF NOT EXISTS kb_vec_knowledge USING vec0(embedding float[1024] distance_metric=cosine)")
     query!(Repo, "CREATE VIRTUAL TABLE IF NOT EXISTS kb_vec_memo      USING vec0(embedding float[1024] distance_metric=cosine)")
-    migrate_vec_tables_to_cosine()
 
     # FTS5 inverted index over chunk_text — feeds the BM25 leg of
-    # hybrid search (#182). Contentless table (text not duplicated;
-    # we already have it in `kb_chunks_meta`); rowid mirrors
+    # hybrid search. Contentless table (text not duplicated; we
+    # already have it in `kb_chunks_meta`); rowid mirrors
     # `kb_chunks_meta.id`. `contentless_delete=1` lets us issue
     # plain `DELETE FROM kb_fts WHERE rowid=?` on chunk delete.
     # Tokenizer `unicode61` handles diacritics + case-folding for
@@ -735,7 +467,6 @@ defmodule DmhAi.DB.Init do
       tokenize='unicode61 remove_diacritics 2'
     )
     """)
-    migrate_fts5_backfill()
 
     query!(Repo, """
     CREATE TABLE IF NOT EXISTS kb_seeds (
@@ -758,15 +489,16 @@ defmodule DmhAi.DB.Init do
     )
     """)
 
-    # Pools — model-routing registry. See specs/api_pools.md.
-    # Replaces the legacy <provider>::<local|cloud>::<model> scheme. A
-    # pool bundles endpoint config + account rotation, addressed in
-    # canonical model strings as <pool>::<model>.
+    # Pools — model-routing registry. See arch_wiki/dmh_ai/integrations.md
+    # §API Pools. A pool bundles endpoint config + account rotation,
+    # addressed in canonical model strings as <pool>::<model>. The
+    # `protocol` column drives wire-format dispatch in
+    # `DmhAi.Agent.LLM.adapter_for/1`.
     query!(Repo, """
     CREATE TABLE IF NOT EXISTS pools (
       id               INTEGER PRIMARY KEY AUTOINCREMENT,
       name             TEXT NOT NULL UNIQUE,
-      provider         TEXT NOT NULL,           -- 'ollama' | 'openai' | …
+      protocol         TEXT NOT NULL,           -- 'openai' | 'ollama' | 'anthropic'
       base_url         TEXT NOT NULL,
       strategy         TEXT NOT NULL DEFAULT 'least_used',
       cooldown_seconds INTEGER NOT NULL DEFAULT 300,
@@ -774,204 +506,62 @@ defmodule DmhAi.DB.Init do
                                                 -- NULL = don't inject (server default applies)
       accounts         TEXT NOT NULL DEFAULT '[]',
                                                 -- JSON array: [{name, api_key, throttled_until?, last_used_ts?}]
+      models           TEXT NOT NULL DEFAULT '[]',
+                                                -- JSON array of strings; static model
+                                                -- list for endpoints that don't expose
+                                                -- /models. Empty = discover live.
       rr_cursor        INTEGER NOT NULL DEFAULT 0,
                                                 -- round-robin cursor (only used when strategy='round_robin')
       created_ts       INTEGER NOT NULL,
       updated_ts       INTEGER NOT NULL
     )
     """)
-
-    migrate_pools_drop_api_format()
-    migrate_pools_add_num_ctx()
-  end
-
-  # Add the `num_ctx` column to existing pools tables. Per-pool
-  # Ollama context-window override; NULL means don't inject (server
-  # default applies). See specs/api_pools.md. Idempotent: a no-op
-  # once the column is present.
-  defp migrate_pools_add_num_ctx do
-    sql =
-      case query!(Repo, "SELECT sql FROM sqlite_master WHERE type='table' AND name='pools'", []).rows do
-        [[s]] when is_binary(s) -> s
-        _ -> ""
-      end
-
-    if not String.contains?(sql, "num_ctx") do
-      Logger.info("[DB.Init] adding pools.num_ctx (per-pool Ollama context override)")
-      query!(Repo, "ALTER TABLE pools ADD COLUMN num_ctx INTEGER", [])
-    end
-  end
-
-  # Drop the legacy `api_format` column from existing pools tables.
-  # Provider-driven adapter dispatch (#185 phase 3) made it dead — the
-  # wire protocol is determined entirely by `provider`. Idempotent: a
-  # no-op once the column is gone. Requires SQLite 3.35+ (released
-  # 2021-03), guaranteed on every deployment we care about.
-  defp migrate_pools_drop_api_format do
-    sql =
-      case query!(Repo, "SELECT sql FROM sqlite_master WHERE type='table' AND name='pools'", []).rows do
-        [[s]] when is_binary(s) -> s
-        _ -> ""
-      end
-
-    if String.contains?(sql, "api_format") do
-      Logger.info("[DB.Init] dropping pools.api_format (provider-driven dispatch)")
-      query!(Repo, "ALTER TABLE pools DROP COLUMN api_format", [])
-    end
-  end
-
-  # Migrate any existing vec0 tables that were created without
-  # `distance_metric=cosine` (the prior default was L2). vec0's
-  # metric is fixed at table creation, so the only path is drop +
-  # recreate + re-embed every chunk. Detection: read the CREATE
-  # statement from sqlite_master and check whether it mentions
-  # cosine. Idempotent: a no-op once tables are on cosine.
-  #
-  # Re-embedding fires synchronously during boot — fine for the
-  # current corpus size (a few hundred memo chunks per user). If
-  # the corpus grows past that, move this to a background task.
-  defp migrate_vec_tables_to_cosine do
-    Enum.each([:knowledge, :memo], fn scope ->
-      vec_table =
-        case scope do
-          :knowledge -> "kb_vec_knowledge"
-          :memo      -> "kb_vec_memo"
-        end
-
-      sql =
-        case query!(Repo, "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", [vec_table]).rows do
-          [[s]] when is_binary(s) -> s
-          _                        -> ""
-        end
-
-      cond do
-        sql == "" ->
-          # Table was just freshly created with cosine — nothing to migrate.
-          :ok
-
-        String.contains?(sql, "distance_metric=cosine") ->
-          # Already on cosine.
-          :ok
-
-        true ->
-          Logger.info("[DB.Init] migrating #{vec_table} from L2 → cosine (re-embedding existing chunks)")
-          rebuild_vec_table_as_cosine(scope, vec_table)
-      end
-    end)
-  end
-
-  # Drop the old L2 vec0 table, recreate with cosine, then re-embed
-  # every chunk from `kb_chunks_meta` and re-insert with the same
-  # rowid. Per-batch embedder calls (size capped by AgentSettings)
-  # so a stale embedder pool doesn't compound the boot delay.
-  defp rebuild_vec_table_as_cosine(scope, vec_table) do
-    rows =
-      query!(Repo,
-        "SELECT id, chunk_text FROM kb_chunks_meta WHERE scope=? ORDER BY id ASC",
-        [Atom.to_string(scope)]).rows
-
-    query!(Repo, "DROP TABLE IF EXISTS #{vec_table}", [])
-
-    query!(Repo,
-      "CREATE VIRTUAL TABLE IF NOT EXISTS #{vec_table} USING vec0(embedding float[1024] distance_metric=cosine)", [])
-
-    case rows do
-      [] ->
-        Logger.info("[DB.Init] #{vec_table} migration: no chunks to re-embed")
-        :ok
-
-      _ ->
-        batch_size = DmhAi.Agent.AgentSettings.kb_embedding_batch_size()
-
-        rows
-        |> Enum.chunk_every(batch_size)
-        |> Enum.each(fn batch ->
-          texts = Enum.map(batch, fn [_id, text] -> text end)
-
-          case DmhAi.VectorDB.Embedder.embed_batch(texts) do
-            {:ok, vecs} ->
-              Enum.zip(batch, vecs)
-              |> Enum.each(fn {[id, _text], vec} ->
-                blob = encode_vector_le(vec)
-                query!(Repo, "INSERT INTO #{vec_table}(rowid, embedding) VALUES (?, ?)", [id, blob])
-              end)
-
-            {:error, reason} ->
-              Logger.error("[DB.Init] re-embed failed for #{vec_table}: #{inspect(reason)} — skipping #{length(batch)} chunks")
-          end
-        end)
-
-        Logger.info("[DB.Init] #{vec_table} migration: re-embedded #{length(rows)} chunks")
-    end
-  end
-
-  # Pack a list of floats into a vec0-compatible LE blob. Mirrors
-  # `DmhAi.VectorDB.SqliteVec.encode_vector/1`; duplicated here so
-  # the migration doesn't depend on an alias-loop with that module.
-  defp encode_vector_le(floats) do
-    Enum.reduce(floats, <<>>, fn f, acc -> acc <> <<f::little-float-32>> end)
-  end
-
-  # Backfill the FTS5 index from existing `kb_chunks_meta` rows.
-  # Idempotent: `INSERT OR IGNORE` skips any rowid already in the
-  # FTS5 table, so re-running on every boot is cheap (the dup-check
-  # is just an index probe per row). Boot-time cost on a fresh-from-
-  # migration database: one full scan; on subsequent boots: near-
-  # instant. The chunk-add path keeps FTS5 in sync going forward, so
-  # this is mainly for the v2 → hybrid upgrade path.
-  defp migrate_fts5_backfill do
-    %{rows: [[meta_count]]} = query!(Repo, "SELECT COUNT(*) FROM kb_chunks_meta", [])
-    %{rows: [[fts_count]]}  = query!(Repo, "SELECT COUNT(*) FROM kb_fts", [])
-
-    if meta_count > fts_count do
-      Logger.info("[DB.Init] FTS5 backfill: meta=#{meta_count} fts=#{fts_count} → backfilling missing")
-
-      query!(Repo, """
-      INSERT OR IGNORE INTO kb_fts(rowid, chunk_text)
-      SELECT id, chunk_text FROM kb_chunks_meta
-      """, [])
-
-      %{rows: [[after_count]]} = query!(Repo, "SELECT COUNT(*) FROM kb_fts", [])
-      Logger.info("[DB.Init] FTS5 backfill: now #{after_count} rows")
-    end
-
-    :ok
-  rescue
-    e ->
-      Logger.warning("[DB.Init] FTS5 backfill failed: #{Exception.message(e)}")
-      :ok
   end
 
   # Seed default pools on first boot. Importable from an operator-managed
   # pools.json (see load_pool_seeds/0 for path order). When no file is
   # found, only the `ollama-cloud` placeholder is inserted so the admin UI
   # has something to edit. Idempotent — re-run on every boot, but only
-  # inserts pools that don't already exist by name.
+  # inserts pools that don't already exist by name. Pools whose
+  # `protocol` is missing or invalid are skipped with a loud log line —
+  # the seed loader does not auto-translate older shapes.
   defp seed_pools do
     existing = query!(Repo, "SELECT name FROM pools", []).rows |> List.flatten() |> MapSet.new()
 
     seeds = load_pool_seeds()
+    valid_protocols = DmhAi.LLM.Pools.valid_protocols()
 
     now = System.os_time(:millisecond)
 
     Enum.each(seeds, fn pool ->
-      if not MapSet.member?(existing, pool["name"]) do
-        query!(Repo, """
-        INSERT INTO pools (name, provider, base_url, strategy,
-                           cooldown_seconds, num_ctx, accounts, rr_cursor,
-                           created_ts, updated_ts)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
-        """, [
-          pool["name"],
-          pool["provider"],
-          pool["base_url"],
-          pool["strategy"] || "least_used",
-          pool["cooldown_seconds"] || 300,
-          pool["num_ctx"],
-          Jason.encode!(pool["accounts"] || []),
-          now, now
-        ])
-        Logger.info("[DB.Init] seeded pool: #{pool["name"]}")
+      cond do
+        MapSet.member?(existing, pool["name"]) ->
+          :ok
+
+        pool["protocol"] not in valid_protocols ->
+          Logger.error(
+            "[DB.Init] pool seed `#{pool["name"] || "(unnamed)"}` skipped: " <>
+              "protocol=#{inspect(pool["protocol"])} not in #{inspect(valid_protocols)}"
+          )
+
+        true ->
+          query!(Repo, """
+          INSERT INTO pools (name, protocol, base_url, strategy,
+                             cooldown_seconds, num_ctx, accounts, models,
+                             rr_cursor, created_ts, updated_ts)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+          """, [
+            pool["name"],
+            pool["protocol"],
+            pool["base_url"],
+            pool["strategy"] || "least_used",
+            pool["cooldown_seconds"] || 300,
+            pool["num_ctx"],
+            Jason.encode!(pool["accounts"] || []),
+            Jason.encode!(pool["models"] || []),
+            now, now
+          ])
+          Logger.info("[DB.Init] seeded pool: #{pool["name"]}")
       end
     end)
   end
@@ -996,8 +586,6 @@ defmodule DmhAi.DB.Init do
       path ->
         try do
           %{"pools" => pools} = path |> File.read!() |> Jason.decode!()
-          # Translate pools.json's account `api_key` field to our schema
-          # (already aligned), but keep both shapes accepted.
           Enum.map(pools, fn p ->
             accounts =
               (p["accounts"] || [])
@@ -1022,7 +610,7 @@ defmodule DmhAi.DB.Init do
     [
       %{
         "name" => "ollama-cloud",
-        "provider" => "ollama",
+        "protocol" => "openai",
         "base_url" => "https://ollama.com/v1",
         "strategy" => "least_used",
         "cooldown_seconds" => 300,

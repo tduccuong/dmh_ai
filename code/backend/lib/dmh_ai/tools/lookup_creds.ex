@@ -37,7 +37,7 @@ defmodule DmhAi.Tools.LookupCreds do
           },
           account: %{
             type: "string",
-            description: "Optional account label (typically the email/login the OAuth provider returned). Omit to fetch every account for the target. Provide when the user named one or when a previous lookup result narrowed to a single choice."
+            description: "Optional account label. For OAuth: the email/login the provider returned. For `ssh:<host>` targets: the remote login (e.g. `cuong`, `root`). Omit to fetch every account for the target. Provide when the user named one or when a previous lookup result narrowed to a single choice."
           }
         },
         required: []

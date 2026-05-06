@@ -16,7 +16,7 @@ defmodule DmhAi.OAuth.Userinfo do
   Array indices are not supported here; if a provider returns the
   account in an array (Twitch's `data[0].login`) the catalog row
   leaves both fields NULL and the callback handler falls back to
-  `account = ""` (legacy single-account default).
+  `account = ""` (the unlabelled default).
 
   Network errors, HTTP errors, missing fields, malformed JSON — all
   resolve to `{:error, reason}`. Callers log and proceed with

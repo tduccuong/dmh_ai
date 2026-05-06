@@ -1245,9 +1245,10 @@ defmodule DmhAi.Agent.UserAgent do
 
   # Append a message map to the session's messages JSON column in DB.
   # Stamps the message's `ts` from the BE clock (overwriting any incoming
-  # value) per CLAUDE.md rule #9 — the BE is the authority for every
-  # persisted timestamp. Returns {:ok, ts_ms} so callers can echo the
-  # timestamp back on the wire (e.g. in the final /agent/chat SSE frame).
+  # value) — the BE is the sole authority for every persisted timestamp;
+  # the FE never stamps `ts`. Returns {:ok, ts_ms} so callers can echo
+  # the timestamp back on the wire (e.g. in the final /agent/chat SSE
+  # frame).
   defp append_session_message(session_id, user_id, message) do
     try do
       result = query!(Repo, "SELECT messages FROM sessions WHERE id=? AND user_id=?",
@@ -3490,7 +3491,7 @@ defmodule DmhAi.Agent.UserAgent do
   defp extract_task_num_from_success(_), do: nil
 
   # Normalise a tool's {:ok, result} payload into the string that the model
-  # receives as `tool` role content. Rules (see CLAUDE.md rule #10):
+  # receives as `tool` role content. Rules:
   #   binary → pass-through (verbatim text, e.g. stdout)
   #   map/list → pretty JSON after recursive atom/tuple normalisation
   #   number / boolean → to_string

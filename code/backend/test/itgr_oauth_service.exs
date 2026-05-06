@@ -214,6 +214,7 @@ defmodule Itgr.OAuthService do
       "oauth:service-b.test",
       "oauth2_service",
       %{"access_token" => "tkn_abc", "refresh_token" => "rfr_abc"},
+      account: "",
       notes: "test",
       expires_at: System.os_time(:millisecond) + one_hour
     )

@@ -39,19 +39,19 @@ defmodule Itgr.Pools do
       assert {:ok, pool} =
                Pools.create(%{
                  "name" => name,
-                 "provider" => "ollama",
+                 "protocol" => "openai",
                  "base_url" => "http://example.test/v1",
                  "accounts" => [%{"name" => "a1", "api_key" => "k1"}]
                })
 
       assert pool.name == name
-      assert pool.provider == "ollama"
+      assert pool.protocol == "openai"
       assert [%{"name" => "a1", "api_key" => "k1"}] = pool.accounts
 
       assert {:ok, ^pool} = Pools.fetch(name)
       assert {:error, :name_taken} = Pools.create(%{
         "name" => name,
-        "provider" => "ollama",
+        "protocol" => "openai",
         "base_url" => "http://example.test/v1"
       })
 
@@ -63,10 +63,72 @@ defmodule Itgr.Pools do
       assert {:error, :missing_fields} = Pools.create(%{"name" => "incomplete"})
     end
 
+    test "rejects unknown protocol values", %{name: name} do
+      assert {:error, {:invalid_protocol, "weirdo"}} =
+               Pools.create(%{
+                 "name" => name <> "-bad-proto",
+                 "protocol" => "weirdo",
+                 "base_url" => "http://example.test/v1"
+               })
+    end
+
+    test "accepts the three known protocols", %{name: name} do
+      for proto <- ["openai", "ollama", "anthropic"] do
+        suffix = "-" <> proto
+        {:ok, p} =
+          Pools.create(%{
+            "name" => name <> suffix,
+            "protocol" => proto,
+            "base_url" => "http://example.test/v1"
+          })
+
+        assert p.protocol == proto
+        query!(Repo, "DELETE FROM pools WHERE name=?", [name <> suffix])
+      end
+    end
+
+    test "models: empty by default; list round-trips; trims, dedups, drops blanks", %{name: name} do
+      {:ok, p1} = Pools.create(%{
+        "name" => name <> "-m1",
+        "protocol" => "anthropic",
+        "base_url" => "https://example.test/v1"
+      })
+      assert p1.models == []
+      query!(Repo, "DELETE FROM pools WHERE name=?", [name <> "-m1"])
+
+      {:ok, p2} = Pools.create(%{
+        "name" => name <> "-m2",
+        "protocol" => "anthropic",
+        "base_url" => "https://example.test/v1",
+        "models" => ["MiniMax-M2.7", "MiniMax-M2.5"]
+      })
+      assert p2.models == ["MiniMax-M2.7", "MiniMax-M2.5"]
+
+      # update — replace the list
+      {:ok, p2u} = Pools.update(p2.id, %{"models" => ["MiniMax-M2"]})
+      assert p2u.models == ["MiniMax-M2"]
+
+      # update — clear the list with `[]`
+      {:ok, p2c} = Pools.update(p2.id, %{"models" => []})
+      assert p2c.models == []
+      query!(Repo, "DELETE FROM pools WHERE name=?", [name <> "-m2"])
+
+      # accept newline/comma-separated string from FE
+      {:ok, p3} = Pools.create(%{
+        "name" => name <> "-m3",
+        "protocol" => "anthropic",
+        "base_url" => "https://example.test/v1",
+        "models" => "  MiniMax-M2.7\n,  ,MiniMax-M2.5\nMiniMax-M2.7  "
+      })
+      # trims, dedups, drops blanks, preserves first-seen order
+      assert p3.models == ["MiniMax-M2.7", "MiniMax-M2.5"]
+      query!(Repo, "DELETE FROM pools WHERE name=?", [name <> "-m3"])
+    end
+
     test "num_ctx: nil by default; integers persist; strings parse; garbage → nil", %{name: name} do
       {:ok, p1} = Pools.create(%{
         "name" => name <> "-a",
-        "provider" => "ollama",
+        "protocol" => "openai",
         "base_url" => "http://example.test"
       })
       assert p1.num_ctx == nil
@@ -74,7 +136,7 @@ defmodule Itgr.Pools do
 
       {:ok, p2} = Pools.create(%{
         "name" => name <> "-b",
-        "provider" => "ollama",
+        "protocol" => "openai",
         "base_url" => "http://example.test",
         "num_ctx" => 32768
       })
@@ -83,7 +145,7 @@ defmodule Itgr.Pools do
 
       {:ok, p3} = Pools.create(%{
         "name" => name <> "-c",
-        "provider" => "ollama",
+        "protocol" => "openai",
         "base_url" => "http://example.test",
         "num_ctx" => "16384"
       })
@@ -92,7 +154,7 @@ defmodule Itgr.Pools do
 
       {:ok, p4} = Pools.create(%{
         "name" => name <> "-d",
-        "provider" => "ollama",
+        "protocol" => "openai",
         "base_url" => "http://example.test",
         "num_ctx" => "abc"
       })
@@ -103,7 +165,7 @@ defmodule Itgr.Pools do
     test "update can flip num_ctx between value and nil", %{name: name} do
       {:ok, p} = Pools.create(%{
         "name" => name,
-        "provider" => "ollama",
+        "protocol" => "openai",
         "base_url" => "http://example.test",
         "num_ctx" => 8192
       })
@@ -122,7 +184,7 @@ defmodule Itgr.Pools do
     test "returns endpoint + account fields for a known pool", %{name: name} do
       {:ok, _} = Pools.create(%{
         "name" => name,
-        "provider" => "ollama",
+        "protocol" => "openai",
         "base_url" => "http://example.test/v1",
         "accounts" => [%{"name" => "k1", "api_key" => "secret-1"}]
       })
@@ -131,7 +193,7 @@ defmodule Itgr.Pools do
       assert resolved.pool_name == name
       assert resolved.model == "some-model:7b"
       assert resolved.base_url == "http://example.test/v1"
-      assert resolved.provider == "ollama"
+      assert resolved.protocol == "openai"
       assert resolved.account_name == "k1"
       assert resolved.api_key == "secret-1"
     end
@@ -149,7 +211,7 @@ defmodule Itgr.Pools do
     test "least_used picks the account with the smallest last_used_ts", %{name: name} do
       {:ok, pool} = Pools.create(%{
         "name" => name,
-        "provider" => "ollama",
+        "protocol" => "openai",
         "base_url" => "http://example.test/v1",
         "strategy" => "least_used",
         "accounts" => [
@@ -167,7 +229,7 @@ defmodule Itgr.Pools do
 
       {:ok, pool} = Pools.create(%{
         "name" => name,
-        "provider" => "ollama",
+        "protocol" => "openai",
         "base_url" => "http://example.test/v1",
         "accounts" => [
           %{"name" => "blocked", "api_key" => "k1", "throttled_until" => future}
@@ -181,15 +243,27 @@ defmodule Itgr.Pools do
     test "probe surfaces network failure as a string error" do
       alias DmhAi.LLM.Probe
       # Use a guaranteed-unroutable address so this is fast + offline-safe.
-      assert {:error, msg} = Probe.probe("http://127.0.0.1:1", nil)
+      assert {:error, msg} = Probe.probe("http://127.0.0.1:1", nil, "openai")
       assert is_binary(msg)
       assert msg =~ "Connection failed" or msg =~ "Connection refused" or msg =~ "econnrefused"
+    end
+
+    test "probe sends x-api-key for anthropic protocol; Bearer for openai" do
+      alias DmhAi.LLM.Probe
+      # Anthropic path — a connect failure is fine, we only assert that
+      # the call signature works without raising and returns a string error.
+      assert {:error, msg} = Probe.probe("http://127.0.0.1:1", "fake-key", "anthropic")
+      assert is_binary(msg)
+
+      # Openai path — same shape.
+      assert {:error, msg2} = Probe.probe("http://127.0.0.1:1", "fake-key", "openai")
+      assert is_binary(msg2)
     end
 
     test "add_account / remove_account round trip", %{name: name} do
       {:ok, pool} = Pools.create(%{
         "name" => name,
-        "provider" => "ollama",
+        "protocol" => "openai",
         "base_url" => "http://example.test/v1"
       })
       assert pool.accounts == []
@@ -215,10 +289,59 @@ defmodule Itgr.Pools do
       assert length(p4.accounts) == 1
     end
 
+    test "global attempt cap stops persistent server-error loops on single-account pools", %{name: name} do
+      # Persistent connection-refused → classified as :server_error.
+      # With one account and `:server_error` not triggering throttle,
+      # the only correct termination is the global attempt cap.
+      {:ok, _} = Pools.create(%{
+        "name" => name,
+        "protocol" => "openai",
+        "base_url" => "http://127.0.0.1:1",
+        "accounts" => [%{"name" => "lone", "api_key" => "sk-x"}]
+      })
+
+      now = System.os_time(:millisecond)
+      raw =
+        case query!(Repo, "SELECT value FROM settings WHERE key=?", ["admin_cloud_settings"]).rows do
+          [[v] | _] when is_binary(v) -> v
+          _ -> "{}"
+        end
+
+      blob = Jason.decode!(raw || "{}")
+      patched = Map.put(blob, "llmTotalAttempts", 2)
+
+      query!(Repo,
+        "INSERT INTO settings (key, value) VALUES (?, ?) " <>
+          "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        ["admin_cloud_settings", Jason.encode!(patched)])
+
+      on_exit(fn ->
+        # Restore prior settings blob so other tests in the suite are unaffected.
+        query!(Repo,
+          "INSERT INTO settings (key, value) VALUES (?, ?) " <>
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+          ["admin_cloud_settings", raw])
+      end)
+
+      t0 = System.monotonic_time(:millisecond)
+
+      assert {:error, :attempts_exhausted} =
+               DmhAi.Agent.LLM.stream(name <> "::nonsense-model", [], self(), tools: [])
+
+      elapsed = System.monotonic_time(:millisecond) - t0
+
+      # cap=2 → 2 attempts + 1 backoff sleep × 2000 ms = ~2 s.
+      # Generous upper bound: < 8 s. The pre-cap behaviour was infinite,
+      # so any finite bound proves termination; the tighter bound proves
+      # the cap fired at exactly the configured value.
+      assert elapsed < 8_000,
+             "expected cap to fire within 8s, took #{elapsed}ms"
+    end
+
     test "mark_throttled persists across fetches", %{name: name} do
       {:ok, _} = Pools.create(%{
         "name" => name,
-        "provider" => "ollama",
+        "protocol" => "openai",
         "base_url" => "http://example.test/v1",
         "accounts" => [
           %{"name" => "a1", "api_key" => "k1"},

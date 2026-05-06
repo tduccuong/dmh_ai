@@ -146,7 +146,7 @@ defmodule DmhAi.Tools.ConnectMcp do
   # runs the appropriate fresh flow.
   defp already_authorized_and_attach(user_id, anchor_task_id, alias_) do
     with %{canonical_resource: resource} = authz <- MCPRegistry.find_authorized(user_id, alias_),
-         cred when is_map(cred) <- Credentials.lookup(user_id, "mcp:" <> resource),
+         cred when is_map(cred) <- Credentials.lookup(user_id, "mcp:" <> resource, ""),
          %{is_expired: false} <- cred,
          {:ok, handshake_ctx} <- build_handshake_ctx(authz, cred),
          {:ok, _info, sid}    <- MCPClient.initialize(handshake_ctx),
@@ -391,7 +391,8 @@ defmodule DmhAi.Tools.ConnectMcp do
           "canonical_resource" => url,
           "server_url"         => url
         },
-        notes: "Open MCP — no auth"
+        account: "",
+        notes:   "Open MCP — no auth"
       )
 
       {:ok, %{status: "connected", alias: alias_, tools: summarize_tools(tools)}}

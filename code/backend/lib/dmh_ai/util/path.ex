@@ -67,12 +67,11 @@ defmodule DmhAi.Util.Path do
       end
 
     # session_root, data_dir, and workspace_dir live in two physically
-    # different trees now (user_assets vs user_workspaces, see
-    # specs/permissions.md). The legacy invariant "abs must be under
-    # session_root" no longer holds — a path like
-    # /data/user_workspaces/<email>/<session>/foo isn't under
-    # /data/user_assets/<email>/<session>/. Generalise to "abs must be
-    # under at least one of the configured roots".
+    # different trees (user_assets vs user_workspaces, see
+    # specs/permissions.md). An absolute path is valid when it lies
+    # under any of the configured roots — e.g. a path like
+    # /data/user_workspaces/<email>/<session>/foo lives under
+    # workspace_dir but not session_root.
     allowed_roots =
       [session_root, data_dir, workspace_dir]
       |> Enum.reject(&is_nil/1)

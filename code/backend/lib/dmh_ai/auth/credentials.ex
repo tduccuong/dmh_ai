@@ -10,22 +10,17 @@ defmodule DmhAi.Auth.Credentials do
   tokens.
 
   Schema: `user_credentials` keyed by `(user_id, target, account)`.
-  `account` is a per-account label (typically the email/login returned
-  by the OAuth provider's userinfo endpoint, or `""` for credentials
-  that have no account concept — API keys etc.). Multiple accounts of
-  the same service for the same user co-exist as separate rows;
-  `lookup_all/2` returns them all.
+  `account` is a per-account label — typically the email / login
+  returned by the OAuth provider's userinfo endpoint. For credentials
+  that have no per-account concept (API keys, manual SSH passwords,
+  MCP-server tokens) callers pass `""`. Multiple accounts of the same
+  service for the same user co-exist as separate rows; `lookup_all/2`
+  returns every row for a `(user_id, target)` pair.
 
   `kind` is a free-form string the caller chooses to describe
   `payload`'s shape. `expires_at` (optional unix-ms) supports time-
   bounded credentials such as OAuth2 access tokens; `nil` for non-
   expiring creds.
-
-  Backward compat: callers that don't pass an `account` opt operate
-  on the legacy default account (`""`) — the same row a pre-multi-
-  account install would have written. Existing OAuth flows keep
-  working until they're updated to capture the account from
-  userinfo at callback time.
 
   Security: payloads stored **plaintext** in SQLite — known shortcut
   matching how the rest of the app treats sensitive fields. Revisit
@@ -50,17 +45,20 @@ defmodule DmhAi.Auth.Credentials do
 
   @doc """
   Upsert a credential scoped to `(user_id, target, account)`. `kind`
-  is a free-form string describing `payload`'s shape. Optional opts:
+  is a free-form string describing `payload`'s shape. Required opt:
 
-    * `:account` (default `""`) — per-account label; rows with
-      different accounts co-exist as separate credentials.
+    * `:account` — per-account label. Pass `""` for credentials that
+      have no per-account concept (API keys, MCP tokens, SSH).
+
+  Optional opts:
+
     * `:notes` — free-form notes string.
     * `:expires_at` — unix ms expiry.
   """
   @spec save(String.t(), String.t(), String.t(), map(), keyword()) :: :ok
-  def save(user_id, target, kind, payload, opts \\ [])
+  def save(user_id, target, kind, payload, opts)
       when is_binary(user_id) and is_binary(target) and is_binary(kind) and is_map(payload) do
-    account    = Keyword.get(opts, :account, "")
+    account    = Keyword.fetch!(opts, :account)
     notes      = Keyword.get(opts, :notes)
     expires_at = Keyword.get(opts, :expires_at)
     now        = System.os_time(:millisecond)
@@ -81,22 +79,9 @@ defmodule DmhAi.Auth.Credentials do
   end
 
   @doc """
-  Fetch by `(user_id, target)`. Backward-compat lookup that resolves
-  to the legacy default account (`""`) — the row a pre-multi-account
-  install would have written. New callers that need account-scoped
-  access should use `lookup/3` (with explicit account) or
-  `lookup_all/2` (returns every account for the target).
-
-  Returns the decoded record or `nil` if missing.
-  """
-  @spec lookup(String.t(), String.t()) :: cred() | nil
-  def lookup(user_id, target) when is_binary(user_id) and is_binary(target) do
-    lookup(user_id, target, "")
-  end
-
-  @doc """
   Fetch by `(user_id, target, account)`. Returns the decoded record
-  or `nil` if missing.
+  or `nil` if missing. Use `lookup_all/2` to get every account row
+  for a target.
   """
   @spec lookup(String.t(), String.t(), String.t()) :: cred() | nil
   def lookup(user_id, target, account)
@@ -164,16 +149,6 @@ defmodule DmhAi.Auth.Credentials do
         updated_at: updated_at
       }
     end)
-  end
-
-  @doc """
-  Delete by `(user_id, target)`. Backward-compat: deletes the legacy
-  default account (`""`) only. Use `delete/3` for explicit account
-  scoping or `delete_all/2` to remove every account for a target.
-  """
-  @spec delete(String.t(), String.t()) :: :ok
-  def delete(user_id, target) when is_binary(user_id) and is_binary(target) do
-    delete(user_id, target, "")
   end
 
   @doc "Delete the row at `(user_id, target, account)`."

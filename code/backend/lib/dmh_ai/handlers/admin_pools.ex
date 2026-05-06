@@ -45,7 +45,12 @@ defmodule DmhAi.Handlers.AdminPools do
           Proxy.json(conn, 201, %{pool: render(pool, mask: false)})
 
         {:error, :missing_fields} ->
-          Proxy.json(conn, 400, %{error: "missing required fields: name, provider, base_url"})
+          Proxy.json(conn, 400, %{error: "missing required fields: name, protocol, base_url"})
+
+        {:error, {:invalid_protocol, value}} ->
+          Proxy.json(conn, 400, %{
+            error: "invalid protocol #{inspect(value)}; must be one of #{inspect(Pools.valid_protocols())}"
+          })
 
         {:error, :name_taken} ->
           Proxy.json(conn, 409, %{error: "pool name already exists"})
@@ -58,7 +63,7 @@ defmodule DmhAi.Handlers.AdminPools do
 
   @doc """
   Bulk-import pools from a JSON array. Each entry is the same map
-  shape `create/2` accepts (name, provider, base_url, strategy,
+  shape `create/2` accepts (name, protocol, base_url, strategy,
   accounts, …). Slug collisions on `name` are skipped (no overwrite).
   Returns a summary
   `%{inserted: N, skipped: M, errors: [{name, error_str}, …]}`.
@@ -146,7 +151,7 @@ defmodule DmhAi.Handlers.AdminPools do
           # broken keys.
           with {:ok, pool}     <- Pools.fetch_by_id_safe(pool_id),
                :ok             <- ensure_fields(name, api_key),
-               {:ok, _count}   <- Probe.probe(pool.base_url, api_key) do
+               {:ok, _count}   <- Probe.probe(pool.base_url, api_key, pool.protocol) do
             case Pools.add_account(pool_id, name, api_key) do
               {:ok, p}                  -> Proxy.json(conn, 201, %{pool: render(p, mask: true)})
               {:error, :missing_fields} -> Proxy.json(conn, 400, %{error: "name and api_key are required"})
@@ -210,20 +215,32 @@ defmodule DmhAi.Handlers.AdminPools do
   end
 
   defp probe_one_pool(pool) do
-    case cached_models(pool) do
-      {:hit, names} ->
-        {:ok, pool.name, names}
+    static = pool.models || []
 
-      :miss ->
-        api_key = pool_first_active_key(pool)
+    cond do
+      # Pool ships an explicit static model list — use it verbatim, no
+      # HTTP probe. Picker fan-out for endpoints that don't expose
+      # /models (e.g. MiniMax's Anthropic-compat host) flows through
+      # this branch.
+      static != [] ->
+        {:ok, pool.name, static}
 
-        case Probe.list_models(pool.base_url, api_key) do
-          {:ok, names} ->
-            cache_put(pool, names)
+      true ->
+        case cached_models(pool) do
+          {:hit, names} ->
             {:ok, pool.name, names}
 
-          {:error, reason} ->
-            {:error, pool.name, reason}
+          :miss ->
+            api_key = pool_first_active_key(pool)
+
+            case Probe.list_models(pool.base_url, api_key, pool.protocol) do
+              {:ok, names} ->
+                cache_put(pool, names)
+                {:ok, pool.name, names}
+
+              {:error, reason} ->
+                {:error, pool.name, reason}
+            end
         end
     end
   end
@@ -273,13 +290,19 @@ defmodule DmhAi.Handlers.AdminPools do
       attrs = parse_body(body)
       base_url = (attrs["base_url"] || "") |> to_string() |> String.trim()
       api_key  = (attrs["api_key"]  || "") |> to_string() |> String.trim()
+      protocol = (attrs["protocol"] || "openai") |> to_string() |> String.trim()
 
       cond do
         base_url == "" ->
           Proxy.json(conn, 400, %{error: "base_url is required"})
 
+        protocol not in Pools.valid_protocols() ->
+          Proxy.json(conn, 400, %{
+            error: "invalid protocol #{inspect(protocol)}; must be one of #{inspect(Pools.valid_protocols())}"
+          })
+
         true ->
-          case Probe.probe(base_url, api_key) do
+          case Probe.probe(base_url, api_key, protocol) do
             {:ok, count}      -> Proxy.json(conn, 200, %{ok: true, model_count: count})
             {:error, reason}  -> Proxy.json(conn, 200, %{ok: false, error: reason})
           end
@@ -365,16 +388,24 @@ defmodule DmhAi.Handlers.AdminPools do
     %{
       id: pool.id,
       name: pool.name,
-      provider: pool.provider,
+      protocol: pool.protocol,
       base_url: pool.base_url,
       strategy: pool.strategy,
       cooldown_seconds: pool.cooldown_seconds,
       num_ctx: pool.num_ctx,
       accounts: accounts,
+      models: pool.models || [],
       created_ts: pool.created_ts,
       updated_ts: pool.updated_ts
     }
   end
+
+  # Fixed-width mask: short keys (≤4 chars) become full bullets; longer
+  # keys render as `••••••••<last4>` (8 bullets + last 4 actual chars).
+  # Cap is intentional — a literal char-for-char mask of a long token
+  # (e.g. a 150-char Anthropic key) blows out the flex layout in
+  # System Settings, squeezing the account-name label to zero width.
+  @mask_bullets 8
 
   defp mask_key(""), do: ""
   defp mask_key(key) when is_binary(key) do
@@ -382,7 +413,7 @@ defmodule DmhAi.Handlers.AdminPools do
     if n <= 4 do
       String.duplicate("•", n)
     else
-      String.duplicate("•", n - 4) <> String.slice(key, n - 4, 4)
+      String.duplicate("•", @mask_bullets) <> String.slice(key, n - 4, 4)
     end
   end
 end

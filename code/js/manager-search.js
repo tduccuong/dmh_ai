@@ -89,10 +89,11 @@ UIManager.sendMessage = async function() {
     var allImages = imagesForAPI.concat(videosForAPI);
 
     // --- Build the user message for local session storage (thumbnail format for display) ---
-    // BE is the sole authority for `ts` (CLAUDE.md rule #9). The optimistic
-    // local-only copy carries a transient Date.now() so the just-sent message
-    // sorts at the end of the timeline immediately; on {done: true} we patch
-    // it with the canonical BE-stamped user_ts from the final SSE frame.
+    // BE is the sole authority for `ts` on every persisted message. The
+    // optimistic local-only copy carries a transient Date.now() so the
+    // just-sent message sorts at the end of the timeline immediately; on
+    // {done: true} we patch it with the canonical BE-stamped user_ts
+    // from the final SSE frame.
     var userMsgForStorage = { role: 'user', content: content, ts: Date.now(), _optimistic: true };
     if (imagesForStorage.length > 0) userMsgForStorage.images = imagesForStorage;
     if (videosForStorage.length > 0) userMsgForStorage.videos = videosForStorage;
@@ -102,8 +103,9 @@ UIManager.sendMessage = async function() {
     sessionAtSend.messages.push(userMsgForStorage);
 
     // Register upload-completion callbacks now that sessionAtSend is defined.
-    // Local fileId patching only — do NOT call SessionStore.updateSession
-    // (CLAUDE.md rule #9: BE owns session.messages).
+    // Local fileId patching only — do NOT call SessionStore.updateSession;
+    // the BE owns session.messages and the FE never PUTs message-shaped
+    // state back.
     pendingUploadEntries.forEach(function(p) {
         p.entry._onUploadDone = function(fileId) {
             p.storage.fileId = fileId;
@@ -123,7 +125,7 @@ UIManager.sendMessage = async function() {
 
     // assistantTs is not captured at click time — BE stamps it when it
     // persists the final assistant message and echoes it back in the
-    // {done, user_ts, assistant_ts} SSE frame (see CLAUDE.md rule #9).
+    // {done, user_ts, assistant_ts} SSE frame.
     let assistantTs = null;
 
     // Build the streaming placeholder but keep it HIDDEN until actual
@@ -160,7 +162,7 @@ UIManager.sendMessage = async function() {
 
     // Do NOT PUT session.messages here. The BE persists the user message
     // itself (with a BE-stamped ts) inside /agent/chat before dispatching
-    // to the pipeline (CLAUDE.md rule #9).
+    // to the pipeline.
 
     this._acquireWakeLock();
     self._activeBodyDiv = bodyDiv;
@@ -299,7 +301,8 @@ UIManager.sendMessage = async function() {
         }
 
         // Patch the optimistic local user message with the BE-stamped ts
-        // so the timeline sort is correct (CLAUDE.md rule #9).
+        // so the timeline sort is correct (BE is the sole authority for
+        // every persisted timestamp).
         var userTs = body && body.user_ts;
         if (typeof userTs === 'number') {
             for (var m = sessionAtSend.messages.length - 1; m >= 0; m--) {

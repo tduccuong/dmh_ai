@@ -626,8 +626,8 @@ defmodule DmhAi.Handlers.Data do
   # Metadata-only: updates name (and wipes messages + context when the FE
   # sends `messages: []` as a session-reset signal). Regular message writes
   # are BE-only via /agent/chat — FE MUST NOT push message-shaped state
-  # back here (CLAUDE.md rule #9). Incoming `messages` arrays with content
-  # are ignored; only the empty-array "reset" case has effect.
+  # back here. Incoming `messages` arrays with content are ignored; only
+  # the empty-array "reset" case has effect.
   def put_session(conn, user, session_id) do
     {:ok, body, conn} = read_body(conn)
     d = Jason.decode!(body || "{}")
@@ -907,7 +907,7 @@ defmodule DmhAi.Handlers.Data do
       "oauth_client:" <> (asm[:issuer] || asm[:authorization_endpoint] || "")
 
     cred_payload =
-      case DmhAi.Auth.Credentials.lookup(user_id, client_target) do
+      case DmhAi.Auth.Credentials.lookup(user_id, client_target, "") do
         %{payload: %{"client_id" => cid} = cp} ->
           Map.merge(cred_payload, %{
             "client_id"     => cid,
@@ -923,7 +923,8 @@ defmodule DmhAi.Handlers.Data do
       "mcp:" <> resource,
       "oauth2_mcp",
       cred_payload,
-      notes: "MCP connection: #{alias_}",
+      account:    "",
+      notes:      "MCP connection: #{alias_}",
       expires_at: tokens.expires_at
     )
 
@@ -978,13 +979,11 @@ defmodule DmhAi.Handlers.Data do
       end
 
     # Discover the account identifier (typically email/login) so the
-    # credential gets stored under (user_id, target, account=<email>)
-    # — the multi-account schema. NULL userinfo fields on the catalog
-    # row OR a network/parse failure both fall back to account="" so
-    # this user lands in the "legacy default account" slot, same shape
-    # every credential had pre-multi-account. Failing the entire OAuth
-    # callback because userinfo blew up is worse UX than storing the
-    # credential without an account label.
+    # credential gets stored under (user_id, target, account=<email>).
+    # NULL userinfo fields on the catalog row OR a network/parse
+    # failure both fall back to account="" — the credential still gets
+    # saved (failing the whole OAuth callback because userinfo blew up
+    # would be worse UX), it just won't surface a per-account label.
     account =
       case catalog_row && DmhAi.OAuth.Userinfo.fetch(catalog_row, tokens.access_token) do
         {:ok, acc} ->
@@ -1403,7 +1402,8 @@ defmodule DmhAi.Handlers.Data do
             "mcp:" <> canonical,
             "api_key_mcp",
             cred_payload,
-            notes: "API-key MCP connection: #{alias_} (header: #{header})"
+            account: "",
+            notes:   "API-key MCP connection: #{alias_} (header: #{header})"
           )
 
           DmhAi.MCP.Registry.authorize(user_id, alias_, canonical, server_url, nil)

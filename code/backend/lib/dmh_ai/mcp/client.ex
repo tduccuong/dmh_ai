@@ -123,7 +123,7 @@ defmodule DmhAi.MCP.Client do
   end
 
   defp handle_401_refresh(user_id, conn, tool_name, args) do
-    case OAuth2.refresh(user_id, conn.cred_target) do
+    case OAuth2.refresh(user_id, conn.cred_target, "") do
       {:ok, %{payload: payload}} ->
         refreshed = %{conn | auth: bearer_auth(payload, conn.canonical_resource)}
         do_call(user_id, refreshed, tool_name, args, false)
@@ -153,14 +153,14 @@ defmodule DmhAi.MCP.Client do
         target = "mcp:" <> row.canonical_resource
 
         # Proactive auto-refresh: when the credential is `oauth2_mcp`
-        # and `is_expired`, `lookup_with_refresh/2` fires `refresh/2`
+        # and `is_expired`, `lookup_with_refresh/3` fires `refresh/3`
         # and returns the rotated tokens. Saves the 401 round-trip
         # the reactive path in `handle_401_refresh` would otherwise
         # catch. On `refresh_failed`, the wrapper has ALREADY flipped
         # the registry to `needs_auth`; we surface
         # `{:error, :needs_auth}` so the model gets the same recovery
         # path it'd get from a 401-then-refresh-fail.
-        case OAuth2.lookup_with_refresh(user_id, target) do
+        case OAuth2.lookup_with_refresh(user_id, target, "") do
           {:ok, %{kind: kind, payload: payload}} ->
             case build_auth(kind, payload, row.canonical_resource) do
               {:ok, auth} ->

@@ -4,7 +4,6 @@ defmodule Itgr.CredentialsMultiAccount do
 
     * Schema accepts multiple rows with the same `(user_id, target)`
       when `account` differs.
-    * `lookup/2` (legacy) returns the row with `account = ""` only.
     * `lookup/3` is account-scoped.
     * `lookup_all/2` returns every account row for the target.
     * `delete/3` is account-scoped; `delete_all/2` clears every
@@ -61,17 +60,6 @@ defmodule Itgr.CredentialsMultiAccount do
   end
 
   describe "lookup_all / lookup / delete API" do
-    test "lookup/2 (legacy) returns the default-account row only", c do
-      :ok = Credentials.save(c.user_id, "oauth:googleapis.com", "oauth2_service",
-              %{"access_token" => "default-tok"})  # account defaults to ""
-      :ok = Credentials.save(c.user_id, "oauth:googleapis.com", "oauth2_service",
-              %{"access_token" => "work-tok"}, account: "work@gmail.com")
-
-      cred = Credentials.lookup(c.user_id, "oauth:googleapis.com")
-      assert cred.account == ""
-      assert cred.payload["access_token"] == "default-tok"
-    end
-
     test "lookup/3 is account-scoped", c do
       :ok = Credentials.save(c.user_id, "oauth:googleapis.com", "oauth2_service",
               %{"access_token" => "work-tok"}, account: "work@gmail.com")

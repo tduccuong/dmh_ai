@@ -1,11 +1,11 @@
 # Integration tests: Confidant end-to-end pipeline via UserAgent.dispatch_confidant.
 # Run with: MIX_ENV=test mix test test/itgr_confidant_flow.exs
 #
-# Polling-based architecture (CLAUDE.md rule #9 + specs/architecture.md
-# §Polling-based delivery): the BE writes the final message to
-# session.messages and streams partial tokens into sessions.stream_buffer.
-# Tests assert on DB state (messages persisted, stream_buffer drained)
-# rather than on mailbox messages to reply_pid.
+# Polling-based architecture (see specs/architecture.md §Polling-based
+# delivery): the BE owns every persisted message write and streams
+# partial tokens into sessions.stream_buffer. Tests assert on DB state
+# (messages persisted, stream_buffer drained) rather than on mailbox
+# messages to reply_pid.
 
 defmodule Itgr.ConfidantFlow do
   use ExUnit.Case, async: false

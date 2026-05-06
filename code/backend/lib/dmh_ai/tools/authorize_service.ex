@@ -141,19 +141,21 @@ defmodule DmhAi.Tools.AuthorizeService do
   defp already_authorized_or_init(user_id, session_id, anchor_n, %{host_match: host} = entry) do
     target = "oauth:" <> host
 
-    case OAuth2.lookup_with_refresh(user_id, target) do
-      {:ok, %{kind: "oauth2_service"}} ->
-        # Fresh (or just-refreshed) token. Tell the model it can
-        # call lookup_creds + curl immediately.
+    # Multi-account: if ANY account already has a credential for this
+    # service, surface that to the model so it skips the OAuth dance.
+    # `lookup_all_with_refresh/2` returns every account's row with
+    # expired tokens transparently refreshed.
+    case OAuth2.lookup_all_with_refresh(user_id, target) do
+      [_ | _] ->
         {:ok, %{
           status:      "authorized",
           alias:       entry.slug,
           host_match:  host,
           cred_target: target,
-          message:     "User already has a valid OAuth token. Call lookup_creds(target: \"#{target}\") to read the access_token, then use it as `Authorization: Bearer <token>` in run_script + curl."
+          message:     "User already has at least one valid OAuth credential for this service. Call `lookup_creds(target: \"#{target}\")` to read the credential array — pass `account=` to filter when there are multiple, or fan out across all accounts otherwise."
         }}
 
-      _missing_or_unrefreshable ->
+      [] ->
         init_oauth_flow(user_id, session_id, anchor_n, entry)
     end
   end

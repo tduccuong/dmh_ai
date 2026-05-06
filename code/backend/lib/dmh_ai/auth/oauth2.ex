@@ -66,7 +66,7 @@ defmodule DmhAi.Auth.OAuth2 do
   def acquire_client_id(asm, user_id, opts \\ []) when is_map(asm) and is_binary(user_id) do
     target = client_target(asm)
 
-    case Credentials.lookup(user_id, target) do
+    case Credentials.lookup(user_id, target, "") do
       %{payload: %{"client_id" => cid} = payload} ->
         {:ok, %{client_id: cid, client_secret: payload["client_secret"]}}
 
@@ -80,7 +80,8 @@ defmodule DmhAi.Auth.OAuth2 do
               {:ok, %{client_id: cid, client_secret: secret}} = resp ->
                 Credentials.save(user_id, target, "oauth_client",
                   %{"client_id" => cid, "client_secret" => secret},
-                  notes: "DCR-registered for #{asm[:issuer] || "unknown issuer"}"
+                  account: "",
+                  notes:   "DCR-registered for #{asm[:issuer] || "unknown issuer"}"
                 )
                 resp
 
@@ -387,19 +388,6 @@ defmodule DmhAi.Auth.OAuth2 do
   Living in `Auth.OAuth2` rather than `Auth.Credentials` to avoid the
   circular dependency Credentials → OAuth2 → Credentials.
   """
-  @spec lookup_with_refresh(String.t(), String.t()) ::
-          {:ok, map()}
-          | {:error, :missing | {:refresh_failed, term()}}
-  def lookup_with_refresh(user_id, target) when is_binary(user_id) and is_binary(target) do
-    lookup_with_refresh(user_id, target, "")
-  end
-
-  @doc """
-  Account-scoped variant of `lookup_with_refresh/2`. Same semantics
-  but operates on the row at `(user_id, target, account)`. Use this
-  when you have a specific account in hand (e.g. fanned-out per-
-  account requests where each iteration knows which row it owns).
-  """
   @spec lookup_with_refresh(String.t(), String.t(), String.t()) ::
           {:ok, map()}
           | {:error, :missing | {:refresh_failed, term()}}
@@ -481,16 +469,6 @@ defmodule DmhAi.Auth.OAuth2 do
   Returns the refreshed credential record (mirrors `Credentials.lookup/2`).
   Errors propagate upward; callers (typically `MCP.Client` on a 401)
   decide whether to flip the connection status to `needs_auth`.
-  """
-  @spec refresh(String.t(), String.t()) ::
-          {:ok, map()} | {:error, term()}
-  def refresh(user_id, target) when is_binary(user_id) and is_binary(target) do
-    refresh(user_id, target, "")
-  end
-
-  @doc """
-  Account-scoped refresh. Same semantics as `refresh/2` but targets
-  the row at `(user_id, target, account)`.
   """
   @spec refresh(String.t(), String.t(), String.t()) ::
           {:ok, map()} | {:error, term()}

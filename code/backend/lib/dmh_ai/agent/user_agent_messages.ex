@@ -17,10 +17,11 @@ defmodule DmhAi.Agent.UserAgentMessages do
 
   @doc """
   Append a message to the session's `messages` JSON column and stamp its
-  `ts` from the BE clock (overwriting any incoming value) per CLAUDE.md
-  rule #9. Returns `{:ok, ts_ms}` on success so callers can plumb the
-  canonical timestamp back through their response (e.g. /agent/chat's
-  final SSE `{done, user_ts, assistant_ts}` frame).
+  `ts` from the BE clock (overwriting any incoming value). The BE is the
+  sole authority for every persisted timestamp — the FE never stamps `ts`.
+  Returns `{:ok, ts_ms}` on success so callers can plumb the canonical
+  timestamp back through their response (e.g. /agent/chat's final SSE
+  `{done, user_ts, assistant_ts}` frame).
 
   Idempotency: if `message` carries a `:client_msg_id` / `"client_msg_id"`
   key and an entry with the same `client_msg_id` already exists in the

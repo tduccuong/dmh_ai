@@ -247,9 +247,9 @@ defmodule DmhAi.Agent.ContextEngine do
   # OAuth section — one bullet per credential row, showing the literal
   # `target=` string the model must pass to `lookup_creds`. Multi-
   # account rows list every account label so the `account=` arg has a
-  # known, copyable shape. Legacy rows with `account=""` render as
-  # `default`. Empty string when the user has no oauth2_service
-  # credentials so the caller can drop the section entirely.
+  # known, copyable shape. Rows with `account=""` render as `default`.
+  # Empty string when the user has no oauth2_service credentials so
+  # the caller can drop the section entirely.
   defp format_oauth_section(user_id) do
     creds =
       user_id
@@ -612,10 +612,6 @@ defmodule DmhAi.Agent.ContextEngine do
         cond do
           name == "extract_content"          -> [Map.put(args, "__tool__", name)]
           name in @task_verbs_with_task_id   -> [Map.put(args, "__tool__", name)]
-          # Legacy retained turns from before the verb API may still
-          # carry `update_task` calls; keep recognising them so their
-          # task_id links through to the task-num mapping.
-          name == "update_task"              -> [Map.put(args, "__tool__", name)]
           true                               -> []
         end
       end)

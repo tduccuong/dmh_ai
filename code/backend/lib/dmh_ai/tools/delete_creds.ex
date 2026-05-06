@@ -28,6 +28,7 @@ defmodule DmhAi.Tools.DeleteCreds do
 
   alias DmhAi.Auth.Credentials
   alias DmhAi.MCP.Registry
+  alias DmhAi.Tools.ProvisionSshIdentity
 
   require Logger
 
@@ -39,7 +40,7 @@ defmodule DmhAi.Tools.DeleteCreds do
   @impl true
   def description do
     """
-    Remove a saved credential by `target`. Only on explicit user request. For `mcp:<canonical>` targets, also disconnects the service: revokes at the AS (RFC 7009, best-effort), drops the authorized row, detaches every task holding it.
+    Remove a saved credential by `target`. Only on explicit user request. Pass `account` to revoke a single per-account row; omit it to revoke EVERY account row at the target. For `mcp:<canonical>` targets, also disconnects the service: revokes at the AS (RFC 7009, best-effort), drops the authorized row, detaches every task holding it.
     """
   end
 
@@ -54,6 +55,10 @@ defmodule DmhAi.Tools.DeleteCreds do
           target: %{
             type: "string",
             description: "Exact target label of the credential to delete."
+          },
+          account: %{
+            type: "string",
+            description: "Optional per-account label. Omit to revoke every account at the target."
           }
         },
         required: ["target"]
@@ -62,14 +67,29 @@ defmodule DmhAi.Tools.DeleteCreds do
   end
 
   @impl true
-  def execute(%{"target" => target}, ctx) when is_binary(target) and target != "" do
+  def execute(%{"target" => target} = args, ctx) when is_binary(target) and target != "" do
     user_id = ctx[:user_id] || ctx["user_id"]
+    account = args["account"]
 
     if is_nil(user_id) or user_id == "" do
       {:error, "no user_id in context"}
     else
-      cascade_result = maybe_mcp_cascade(user_id, target)
-      Credentials.delete(user_id, target)
+      # The SSH cascade has to enumerate the rows it's about to drop
+      # BEFORE the credential delete runs (it needs `payload.host` and
+      # `account` from each row to derive the slug). MCP cascade runs
+      # before too — both gather their state from the live rows, then
+      # the actual `Credentials.delete*` runs once below.
+      cascade_result =
+        maybe_mcp_cascade(user_id, target)
+        |> Map.merge(maybe_ssh_cascade(user_id, target, account, ctx))
+
+      case account do
+        a when is_binary(a) and a != "" ->
+          Credentials.delete(user_id, target, a)
+
+        _ ->
+          Credentials.delete_all(user_id, target)
+      end
 
       {:ok,
        Map.merge(%{deleted: true, target: target}, cascade_result)}
@@ -85,7 +105,7 @@ defmodule DmhAi.Tools.DeleteCreds do
   # task_services attachment. Returns a small map summarising what
   # happened so the model can report it cleanly back to the user.
   defp maybe_mcp_cascade(user_id, "mcp:" <> canonical) do
-    case Credentials.lookup(user_id, "mcp:" <> canonical) do
+    case Credentials.lookup(user_id, "mcp:" <> canonical, "") do
       nil ->
         # No credential to revoke; `deauthorize` is still safe to run
         # (it no-ops on a missing row but also drops orphaned task
@@ -106,6 +126,70 @@ defmodule DmhAi.Tools.DeleteCreds do
     case Registry.find_authorized_by_resource(user_id, canonical) do
       %{alias: a} -> a
       _           -> "unknown"
+    end
+  end
+
+  # If the target is an SSH credential (`ssh:<host_part>`), best-effort
+  # remove the materialised keypair files in the user's keystore for
+  # every row about to be dropped. SSH credentials are multi-account
+  # (one row per remote_user on the same host); each row has its own
+  # file pair slugged by `(remote_user, host_part)`. The credential
+  # rows themselves are dropped by the caller — this cascade only
+  # cleans the on-disk files.
+  #
+  # Best-effort: a missing file or an unwritable keystore is logged
+  # but doesn't fail the credential delete (the contract is "remove
+  # the local copy"; on-disk artifacts are an out-of-band concern).
+  defp maybe_ssh_cascade(user_id, "ssh:" <> host_part, account, ctx) do
+    case Map.get(ctx, :keystore_dir) do
+      keystore when is_binary(keystore) and keystore != "" ->
+        rows = ssh_rows_to_remove(user_id, "ssh:" <> host_part, account)
+        removed = Enum.flat_map(rows, &remove_pair_for_row(keystore, host_part, &1))
+        %{removed_keystore_files: removed}
+
+      _ ->
+        %{removed_keystore_files: []}
+    end
+  end
+
+  defp maybe_ssh_cascade(_user_id, _target, _account, _ctx), do: %{}
+
+  # Returns the credential rows that the upcoming Credentials.delete*
+  # call will drop. With an explicit account: the single matching row
+  # (or [] if missing). Without account: every row at the target.
+  defp ssh_rows_to_remove(user_id, target, account) do
+    cond do
+      is_binary(account) and account != "" ->
+        case Credentials.lookup(user_id, target, account) do
+          %{} = row -> [row]
+          _         -> []
+        end
+
+      true ->
+        Credentials.lookup_all(user_id, target)
+    end
+  end
+
+  defp remove_pair_for_row(keystore, host_part, row) do
+    remote_user = Map.get(row, :account, "")
+
+    {priv_path, pub_path} =
+      ProvisionSshIdentity.materialised_paths(keystore, remote_user, host_part)
+
+    Enum.flat_map([priv_path, pub_path], &best_effort_rm/1)
+  end
+
+  defp best_effort_rm(path) do
+    case File.rm(path) do
+      :ok ->
+        [path]
+
+      {:error, :enoent} ->
+        []
+
+      {:error, reason} ->
+        Logger.info("[DeleteCreds] keystore rm failed path=#{path} reason=#{inspect(reason)}")
+        []
     end
   end
 

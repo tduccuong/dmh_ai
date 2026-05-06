@@ -43,16 +43,26 @@ defmodule DmhAi.Agent.LLM do
   # (account rotation, retry-on-throttle, transport timing,
   # thinking-tag extraction, message sanitisation) stays here.
   #
-  # Dispatch is provider-driven: Ollama pools use `/api/chat` (native
-  # NDJSON, honours `options.num_ctx`); everything else goes through
-  # the OpenAI-shape `/v1/chat/completions` endpoint. Adding a new
-  # wire protocol is a new clause + a new adapter module.
-  defp adapter_for(%{provider: "ollama"}), do: DmhAi.LLM.Adapters.Ollama
-  defp adapter_for(_), do: DmhAi.LLM.Adapters.OpenAI
+  # Dispatch is protocol-driven and fail-loud — every pool declares
+  # its wire protocol at create time and the resolver carries that
+  # value through unchanged. An unknown value here is a bug in
+  # `Pools.create/1` validation, not a runtime fallback target.
+  defp adapter_for(%{protocol: "openai"}),    do: DmhAi.LLM.Adapters.OpenAI
+  defp adapter_for(%{protocol: "ollama"}),    do: DmhAi.LLM.Adapters.Ollama
+  defp adapter_for(%{protocol: "anthropic"}), do: DmhAi.LLM.Adapters.Anthropic
+
+  defp adapter_for(%{protocol: other}) do
+    raise ArgumentError,
+          "unknown pool protocol #{inspect(other)} — Pools validation should " <>
+            "have rejected this. Allowed: #{inspect(DmhAi.LLM.Pools.valid_protocols())}"
+  end
 
   # Transient-error retry budget for a single account before rotation
   # kicks in. Three retries with @server_error_delay_ms backoff = ~6s
   # total before we mark the account throttled and pick the next one.
+  # Bounded by `AgentSettings.llm_total_attempts/0` (the global cap
+  # across within-account retries + cross-account rotation cycles —
+  # see arch_wiki §Retry cap).
   @server_error_retries 3
   @server_error_delay_ms 2_000
 
@@ -79,11 +89,12 @@ defmodule DmhAi.Agent.LLM do
           {:ok, resolved} ->
             adapter = adapter_for(resolved)
             sanitized =
-              sanitize_messages(resolved.provider, messages, resolved.model)
+              sanitize_messages(resolved.protocol, messages, resolved.model)
               |> adapter.normalize_messages()
             options = inject_pool_options(resolved, llm_options)
             body = adapter.build_body(resolved.model, sanitized, tools, true, options)
-            do_pool_stream(resolved, adapter, body, reply_pid, model_str, on_tokens)
+            do_pool_stream(resolved, adapter, body, reply_pid, model_str, on_tokens,
+                           AgentSettings.llm_total_attempts())
 
           {:error, :all_throttled, retry_ms} ->
             Logger.error("[LLM] all accounts throttled in pool, retry in #{retry_ms}ms #{model_str}")
@@ -121,11 +132,12 @@ defmodule DmhAi.Agent.LLM do
           {:ok, resolved} ->
             adapter = adapter_for(resolved)
             sanitized =
-              sanitize_messages(resolved.provider, messages, resolved.model)
+              sanitize_messages(resolved.protocol, messages, resolved.model)
               |> adapter.normalize_messages()
             options = inject_pool_options(resolved, llm_options)
             body = adapter.build_body(resolved.model, sanitized, tools, false, options)
-            do_pool_call(resolved, adapter, body, model_str, on_tokens)
+            do_pool_call(resolved, adapter, body, model_str, on_tokens,
+                         AgentSettings.llm_total_attempts())
 
           {:error, :all_throttled, retry_ms} ->
             Logger.error("[LLM] all accounts throttled in pool, retry in #{retry_ms}ms #{model_str}")
@@ -145,6 +157,13 @@ defmodule DmhAi.Agent.LLM do
 
   # ─── Pool-driven request helpers ────────────────────────────────────────────
 
+  # Protocol-specific auth headers. OpenAI/Ollama take a Bearer token;
+  # Anthropic rejects Bearer and requires `x-api-key` + the
+  # `anthropic-version` header. Pools without an api_key (LAN dev
+  # endpoints, no-auth shims) get an empty list.
+  defp auth_headers(%{protocol: "anthropic", api_key: key}),
+    do: DmhAi.LLM.Adapters.Anthropic.auth_headers(key)
+
   defp auth_headers(%{api_key: key}) when is_binary(key) and key != "",
     do: [{"authorization", "Bearer " <> key}]
 
@@ -153,9 +172,22 @@ defmodule DmhAi.Agent.LLM do
   # Streaming wrapper with per-account fallback. On rate-limit / quota
   # exhaust against the chosen account, marks it throttled (persisted via
   # AccountRotation) and resolves a fresh account from the same pool.
-  defp do_pool_stream(resolved, adapter, body, reply_pid, model_str, on_tokens, retries \\ @server_error_retries) do
+  # `attempts_left` is the global cap (default
+  # `AgentSettings.llm_total_attempts/0`) shared with cross-account
+  # rotation in `retry_after_rotation`. Each Req.post attempt
+  # decrements it; reaching 0 returns `{:error, :attempts_exhausted}`.
+  defp do_pool_stream(resolved, adapter, body, reply_pid, model_str, on_tokens, attempts_left, retries \\ @server_error_retries)
+
+  defp do_pool_stream(_resolved, _adapter, _body, _reply_pid, model_str, _on_tokens, attempts_left, _retries)
+       when attempts_left <= 0 do
+    Logger.error("[LLM] global attempt cap reached, giving up #{model_str}")
+    {:error, :attempts_exhausted}
+  end
+
+  defp do_pool_stream(resolved, adapter, body, reply_pid, model_str, on_tokens, attempts_left, retries) do
     url     = adapter.chat_endpoint_url(resolved)
     headers = auth_headers(resolved)
+    attempts_left = attempts_left - 1
 
     case do_stream_request(url, headers, body, reply_pid, model_str, on_tokens, adapter) do
       {:error, :quota_exhausted} ->
@@ -163,29 +195,29 @@ defmodule DmhAi.Agent.LLM do
         until = System.os_time(:millisecond) + :timer.hours(hours)
         Logger.warning("[LLM] account #{resolved.account_name} weekly quota exhausted, throttling #{hours}h")
         AccountRotation.mark_throttled(resolved.pool_name, resolved.account_name, until)
-        retry_after_rotation(model_str, body, reply_pid, on_tokens, :stream)
+        retry_after_rotation(model_str, body, reply_pid, on_tokens, :stream, attempts_left)
 
       {:error, {:rate_limited, ms}} ->
         until = System.os_time(:millisecond) + ms
         Logger.warning("[LLM] account #{resolved.account_name} rate-limited (Retry-After=#{div(ms, 1000)}s)")
         AccountRotation.mark_throttled(resolved.pool_name, resolved.account_name, until)
-        retry_after_rotation(model_str, body, reply_pid, on_tokens, :stream)
+        retry_after_rotation(model_str, body, reply_pid, on_tokens, :stream, attempts_left)
 
       {:error, :rate_limited} ->
         secs = AgentSettings.rate_limit_throttle_secs()
         until = System.os_time(:millisecond) + :timer.seconds(secs)
         Logger.warning("[LLM] account #{resolved.account_name} rate-limited (no Retry-After), throttling #{secs}s")
         AccountRotation.mark_throttled(resolved.pool_name, resolved.account_name, until)
-        retry_after_rotation(model_str, body, reply_pid, on_tokens, :stream)
+        retry_after_rotation(model_str, body, reply_pid, on_tokens, :stream, attempts_left)
 
-      {:error, :server_error} when retries > 0 ->
-        Logger.warning("[LLM] transient server error, retrying in #{@server_error_delay_ms}ms (#{retries} left) #{model_str}")
+      {:error, :server_error} when retries > 0 and attempts_left > 0 ->
+        Logger.warning("[LLM] transient server error, retrying in #{@server_error_delay_ms}ms (#{retries} left, #{attempts_left} budget) #{model_str}")
         Process.sleep(@server_error_delay_ms)
-        do_pool_stream(resolved, adapter, body, reply_pid, model_str, on_tokens, retries - 1)
+        do_pool_stream(resolved, adapter, body, reply_pid, model_str, on_tokens, attempts_left, retries - 1)
 
       {:error, :server_error} ->
         Logger.error("[LLM] server error persists after retries, account=#{resolved.account_name} #{model_str}")
-        retry_after_rotation(model_str, body, reply_pid, on_tokens, :stream)
+        retry_after_rotation(model_str, body, reply_pid, on_tokens, :stream, attempts_left)
 
       other ->
         other
@@ -193,9 +225,18 @@ defmodule DmhAi.Agent.LLM do
   end
 
   # Non-streaming counterpart.
-  defp do_pool_call(resolved, adapter, body, model_str, on_tokens, retries \\ @server_error_retries) do
+  defp do_pool_call(resolved, adapter, body, model_str, on_tokens, attempts_left, retries \\ @server_error_retries)
+
+  defp do_pool_call(_resolved, _adapter, _body, model_str, _on_tokens, attempts_left, _retries)
+       when attempts_left <= 0 do
+    Logger.error("[LLM] global attempt cap reached, giving up #{model_str}")
+    {:error, :attempts_exhausted}
+  end
+
+  defp do_pool_call(resolved, adapter, body, model_str, on_tokens, attempts_left, retries) do
     url     = adapter.chat_endpoint_url(resolved)
     headers = auth_headers(resolved)
+    attempts_left = attempts_left - 1
 
     case do_call_request(url, headers, body, model_str, on_tokens, adapter) do
       {:error, :quota_exhausted} ->
@@ -203,29 +244,29 @@ defmodule DmhAi.Agent.LLM do
         until = System.os_time(:millisecond) + :timer.hours(hours)
         Logger.warning("[LLM] account #{resolved.account_name} weekly quota exhausted, throttling #{hours}h")
         AccountRotation.mark_throttled(resolved.pool_name, resolved.account_name, until)
-        retry_after_rotation(model_str, body, nil, on_tokens, :call)
+        retry_after_rotation(model_str, body, nil, on_tokens, :call, attempts_left)
 
       {:error, {:rate_limited, ms}} ->
         until = System.os_time(:millisecond) + ms
         Logger.warning("[LLM] account #{resolved.account_name} rate-limited (Retry-After=#{div(ms, 1000)}s)")
         AccountRotation.mark_throttled(resolved.pool_name, resolved.account_name, until)
-        retry_after_rotation(model_str, body, nil, on_tokens, :call)
+        retry_after_rotation(model_str, body, nil, on_tokens, :call, attempts_left)
 
       {:error, :rate_limited} ->
         secs = AgentSettings.rate_limit_throttle_secs()
         until = System.os_time(:millisecond) + :timer.seconds(secs)
         Logger.warning("[LLM] account #{resolved.account_name} rate-limited (no Retry-After), throttling #{secs}s")
         AccountRotation.mark_throttled(resolved.pool_name, resolved.account_name, until)
-        retry_after_rotation(model_str, body, nil, on_tokens, :call)
+        retry_after_rotation(model_str, body, nil, on_tokens, :call, attempts_left)
 
-      {:error, :server_error} when retries > 0 ->
-        Logger.warning("[LLM] transient server error, retrying in #{@server_error_delay_ms}ms (#{retries} left) #{model_str}")
+      {:error, :server_error} when retries > 0 and attempts_left > 0 ->
+        Logger.warning("[LLM] transient server error, retrying in #{@server_error_delay_ms}ms (#{retries} left, #{attempts_left} budget) #{model_str}")
         Process.sleep(@server_error_delay_ms)
-        do_pool_call(resolved, adapter, body, model_str, on_tokens, retries - 1)
+        do_pool_call(resolved, adapter, body, model_str, on_tokens, attempts_left, retries - 1)
 
       {:error, :server_error} ->
         Logger.error("[LLM] server error persists after retries, account=#{resolved.account_name} #{model_str}")
-        retry_after_rotation(model_str, body, nil, on_tokens, :call)
+        retry_after_rotation(model_str, body, nil, on_tokens, :call, attempts_left)
 
       other ->
         other
@@ -236,13 +277,24 @@ defmodule DmhAi.Agent.LLM do
   # the same model_str again — Pools.resolve picks the next-best account
   # from the same pool. When every account is throttled we propagate the
   # error up honestly (no silent failover to a different pool).
-  defp retry_after_rotation(model_str, body, reply_pid, on_tokens, mode) do
+  # `attempts_left` is the same global cap shared with `do_pool_stream` /
+  # `do_pool_call`; once exhausted we stop without re-resolving (otherwise
+  # a single-account pool whose endpoint persistently 5xx's would loop
+  # infinitely, since `:server_error` doesn't trigger `mark_throttled`
+  # and `Pools.resolve` keeps returning the same account).
+  defp retry_after_rotation(model_str, _body, _reply_pid, _on_tokens, _mode, attempts_left)
+       when attempts_left <= 0 do
+    Logger.error("[LLM] global attempt cap reached during rotation, giving up #{model_str}")
+    {:error, :attempts_exhausted}
+  end
+
+  defp retry_after_rotation(model_str, body, reply_pid, on_tokens, mode, attempts_left) do
     case Pools.resolve(model_str) do
       {:ok, fresh} ->
         adapter = adapter_for(fresh)
         case mode do
-          :stream -> do_pool_stream(fresh, adapter, body, reply_pid, model_str, on_tokens)
-          :call   -> do_pool_call(fresh, adapter, body, model_str, on_tokens)
+          :stream -> do_pool_stream(fresh, adapter, body, reply_pid, model_str, on_tokens, attempts_left)
+          :call   -> do_pool_call(fresh, adapter, body, model_str, on_tokens, attempts_left)
         end
 
       {:error, :all_throttled, _ms} ->
@@ -257,10 +309,10 @@ defmodule DmhAi.Agent.LLM do
 
   # Inject pool-level options into the per-call options map. Right
   # now that's just `num_ctx`, which only matters for the Ollama
-  # adapter — other providers ignore the field. Caller-supplied
+  # adapter — other protocols ignore the field. Caller-supplied
   # `:num_ctx` (rare but legal, e.g. a one-off long-context request)
   # always wins; pool-level only fills the blank.
-  defp inject_pool_options(%{provider: "ollama", num_ctx: ctx}, options)
+  defp inject_pool_options(%{protocol: "ollama", num_ctx: ctx}, options)
        when is_integer(ctx) and ctx > 0 and is_map(options) do
     if Map.has_key?(options, :num_ctx) or Map.has_key?(options, "num_ctx") do
       options
@@ -397,7 +449,7 @@ defmodule DmhAi.Agent.LLM do
     end
   end
 
-  defp sanitize_messages(_provider, messages, _model_name), do: messages
+  defp sanitize_messages(_protocol, messages, _model_name), do: messages
 
   defp do_sanitize_gemini_messages(messages) do
     # Build a map from tool_call_id → full call, so the tool result message
