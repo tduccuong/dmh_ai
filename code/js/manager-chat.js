@@ -40,7 +40,14 @@ function buildSessionTimeline(session) {
     });
     var progress = (session.progress || []).filter(function(p) {
         // final rows surface as real assistant messages already; skip to avoid duplication.
-        return p.kind !== 'final';
+        if (p.kind === 'final') return false;
+        // chain_end is the polling-termination signal handled by
+        // manager-search.js; it has no user-visible artifact (the
+        // close-verb tool row or final assistant message is what
+        // the user sees). Drop from the timeline so renderProgressRow
+        // is never called with a chain_end row downstream.
+        if (p.kind === 'chain_end') return false;
+        return true;
     });
     // Sort both by ts so the bracketing walk is linear.
     msgs = msgs.slice().sort(function(a, b) { return (a.ts || 0) - (b.ts || 0); });
@@ -227,6 +234,15 @@ function _ensureElapsedTicker() {
 }
 
 function renderProgressRow(row) {
+    // `chain_end` is a signal-only row that the polling loop uses to
+    // terminate; not a user-visible artifact. The close-verb tool
+    // row or the final assistant message above it is what the user
+    // already sees. Render nothing — the row stays in the timeline
+    // data so dedupe / since_id logic keeps working, just no DOM.
+    if (row && row.kind === 'chain_end') {
+        return null;
+    }
+
     // Outer container is a flex-column so sub_labels can stack
     // beneath the header (icon + main label + elapsed). The header
     // itself stays a flex-row — see CSS .progress-row-header.
@@ -748,7 +764,8 @@ function buildMessageEntryNode(msg, sessionId, renderSession, progressRows) {
                 var progContainer = document.createElement('div');
                 progContainer.className = 'msg-progress-rows';
                 progressRows.forEach(function(p) {
-                    progContainer.appendChild(renderProgressRow(p));
+                    var node = renderProgressRow(p);
+                    if (node) progContainer.appendChild(node);
                 });
                 div.appendChild(progContainer);
             }
@@ -1165,7 +1182,8 @@ UIManager.renderChat = function() {
                 activeStreamingMsg.insertBefore(progContainer, activeStreamingBody);
             }
             inflightProgress.forEach(function(entry) {
-                progContainer.appendChild(renderProgressRow(entry.payload));
+                var node = renderProgressRow(entry.payload);
+                if (node) progContainer.appendChild(node);
             });
         }
     }

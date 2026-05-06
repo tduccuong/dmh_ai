@@ -1857,6 +1857,7 @@ defmodule DmhAi.Agent.UserAgent do
       msg = DmhAi.I18n.t("turn_cap_reached", "en", %{max: max_turns})
       cap_msg = maybe_tag_task_num(%{role: "assistant", content: msg}, ctx)
       {:ok, _} = append_session_message(ctx.session_id, ctx.user_id, cap_msg)
+      emit_chain_end(ctx, "turn_cap")
       {:chain_done, max_user_ts_in_messages(messages), false}
     else
       tools = DmhAi.Tools.Registry.all_definitions(ctx.user_id, anchor_task_id_from_ctx(ctx))
@@ -2016,6 +2017,7 @@ defmodule DmhAi.Agent.UserAgent do
               {:ok, _} = append_session_message(ctx.session_id, ctx.user_id, msg)
               DmhAi.SysLog.log("[ASSISTANT] turn=#{turn} form persisted (kind=#{form["kind"] || "request_input"} token=#{form["token"] || form[:token]})")
 
+              emit_chain_end(ctx, "form")
               {:chain_done, max_user_ts_in_messages(messages), false}
 
             close_terminates_chain? ->
@@ -2082,6 +2084,7 @@ defmodule DmhAi.Agent.UserAgent do
                   "auto_pivot=#{inspect(auto_pivot_signal)})"
               )
 
+              emit_chain_end(ctx, "close_verb")
               {:chain_done, max_user_ts_in_messages(messages), auto_pivot_signal}
 
             true ->
@@ -2106,6 +2109,7 @@ defmodule DmhAi.Agent.UserAgent do
                   session_chain_loop(new_messages, model, ctx, turn + 1)
 
                 :aborted ->
+                  emit_chain_end(ctx, "aborted")
                   {:chain_done, max_user_ts_in_messages(messages), false}
               end
           end
@@ -2137,8 +2141,12 @@ defmodule DmhAi.Agent.UserAgent do
                 ]
 
               case maybe_abort_on_model_behavior_issue(ctx, model) do
-                :continue -> session_chain_loop(new_messages, model, ctx, turn + 1)
-                :aborted  -> {:chain_done, max_user_ts_in_messages(messages), false}
+                :continue ->
+                  session_chain_loop(new_messages, model, ctx, turn + 1)
+
+                :aborted ->
+                  emit_chain_end(ctx, "aborted")
+                  {:chain_done, max_user_ts_in_messages(messages), false}
               end
 
             :ok ->
@@ -2169,8 +2177,12 @@ defmodule DmhAi.Agent.UserAgent do
                     ]
 
                   case maybe_abort_on_model_behavior_issue(ctx, model) do
-                    :continue -> session_chain_loop(new_messages, model, ctx, turn + 1)
-                    :aborted  -> {:chain_done, max_user_ts_in_messages(messages), false}
+                    :continue ->
+                      session_chain_loop(new_messages, model, ctx, turn + 1)
+
+                    :aborted ->
+                      emit_chain_end(ctx, "aborted")
+                      {:chain_done, max_user_ts_in_messages(messages), false}
                   end
 
                 :ok ->
@@ -2230,6 +2242,7 @@ defmodule DmhAi.Agent.UserAgent do
                   # after index is what this chain produced.
                   finalise_chain_tool_history(messages, ctx, assistant_ts, clean_text)
 
+                  emit_chain_end(ctx, "final_text")
                   {:chain_done, max_user_ts_in_messages(messages), false}
               end
           end
@@ -2238,6 +2251,7 @@ defmodule DmhAi.Agent.UserAgent do
           DmhAi.SysLog.log("[ASSISTANT] turn=#{turn} empty response — no message persisted")
           StreamBuffer.clear(ctx.session_id, ctx.user_id)
           ThinkingBuffer.clear(ctx.session_id, ctx.user_id)
+          emit_chain_end(ctx, "empty_response")
           {:chain_done, max_user_ts_in_messages(messages), false}
 
         {:error, reason} ->
@@ -2264,6 +2278,7 @@ defmodule DmhAi.Agent.UserAgent do
 
           err_msg = maybe_tag_task_num(err_msg_payload, ctx)
           {:ok, _} = append_session_message(ctx.session_id, ctx.user_id, err_msg)
+          emit_chain_end(ctx, "error")
           {:chain_done, max_user_ts_in_messages(messages), false}
       end
     end
@@ -2466,6 +2481,27 @@ defmodule DmhAi.Agent.UserAgent do
           _              -> nil
         end
     end
+  end
+
+  # Emit a `chain_end` SessionProgress row — the explicit FE
+  # termination signal for normal chain-end branches. Called at
+  # every `{:chain_done, ...}` return point in `session_chain_loop`
+  # so the FE can stop polling without waiting for an assistant
+  # message that may never land (close-verb terminator with empty
+  # narration, empty LLM response, error, etc.).
+  #
+  # Forceful-end paths (user-stop / anchor-cancelled / internal
+  # crash) emit `chain_aborted` instead — see those sites; they're
+  # NOT wrapped with this helper. Both kinds terminate the FE.
+  defp emit_chain_end(ctx, cause) when is_binary(cause) do
+    progress_ctx = %{
+      session_id: Map.get(ctx, :session_id),
+      user_id:    Map.get(ctx, :user_id),
+      task_id:    anchor_task_id_from_ctx(ctx)
+    }
+
+    _ = DmhAi.Agent.SessionProgress.append_chain_end(progress_ctx, cause)
+    :ok
   end
 
   # User-initiated chain cancellation: the sidebar Stop button POSTs

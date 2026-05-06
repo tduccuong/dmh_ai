@@ -627,19 +627,25 @@ UIManager.pollTurnToCompletion = function(sessionAtSend, onComplete, onError, ab
                 }
             }
 
-            // User-initiated chain cancellation: the BE `session_chain_loop`
-            // checks the anchor task's `task_status` at the top of every
-            // turn iteration; on `cancelled`, it appends a
-            // `kind="chain_aborted"` session_progress row as the chain-end
-            // signal (see specs/architecture.md §User-initiated chain
-            // cancellation). When that row hits this poll's progress delta,
-            // tear down via the same path as a normal completion — the
-            // FE's "Stopped by user." status line is rendered by
-            // `renderProgress`, no fabricated assistant message.
-            var sawChainAborted = (data.progress || []).some(function(p) {
-                return p && p.kind === 'chain_aborted';
+            // Explicit chain-end signal. The BE emits one of two
+            // session_progress kinds at every chain-end branch:
+            //
+            //   `chain_end`     — natural end (close-verb, final text,
+            //                     empty response, turn cap, form, error).
+            //                     Signal-only, FE skips visual render.
+            //   `chain_aborted` — forceful end (user-stop, anchor task
+            //                     cancelled mid-flight, internal crash).
+            //                     Renders "Stopped by user." / similar.
+            //
+            // Either kind terminates polling. Without this branch, a
+            // close-verb chain end with empty narration would never
+            // satisfy the `sawAssistantMessage` rule below (no fresh
+            // assistant message lands), and the FE would poll forever.
+            // See architecture.md §Chain-end signals.
+            var sawChainEndSignal = (data.progress || []).some(function(p) {
+                return p && (p.kind === 'chain_end' || p.kind === 'chain_aborted');
             });
-            if (sawChainAborted) {
+            if (sawChainEndSignal) {
                 finish(onComplete);
                 return;
             }

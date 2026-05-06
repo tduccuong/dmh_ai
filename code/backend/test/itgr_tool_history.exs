@@ -350,6 +350,78 @@ defmodule Itgr.ToolHistory do
       assert length(archive) == 4, "task's tool messages should land in task_chain_archive"
     end
 
+    test "save: closed task's group skips the rolling window and routes to archive" do
+      # Regression for the close-then-resave race: complete_task /
+      # cancel_task / pause_task call flush_for_task mid-chain to
+      # purge the rolling window, but the chain-end finalise re-saves
+      # the same task's tool_call/result pairs. Without the save-time
+      # filter, every closed task's data lingers in the rolling
+      # window until cap eviction — defeating the on-close flush.
+      sid = uid(); uid_ = uid()
+      insert_session(sid, uid_)
+      task_id = insert_task(sid, uid_)
+      task = Tasks.get(task_id)
+
+      # Flip the task to `done` BEFORE save (mirrors the production
+      # ordering: complete_task fires, mark_done flips status, chain
+      # ends, finalise_chain_tool_history calls save).
+      Tasks.mark_done(task_id, "done")
+
+      msgs = stub_extract_messages(task_id, "workspace/foo.pdf", "extracted content")
+      :ok = ToolHistory.save_tools_result_of_chain(sid, uid_, 1_777_777_000_000,
+              [{task.task_num, msgs}])
+
+      # Rolling window stays empty — the closed task's group never
+      # entered it.
+      assert ToolHistory.load(sid) == [],
+             "closed task's chain group must not enter the rolling window"
+
+      # The data still lands in task_chain_archive so fetch_task(N)
+      # can recover it.
+      archive = TaskChainArchive.fetch_for_task(task_id)
+      assert length(archive) == 4,
+             "closed task's chain messages must be archived for fetch_task recovery"
+    end
+
+    test "save: cancelled and paused tasks also skip the rolling window" do
+      for status_flip <- [:mark_cancelled, :mark_paused] do
+        sid = uid(); uid_ = uid()
+        insert_session(sid, uid_)
+        task_id = insert_task(sid, uid_)
+        task = Tasks.get(task_id)
+
+        case status_flip do
+          :mark_cancelled -> Tasks.mark_cancelled(task_id, "stopped")
+          :mark_paused    -> Tasks.mark_paused(task_id)
+        end
+
+        msgs = stub_extract_messages(task_id, "workspace/foo.pdf", "content")
+        :ok = ToolHistory.save_tools_result_of_chain(sid, uid_, 1_777_888_000_000,
+                [{task.task_num, msgs}])
+
+        assert ToolHistory.load(sid) == [],
+               "#{status_flip}: closed task's group must not enter the rolling window"
+      end
+    end
+
+    test "save: ongoing tasks and free-mode (task_num=nil) DO enter the rolling window" do
+      # Counter-test: the closed-task filter must NOT clobber the
+      # legitimate save path. Ongoing tasks and free-mode tool use
+      # are the rolling window's whole purpose.
+      sid = uid(); uid_ = uid()
+      insert_session(sid, uid_)
+      task_id = insert_task(sid, uid_)  # task_status="ongoing"
+      task = Tasks.get(task_id)
+
+      free_mode_msgs = stub_extract_messages("free", "a.pdf", "free")
+      ongoing_msgs   = stub_extract_messages(task_id, "b.pdf", "open")
+
+      :ok = ToolHistory.save_tools_result_of_chain(sid, uid_, 1_778_001_000_000,
+              [{nil, free_mode_msgs}, {task.task_num, ongoing_msgs}])
+
+      assert length(ToolHistory.load(sid)) == 2
+    end
+
     test "leaves entries from other tasks in place" do
       sid = uid(); uid_ = uid()
       insert_session(sid, uid_)

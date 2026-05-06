@@ -32,7 +32,7 @@ defmodule DmhAi.Tools.AuthorizeService do
 
   @behaviour DmhAi.Tools.Behaviour
 
-  alias DmhAi.Auth.{Credentials, OAuth2}
+  alias DmhAi.Auth.OAuth2
   alias DmhAi.OAuth.Catalog
 
   @impl true
@@ -45,9 +45,11 @@ defmodule DmhAi.Tools.AuthorizeService do
 
     `target` may be a catalog slug (preferred), a host (`api.example.com`), or a full URL — the runtime matches by host suffix.
 
+    `force_new` (optional bool, default false): when the user explicitly asks to ADD or AUTHORIZE a NEW account on a service they've already linked (shape: "add my new <service> account", "authorize another <service> account", "connect a different <service> login"), pass `true`. This bypasses the existing-credential shortcut and runs a fresh OAuth dance; the user picks the account on the provider's UI and the new credential is saved alongside any prior ones.
+
     Returns:
-    - `{status: "authorized"}` — the user already has a fresh token; immediately call `lookup_creds(target: "oauth:<host>")` and proceed with `run_script` + curl.
-    - `{status: "needs_auth", auth_url}` — first-time auth. Relay the auth_url as a clickable link; chain ends; the OAuth callback auto-resumes the chain after the user authorizes.
+    - `{status: "authorized"}` — the user already has at least one valid token AND `force_new` was not set. Immediately call `lookup_creds(target: "oauth:<host>")` and proceed with `run_script` + curl.
+    - `{status: "needs_auth", auth_url}` — first-time auth, OR the user asked to add a new account. Relay the auth_url as a clickable link; chain ends; the OAuth callback auto-resumes the chain after the user authorizes.
     - `{:error, reason}` — host isn't in the catalog (admin hasn't wired it), or another setup issue. Tell the user honestly and offer alternatives.
     """
   end
@@ -63,6 +65,10 @@ defmodule DmhAi.Tools.AuthorizeService do
           target: %{
             type: "string",
             description: "Slug (e.g. \"google\"), host (\"api.github.com\"), or URL of the service to authorize. The runtime matches against the catalog by host suffix."
+          },
+          force_new: %{
+            type: "boolean",
+            description: "Set to true when the user asks to ADD or AUTHORIZE a NEW account on a service they've already linked. Bypasses the existing-credential shortcut and forces a fresh OAuth flow."
           }
         },
         required: ["target"]
@@ -76,6 +82,7 @@ defmodule DmhAi.Tools.AuthorizeService do
     session_id     = Map.get(ctx, :session_id)
     anchor_n       = Map.get(ctx, :anchor_task_num)
     target_in      = Map.get(args, "target")
+    force_new      = Map.get(args, "force_new") == true
 
     cond do
       not is_binary(user_id) or user_id == "" ->
@@ -90,7 +97,7 @@ defmodule DmhAi.Tools.AuthorizeService do
       true ->
         case Catalog.resolve(target_in) do
           {:ok, %{} = entry} ->
-            already_authorized_or_init(user_id, session_id, anchor_n, entry)
+            already_authorized_or_init(user_id, session_id, anchor_n, entry, force_new)
 
           {:ambiguous, candidates} ->
             {:error, ambiguous_message(target_in, candidates)}
@@ -138,7 +145,16 @@ defmodule DmhAi.Tools.AuthorizeService do
 
   # ── already-authorized shortcut ──────────────────────────────────────────
 
-  defp already_authorized_or_init(user_id, session_id, anchor_n, %{host_match: host} = entry) do
+  # `force_new == true` skips the lookup entirely and runs a fresh
+  # OAuth dance. The callback's userinfo step keys the new credential
+  # by the email it discovers, so an additional account at the same
+  # service coexists with prior rows under
+  # UNIQUE(user_id, target, account).
+  defp already_authorized_or_init(user_id, session_id, anchor_n, entry, true = _force_new) do
+    init_oauth_flow(user_id, session_id, anchor_n, entry, true)
+  end
+
+  defp already_authorized_or_init(user_id, session_id, anchor_n, %{host_match: host} = entry, false) do
     target = "oauth:" <> host
 
     # Multi-account: if ANY account already has a credential for this
@@ -152,17 +168,17 @@ defmodule DmhAi.Tools.AuthorizeService do
           alias:       entry.slug,
           host_match:  host,
           cred_target: target,
-          message:     "User already has at least one valid OAuth credential for this service. Call `lookup_creds(target: \"#{target}\")` to read the credential array — pass `account=` to filter when there are multiple, or fan out across all accounts otherwise."
+          message:     "User already has at least one valid OAuth credential for this service. Call `lookup_creds(target: \"#{target}\")` to read the credential array — pass `account=` to filter when there are multiple, or fan out across all accounts otherwise. (If the user explicitly asked to add a NEW account, retry with `force_new: true`.)"
         }}
 
       [] ->
-        init_oauth_flow(user_id, session_id, anchor_n, entry)
+        init_oauth_flow(user_id, session_id, anchor_n, entry, false)
     end
   end
 
   # ── kick off the OAuth flow ──────────────────────────────────────────────
 
-  defp init_oauth_flow(user_id, session_id, anchor_n, entry) do
+  defp init_oauth_flow(user_id, session_id, anchor_n, entry, force_new?) do
     # We need an anchor task for parity with connect_mcp's contract —
     # OAuth flows tie to the active task so the post-callback
     # auto_resume re-enters the right anchor.
@@ -204,9 +220,24 @@ defmodule DmhAi.Tools.AuthorizeService do
           status:   "needs_auth",
           alias:    entry.slug,
           auth_url: auth_url,
-          message:  "Tell the user: \"#{entry.display_name} needs your authorization. Click this link to grant access — the chat resumes automatically once you're done: #{auth_url}\". End your turn here — do not pair this with other tool calls."
+          message:  needs_auth_message(entry, auth_url, force_new?)
         }}
     end
+  end
+
+  defp needs_auth_message(entry, auth_url, false) do
+    "Tell the user: \"#{entry.display_name} needs your authorization. " <>
+      "Click this link to grant access — the chat resumes automatically once you're done: " <>
+      "#{auth_url}\". End your turn here — do not pair this with other tool calls."
+  end
+
+  defp needs_auth_message(entry, auth_url, true) do
+    "Tell the user: \"To add a new #{entry.display_name} account, click this link " <>
+      "and authorize as the account you want to add — the chat resumes automatically once " <>
+      "you're done: #{auth_url}. " <>
+      "If your browser is signed into the wrong #{entry.display_name} account, sign out " <>
+      "of #{entry.display_name} first or open the link in a private window so you can pick " <>
+      "the right one.\" End your turn here — do not pair this with other tool calls."
   end
 
   defp resolve_anchor(session_id, n) when is_binary(session_id) and is_integer(n) do
@@ -223,10 +254,4 @@ defmodule DmhAi.Tools.AuthorizeService do
     base = DmhAi.Agent.AgentSettings.oauth_redirect_base_url()
     String.trim_trailing(base, "/") <> "/oauth/callback"
   end
-
-  # Dummy reference so Credentials shows up in the analyzer's reach
-  # graph. We don't call it directly here — the lookup goes through
-  # OAuth2.lookup_with_refresh — but the module is part of the
-  # documented contract.
-  _ = &Credentials.lookup/2
 end

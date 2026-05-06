@@ -33,6 +33,27 @@ defmodule DmhAi.Agent.SessionProgress do
     - 'summary'             — on-demand status summary (from the
                               summariser called by the session loop
                               when the user asks for a status check).
+    - 'chain_end'           — the explicit FE termination signal.
+                              Emitted at every NORMAL chain-end branch
+                              in `UserAgent.session_chain_loop` (close-
+                              verb terminator, final text turn, empty
+                              response, turn cap, form, LLM-call error).
+                              `label` carries a stable cause string
+                              ("close_verb", "final_text",
+                              "empty_response", "turn_cap", "form",
+                              "error"). FE recognises the kind and
+                              terminates polling without painting a
+                              visible row — the close-verb tool row or
+                              final assistant message is the user-
+                              visible artifact. Distinct from
+                              'chain_aborted', which renders a visible
+                              ⏹ row.
+    - 'chain_aborted'       — the chain ended forcefully: user clicked
+                              Stop, anchor task cancelled mid-flight,
+                              internal Task crash. Renders as a visible
+                              row with ⏹ icon and the `label` text.
+                              Also a termination signal. See
+                              architecture.md §Chain-end signals.
 
   ctx shape:
       %{
@@ -97,6 +118,21 @@ defmodule DmhAi.Agent.SessionProgress do
   @spec append_tool_pending(map(), String.t()) :: {:ok, map()}
   def append_tool_pending(ctx, label),
     do: append(ctx, "tool", label, status: "pending")
+
+  @doc """
+  Append a `chain_end` progress row — the explicit FE termination
+  signal for normal chain-end branches. `cause` is a stable
+  identifier the FE ignores for rendering but is preserved for
+  diagnostics. Use one of: `"close_verb"`, `"final_text"`,
+  `"empty_response"`, `"turn_cap"`, `"form"`, `"error"`.
+
+  Distinct from `chain_aborted`, which is reserved for chains that
+  ended forcefully (user-stop / anchor-cancelled-mid-flight /
+  internal crash) and renders a visible ⏹ row.
+  """
+  @spec append_chain_end(map(), String.t()) :: {:ok, map()}
+  def append_chain_end(ctx, cause) when is_binary(cause),
+    do: append(ctx, "chain_end", cause)
 
   @doc """
   Flip a tool row (appended with status='pending') to status='done'

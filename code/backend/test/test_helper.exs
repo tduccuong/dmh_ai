@@ -77,6 +77,188 @@ defmodule T do
       "function" => %{"name" => name, "arguments" => args, "thought_signature" => "sig_#{uid()}"}}
   end
 
+  # ─── Session walk: drive a multi-turn assistant session offline ──────────
+  #
+  # The shape that catches the bugs unit tests miss. Drive a sequence
+  # of user messages through the live `UserAgent.dispatch_assistant/2`
+  # path; for each message, the chain proceeds through a list of
+  # turn responses you supply (`{:tool_calls, [...]}` or
+  # `{:text, "..."}`). After each chain ends (signalled by a
+  # `chain_end` SessionProgress row), the helper snapshots the
+  # observable state and moves to the next user message.
+  #
+  # Examples of what walks catch that single-turn tests don't:
+  #   * tool_history NOT carrying closed-task data into the next chain
+  #   * FE polling termination on close-verb empty narration
+  #   * retry-cap bounding an infinite-rotation loop on single-account pools
+  #
+  # Walk shape:
+  #
+  #     T.session_walk(user_id, session_id, [
+  #       {"first user msg", [
+  #          fn _msgs, _tools -> {:tool_calls, [T.tool_call("create_task", %{...})]} end,
+  #          fn _msgs, _tools -> {:tool_calls, [T.tool_call("complete_task", %{"task_num" => 1})]} end,
+  #          fn _msgs, _tools -> {:text, "Done."} end
+  #       ]},
+  #       {"follow-up", [
+  #          fn _msgs, _tools -> {:text, "Cannot recall — call fetch_task(1)?"} end
+  #       ]}
+  #     ])
+  #
+  # Each turn fn receives the live messages list and tools list the
+  # runtime is about to send to the LLM, so the test can assert on
+  # what the model "saw" mid-flight (e.g. that closed-task tool
+  # results are absent on the second user message).
+  #
+  # Returns a list of observation maps, one per user message:
+  #
+  #     [
+  #       %{
+  #         messages:        [...],   # session.messages snapshot
+  #         tool_history:    [...],   # session.tool_history snapshot
+  #         progress:        [...],   # session_progress rows for this session
+  #         seen_messages:   [[...], [...], ...]  # the per-turn live messages list
+  #       },
+  #       ...
+  #     ]
+  @session_walk_chain_timeout_ms 6_000
+
+  def session_walk(user_id, session_id, walk) when is_list(walk) do
+    alias DmhAi.Agent.{AssistantCommand, SessionProgress, UserAgent}
+    alias DmhAi.Repo
+    import Ecto.Adapters.SQL, only: [query!: 3]
+
+    seen_per_turn_pid =
+      :persistent_term.get({:session_walk_buffer, self()}, nil) ||
+        spawn_link(fn -> seen_buffer_loop([]) end)
+
+    :persistent_term.put({:session_walk_buffer, self()}, seen_per_turn_pid)
+
+    Enum.map_reduce(walk, 0, fn {user_msg, turn_fns}, baseline_progress_id ->
+      send(seen_per_turn_pid, {:reset, self()})
+      assert_seen_buffer_ack()
+
+      # The stub fn gets called once per LLM turn within this user
+      # message. We track turn index in a per-process counter so the
+      # walk's closure list rotates correctly.
+      counter_key = {:walk_turn, self(), user_msg}
+      Process.put(counter_key, 0)
+
+      stub_llm_stream(fn _model, msgs, _reply_pid, opts ->
+        idx = Process.get(counter_key, 0)
+        Process.put(counter_key, idx + 1)
+
+        send(seen_per_turn_pid, {:saw, msgs, Keyword.get(opts, :tools, [])})
+
+        case Enum.at(turn_fns, idx) do
+          nil ->
+            raise "session_walk: ran out of turn fns for user_msg=#{inspect(user_msg)} at turn #{idx}; supply more"
+
+          fun when is_function(fun, 2) ->
+            case fun.(msgs, Keyword.get(opts, :tools, [])) do
+              {:tool_calls, calls}      -> {:ok, {:tool_calls, calls}}
+              {:text, text}             -> {:ok, text}
+              {:error, _} = e           -> e
+              other ->
+                raise "session_walk: turn fn must return {:tool_calls, …} | {:text, …} | {:error, …}, got #{inspect(other)}"
+            end
+        end
+      end)
+
+      cmd = %AssistantCommand{
+        type:             :chat,
+        content:          user_msg,
+        session_id:       session_id,
+        reply_pid:        self(),
+        attachment_names: [],
+        files:            [],
+        metadata:         %{}
+      }
+
+      :ok = UserAgent.dispatch_assistant(user_id, cmd)
+
+      next_id = wait_for_chain_end(session_id, baseline_progress_id)
+
+      %{rows: rows} =
+        query!(Repo,
+          "SELECT messages, tool_history FROM sessions WHERE id=?",
+          [session_id])
+
+      [[messages_json, tool_history_json]] = rows
+
+      seen = seen_buffer_drain(seen_per_turn_pid)
+
+      observation = %{
+        messages:      Jason.decode!(messages_json || "[]"),
+        tool_history:  Jason.decode!(tool_history_json || "[]"),
+        progress:      SessionProgress.fetch_for_session(session_id, 0),
+        seen_messages: seen
+      }
+
+      {observation, next_id}
+    end)
+    |> elem(0)
+  end
+
+  defp wait_for_chain_end(session_id, baseline_id) do
+    alias DmhAi.Agent.SessionProgress
+    deadline = System.os_time(:millisecond) + @session_walk_chain_timeout_ms
+
+    do_wait_for_chain_end(session_id, baseline_id, deadline)
+  end
+
+  defp do_wait_for_chain_end(session_id, baseline_id, deadline) do
+    alias DmhAi.Agent.SessionProgress
+
+    rows = SessionProgress.fetch_for_session(session_id, baseline_id)
+
+    case Enum.find(rows, fn r -> r.kind in ["chain_end", "chain_aborted"] end) do
+      %{id: id} ->
+        id
+
+      _ ->
+        if System.os_time(:millisecond) > deadline do
+          raise "session_walk: chain didn't end within #{@session_walk_chain_timeout_ms}ms"
+        else
+          Process.sleep(20)
+          do_wait_for_chain_end(session_id, baseline_id, deadline)
+        end
+    end
+  end
+
+  defp seen_buffer_loop(state) do
+    receive do
+      {:saw, msgs, tools} ->
+        seen_buffer_loop([%{msgs: msgs, tools: tools} | state])
+
+      {:reset, caller} ->
+        send(caller, :seen_buffer_reset_ack)
+        seen_buffer_loop([])
+
+      {:drain, caller} ->
+        send(caller, {:seen_buffer, Enum.reverse(state)})
+        seen_buffer_loop([])
+    end
+  end
+
+  defp assert_seen_buffer_ack do
+    receive do
+      :seen_buffer_reset_ack -> :ok
+    after
+      1_000 -> raise "session_walk: seen_buffer didn't ack reset"
+    end
+  end
+
+  defp seen_buffer_drain(pid) do
+    send(pid, {:drain, self()})
+
+    receive do
+      {:seen_buffer, list} -> list
+    after
+      1_000 -> []
+    end
+  end
+
   # ─── Memo encryption helpers ──────────────────────────────────────────────
   #
   # Memo writes/reads use a master-key-wrapped MMK persisted in

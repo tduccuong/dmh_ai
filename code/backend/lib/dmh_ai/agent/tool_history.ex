@@ -43,7 +43,28 @@ defmodule DmhAi.Agent.ToolHistory do
   `nil` only for genuinely-free-mode tool use) and `flush_for_task/2`
   evicts cleanly when the matching task closes.
 
-  ## Caps (applied on every save)
+  ## Invariant: rolling window holds only OPEN-task or FREE-mode work
+
+  The window's purpose is "context for follow-ups on what the user is
+  *currently* working on." Once a task closes, its tool work belongs
+  in the archive (`task_chain_archive`), not the rolling window —
+  otherwise every closed task keeps paying LLM context-rent until cap
+  eviction, and `fetch_task(N)` becomes the *only* safe answer source
+  for any closed-task question (since the model can't tell stale
+  rolling-window data apart from current).
+
+  `save_tools_result_of_chain/4` enforces this on every write: groups
+  whose `task_num` is currently in `done|cancelled|paused` skip the
+  rolling window and route straight to `TaskChainArchive.append_raw/3`.
+  Groups for `ongoing` tasks or with `task_num: nil` (free-mode tool
+  use) append to the rolling window normally.
+
+  This complements the mid-chain `flush_for_task/2` call from
+  `Tasks.mark_{done,cancelled,paused}/1`. Without the save-time filter,
+  the chain-end finalise would re-introduce the just-flushed task's
+  data on every close.
+
+  ## Caps (applied on every save to the rolling window)
 
     * **Turn cap** — keep at most
       `AgentSettings.tool_result_retention_turns/0` most-recent
@@ -100,14 +121,28 @@ defmodule DmhAi.Agent.ToolHistory do
         end
       end)
 
-    if cleaned == [] do
+    # Partition by task status. Closed tasks (`done|cancelled|paused`)
+    # never enter the rolling window — their messages route straight
+    # to `task_chain_archive` so `fetch_task(N)` can still retrieve
+    # them, while the LLM's context on the next chain stays free of
+    # closed-task data. See the moduledoc invariant.
+    {to_rolling, to_archive_only} =
+      Enum.split_with(cleaned, fn {task_num, _msgs} ->
+        not closed_task?(session_id, task_num)
+      end)
+
+    Enum.each(to_archive_only, fn {task_num, msgs} ->
+      archive_closed_group(session_id, task_num, msgs)
+    end)
+
+    if to_rolling == [] do
       :ok
     else
       try do
         existing = load(session_id)
 
         new_entries =
-          Enum.map(cleaned, fn {task_num, msgs} ->
+          Enum.map(to_rolling, fn {task_num, msgs} ->
             %{
               "assistant_ts" => assistant_ts,
               "ts" => System.os_time(:millisecond),
@@ -250,6 +285,47 @@ defmodule DmhAi.Agent.ToolHistory do
       do_cap_by_bytes(tl(list), cap)
     end
   end
+
+  # Is the task at `(session_id, task_num)` currently in a closed
+  # state (`done`, `cancelled`, `paused`)? Used by
+  # `save_tools_result_of_chain/4` to decide whether to admit a group
+  # to the rolling window or archive it directly. `nil` task_num
+  # (free-mode tool use) is NOT closed — it has no task to be closed.
+  defp closed_task?(_session_id, nil), do: false
+
+  defp closed_task?(session_id, task_num) when is_integer(task_num) do
+    case DmhAi.Agent.Tasks.resolve_num(session_id, task_num) do
+      {:ok, task_id} ->
+        case DmhAi.Agent.Tasks.get(task_id) do
+          %{task_status: status} when status in ["done", "cancelled", "paused"] -> true
+          _ -> false
+        end
+
+      _ ->
+        false
+    end
+  end
+
+  # Route a closed-task chain group straight to `task_chain_archive`
+  # without ever entering the rolling window. Same archive path that
+  # `flush_for_task/2` and the cap-eviction sweep use.
+  defp archive_closed_group(session_id, task_num, msgs) when is_integer(task_num) do
+    case DmhAi.Agent.Tasks.resolve_num(session_id, task_num) do
+      {:ok, task_id} ->
+        DmhAi.Agent.TaskChainArchive.append_raw(
+          task_id,
+          session_id,
+          Enum.map(msgs, &stringify_keys/1)
+        )
+
+      _ ->
+        Logger.warning(
+          "[ToolHistory] save: closed task_num=#{task_num} not resolvable in session=#{session_id}; dropping group without archival"
+        )
+    end
+  end
+
+  defp archive_closed_group(_session_id, _task_num, _msgs), do: :ok
 
   defp archive_evicted([], _session_id), do: :ok
 

@@ -225,6 +225,78 @@ defmodule Itgr.OAuthService do
     assert target == "oauth:service-b.test"
   end
 
+  # ─── Tool: force_new bypasses the shortcut even when creds exist ──────────
+
+  test "authorize_service: force_new=true triggers OAuth flow even with existing creds" do
+    user = uid(); sess = uid(); seed_user(user)
+    n = seed_session_with_task(user, sess)
+    seed_catalog("svc_force", "service-force.test")
+
+    # Pre-seed an existing valid credential. Without force_new the
+    # tool would short-circuit to {status: "authorized"}.
+    one_hour = 3_600_000
+    Credentials.save(
+      user,
+      "oauth:service-force.test",
+      "oauth2_service",
+      %{"access_token" => "old_tkn", "refresh_token" => "old_rfr"},
+      account: "alice@example.com",
+      notes: "test",
+      expires_at: System.os_time(:millisecond) + one_hour
+    )
+
+    # force_new=true: should ignore the existing row and return needs_auth.
+    assert {:ok, %{status: "needs_auth", alias: "svc_force", auth_url: auth_url, message: msg}} =
+             AuthorizeService.execute(
+               %{"target" => "svc_force", "force_new" => true},
+               ctx_for(user, sess, n))
+
+    assert is_binary(auth_url) and auth_url != ""
+    assert msg =~ "add a new"
+  end
+
+  test "authorize_service: force_new omitted defaults to existing-cred shortcut" do
+    user = uid(); sess = uid(); seed_user(user)
+    n = seed_session_with_task(user, sess)
+    seed_catalog("svc_default", "service-default.test")
+
+    one_hour = 3_600_000
+    Credentials.save(
+      user,
+      "oauth:service-default.test",
+      "oauth2_service",
+      %{"access_token" => "t", "refresh_token" => "r"},
+      account: "alice@example.com",
+      notes: "test",
+      expires_at: System.os_time(:millisecond) + one_hour
+    )
+
+    assert {:ok, %{status: "authorized"}} =
+             AuthorizeService.execute(%{"target" => "svc_default"}, ctx_for(user, sess, n))
+  end
+
+  test "authorize_service: force_new=false explicitly behaves like omitted" do
+    user = uid(); sess = uid(); seed_user(user)
+    n = seed_session_with_task(user, sess)
+    seed_catalog("svc_fn_false", "service-fn-false.test")
+
+    one_hour = 3_600_000
+    Credentials.save(
+      user,
+      "oauth:service-fn-false.test",
+      "oauth2_service",
+      %{"access_token" => "t", "refresh_token" => "r"},
+      account: "",
+      notes: "test",
+      expires_at: System.os_time(:millisecond) + one_hour
+    )
+
+    assert {:ok, %{status: "authorized"}} =
+             AuthorizeService.execute(
+               %{"target" => "svc_fn_false", "force_new" => false},
+               ctx_for(user, sess, n))
+  end
+
   # ─── Tool: target accepted as URL (host extracted) ─────────────────────────
 
   test "authorize_service: full URL target → catalog lookup by host suffix" do
