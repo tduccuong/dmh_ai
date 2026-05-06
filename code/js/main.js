@@ -600,11 +600,17 @@ const UIManager = {
             document.getElementById('user-profiles-btn').style.display = isAdmin ? '' : 'none';
             document.getElementById('user-settings-btn').style.display = isAdmin ? '' : 'none';
             document.getElementById('user-ai-settings-btn').style.display = isAdmin ? '' : 'none';
-            document.getElementById('user-conv-settings-btn').style.display = isAdmin ? '' : 'none';
+            // Conversation Settings is visible to ALL users — non-admins
+            // see only the Token Saving section (per-user preferences);
+            // admin-only sections inside the page self-gate via
+            // `data-admin-only="true"` and the SettingsModal.open hook.
+            document.getElementById('user-conv-settings-btn').style.display = '';
             document.getElementById('user-wiki-seeds-btn').style.display = isAdmin ? '' : 'none';
             document.getElementById('user-mcp-catalog-btn').style.display = isAdmin ? '' : 'none';
             document.getElementById('user-oauth-catalog-btn').style.display = isAdmin ? '' : 'none';
-            document.getElementById('user-settings-sep').style.display = isAdmin ? '' : 'none';
+            // Conv Settings is visible to all, so the separator above
+            // it (between About and the settings block) must show too.
+            document.getElementById('user-settings-sep').style.display = '';
         }
         this.updatePwWarning();
     },

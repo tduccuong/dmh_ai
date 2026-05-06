@@ -391,12 +391,26 @@ defmodule DmhAi.Auth.OAuth2 do
           {:ok, map()}
           | {:error, :missing | {:refresh_failed, term()}}
   def lookup_with_refresh(user_id, target) when is_binary(user_id) and is_binary(target) do
-    case Credentials.lookup(user_id, target) do
+    lookup_with_refresh(user_id, target, "")
+  end
+
+  @doc """
+  Account-scoped variant of `lookup_with_refresh/2`. Same semantics
+  but operates on the row at `(user_id, target, account)`. Use this
+  when you have a specific account in hand (e.g. fanned-out per-
+  account requests where each iteration knows which row it owns).
+  """
+  @spec lookup_with_refresh(String.t(), String.t(), String.t()) ::
+          {:ok, map()}
+          | {:error, :missing | {:refresh_failed, term()}}
+  def lookup_with_refresh(user_id, target, account)
+      when is_binary(user_id) and is_binary(target) and is_binary(account) do
+    case Credentials.lookup(user_id, target, account) do
       nil ->
         {:error, :missing}
 
       %{kind: kind, is_expired: true} when kind in ["oauth2_mcp", "oauth2_service"] ->
-        case refresh(user_id, target) do
+        case refresh(user_id, target, account) do
           {:ok, fresh} ->
             {:ok, fresh}
 
@@ -409,6 +423,41 @@ defmodule DmhAi.Auth.OAuth2 do
         {:ok, cred}
     end
   end
+
+  @doc """
+  Multi-account auto-refresh. Returns every row at `(user_id, target)`,
+  refreshing any that are expired in place. Used by the lookup_creds
+  tool to expose all account variants at once so the model can fan
+  out per-account requests in a single chain. Refresh failures don't
+  abort the batch — the failing row comes back with `is_expired:
+  true` and a `refresh_error` field so the model can choose to skip
+  it OR surface the failure to the user; the runtime never decides
+  to omit a credential silently.
+  """
+  @spec lookup_all_with_refresh(String.t(), String.t()) :: [map()]
+  def lookup_all_with_refresh(user_id, target)
+      when is_binary(user_id) and is_binary(target) do
+    Credentials.lookup_all(user_id, target)
+    |> Enum.map(fn cred -> maybe_refresh(user_id, target, cred) end)
+  end
+
+  defp maybe_refresh(user_id, target, %{kind: kind, is_expired: true, account: account} = cred)
+       when kind in ["oauth2_mcp", "oauth2_service"] do
+    case refresh(user_id, target, account) do
+      {:ok, fresh} ->
+        fresh
+
+      {:error, reason} ->
+        # Surface the failure on the row so the caller can decide.
+        # Distinct from the Single-row `lookup_with_refresh` path
+        # which treats refresh failures as fatal — fan-out is more
+        # tolerant; missing one account shouldn't kill the whole
+        # multi-account answer.
+        mark_resource_needs_auth(user_id, target)
+        Map.put(cred, :refresh_error, inspect(reason))
+    end
+  end
+  defp maybe_refresh(_user_id, _target, cred), do: cred
 
   # Map an `mcp:<canonical>` credential target back to the alias the
   # registry knows the service by, then flip its status. No-op when
@@ -436,10 +485,21 @@ defmodule DmhAi.Auth.OAuth2 do
   @spec refresh(String.t(), String.t()) ::
           {:ok, map()} | {:error, term()}
   def refresh(user_id, target) when is_binary(user_id) and is_binary(target) do
-    case Credentials.lookup(user_id, target) do
+    refresh(user_id, target, "")
+  end
+
+  @doc """
+  Account-scoped refresh. Same semantics as `refresh/2` but targets
+  the row at `(user_id, target, account)`.
+  """
+  @spec refresh(String.t(), String.t(), String.t()) ::
+          {:ok, map()} | {:error, term()}
+  def refresh(user_id, target, account)
+      when is_binary(user_id) and is_binary(target) and is_binary(account) do
+    case Credentials.lookup(user_id, target, account) do
       %{kind: kind, payload: %{"refresh_token" => rt} = payload}
       when kind in ["oauth2_mcp", "oauth2_service"] and is_binary(rt) ->
-        do_refresh(user_id, target, kind, payload, rt)
+        do_refresh(user_id, target, account, kind, payload, rt)
 
       %{kind: kind} when kind in ["oauth2_mcp", "oauth2_service"] ->
         {:error, :no_refresh_token}
@@ -449,7 +509,7 @@ defmodule DmhAi.Auth.OAuth2 do
     end
   end
 
-  defp do_refresh(user_id, target, kind, payload, refresh_token) do
+  defp do_refresh(user_id, target, account, kind, payload, refresh_token) do
     asm = decode_asm(payload["asm_json"])
     client_id     = payload["client_id"]
     client_secret = payload["client_secret"]
@@ -509,11 +569,12 @@ defmodule DmhAi.Auth.OAuth2 do
             })
 
             Credentials.save(user_id, target, kind, new_payload,
-              notes: "refreshed",
+              account:    account,
+              notes:      "refreshed",
               expires_at: tokens.expires_at
             )
 
-            {:ok, Credentials.lookup(user_id, target)}
+            {:ok, Credentials.lookup(user_id, target, account)}
 
           err ->
             err

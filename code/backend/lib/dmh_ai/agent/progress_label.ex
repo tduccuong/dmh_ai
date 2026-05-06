@@ -82,7 +82,17 @@ defmodule DmhAi.Agent.ProgressLabel do
         true                                      -> first_string_value(args)
       end
 
-    truncate_words(val || "")
+    # Redact BEFORE truncate. The script value can be a multi-line shell
+    # script that embeds an OAuth bearer token (`ACCESS_TOKEN="ya29.…"`,
+    # `Authorization: Bearer ya29.…`) — without redaction those tokens
+    # end up in `session_progress.label` (DB column) AND in the FE
+    # activity-row render, BOTH visible long after the live token has
+    # rotated. `truncate_words/1` slices the redacted form, so a leaked
+    # token can't sneak through by being beyond the 18-word cut.
+    val
+    |> Kernel.||("")
+    |> DmhAi.Util.Redact.call()
+    |> truncate_words()
   end
 
   # Collapse whitespace (so multi-line scripts don't blow up the preview),

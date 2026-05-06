@@ -16,6 +16,7 @@ defmodule DmhAi.DB.Init do
 
     create_tables()
     migrate_columns()
+    migrate_user_credentials_account()
     DmhAi.Agent.AgentSettings.migrate_legacy_model_keys()
     seed_admin()
     seed_pools()
@@ -103,6 +104,15 @@ defmodule DmhAi.DB.Init do
     add_column_if_missing("users", "browser_consent_at", "INTEGER")
     add_column_if_missing("users", "browser_consent_text_hash", "TEXT")
 
+    # Per-user UI-controlled preferences (JSON blob). Distinct from the
+    # global `admin_cloud_settings` row in the `settings` table — that
+    # holds runtime configuration tunable by admins; this column holds
+    # personal toggles every user can flip (token-saving mode, future
+    # display preferences, etc.). NULL is treated as the default
+    # (all-keys-off) by readers, so an unmigrated row keeps the
+    # current behaviour.
+    add_column_if_missing("users", "preferences", "TEXT")
+
     # Generic OAuth orchestration: distinguish MCP-flavored OAuth (the
     # original use case — token attaches to MCP.Registry on callback)
     # from generic-service OAuth (token persists at oauth:<host> and
@@ -120,6 +130,13 @@ defmodule DmhAi.DB.Init do
     #   extra_token_params → appended to the token-exchange + refresh body
     add_column_if_missing("oauth_catalog", "extra_auth_params",  "TEXT NOT NULL DEFAULT '{}'")
     add_column_if_missing("oauth_catalog", "extra_token_params", "TEXT NOT NULL DEFAULT '{}'")
+    # Userinfo discovery columns drive the multi-account OAuth callback
+    # flow. NULL on either column means the provider has no userinfo
+    # endpoint we can call to identify the account; the callback then
+    # stores the credential with `account=''` (the legacy default).
+    # See architecture.md §Multi-account OAuth.
+    add_column_if_missing("oauth_catalog", "userinfo_endpoint",   "TEXT")
+    add_column_if_missing("oauth_catalog", "userinfo_field_path", "TEXT")
 
     # One-shot sweep of legacy memo entries from kb_fts. Memo writes
     # since the encryption deploy skip kb_fts (FTS over ciphertext is
@@ -162,6 +179,78 @@ defmodule DmhAi.DB.Init do
       Logger.info("[DB.Init] added #{table}.#{column}")
     rescue
       _ -> :ok
+    end
+  end
+
+  # `user_credentials` schema migration to add per-account support:
+  #
+  #   * ADD COLUMN `account TEXT NOT NULL DEFAULT ''`
+  #   * REPLACE `UNIQUE(user_id, target)` with `UNIQUE(user_id, target, account)`
+  #
+  # SQLite makes the inline-`UNIQUE` clause an autoindex that can't be
+  # dropped in place, so we rebuild the table when the `account`
+  # column is missing. Idempotent across all states:
+  #
+  #   * Fresh install → `create_tables/0` already laid down the new
+  #     schema; the column-presence check below short-circuits.
+  #   * Pre-account install → the column is missing, the rebuild
+  #     fires once. Existing rows migrate to `account = ''` (the
+  #     legacy "default account") so older OAuth credentials keep
+  #     working unchanged. Operators get a single log line on the
+  #     transition; subsequent restarts see the column and no-op.
+  #
+  # Wrapped in a transaction so a crash mid-rebuild leaves the DB on
+  # the OLD schema instead of half-migrated. The CREATE TABLE inside
+  # creates the new shape with the new constraint; the INSERT moves
+  # data; the DROP removes the holdover; the rename swaps in the new
+  # table under the canonical name.
+  defp migrate_user_credentials_account do
+    cols = user_credentials_columns()
+
+    if not Enum.member?(cols, "account") do
+      Logger.info("[DB.Init] migrating user_credentials → multi-account schema")
+
+      Repo.transaction(fn ->
+        query!(Repo, "ALTER TABLE user_credentials RENAME TO user_credentials_old")
+
+        query!(Repo, """
+        CREATE TABLE user_credentials (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id TEXT NOT NULL,
+          target TEXT NOT NULL,
+          account TEXT NOT NULL DEFAULT '',
+          kind TEXT NOT NULL,
+          payload TEXT NOT NULL,
+          notes TEXT,
+          expires_at INTEGER,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          UNIQUE(user_id, target, account)
+        )
+        """)
+
+        query!(Repo, """
+        INSERT INTO user_credentials
+          (id, user_id, target, account, kind, payload, notes, expires_at, created_at, updated_at)
+        SELECT id, user_id, target, '', kind, payload, notes, expires_at, created_at, updated_at
+        FROM user_credentials_old
+        """)
+
+        query!(Repo, "DROP TABLE user_credentials_old")
+        query!(Repo, "CREATE INDEX idx_user_credentials_user ON user_credentials (user_id)")
+      end)
+
+      Logger.info("[DB.Init] user_credentials multi-account migration done")
+    end
+  end
+
+  defp user_credentials_columns do
+    case query!(Repo, "PRAGMA table_info(user_credentials)") do
+      %{rows: rows} ->
+        Enum.map(rows, fn [_cid, name | _rest] -> name end)
+
+      _ ->
+        []
     end
   end
 
@@ -373,13 +462,14 @@ defmodule DmhAi.DB.Init do
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id TEXT NOT NULL,
       target TEXT NOT NULL,                  -- free-form label: host+user, service name, API name
+      account TEXT NOT NULL DEFAULT '',      -- per-account label (email/login from provider userinfo); '' for non-account creds (api_key etc.)
       kind TEXT NOT NULL,                    -- free-form: 'ssh_key' | 'user_pass' | 'api_key' | 'oauth2' | …
       payload TEXT NOT NULL,                 -- plaintext JSON, shape determined by `kind`
       notes TEXT,                            -- free-form notes from the assistant (why/when/how to use)
       expires_at INTEGER,                    -- optional unix ms expiry (OAuth2 access tokens etc.); NULL = non-expiring
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
-      UNIQUE(user_id, target)
+      UNIQUE(user_id, target, account)
     )
     """)
 
@@ -436,6 +526,16 @@ defmodule DmhAi.DB.Init do
       client_secret          TEXT,
       extra_auth_params      TEXT NOT NULL DEFAULT '{}',
       extra_token_params     TEXT NOT NULL DEFAULT '{}',
+      -- Userinfo discovery for the multi-account flow. After token
+      -- exchange, the OAuth callback handler GETs `userinfo_endpoint`
+      -- with the access token and reads the field at the dotted path
+      -- `userinfo_field_path` to populate `user_credentials.account`.
+      -- Both NULL = the provider has no userinfo endpoint we know how
+      -- to call; the credential row is stored with `account=''` (the
+      -- legacy default account). Operators can edit these via the
+      -- admin catalog UI when adding new providers.
+      userinfo_endpoint      TEXT,
+      userinfo_field_path    TEXT,
       enabled                INTEGER NOT NULL DEFAULT 0,
       created_ts             INTEGER NOT NULL,
       updated_ts             INTEGER NOT NULL
@@ -984,8 +1084,9 @@ defmodule DmhAi.DB.Init do
          authorization_endpoint, token_endpoint,
          scopes_default, client_id, client_secret,
          extra_auth_params, extra_token_params,
+         userinfo_endpoint, userinfo_field_path,
          enabled, created_ts, updated_ts)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       """, [
         entry["slug"],
         entry["display_name"],
@@ -997,6 +1098,8 @@ defmodule DmhAi.DB.Init do
         entry["client_secret"],
         extra_auth,
         extra_token,
+        entry["userinfo_endpoint"],
+        entry["userinfo_field_path"],
         if(entry["enabled"] == true, do: 1, else: 0),
         now,
         now

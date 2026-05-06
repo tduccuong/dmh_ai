@@ -142,7 +142,7 @@ defmodule Itgr.SessionContextContract do
 
     # --- LOGIC: the Recently-extracted files block must be injected. ---
     block = find_msg(assembled, "user",
-                     &String.starts_with?(&1, "## Recently-extracted files"))
+                     &String.starts_with?(&1, "<recently_extracted_files>"))
     assert block != nil,
            "Recently-extracted block MUST appear when the session was loaded " <>
              "through the real load_session/2 path (regression: used to silently disappear)"
@@ -184,7 +184,7 @@ defmodule Itgr.SessionContextContract do
     assembled = ContextEngine.build_assistant_messages(sd)
 
     refute find_msg(assembled, "user",
-                    &String.starts_with?(&1, "## Recently-extracted files")),
+                    &String.starts_with?(&1, "<recently_extracted_files>")),
            "block must be absent when there's no tool_history — otherwise we'd be lying to the model"
   end
 

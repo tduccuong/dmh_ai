@@ -39,6 +39,8 @@ defmodule DmhAi.OAuth.Catalog do
           client_secret:          String.t() | nil,
           extra_auth_params:      map(),
           extra_token_params:     map(),
+          userinfo_endpoint:      String.t() | nil,
+          userinfo_field_path:    String.t() | nil,
           enabled:                boolean()
         }
 
@@ -87,6 +89,148 @@ defmodule DmhAi.OAuth.Catalog do
   @spec all_enabled() :: [entry()]
   def all_enabled, do: enabled_entries()
 
+  @doc """
+  Hierarchical resolver. Maps the model's free-form input (slug,
+  host, full URL, partial name, typo) onto a catalog entry. Match
+  order — first hit wins:
+
+    1. Exact slug match — e.g. `"google"` → row `slug=google`.
+    2. Exact host_match — e.g. `"googleapis.com"` → row `host_match=googleapis.com`.
+    3. Host suffix on extracted host — `"https://www.googleapis.com/calendar/..."`
+       → host=`www.googleapis.com` → suffix-matches `host_match=googleapis.com`.
+       Exact-precision URL handling.
+    4. Substring / token match — input lowercased and split on
+       non-alphanumeric runs; any token appearing in the slug or in
+       the display_name (case-insensitive) counts. `"calendar"` →
+       google (display_name contains `Calendar`); `"google.com"` →
+       google (slug `google` is a token).
+    5. Jaro distance ≥ 0.85 against slug or host_match — last-resort
+       typo recovery for `"goggle"` / `"githab"` etc.
+
+  Returns:
+    * `{:ok, entry}`               — definitive single match (steps 1–3 always; step 4 when a single entry covers the input; step 5 when one entry crosses the threshold).
+    * `{:ambiguous, top3}`        — multiple step-4 hits (e.g. `"box"` could match `box` or `dropbox`); model surfaces the list to the user.
+    * `{:none, top3}`             — no hit anywhere; model tells the user the service isn't configured and lists the closest catalog entries as alternatives.
+    * `{:none, []}`               — catalog is empty in this deployment.
+
+  Disabled rows are skipped — same gate as `get_by_slug/1` /
+  `get_by_host/1`. Operators flip Enabled when the OAuth app is
+  registered.
+  """
+  @spec resolve(String.t()) ::
+          {:ok, entry()} | {:ambiguous, [entry()]} | {:none, [entry()]}
+  def resolve(input) when is_binary(input) and input != "" do
+    trimmed = String.trim(input)
+
+    cond do
+      trimmed == "" -> {:none, []}
+      true          -> do_resolve(trimmed, enabled_entries())
+    end
+  end
+
+  def resolve(_), do: {:none, []}
+
+  defp do_resolve(_input, []), do: {:none, []}
+
+  defp do_resolve(input, entries) do
+    cond do
+      # 1. Exact slug.
+      hit = Enum.find(entries, &(&1.slug == input)) ->
+        {:ok, hit}
+
+      # 2. Exact host_match.
+      hit = Enum.find(entries, &(&1.host_match == input)) ->
+        {:ok, hit}
+
+      # 3. Host suffix on extracted host.
+      hit = host_suffix_match(input, entries) ->
+        {:ok, hit}
+
+      true ->
+        case substring_match(input, entries) do
+          [single] ->
+            {:ok, single}
+
+          [] ->
+            jaro_or_none(input, entries)
+
+          multiple ->
+            {:ambiguous, Enum.take(multiple, 3)}
+        end
+    end
+  end
+
+  # Step 3: extract host from URL-or-host input, then longest-suffix
+  # match against catalog `host_match`.
+  defp host_suffix_match(input, entries) do
+    case extract_host(input) do
+      "" ->
+        nil
+
+      host ->
+        entries
+        |> Enum.filter(fn e -> host == e.host_match or String.ends_with?(host, "." <> e.host_match) end)
+        |> Enum.sort_by(fn e -> -byte_size(e.host_match) end)
+        |> List.first()
+    end
+  end
+
+  # Step 4: tokenise input + each entry's slug+display_name; an entry
+  # matches when ANY token of the input appears in its slug or its
+  # display_name (case-insensitive). Sorted by score (number of
+  # matching tokens) desc.
+  defp substring_match(input, entries) do
+    input_tokens =
+      input
+      |> String.downcase()
+      |> String.split(~r/[^a-z0-9]+/, trim: true)
+      |> Enum.reject(&(&1 == ""))
+
+    if input_tokens == [] do
+      []
+    else
+      entries
+      |> Enum.map(fn e ->
+        haystack = String.downcase(e.slug <> " " <> e.display_name)
+        score    = Enum.count(input_tokens, &String.contains?(haystack, &1))
+        {e, score}
+      end)
+      |> Enum.filter(fn {_e, score} -> score > 0 end)
+      |> Enum.sort_by(fn {_e, score} -> -score end)
+      |> Enum.map(fn {e, _score} -> e end)
+    end
+  end
+
+  # Step 5: Jaro distance ≥ 0.85 last-resort typo recovery.
+  # `String.jaro_distance/2` returns 1.0 for identical strings. We
+  # check both slug and host_match; the closest entry wins. If
+  # nothing crosses the threshold, return `{:none, top3}` where the
+  # top-3 is the highest-scoring entries below the threshold (so the
+  # model has SOMETHING to surface to the user).
+  defp jaro_or_none(input, entries) do
+    lowered = String.downcase(input)
+
+    scored =
+      entries
+      |> Enum.map(fn e ->
+        s = max(
+          String.jaro_distance(lowered, String.downcase(e.slug)),
+          String.jaro_distance(lowered, String.downcase(e.host_match))
+        )
+        {e, s}
+      end)
+      |> Enum.sort_by(fn {_e, s} -> -s end)
+
+    case scored do
+      [{e, score} | _rest] when score >= 0.85 ->
+        {:ok, e}
+
+      _ ->
+        top3 = scored |> Enum.take(3) |> Enum.map(fn {e, _} -> e end)
+        {:none, top3}
+    end
+  end
+
   @doc "Every row, enabled OR disabled — used by the admin UI."
   @spec list_all() :: [entry()]
   def list_all do
@@ -96,7 +240,9 @@ defmodule DmhAi.OAuth.Catalog do
         SELECT id, slug, display_name, host_match,
                authorization_endpoint, token_endpoint,
                scopes_default, client_id, client_secret,
-               extra_auth_params, extra_token_params, enabled
+               extra_auth_params, extra_token_params,
+               userinfo_endpoint, userinfo_field_path,
+               enabled
         FROM oauth_catalog
         ORDER BY display_name
         """,
@@ -124,8 +270,9 @@ defmodule DmhAi.OAuth.Catalog do
              authorization_endpoint, token_endpoint,
              scopes_default, client_id, client_secret,
              extra_auth_params, extra_token_params,
+             userinfo_endpoint, userinfo_field_path,
              enabled, created_ts, updated_ts)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           """,
           [
             normalised.slug,
@@ -138,6 +285,8 @@ defmodule DmhAi.OAuth.Catalog do
             normalised.client_secret,
             Jason.encode!(normalised.extra_auth_params),
             Jason.encode!(normalised.extra_token_params),
+            normalised.userinfo_endpoint,
+            normalised.userinfo_field_path,
             if(normalised.enabled, do: 1, else: 0),
             now,
             now
@@ -179,6 +328,7 @@ defmodule DmhAi.OAuth.Catalog do
                   authorization_endpoint = ?, token_endpoint = ?,
                   scopes_default = ?, client_id = ?, client_secret = ?,
                   extra_auth_params = ?, extra_token_params = ?,
+                  userinfo_endpoint = ?, userinfo_field_path = ?,
                   enabled = ?, updated_ts = ?
               WHERE id = ?
               """,
@@ -193,6 +343,8 @@ defmodule DmhAi.OAuth.Catalog do
                 secret,
                 Jason.encode!(merged.extra_auth_params),
                 Jason.encode!(merged.extra_token_params),
+                Map.get(merged, :userinfo_endpoint),
+                Map.get(merged, :userinfo_field_path),
                 if(merged.enabled, do: 1, else: 0),
                 now,
                 id
@@ -223,7 +375,9 @@ defmodule DmhAi.OAuth.Catalog do
       |> stringify_keys()
       |> Map.take(~w(slug display_name host_match authorization_endpoint
                       token_endpoint scopes_default client_id client_secret
-                      extra_auth_params extra_token_params enabled))
+                      extra_auth_params extra_token_params
+                      userinfo_endpoint userinfo_field_path
+                      enabled))
       |> Enum.into(%{}, fn
         {"scopes_default",    v} -> {:scopes_default,     normalise_scopes(v)}
         {"extra_auth_params", v} -> {:extra_auth_params,  normalise_map(v)}
@@ -237,10 +391,12 @@ defmodule DmhAi.OAuth.Catalog do
         out
       else
         out
-        |> Map.put_new(:scopes_default,     [])
-        |> Map.put_new(:extra_auth_params,  %{})
-        |> Map.put_new(:extra_token_params, %{})
-        |> Map.put_new(:enabled,            false)
+        |> Map.put_new(:scopes_default,      [])
+        |> Map.put_new(:extra_auth_params,   %{})
+        |> Map.put_new(:extra_token_params,  %{})
+        |> Map.put_new(:userinfo_endpoint,   nil)
+        |> Map.put_new(:userinfo_field_path, nil)
+        |> Map.put_new(:enabled,             false)
       end
 
     {:ok, out}
@@ -304,7 +460,9 @@ defmodule DmhAi.OAuth.Catalog do
         SELECT id, slug, display_name, host_match,
                authorization_endpoint, token_endpoint,
                scopes_default, client_id, client_secret,
-               extra_auth_params, extra_token_params, enabled
+               extra_auth_params, extra_token_params,
+               userinfo_endpoint, userinfo_field_path,
+               enabled
         FROM oauth_catalog
         WHERE enabled = 1
         """,
@@ -319,7 +477,9 @@ defmodule DmhAi.OAuth.Catalog do
            SELECT id, slug, display_name, host_match,
                   authorization_endpoint, token_endpoint,
                   scopes_default, client_id, client_secret,
-                  extra_auth_params, extra_token_params, enabled
+                  extra_auth_params, extra_token_params,
+                  userinfo_endpoint, userinfo_field_path,
+                  enabled
            FROM oauth_catalog
            #{where}
            LIMIT 1
@@ -332,7 +492,9 @@ defmodule DmhAi.OAuth.Catalog do
 
   defp row_to_entry([id, slug, display_name, host_match, auth_ep, token_ep,
                      scopes_json, client_id, client_secret,
-                     extra_auth_json, extra_token_json, enabled]) do
+                     extra_auth_json, extra_token_json,
+                     userinfo_endpoint, userinfo_field_path,
+                     enabled]) do
     %{
       id:                     id,
       slug:                   slug,
@@ -345,6 +507,8 @@ defmodule DmhAi.OAuth.Catalog do
       client_secret:          client_secret,
       extra_auth_params:      decode_json_map(extra_auth_json),
       extra_token_params:     decode_json_map(extra_token_json),
+      userinfo_endpoint:      userinfo_endpoint,
+      userinfo_field_path:    userinfo_field_path,
       enabled:                enabled == 1
     }
   end

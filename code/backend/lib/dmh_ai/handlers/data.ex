@@ -977,6 +977,29 @@ defmodule DmhAi.Handlers.Data do
           {nil, nil, %{}}
       end
 
+    # Discover the account identifier (typically email/login) so the
+    # credential gets stored under (user_id, target, account=<email>)
+    # — the multi-account schema. NULL userinfo fields on the catalog
+    # row OR a network/parse failure both fall back to account="" so
+    # this user lands in the "legacy default account" slot, same shape
+    # every credential had pre-multi-account. Failing the entire OAuth
+    # callback because userinfo blew up is worse UX than storing the
+    # credential without an account label.
+    account =
+      case catalog_row && DmhAi.OAuth.Userinfo.fetch(catalog_row, tokens.access_token) do
+        {:ok, acc} ->
+          DmhAi.SysLog.log("[OAUTH] finalize_oauth_service: userinfo resolved account=#{inspect(acc)}")
+          acc
+
+        {:error, reason} ->
+          DmhAi.SysLog.log("[OAUTH] finalize_oauth_service: userinfo failed (#{inspect(reason)}) — storing credential with empty account")
+          ""
+
+        nil ->
+          # No catalog row at all — finalize without an account label.
+          ""
+      end
+
     cred_payload = %{
       "access_token"       => tokens.access_token,
       "refresh_token"      => tokens.refresh_token,
@@ -985,6 +1008,7 @@ defmodule DmhAi.Handlers.Data do
       "server_url"         => server_url,
       "alias"              => alias_,
       "host_match"         => host_match,
+      "account"            => account,
       "asm_json"           => Jason.encode!(asm),
       "extra_token_params" => extra_token_params,
       "client_id"          => client_id,
@@ -996,11 +1020,12 @@ defmodule DmhAi.Handlers.Data do
       "oauth:" <> host_match,
       "oauth2_service",
       cred_payload,
-      notes: "OAuth connection: #{alias_}",
+      account:    account,
+      notes:      "OAuth connection: #{alias_}#{if account != "", do: " (#{account})", else: ""}",
       expires_at: tokens.expires_at
     )
 
-    DmhAi.SysLog.log("[OAUTH] finalize_oauth_service: stored cred user=#{user_id} target=oauth:#{host_match} expires_at=#{inspect(tokens.expires_at)}")
+    DmhAi.SysLog.log("[OAUTH] finalize_oauth_service: stored cred user=#{user_id} target=oauth:#{host_match} account=#{inspect(account)} expires_at=#{inspect(tokens.expires_at)}")
 
     append_oauth_service_connected_message(session_id, user_id, alias_, host_match)
 

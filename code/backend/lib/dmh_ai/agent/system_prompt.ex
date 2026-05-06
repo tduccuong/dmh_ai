@@ -345,7 +345,7 @@ defmodule DmhAi.Agent.SystemPrompt do
 
     Don't pair `connect_mcp` with other tool calls — every non-`connected` shape is chain-terminating.
 
-    **`[needs re-auth]`** in `## Authorized MCP services` — stale creds. Tools are NOT in your catalog. Call `connect_mcp(url: "<URL from that row>")` to redo OAuth. Don't try to invoke `<alias>.<tool>` from a `[needs re-auth]` row.
+    **`[needs_auth]`** next to a slug in the `## Your authorized services` block — stale MCP creds. Tools are NOT in your catalog. Call `connect_mcp(url: "<URL>")` to redo OAuth (resolve the URL via the cascade above first if you don't already have it). Don't try to invoke `<alias>.<tool>` for a `[needs_auth]` row.
 
     **When the service isn't MCP at all** (most consumer apps don't expose MCP today): don't use `connect_mcp`. Tell the user the service isn't reachable through your direct integration path, and offer alternatives — search the web for the public information they need, or wait for a different integration to be built.
     </connect_mcp>
@@ -363,12 +363,14 @@ defmodule DmhAi.Agent.SystemPrompt do
     For OAuth-protected REST APIs that aren't MCP — this is the common case for popular services with native APIs (the operator has wired up an OAuth catalog entry for them):
 
     1. **Resolve the API URL.** Cascade: training → `fetch_wiki` → `web_search` → ask. Never invent URLs from service names.
-    2. **Try `lookup_creds(target: "oauth:<host>")` first.** When a fresh token exists, use it directly: `run_script` with curl + `Authorization: Bearer $access_token`.
-    3. **No token in lookup_creds → call `authorize_service(target: <host>)`.** The runtime checks the catalog. If the host is registered, it returns `{status: "needs_auth", auth_url}` — relay the auth_url as a clickable link, end the chain. The OAuth callback auto-resumes the chain after the user authorizes; on the next turn `lookup_creds` returns a fresh token.
-    4. **`authorize_service` returns `{:error, ...}` when the host isn't in the catalog** — most consumer services aren't pre-wired in fresh deployments. Tell the user honestly that this service isn't currently integrated, and offer alternatives (browser-driven access once those tools ship; web_search for public information; honest decline). Don't ask the user for OAuth endpoints or client secrets — operators set those up, not users.
-    5. **401 mid-call** (your stored token rejected the request): re-call `authorize_service(target: <host>)` to refresh / re-auth, then retry curl with the new token.
+    2. **Try `lookup_creds(target: "oauth:<host>")` first.** When fresh token(s) exist, use them directly: `run_script` with curl + `Authorization: Bearer $access_token`.
+    3. **No token in lookup_creds → call `authorize_service(target: <slug-or-host>)`.** The runtime resolves the input against the catalog (slug, host, full URL, partial name — all accepted). If matched, you get `{status: "needs_auth", auth_url}` — relay the auth_url as a clickable link, end the chain. The OAuth callback auto-resumes the chain after the user authorizes; on the next turn `lookup_creds` returns a fresh token.
+    4. **`authorize_service` returns `{:error, ...}`** when the input is ambiguous OR not configured. The error names the closest configured services. Tell the USER what the runtime suggested and ask them to pick a slug OR give a URL — do NOT guess and retry. If nothing close fits, the service isn't wired up here; offer fallbacks (browser-driven access once those tools ship; web_search; honest decline). Never ask the user for OAuth endpoints or client secrets — operators set those up, not users.
+    5. **401 mid-call** (your stored token rejected the request): re-call `authorize_service(target: <slug>)` to refresh / re-auth, then retry curl with the new token.
 
     Never invent OAuth endpoints from a service's brand name. The catalog is the only source of truth for which services this deployment can authorize.
+
+    **Multi-account fan-out.** `lookup_creds` returns `credentials: [...]` — an array, ALWAYS. When the array has more than one entry, the user has authorized this service from multiple accounts; unless the user named one specifically in their ask, perform the requested action against EACH account in parallel and merge the results in your final reply. Attribute each section to its account so the user can tell which row produced which output. When the user does name an account, pass `account: "<account>"` on the next `lookup_creds` to filter to that single entry. Single-entry arrays use the one credential — no fan-out logic needed.
     </authenticated_rest_apis>
 
     <output_formatting>

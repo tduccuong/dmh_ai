@@ -14,10 +14,24 @@
     "",
     "scopes_default values are sensible read-only starting points.",
     "Operators tune them to match the access their app actually needs.",
+    "OIDC-style providers (google, slack, salesforce, linkedin) carry",
+    "`openid email profile` so the post-callback userinfo fetch can",
+    "identify the account in one trip — bumping the user's consent",
+    "into the same dialog as the data scopes. Non-OIDC providers use",
+    "their native account-aware scope (e.g. github read:user, slack",
+    "users:read).",
     "",
     "extra_auth_params encode known per-provider quirks that need to",
     "ride on the authorization URL (e.g. Google's access_type=offline,",
-    "Atlassian's audience=api.atlassian.com)."
+    "Atlassian's audience=api.atlassian.com).",
+    "",
+    "userinfo_endpoint + userinfo_field_path drive multi-account",
+    "support: after token exchange the OAuth callback GETs the URL",
+    "with the access token and reads the account identifier (typically",
+    "the email or login) at the dotted JSON path. NULL on either field",
+    "= we don't know how to identify accounts on this provider; the",
+    "credential row stores account='' (the legacy single-account",
+    "default) and lookup_creds returns it like any other row."
   ],
 
   "services": [
@@ -28,12 +42,17 @@
       "authorization_endpoint": "https://accounts.google.com/o/oauth2/v2/auth",
       "token_endpoint":         "https://oauth2.googleapis.com/token",
       "scopes_default":         [
+        "openid",
+        "email",
+        "profile",
         "https://www.googleapis.com/auth/calendar.readonly",
         "https://www.googleapis.com/auth/gmail.readonly",
         "https://www.googleapis.com/auth/drive.readonly"
       ],
       "extra_auth_params":      { "access_type": "offline", "prompt": "consent" },
       "extra_token_params":     {},
+      "userinfo_endpoint":      "https://openidconnect.googleapis.com/v1/userinfo",
+      "userinfo_field_path":    "email",
       "client_id":              "",
       "client_secret":          null,
       "enabled":                false
@@ -54,6 +73,8 @@
       ],
       "extra_auth_params":      { "prompt": "select_account" },
       "extra_token_params":     {},
+      "userinfo_endpoint":      "https://graph.microsoft.com/v1.0/me",
+      "userinfo_field_path":    "userPrincipalName",
       "client_id":              "",
       "client_secret":          null,
       "enabled":                false
@@ -68,6 +89,8 @@
       "scopes_default":         ["repo", "user:email", "read:user"],
       "extra_auth_params":      {},
       "extra_token_params":     {},
+      "userinfo_endpoint":      "https://api.github.com/user",
+      "userinfo_field_path":    "login",
       "client_id":              "",
       "client_secret":          null,
       "enabled":                false
@@ -82,6 +105,8 @@
       "scopes_default":         ["api", "read_user", "read_repository"],
       "extra_auth_params":      {},
       "extra_token_params":     {},
+      "userinfo_endpoint":      "https://gitlab.com/api/v4/user",
+      "userinfo_field_path":    "username",
       "client_id":              "",
       "client_secret":          null,
       "enabled":                false
@@ -93,9 +118,19 @@
       "host_match":             "slack.com",
       "authorization_endpoint": "https://slack.com/oauth/v2/authorize",
       "token_endpoint":         "https://slack.com/api/oauth.v2.access",
-      "scopes_default":         ["channels:read", "chat:write", "users:read", "channels:history"],
+      "scopes_default":         [
+        "openid",
+        "email",
+        "profile",
+        "channels:read",
+        "chat:write",
+        "users:read",
+        "channels:history"
+      ],
       "extra_auth_params":      {},
       "extra_token_params":     {},
+      "userinfo_endpoint":      "https://slack.com/api/openid.connect.userInfo",
+      "userinfo_field_path":    "email",
       "client_id":              "",
       "client_secret":          null,
       "enabled":                false
@@ -110,6 +145,8 @@
       "scopes_default":         ["identify", "guilds", "messages.read"],
       "extra_auth_params":      {},
       "extra_token_params":     {},
+      "userinfo_endpoint":      "https://discord.com/api/users/@me",
+      "userinfo_field_path":    "username",
       "client_id":              "",
       "client_secret":          null,
       "enabled":                false
@@ -124,6 +161,8 @@
       "scopes_default":         [],
       "extra_auth_params":      { "owner": "user" },
       "extra_token_params":     {},
+      "userinfo_endpoint":      null,
+      "userinfo_field_path":    null,
       "client_id":              "",
       "client_secret":          null,
       "enabled":                false
@@ -135,9 +174,11 @@
       "host_match":             "api.dropboxapi.com",
       "authorization_endpoint": "https://www.dropbox.com/oauth2/authorize",
       "token_endpoint":         "https://api.dropboxapi.com/oauth2/token",
-      "scopes_default":         ["files.metadata.read", "files.content.read"],
+      "scopes_default":         ["account_info.read", "files.metadata.read", "files.content.read"],
       "extra_auth_params":      { "token_access_type": "offline" },
       "extra_token_params":     {},
+      "userinfo_endpoint":      "https://api.dropboxapi.com/2/users/get_current_account",
+      "userinfo_field_path":    "email",
       "client_id":              "",
       "client_secret":          null,
       "enabled":                false
@@ -152,6 +193,8 @@
       "scopes_default":         ["user-read-private", "user-read-email", "user-library-read"],
       "extra_auth_params":      {},
       "extra_token_params":     {},
+      "userinfo_endpoint":      "https://api.spotify.com/v1/me",
+      "userinfo_field_path":    "email",
       "client_id":              "",
       "client_secret":          null,
       "enabled":                false
@@ -166,6 +209,8 @@
       "scopes_default":         ["user:read:email"],
       "extra_auth_params":      {},
       "extra_token_params":     {},
+      "userinfo_endpoint":      null,
+      "userinfo_field_path":    null,
       "client_id":              "",
       "client_secret":          null,
       "enabled":                false
@@ -180,6 +225,8 @@
       "scopes_default":         ["identity", "read", "history"],
       "extra_auth_params":      { "duration": "permanent" },
       "extra_token_params":     {},
+      "userinfo_endpoint":      "https://oauth.reddit.com/api/v1/me",
+      "userinfo_field_path":    "name",
       "client_id":              "",
       "client_secret":          null,
       "enabled":                false
@@ -199,6 +246,8 @@
       ],
       "extra_auth_params":      { "audience": "api.atlassian.com", "prompt": "consent" },
       "extra_token_params":     {},
+      "userinfo_endpoint":      "https://api.atlassian.com/me",
+      "userinfo_field_path":    "email",
       "client_id":              "",
       "client_secret":          null,
       "enabled":                false
@@ -213,6 +262,8 @@
       "scopes_default":         ["account", "repository"],
       "extra_auth_params":      {},
       "extra_token_params":     {},
+      "userinfo_endpoint":      "https://api.bitbucket.org/2.0/user",
+      "userinfo_field_path":    "username",
       "client_id":              "",
       "client_secret":          null,
       "enabled":                false
@@ -227,6 +278,8 @@
       "scopes_default":         ["openid", "profile", "email"],
       "extra_auth_params":      {},
       "extra_token_params":     {},
+      "userinfo_endpoint":      "https://api.linkedin.com/v2/userinfo",
+      "userinfo_field_path":    "email",
       "client_id":              "",
       "client_secret":          null,
       "enabled":                false
@@ -241,6 +294,8 @@
       "scopes_default":         ["default"],
       "extra_auth_params":      {},
       "extra_token_params":     {},
+      "userinfo_endpoint":      "https://app.asana.com/api/1.0/users/me",
+      "userinfo_field_path":    "data.email",
       "client_id":              "",
       "client_secret":          null,
       "enabled":                false
@@ -252,9 +307,11 @@
       "host_match":             "api.zoom.us",
       "authorization_endpoint": "https://zoom.us/oauth/authorize",
       "token_endpoint":         "https://zoom.us/oauth/token",
-      "scopes_default":         [],
+      "scopes_default":         ["user:read:user"],
       "extra_auth_params":      {},
       "extra_token_params":     {},
+      "userinfo_endpoint":      "https://api.zoom.us/v2/users/me",
+      "userinfo_field_path":    "email",
       "client_id":              "",
       "client_secret":          null,
       "enabled":                false
@@ -269,6 +326,8 @@
       "scopes_default":         [],
       "extra_auth_params":      {},
       "extra_token_params":     {},
+      "userinfo_endpoint":      "https://api.box.com/2.0/users/me",
+      "userinfo_field_path":    "login",
       "client_id":              "",
       "client_secret":          null,
       "enabled":                false
@@ -280,9 +339,11 @@
       "host_match":             "salesforce.com",
       "authorization_endpoint": "https://login.salesforce.com/services/oauth2/authorize",
       "token_endpoint":         "https://login.salesforce.com/services/oauth2/token",
-      "scopes_default":         ["api", "refresh_token", "offline_access"],
+      "scopes_default":         ["openid", "email", "profile", "api", "refresh_token", "offline_access"],
       "extra_auth_params":      {},
       "extra_token_params":     {},
+      "userinfo_endpoint":      "https://login.salesforce.com/services/oauth2/userinfo",
+      "userinfo_field_path":    "email",
       "client_id":              "",
       "client_secret":          null,
       "enabled":                false
@@ -297,6 +358,8 @@
       "scopes_default":         ["crm.objects.contacts.read"],
       "extra_auth_params":      {},
       "extra_token_params":     {},
+      "userinfo_endpoint":      null,
+      "userinfo_field_path":    null,
       "client_id":              "",
       "client_secret":          null,
       "enabled":                false
@@ -311,6 +374,8 @@
       "scopes_default":         ["AaaServer.profile.READ"],
       "extra_auth_params":      { "access_type": "offline", "prompt": "consent" },
       "extra_token_params":     {},
+      "userinfo_endpoint":      "https://accounts.zoho.com/oauth/user/info",
+      "userinfo_field_path":    "Email",
       "client_id":              "",
       "client_secret":          null,
       "enabled":                false
@@ -325,6 +390,8 @@
       "scopes_default":         ["read", "activity:read"],
       "extra_auth_params":      { "approval_prompt": "auto" },
       "extra_token_params":     {},
+      "userinfo_endpoint":      "https://www.strava.com/api/v3/athlete",
+      "userinfo_field_path":    "username",
       "client_id":              "",
       "client_secret":          null,
       "enabled":                false
@@ -339,6 +406,8 @@
       "scopes_default":         ["profile", "activity", "heartrate"],
       "extra_auth_params":      {},
       "extra_token_params":     {},
+      "userinfo_endpoint":      "https://api.fitbit.com/1/user/-/profile.json",
+      "userinfo_field_path":    "user.encodedId",
       "client_id":              "",
       "client_secret":          null,
       "enabled":                false
@@ -353,6 +422,8 @@
       "scopes_default":         ["tweet.read", "users.read", "offline.access"],
       "extra_auth_params":      {},
       "extra_token_params":     {},
+      "userinfo_endpoint":      "https://api.twitter.com/2/users/me",
+      "userinfo_field_path":    "data.username",
       "client_id":              "",
       "client_secret":          null,
       "enabled":                false
@@ -367,6 +438,8 @@
       "scopes_default":         ["email", "public_profile"],
       "extra_auth_params":      {},
       "extra_token_params":     {},
+      "userinfo_endpoint":      "https://graph.facebook.com/me?fields=email",
+      "userinfo_field_path":    "email",
       "client_id":              "",
       "client_secret":          null,
       "enabled":                false

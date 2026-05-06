@@ -68,7 +68,7 @@ defmodule Itgr.ContextEngine do
     sd  = session(messages: [user_msg("new message")], context: ctx)
     msgs = ContextEngine.build_confidant_messages(sd)
 
-    summary_msg = find_msg(msgs, "user", &String.starts_with?(&1, "[Summary of our conversation so far]"))
+    summary_msg = find_msg(msgs, "user", &String.starts_with?(&1, "<conversation_summary>"))
     assert summary_msg != nil
     assert String.contains?(summary_msg.content, "Prior convo summary")
 
@@ -151,7 +151,7 @@ defmodule Itgr.ContextEngine do
     ]
     msgs = ContextEngine.build_assistant_messages(sd, active_tasks: tasks)
 
-    task_msg = find_msg(msgs, "user", &String.starts_with?(&1, "## Task list"))
+    task_msg = find_msg(msgs, "user", &String.starts_with?(&1, "<task_list>"))
     assert task_msg != nil
     assert String.contains?(task_msg.content, "### one_off")
     # Phase 3: tasks render as `#### (N) title` — task_id is BE-internal.
@@ -166,7 +166,7 @@ defmodule Itgr.ContextEngine do
   test "assistant: empty active_tasks → no task list block" do
     sd = session(messages: [user_msg("hello")])
     msgs = ContextEngine.build_assistant_messages(sd, active_tasks: [])
-    refute find_msg(msgs, "user", &String.starts_with?(&1, "## Task list"))
+    refute find_msg(msgs, "user", &String.starts_with?(&1, "<task_list>"))
   end
 
   test "assistant: done section renders flat (N) title entries" do
@@ -176,7 +176,7 @@ defmodule Itgr.ContextEngine do
         task_type: "one_off", task_spec: "...", time_to_pickup: nil}
     ]
     msgs = ContextEngine.build_assistant_messages(sd, recent_done: done)
-    task_msg = find_msg(msgs, "user", &String.starts_with?(&1, "## Task list"))
+    task_msg = find_msg(msgs, "user", &String.starts_with?(&1, "<task_list>"))
     assert task_msg != nil
     assert String.contains?(task_msg.content, "### done")
     # Phase 3: flat bullets under `### done`, no task_id.
@@ -204,7 +204,7 @@ defmodule Itgr.ContextEngine do
         time_to_pickup: nil}
     ]
     msgs = ContextEngine.build_assistant_messages(sd, recent_done: done)
-    task_msg = find_msg(msgs, "user", &String.starts_with?(&1, "## Task list"))
+    task_msg = find_msg(msgs, "user", &String.starts_with?(&1, "<task_list>"))
     content = task_msg.content
 
     # Head row tagged with [most recent] adjacent to the title.
@@ -230,7 +230,7 @@ defmodule Itgr.ContextEngine do
         time_to_pickup: nil}
     ]
     msgs = ContextEngine.build_assistant_messages(sd, recent_done: done)
-    task_msg = find_msg(msgs, "user", &String.starts_with?(&1, "## Task list"))
+    task_msg = find_msg(msgs, "user", &String.starts_with?(&1, "<task_list>"))
     # Both bullets present, neither has a continuation line.
     assert task_msg.content =~ "- (1) Task A"
     assert task_msg.content =~ "- (2) Task B"
@@ -245,7 +245,7 @@ defmodule Itgr.ContextEngine do
         time_to_pickup: nil}
     ]
     msgs = ContextEngine.build_assistant_messages(sd, active_tasks: tasks)
-    task_msg = find_msg(msgs, "user", &String.starts_with?(&1, "## Task list"))
+    task_msg = find_msg(msgs, "user", &String.starts_with?(&1, "<task_list>"))
     assert String.contains?(task_msg.content, "**Attachments:**")
     assert String.contains?(task_msg.content, "- workspace/photo.jpg")
     assert String.contains?(task_msg.content, "- workspace/notes.txt")
@@ -263,15 +263,21 @@ defmodule Itgr.ContextEngine do
               task_spec: "s", time_to_pickup: nil}]
 
     [msg, _] = ContextEngine.build_task_list_block(active, done, base_level: 2)
+    # The outer wrapper is the XML tag `<task_list>` (no markdown
+    # heading); sub-section headings inside the wrapper are at
+    # `base_level + 1` and per-task titles at `base_level + 2`.
+    assert String.starts_with?(msg.content, "<task_list>")
+    assert String.ends_with?(String.trim(msg.content), "</task_list>")
+
     headings = Regex.scan(~r/^(#+)\s/m, msg.content, capture: :all_but_first)
                |> List.flatten()
                |> Enum.map(&String.length/1)
 
-    # Every heading is 2, 3, or 4 — no h5/h6 leakage, no h1.
-    assert Enum.all?(headings, &(&1 in [2, 3, 4]))
-    # The top heading is always h2.
-    assert hd(headings) == 2
-    # Transitions: 2→3, 3→4, 4→3, 3→3 are allowed; 2→4 (skipping) is not.
+    # All headings inside the wrapper are h3 (sub-section) or h4 (task title).
+    assert Enum.all?(headings, &(&1 in [3, 4]))
+    # The first heading inside the wrapper is h3.
+    assert hd(headings) == 3
+    # Transitions: 3→4, 4→3, 3→3 are allowed; no skips.
     headings
     |> Enum.chunk_every(2, 1, :discard)
     |> Enum.each(fn [a, b] -> assert abs(a - b) <= 1 or b <= a end)
@@ -282,7 +288,9 @@ defmodule Itgr.ContextEngine do
                 task_status: "pending", task_type: "one_off",
                 task_spec: "s", time_to_pickup: nil}]
     [msg, _] = ContextEngine.build_task_list_block(active, [], base_level: 4)
-    assert String.starts_with?(msg.content, "#### Task list")
+    # Wrapper stays `<task_list>` regardless of base_level — base_level
+    # only shifts inner heading depth.
+    assert String.starts_with?(msg.content, "<task_list>")
     assert String.contains?(msg.content, "##### one_off")
     assert String.contains?(msg.content, "###### (1) Z")
     refute String.contains?(msg.content, "a1")

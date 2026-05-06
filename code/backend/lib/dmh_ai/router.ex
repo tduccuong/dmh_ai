@@ -560,6 +560,43 @@ defmodule DmhAi.Router do
     end
   end
 
+  # GET /me/preferences — return the per-user preferences blob (FE-
+  # serialised, defaults applied). Visible to every authenticated
+  # user, NOT admin-gated — these are personal toggles, not global
+  # runtime config (which lives in /admin/settings).
+  get "/me/preferences" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      Auth.get_my_preferences(conn, user)
+    end
+  end
+
+  # PUT /me/preferences — replace one or more preference keys. Body
+  # is a JSON map of `{key: value}`; keys not in the schema are
+  # rejected, types are validated. Same all-users gate as the GET.
+  put "/me/preferences" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      Auth.put_my_preferences(conn, user)
+    end
+  end
+
+  # GET /me/credentials — list the caller's saved credentials,
+  # metadata-only (no payloads). Used by the Conversation Settings
+  # "Connected accounts" panel. Visible to every authenticated user.
+  get "/me/credentials" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      Auth.list_my_credentials(conn, user)
+    end
+  end
+
+  # DELETE /me/credentials/:id — revoke one credential row. Scopes
+  # to (user_id, id) so users can only delete their OWN rows; admin
+  # is not special here. Visible to every authenticated user.
+  delete "/me/credentials/:id" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      Auth.delete_my_credential(conn, user, id)
+    end
+  end
+
   put "/users/:uid" do
     with {:ok, conn, user} <- check_auth(conn) do
       Auth.put_update_user(conn, user, uid)

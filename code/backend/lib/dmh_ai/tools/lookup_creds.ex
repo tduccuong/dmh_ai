@@ -6,7 +6,7 @@
 defmodule DmhAi.Tools.LookupCreds do
   @behaviour DmhAi.Tools.Behaviour
 
-  alias DmhAi.Auth.Credentials
+  alias DmhAi.Auth.{Credentials, OAuth2}
 
   @impl true
   def name, do: "lookup_creds"
@@ -14,7 +14,12 @@ defmodule DmhAi.Tools.LookupCreds do
   @impl true
   def description do
     """
-    Fetch a previously-saved credential. With `target`: returns `{found, kind, payload, expires_at, is_expired, notes}`. Without `target`: returns the list of saved targets (metadata only).
+    Fetch saved credential(s) for a target. Returns an ARRAY shape:
+    `{found, target, credentials: [{account, kind, payload, expires_at, is_expired, notes}, ...]}`. Multiple entries mean the user has authorized this service from multiple accounts.
+
+    When `credentials` has more than one entry AND the user did not name a specific account in their ask, perform the requested action against EACH account in parallel and merge the results in your final reply, attributing each section to its account. Use the optional `account` arg to filter to a single entry once the user picks one (or for follow-up turns where the user named an account).
+
+    Without `target`: returns the metadata list of every saved credential — one row per (target, account) tuple — so you can choose which to fetch in detail.
     """
   end
 
@@ -28,7 +33,11 @@ defmodule DmhAi.Tools.LookupCreds do
         properties: %{
           target: %{
             type: "string",
-            description: "Exact target label previously used with save_creds. Omit to list all saved targets (metadata only)."
+            description: "Exact target label (e.g. `oauth:googleapis.com`, `mcp:<canonical>`, or a free-form label previously used with save_creds). Omit to list every saved (target, account) pair without payloads."
+          },
+          account: %{
+            type: "string",
+            description: "Optional account label (typically the email/login the OAuth provider returned). Omit to fetch every account for the target. Provide when the user named one or when a previous lookup result narrowed to a single choice."
           }
         },
         required: []
@@ -39,31 +48,58 @@ defmodule DmhAi.Tools.LookupCreds do
   @impl true
   def execute(args, ctx) do
     user_id = ctx[:user_id] || ctx["user_id"]
+    target  = trim_or_nil(args["target"])
+    account = trim_or_nil(args["account"])
 
     cond do
       is_nil(user_id) or user_id == "" ->
         {:error, "no user_id in context"}
 
-      is_binary(args["target"]) and args["target"] != "" ->
-        case Credentials.lookup(user_id, args["target"]) do
-          nil ->
-            {:ok, %{found: false, target: args["target"]}}
-
-          cred ->
-            {:ok,
-             %{
-               found:      true,
-               target:     cred.target,
-               kind:       cred.kind,
-               payload:    cred.payload,
-               notes:      cred.notes,
-               expires_at: cred.expires_at,
-               is_expired: cred.is_expired
-             }}
-        end
+      is_binary(target) ->
+        creds = OAuth2.lookup_all_with_refresh(user_id, target)
+        creds = if is_binary(account), do: Enum.filter(creds, &(&1.account == account)), else: creds
+        {:ok, build_target_result(target, account, creds)}
 
       true ->
         {:ok, %{targets: Credentials.list(user_id)}}
     end
   end
+
+  # ── private ──────────────────────────────────────────────────────────
+
+  defp build_target_result(target, _account, []) do
+    %{found: false, target: target, credentials: []}
+  end
+
+  defp build_target_result(target, _account, creds) when is_list(creds) do
+    %{
+      found:       true,
+      target:      target,
+      credentials: Enum.map(creds, &cred_to_entry/1)
+    }
+  end
+
+  defp cred_to_entry(cred) do
+    base = %{
+      account:    cred.account,
+      kind:       cred.kind,
+      payload:    cred.payload,
+      notes:      cred.notes,
+      expires_at: cred.expires_at,
+      is_expired: cred.is_expired
+    }
+
+    case Map.get(cred, :refresh_error) do
+      nil   -> base
+      reason -> Map.put(base, :refresh_error, reason)
+    end
+  end
+
+  defp trim_or_nil(s) when is_binary(s) do
+    case String.trim(s) do
+      ""    -> nil
+      v     -> v
+    end
+  end
+  defp trim_or_nil(_), do: nil
 end

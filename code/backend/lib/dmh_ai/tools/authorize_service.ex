@@ -88,22 +88,52 @@ defmodule DmhAi.Tools.AuthorizeService do
         {:error, "authorize_service requires a non-empty `target` (slug, host, or URL)"}
 
       true ->
-        case lookup_catalog(target_in) do
-          nil ->
-            {:error,
-             "No entry in the curated OAuth catalog matches `#{target_in}`. Either the host isn't registered in this deployment yet (ask admin to add it), or this service doesn't use OAuth at all. Don't retry the same target — tell the user truthfully and offer alternatives (browser_task once available, web_search for public info, or honest decline)."}
-
-          %{} = entry ->
+        case Catalog.resolve(target_in) do
+          {:ok, %{} = entry} ->
             already_authorized_or_init(user_id, session_id, anchor_n, entry)
+
+          {:ambiguous, candidates} ->
+            {:error, ambiguous_message(target_in, candidates)}
+
+          {:none, candidates} ->
+            {:error, none_message(target_in, candidates)}
         end
     end
   end
 
-  # ── catalog lookup ───────────────────────────────────────────────────────
+  # ── error messaging (shape-only; no test-case bake-in) ─────────────────
 
-  defp lookup_catalog(target) do
-    # Try slug first (exact); fall through to host/URL match.
-    Catalog.get_by_slug(target) || Catalog.get_by_host(target)
+  # Multiple plausible matches — model can't auto-resolve. Surface
+  # the candidates to the USER (via the model's reply) and let the
+  # user pick. Don't guess — wrong guess strands a real flow.
+  defp ambiguous_message(target_in, candidates) do
+    "Multiple configured services could match `#{target_in}`:\n" <>
+      format_candidate_list(candidates) <>
+      "\nTell the user which configured services your input could mean and ask them to pick one (by slug) " <>
+      "OR to give the URL of the service they actually want. Don't guess — retry only with the user's explicit choice."
+  end
+
+  # No match — either nothing close in the catalog, or the catalog is
+  # empty in this deployment. Surface what IS available; if there's
+  # nothing close at all, tell the user the service isn't configured
+  # and offer fallbacks (browser, web_search, honest decline).
+  defp none_message(_target_in, []) do
+    "No OAuth services are configured in this deployment. Tell the user honestly: this DMH-AI install has no OAuth catalog yet (the operator hasn't wired any). Offer alternatives: `browser_task` (when available, drives the user-facing site), `web_search` (for public info that doesn't need auth), or honest decline. Suggest they ask the operator to add the service to the OAuth catalog."
+  end
+
+  defp none_message(target_in, candidates) do
+    "No service in the OAuth catalog matches `#{target_in}`. Configured services nearest to your input:\n" <>
+      format_candidate_list(candidates) <>
+      "\nTell the user truthfully that `#{target_in}` didn't resolve, list the closest configured services above by slug, " <>
+      "and ask them to pick one OR give a URL for the service they actually want. " <>
+      "If none of the candidates fit and the user can't supply a URL, the service isn't wired up here — offer `browser_task` " <>
+      "(when available), `web_search` (for public info), or honest decline. Don't guess and retry."
+  end
+
+  defp format_candidate_list(candidates) do
+    Enum.map_join(candidates, "\n", fn e ->
+      "  - slug=`#{e.slug}` host=#{e.host_match} (#{e.display_name})"
+    end)
   end
 
   # ── already-authorized shortcut ──────────────────────────────────────────

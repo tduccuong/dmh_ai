@@ -592,6 +592,83 @@ defmodule DmhAi.Handlers.Auth do
     }
   end
 
+  # GET /me/preferences — return current per-user preferences blob,
+  # FE-serialised with defaults filled in. Visible to every
+  # authenticated user.
+  def get_my_preferences(conn, user) do
+    json(conn, 200, DmhAi.Auth.UserPreferences.serialize(user.id))
+  end
+
+  # PUT /me/preferences — replace one or more preference keys. Body
+  # shape: `{"conservativeTokenSaving": true|false, ...}`. Unknown
+  # keys are rejected with 400; type-mismatches are rejected so the
+  # JSON blob stays canonical.
+  def put_my_preferences(conn, user) do
+    {:ok, body, conn} = read_body(conn)
+
+    case Jason.decode(body || "{}") do
+      {:ok, payload} when is_map(payload) ->
+        case validate_and_apply_preferences(user.id, payload) do
+          :ok ->
+            json(conn, 200, DmhAi.Auth.UserPreferences.serialize(user.id))
+
+          {:error, reason} ->
+            json(conn, 400, %{error: reason})
+        end
+
+      _ ->
+        json(conn, 400, %{error: "Body must be a JSON object"})
+    end
+  end
+
+  # GET /me/credentials — list-only view of the caller's saved
+  # credential rows. Metadata only — never payload — so accidental
+  # console / FE leaks can't expose tokens. Surface fields the
+  # Connected accounts panel needs to render: id (for the per-row
+  # revoke button), target (service identity), account (multi-
+  # account label), kind (oauth2_service / api_key_mcp / etc.),
+  # expiry status, and timestamps.
+  def list_my_credentials(conn, user) do
+    rows = DmhAi.Auth.Credentials.list(user.id)
+    json(conn, 200, %{credentials: rows})
+  end
+
+  # DELETE /me/credentials/:id — revoke ONE row, scoped to the
+  # caller's user_id. We resolve `(user_id, id)` to a target+account
+  # pair before delegating to `delete/3` so the caller can't trick
+  # the row-id into deleting another user's credential by guessing.
+  def delete_my_credential(conn, user, id_str) do
+    case Integer.parse(id_str || "") do
+      {id, ""} ->
+        case DmhAi.Auth.Credentials.list(user.id) |> Enum.find(&(&1.id == id)) do
+          nil ->
+            json(conn, 404, %{error: "credential not found"})
+
+          %{target: target, account: account} ->
+            DmhAi.Auth.Credentials.delete(user.id, target, account)
+            DmhAi.SysLog.log("[ME:CREDS] revoked user=#{user.id} target=#{target} account=#{inspect(account)}")
+            json(conn, 200, %{ok: true})
+        end
+
+      _ ->
+        json(conn, 400, %{error: "id must be an integer"})
+    end
+  end
+
+  defp validate_and_apply_preferences(user_id, payload) do
+    Enum.reduce_while(payload, :ok, fn
+      {"conservativeTokenSaving", v}, :ok when is_boolean(v) ->
+        :ok = DmhAi.Auth.UserPreferences.put_conservative_token_saving(user_id, v)
+        {:cont, :ok}
+
+      {"conservativeTokenSaving", _}, :ok ->
+        {:halt, {:error, "conservativeTokenSaving must be boolean"}}
+
+      {key, _}, :ok ->
+        {:halt, {:error, "unknown preference key: #{key}"}}
+    end)
+  end
+
   # PUT /users/:id (admin: update user)
   def put_update_user(conn, user, uid) do
     if user.role != "admin" do

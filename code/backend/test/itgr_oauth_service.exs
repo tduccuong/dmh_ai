@@ -143,12 +143,36 @@ defmodule Itgr.OAuthService do
     user = uid(); sess = uid(); seed_user(user)
     n = seed_session_with_task(user, sess)
 
+    # Seed at least one row so the resolver's "no service matches"
+    # branch fires with candidates, not the "catalog is empty"
+    # branch. Both branches surface honest errors; the candidates
+    # variant is the more common production case.
+    seed_catalog("seeded_other", "seeded-other.test")
+
     assert {:error, msg} =
              AuthorizeService.execute(%{"target" => "totally-unknown-host.test"},
                                        ctx_for(user, sess, n))
 
-    assert msg =~ "No entry in the curated OAuth catalog"
+    assert msg =~ "No service in the OAuth catalog matches"
     assert msg =~ "totally-unknown-host.test"
+    # Closest configured services are surfaced for the model to
+    # relay to the user.
+    assert msg =~ "slug=`seeded_other`"
+    # Guidance: don't guess, ask the user OR ask for a URL.
+    assert msg =~ "ask them to pick"
+  end
+
+  test "authorize_service: target not in catalog AND catalog empty → honest empty-catalog error" do
+    user = uid(); sess = uid(); seed_user(user)
+    n = seed_session_with_task(user, sess)
+
+    assert {:error, msg} =
+             AuthorizeService.execute(%{"target" => "totally-unknown-host.test"},
+                                       ctx_for(user, sess, n))
+
+    assert msg =~ "No OAuth services are configured"
+    assert msg =~ "browser_task"
+    assert msg =~ "web_search"
   end
 
   # ─── Tool: cold start fires the OAuth flow ─────────────────────────────────

@@ -968,6 +968,10 @@ defmodule DmhAi.Agent.UserAgent do
         active_tasks: active_tasks,
         recent_done:  recent_done,
         files:        [],
+        # The silent-pickup task IS the anchor for this chain — pass
+        # its `task_num` so the conservative-token-saving filter can
+        # drop other-task-tagged history.
+        anchor_task_num: Map.get(task, :task_num),
         # Forward the silent-pickup target so the anchor block names
         # this task explicitly (no runtime lookup would otherwise pick
         # a periodic task over other candidates).
@@ -1083,12 +1087,13 @@ defmodule DmhAi.Agent.UserAgent do
 
     %{role: "user",
       content:
-        "[Task due: (#{task_num}) — #{task.task_title}]\n\n" <>
+        "<silent_pickup>\n\n" <>
+        "**Task due: (#{task_num}) — #{task.task_title}**\n\n" <>
         "This is a PICKUP of the EXISTING periodic task (#{task_num}). " <>
         "The runtime has already flipped it to `ongoing` for you — " <>
         "you do NOT need to call `pickup_task`. (Calling it is a harmless " <>
         "no-op; skipping it is preferred to save a turn.)\n\n" <>
-        "STAY IN LANE — a silent pickup is scoped to THIS ONE TASK. " <>
+        "**STAY IN LANE** — a silent pickup is scoped to THIS ONE TASK. " <>
         "Even if the user asked about a different task in an earlier " <>
         "conversational turn, do NOT act on that here. The user will " <>
         "re-ask on their next message; wait for it. Forbidden this turn: " <>
@@ -1096,15 +1101,16 @@ defmodule DmhAi.Agent.UserAgent do
         "`pause_task` / `cancel_task` on ANY task_num other than " <>
         "#{task_num}, and cancelling (#{task_num}) itself to " <>
         "free the periodic slot.\n\n" <>
-        "Workflow:\n" <>
-        "  1. Run whatever execution tools you need (web_fetch, run_script, etc.) " <>
+        "**Workflow:**\n\n" <>
+        "1. Run whatever execution tools you need (web_fetch, run_script, etc.) " <>
         "to produce this cycle's fresh output.\n" <>
-        "  2. Close (#{task_num}) with `complete_task` — passing the task's " <>
+        "2. Close (#{task_num}) with `complete_task` — passing the task's " <>
         "number and a one-line short summary. The runtime auto-reschedules the next cycle.\n" <>
-        "  3. Your final text IS the task output (the joke, the quote, the status — " <>
+        "3. Your final text IS the task output (the joke, the quote, the status — " <>
         "whatever this task produces). Write it directly in the user's language. " <>
         "NO meta-prefix like \"Joke delivered:\", \"Task complete\", \"Here is your...\", " <>
-        "\"Your update:\". The user just wants the content."}
+        "\"Your update:\". The user just wants the content.\n\n" <>
+        "</silent_pickup>"}
   end
 
   defp silent_pickup_kicker(task, :auto_pivot) do
@@ -1113,23 +1119,25 @@ defmodule DmhAi.Agent.UserAgent do
 
     %{role: "user",
       content:
-        "[Auto-pivot pickup: anchor moved to (#{task_num}) — #{inspect(spec)}]\n\n" <>
+        "<auto_pivot_pickup>\n\n" <>
+        "**Anchor moved to (#{task_num}) — #{inspect(spec)}**\n\n" <>
         "The previous chain consumed the user's pivot signal by closing the prior " <>
         "anchor. The trailing user-role message in your context above is the " <>
         "runtime's already-handled trigger, NOT a fresh ask. Treat (#{task_num})'s " <>
         "spec as the directive and begin execution work on it.\n\n" <>
-        "STAY IN LANE — a runtime-synthesised pickup is scoped to THIS ONE TASK. " <>
+        "**STAY IN LANE** — a runtime-synthesised pickup is scoped to THIS ONE TASK. " <>
         "Forbidden this turn: any close-verb on (#{task_num}) before producing " <>
         "real work for it; `create_task` (any type); `pickup_task` / " <>
         "`complete_task` / `pause_task` / `cancel_task` on any other task_num. " <>
         "Do NOT respond to the trailing chat-tail — it is consumed.\n\n" <>
-        "Workflow:\n" <>
-        "  1. Run whatever execution tools the spec requires (web_fetch, " <>
+        "**Workflow:**\n\n" <>
+        "1. Run whatever execution tools the spec requires (web_fetch, " <>
         "run_script, MCP integrations, etc.) to deliver the answer.\n" <>
-        "  2. Close (#{task_num}) with `complete_task` — passing the task's " <>
+        "2. Close (#{task_num}) with `complete_task` — passing the task's " <>
         "number and a one-line short result.\n" <>
-        "  3. Your final text IS the answer. Write it directly in the user's " <>
-        "language. No meta-prefix, no bookkeeping line."}
+        "3. Your final text IS the answer. Write it directly in the user's " <>
+        "language. No meta-prefix, no bookkeeping line.\n\n" <>
+        "</auto_pivot_pickup>"}
   end
 
   # Mid-chain splice: return `messages` with any newly-arrived user
@@ -1213,22 +1221,24 @@ defmodule DmhAi.Agent.UserAgent do
   # finish the task cleanly or emit text, not probe.
   defp render_anchor_refresh_block(nil) do
     body =
-      "## Active task — UPDATED\n\n" <>
+      "<active_task_update>\n\n" <>
         "- Current task: none (free mode).\n" <>
         "- The chain's pickup task is closed and no back-reference " <>
         "remains. **Emit your final user-facing text and end the " <>
-        "chain.** No more tool calls."
+        "chain.** No more tool calls.\n\n" <>
+        "</active_task_update>"
 
     [%{role: "user", content: body}]
   end
 
   defp render_anchor_refresh_block(n) when is_integer(n) do
     body =
-      "## Active task — UPDATED\n\n" <>
+      "<active_task_update>\n\n" <>
         "- Current task: (#{n}).\n" <>
         "- The previous task in this chain is closed; focus has " <>
         "returned to (#{n}) via its back-reference. Continue the " <>
-        "work or emit your final text."
+        "work or emit your final text.\n\n" <>
+        "</active_task_update>"
 
     [%{role: "user", content: body}]
   end
@@ -1629,15 +1639,35 @@ defmodule DmhAi.Agent.UserAgent do
     active_tasks = Tasks.active_for_session(session_id)
     recent_done  = Tasks.recent_done_for_session(session_id)
 
+    # Resolve the active-task anchor at chain start. Mutates during
+    # the chain via `maybe_mutate_anchor/4` inside `execute_tools`:
+    # pickup_task pushes the prior anchor as the picked-up task's
+    # `back_to_when_done_task_num`; complete / cancel / pause of the
+    # current anchor flips back to that stored back-reference. Drives
+    # persisted-message tagging AND gets refreshed into the prompt's
+    # `## Active task` block at the next turn boundary. See
+    # architecture.md §Anchor mutation via back_to_when_done back-stack.
+    #
+    # Resolved BEFORE `build_assistant_messages` so the chain-start
+    # anchor can be passed in for the conservative-token-saving
+    # filter — that filter needs the anchor to decide which tagged
+    # messages to drop.
+    anchor = DmhAi.Agent.Anchor.resolve(session_id)
+    anchor_task_num = anchor && anchor.task_num
+
     llm_messages =
       ContextEngine.build_assistant_messages(session_data,
-        user_id:      user_id,
-        profile:      profile,
-        active_tasks: active_tasks,
-        recent_done:  recent_done,
-        files:        command.files,
-        timezone:     command.timezone,
-        local_date:   command.local_date
+        user_id:         user_id,
+        profile:         profile,
+        active_tasks:    active_tasks,
+        recent_done:     recent_done,
+        files:           command.files,
+        timezone:        command.timezone,
+        local_date:      command.local_date,
+        # Pass the chain-start anchor so the conservative-token-saving
+        # filter can drop persisted messages tagged with other tasks
+        # at chain start. nil = free-mode → filter is a no-op.
+        anchor_task_num: anchor_task_num
       )
 
     data_dir      = DmhAi.Constants.session_data_dir(email, session_id)
@@ -1651,17 +1681,6 @@ defmodule DmhAi.Agent.UserAgent do
     # turn (chain end) to enforce that each fresh attachment was
     # actually extract_content'd during this chain.
     fresh_attachment_paths = DmhAi.Agent.Police.extract_fresh_attachment_paths(llm_messages)
-
-    # Resolve the active-task anchor at chain start. Mutates during
-    # the chain via `maybe_mutate_anchor/4` inside `execute_tools`:
-    # pickup_task pushes the prior anchor as the picked-up task's
-    # `back_to_when_done_task_num`; complete / cancel / pause of the
-    # current anchor flips back to that stored back-reference. Drives
-    # persisted-message tagging AND gets refreshed into the prompt's
-    # `## Active task` block at the next turn boundary. See
-    # architecture.md §Anchor mutation via back_to_when_done back-stack.
-    anchor = DmhAi.Agent.Anchor.resolve(session_id)
-    anchor_task_num = anchor && anchor.task_num
 
     ctx = %{
       user_id:       user_id,
@@ -1929,6 +1948,9 @@ defmodule DmhAi.Agent.UserAgent do
           # so subsequent LLM calls in this chain see the model's own
           # reasoning alongside its tool_calls — without it the LLM
           # would lose track of why it picked a particular tool.
+          # Capture the pre-call anchor so the conservative-token-saving
+          # mid-chain refilter (below) can detect anchor flips.
+          prev_anchor_task_num = Map.get(ctx, :anchor_task_num)
           {tool_result_msgs_raw, tagged_calls, ctx} = execute_tools(calls, messages, ctx)
           assistant_msg = %{role: "assistant", content: clean_narration, tool_calls: tagged_calls}
 
@@ -2065,6 +2087,21 @@ defmodule DmhAi.Agent.UserAgent do
               case maybe_abort_on_model_behavior_issue(ctx, model) do
                 :continue ->
                   new_messages = messages ++ [assistant_msg] ++ tool_result_msgs
+
+                  # Mid-chain conservative-token-saving refilter. When
+                  # the user opted in AND the anchor just flipped to a
+                  # different non-nil task (create_task or pickup_task
+                  # success), drop persisted messages tagged with other
+                  # task_nums from the in-memory list. The freshly-
+                  # created task starts its first turn with clean
+                  # context. Closing verbs that flip anchor → nil are a
+                  # no-op here so follow-up questions on the just-
+                  # closed task retain its messages. See
+                  # specs/architecture.md §Conservative token saving.
+                  new_messages =
+                    maybe_conservative_refilter(
+                      new_messages, ctx, prev_anchor_task_num)
+
                   session_chain_loop(new_messages, model, ctx, turn + 1)
 
                 :aborted ->
@@ -2366,6 +2403,49 @@ defmodule DmhAi.Agent.UserAgent do
   end
 
   defp decode_form_from_content(_), do: nil
+
+  # Conservative-token-saving mid-chain refilter. Fires once per
+  # `session_chain_loop` iteration AFTER `execute_tools` returns,
+  # checking whether the anchor just flipped to a different non-nil
+  # task. When it has AND the user opted into the toggle, drop
+  # persisted messages tagged with `task_num != new_anchor` from the
+  # in-memory list. In-chain pairs (assistant tool_calls, tool
+  # results) carry no `task_num` field at the message level so they
+  # always survive — `tool_call_task_nums` attribution is on the call
+  # id, not the message map.
+  #
+  # The filter is a NO-OP when:
+  #   * User has not opted in (default).
+  #   * Anchor is unchanged (no transition).
+  #   * Anchor flipped to nil (close-verb without back-ref) — preserves
+  #     the just-closed task's messages so follow-up questions still
+  #     have context.
+  #   * Anchor flipped from nil to a value (rare — happens mid-chain
+  #     after `create_task` from free mode). The chain-start build
+  #     also runs the filter, so this case is handled there too; we
+  #     re-apply here for the inline-create scenario where the
+  #     chain-start anchor was nil.
+  defp maybe_conservative_refilter(messages, ctx, prev_anchor_task_num) do
+    new_anchor = Map.get(ctx, :anchor_task_num)
+    user_id    = Map.get(ctx, :user_id)
+
+    cond do
+      not is_binary(user_id) ->
+        messages
+
+      not is_integer(new_anchor) ->
+        messages
+
+      new_anchor == prev_anchor_task_num ->
+        messages
+
+      not DmhAi.Auth.UserPreferences.conservative_token_saving?(user_id) ->
+        messages
+
+      true ->
+        DmhAi.Agent.ContextEngine.filter_other_tasks(messages, new_anchor)
+    end
+  end
 
   # Resolve the chain's anchor task to its internal task_id (UUID) so
   # downstream callers (Tools.Registry, Police, MCP.Registry.attach)

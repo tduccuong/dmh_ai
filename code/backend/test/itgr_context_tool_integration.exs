@@ -3,7 +3,7 @@
 #
 # Covers:
 #  - AttachmentPaths.clean_spec/1 strips both line-start and inline 📎 refs
-#  - ContextEngine injects "## Recently-extracted files" block when
+#  - ContextEngine injects "<recently_extracted_files>" block when
 #    tool_history contains extract_content entries, with task_num cross-ref
 #  - The block is absent on sessions with no extractions
 
@@ -93,7 +93,7 @@ defmodule Itgr.ContextToolIntegration do
     sd = load_session_data(sid, uid_, [user_msg("hi")])
 
     msgs = ContextEngine.build_assistant_messages(sd, active_tasks: [], recent_done: [])
-    refute find_msg(msgs, "user", &String.starts_with?(&1, "## Recently-extracted files"))
+    refute find_msg(msgs, "user", &String.starts_with?(&1, "<recently_extracted_files>"))
   end
 
   test "present with filename + task_num when tool_history has an extract_content entry" do
@@ -140,7 +140,7 @@ defmodule Itgr.ContextToolIntegration do
 
     msgs = ContextEngine.build_assistant_messages(sd, active_tasks: [], recent_done: [done_task])
 
-    block = find_msg(msgs, "user", &String.starts_with?(&1, "## Recently-extracted files"))
+    block = find_msg(msgs, "user", &String.starts_with?(&1, "<recently_extracted_files>"))
     assert block != nil, "Recently-extracted block should be injected"
     assert String.contains?(block.content, path)
     assert String.contains?(block.content, "(1)"),
@@ -170,7 +170,7 @@ defmodule Itgr.ContextToolIntegration do
     sd = load_session_data(sid, uid_, [user_msg("hi")])
 
     msgs = ContextEngine.build_assistant_messages(sd, active_tasks: [], recent_done: [])
-    block = find_msg(msgs, "user", &String.starts_with?(&1, "## Recently-extracted files"))
+    block = find_msg(msgs, "user", &String.starts_with?(&1, "<recently_extracted_files>"))
 
     assert block != nil
     # The path should appear exactly once in the block.

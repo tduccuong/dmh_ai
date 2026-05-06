@@ -113,13 +113,14 @@ defmodule DmhAi.Agent.ContextEngine do
   """
   @spec build_assistant_messages(map(), keyword()) :: [map()]
   def build_assistant_messages(session_data, opts \\ []) do
-    profile      = Keyword.get(opts, :profile, "")
-    active_tasks = Keyword.get(opts, :active_tasks, [])
-    recent_done  = Keyword.get(opts, :recent_done, [])
-    files        = Keyword.get(opts, :files, [])
-    user_id      = Keyword.get(opts, :user_id)
-    timezone     = Keyword.get(opts, :timezone)
-    local_date   = Keyword.get(opts, :local_date)
+    profile         = Keyword.get(opts, :profile, "")
+    active_tasks    = Keyword.get(opts, :active_tasks, [])
+    recent_done     = Keyword.get(opts, :recent_done, [])
+    files           = Keyword.get(opts, :files, [])
+    user_id         = Keyword.get(opts, :user_id)
+    timezone        = Keyword.get(opts, :timezone)
+    local_date      = Keyword.get(opts, :local_date)
+    anchor_task_num = Keyword.get(opts, :anchor_task_num)
 
     system_msg = %{role: "system",
                    content: SystemPrompt.generate_assistant(
@@ -127,6 +128,16 @@ defmodule DmhAi.Agent.ContextEngine do
                      timezone:   timezone,
                      local_date: local_date
                    )}
+
+    # Per-user "Conservative token saving": when enabled AND a task is
+    # currently the anchor, drop messages tagged with task_num != anchor
+    # from the persisted message history. The model still sees the Task
+    # List block (next-state knowledge) and can `fetch_task(N)` for the
+    # closed-task body on demand. With anchor=nil (free-mode / just
+    # post-completion follow-up) the filter is a no-op so the user
+    # doesn't lose context for an in-flight follow-up. See architecture
+    # spec §Conservative token saving.
+    session_data = maybe_filter_other_tasks(session_data, user_id, anchor_task_num)
 
     {prefix, history_llm, relevant_msgs, last_msgs} =
       build_core(session_data, [], files, nil, nil)
@@ -204,67 +215,108 @@ defmodule DmhAi.Agent.ContextEngine do
   defp build_available_services_block(nil), do: []
 
   defp build_available_services_block(user_id) when is_binary(user_id) do
-    case DmhAi.MCP.Registry.list_authorized(user_id) do
+    oauth_section = format_oauth_section(user_id)
+    mcp_section   = format_mcp_section(user_id)
+
+    case Enum.reject([oauth_section, mcp_section], &(&1 == "")) do
       [] ->
         []
 
-      services ->
-        rows = Enum.map_join(services, "\n", &format_service_row/1)
-
+      sections ->
+        # XML-tag wrapping makes this a structurally-visible block the
+        # model can't drift past. The `target=` strings inside are
+        # LITERAL — `lookup_creds` does an exact match on `target`,
+        # not a fuzzy resolve, so the model must pass exactly what's
+        # shown here. Header forbids paraphrase to make that contract
+        # unmissable.
         body =
-          "## Authorized MCP services\n\n" <>
-            "External services this user has authorized previously. They are NOT in your " <>
-            "current tool catalog — to use any of them in this task, call `connect_mcp` " <>
-            "with the URL listed below. Re-attachment is fast (auth is cached at user level; no browser dance). " <>
-            "Attachments are per-task: every new task that needs a service must re-attach.\n\n" <>
-            rows
+          "<authorized_services>\n\n" <>
+            "Use these EXACT strings — copy verbatim, don't paraphrase.\n\n" <>
+            Enum.join(sections, "\n\n") <>
+            "\n\n</authorized_services>"
 
         [
           %{role: "user",      content: body},
-          %{role: "assistant", content: "Understood — I'll call `connect_mcp` when I need to use one of these."}
+          %{role: "assistant", content: "Understood — I'll use lookup_creds for OAuth and connect_mcp for MCP services."}
         ]
     end
   end
 
   defp build_available_services_block(_), do: []
 
-  defp format_service_row(s) do
-    tools_summary = format_tools_summary(s.tools, s.alias)
-    status_tag    = format_status_tag(s.status)
+  # OAuth section — one bullet per credential row, showing the literal
+  # `target=` string the model must pass to `lookup_creds`. Multi-
+  # account rows list every account label so the `account=` arg has a
+  # known, copyable shape. Legacy rows with `account=""` render as
+  # `default`. Empty string when the user has no oauth2_service
+  # credentials so the caller can drop the section entirely.
+  defp format_oauth_section(user_id) do
+    creds =
+      user_id
+      |> DmhAi.Auth.Credentials.list()
+      |> Enum.filter(&(&1.kind == "oauth2_service"))
 
-    "- Alias: `#{s.alias}`#{status_tag}, URL: `#{s.canonical_resource}`, " <>
-      tools_summary <> ", " <>
-      "Attach: `connect_mcp(url: \"#{s.canonical_resource}\")`"
+    case creds do
+      [] ->
+        ""
+
+      _ ->
+        by_target = Enum.group_by(creds, & &1.target)
+
+        rows =
+          by_target
+          |> Enum.map(fn {target, accounts} ->
+            account_labels =
+              accounts
+              |> Enum.map(fn a ->
+                case a.account do
+                  "" -> "default"
+                  acc -> acc
+                end
+              end)
+              |> Enum.uniq()
+              |> Enum.join(", ")
+
+            "- target=`#{target}`   accounts: #{account_labels}"
+          end)
+          |> Enum.sort()
+          |> Enum.join("\n")
+
+        "**OAuth** — call `lookup_creds(target: \"<target>\")`. " <>
+          "Multiple accounts → pass `account: \"<account>\"` to filter to one.\n\n" <>
+          rows
+    end
   end
 
-  # Surfaces a `needs_auth` service to the model: the tool catalog is
-  # filtered (it can't invoke any of the alias's tools), but the row
-  # is still here with a `[needs re-auth]` annotation. The recovery
-  # action — `connect_mcp(url: …)` — appears on the same line so
-  # the model can act on a single read.
-  defp format_status_tag("needs_auth"),
-    do: " **[needs re-auth — call `connect_mcp` to recover]**"
-  defp format_status_tag(_), do: ""
+  # MCP section — one bullet per attached server with alias + URL.
+  # `connect_mcp` takes a URL, not a target, so the URL is what the
+  # model copies. `[needs_auth]` surfaces re-auth state so the model
+  # can call `connect_mcp` to recover.
+  defp format_mcp_section(user_id) do
+    services = DmhAi.MCP.Registry.list_authorized(user_id)
 
-  defp format_tools_summary([], _alias_), do: "Tools: (catalog refreshed on next attach)"
+    case services do
+      [] ->
+        ""
 
-  defp format_tools_summary(tools, alias_) when is_list(tools) do
-    count = length(tools)
+      _ ->
+        rows =
+          services
+          |> Enum.map(fn s ->
+            tag =
+              case s.status do
+                "needs_auth" -> " [needs_auth]"
+                _            -> ""
+              end
 
-    examples =
-      tools
-      |> Enum.take(3)
-      |> Enum.map(fn t ->
-        n = Map.get(t, "name") || Map.get(t, :name) || ""
-        "#{alias_}.#{n}"
-      end)
-      |> Enum.reject(&(&1 == "#{alias_}."))
-      |> Enum.join(", ")
+            "- alias=`#{s.alias}`#{tag}   url=`#{s.canonical_resource}`"
+          end)
+          |> Enum.sort()
+          |> Enum.join("\n")
 
-    if examples == "" do
-      "Tools: #{count}"
-    else
-      "Tools: #{count} (e.g. #{examples})"
+        "**MCP** — already-authorized servers re-attach per-task via " <>
+          "`connect_mcp(url: \"<url>\")`:\n\n" <>
+          rows
     end
   end
 
@@ -282,7 +334,7 @@ defmodule DmhAi.Agent.ContextEngine do
     # away and the model needs to reload it — prevents weaker models
     # from reflexively fetching on every chain.
     body =
-      "## Active task\n\n" <>
+      "<active_task>\n\n" <>
         "- Current task: (#{n})\n" <>
         "- Your recent activity on this task (prior tool calls, " <>
         "results, narration) is already present in the conversation " <>
@@ -292,7 +344,8 @@ defmodule DmhAi.Agent.ContextEngine do
         "compacted away (older turns no longer visible in your " <>
         "context).\n" <>
         "- Once the task is done, close it with `complete_task` — " <>
-        "passing the task's number and a one-line outcome summary."
+        "passing the task's number and a one-line outcome summary.\n\n" <>
+        "</active_task>"
 
     [
       %{role: "user",      content: body},
@@ -334,6 +387,13 @@ defmodule DmhAi.Agent.ContextEngine do
   def build_task_list_block(active_tasks, recent_done \\ [], opts \\ [])
   def build_task_list_block([], [], _opts), do: []
   def build_task_list_block(active_tasks, recent_done, opts) do
+    # Inside the XML wrapper, sub-sections start at h3 (the wrapper
+    # itself replaces what was an h2 heading). `base_level` was the
+    # markdown-only knob from the pre-XML block; we still honour the
+    # caller's intent by using `base_level + 1` for sub-section
+    # depth (gives `### periodic`, `### one_off`, etc.) and
+    # `base_level + 2` for per-task titles. base_level=2 (default)
+    # → sub=h3, task=h4, which is the FE-rendered shape today.
     base_level = Keyword.get(opts, :base_level, 2)
 
     if base_level + 2 > 6 do
@@ -341,7 +401,6 @@ defmodule DmhAi.Agent.ContextEngine do
         "task-list block base_level=#{base_level} would push task-title headings to level #{base_level + 2}, past Markdown h6"
     end
 
-    top  = String.duplicate("#", base_level)
     sub  = String.duplicate("#", base_level + 1)
     task = String.duplicate("#", base_level + 2)
 
@@ -359,7 +418,7 @@ defmodule DmhAi.Agent.ContextEngine do
     if sections == [] do
       []
     else
-      body = "#{top} Task list\n\n" <> Enum.join(sections, "\n\n")
+      body = "<task_list>\n\n" <> Enum.join(sections, "\n\n") <> "\n\n</task_list>"
 
       [%{role: "user", content: body},
        %{role: "assistant", content: "Noted — task list acknowledged."}]
@@ -469,13 +528,14 @@ defmodule DmhAi.Agent.ContextEngine do
           end)
 
         body =
-          "## Recently-extracted files\n\n" <>
+          "<recently_extracted_files>\n\n" <>
             "The raw extracted content of each file below is currently " <>
             "in your context as a `role: \"tool\"` message (retained from " <>
             "recent turns). Answer follow-up questions about these files " <>
             "directly from those tool messages — do NOT call " <>
             "`extract_content` on them again.\n\n" <>
-            lines
+            lines <>
+            "\n\n</recently_extracted_files>"
 
         [
           %{role: "user",      content: body},
@@ -749,6 +809,53 @@ defmodule DmhAi.Agent.ContextEngine do
   # summary prefix + history + keyword snippets + current message.
   # `web_context` and `memo_context` are nil for the Assistant path
   # (no inline web search, no auto-retrieve memo).
+  @doc """
+  Drop persisted messages whose `task_num` tag points at a task other
+  than the current anchor. Used by:
+    * `build_assistant_messages/2` — chain-start filter when the user
+      has `conservativeTokenSaving=true`.
+    * `DmhAi.Agent.UserAgent.session_chain_loop` — mid-chain re-filter
+      after `maybe_mutate_anchor` flips the anchor to a different
+      non-nil task. Same rule, applied as the chain progresses.
+
+  Behaviour:
+    * `anchor_task_num == nil` → returns the input list unchanged
+      (free-mode / just-completed-follow-up case — no flush).
+    * `anchor_task_num == N` → drops messages where `task_num` is set
+      AND not equal to `N`. Untagged messages stay (free-mode chats,
+      synthetic kickers, in-chain pairs added by `session_chain_loop`).
+    * `messages` containing entries without a `task_num` field — those
+      are always preserved; this helper never invents tags.
+
+  This helper is the single source of truth for the filter rule;
+  callers never re-implement the comparison so a future tag-key change
+  only touches one place.
+  """
+  @spec filter_other_tasks([map()], integer() | nil) :: [map()]
+  def filter_other_tasks(messages, nil), do: messages
+  def filter_other_tasks(messages, anchor_task_num) when is_integer(anchor_task_num) do
+    Enum.reject(messages, fn m ->
+      tag = m["task_num"] || m[:task_num]
+      is_integer(tag) and tag != anchor_task_num
+    end)
+  end
+  def filter_other_tasks(messages, _), do: messages
+
+  # Conservative-token-saving gate: only filter when the user opted in.
+  # Returns `session_data` unchanged when the toggle is off so the
+  # default-behaviour path is byte-identical to pre-feature builds.
+  defp maybe_filter_other_tasks(session_data, nil, _anchor_task_num), do: session_data
+  defp maybe_filter_other_tasks(session_data, user_id, anchor_task_num)
+       when is_binary(user_id) do
+    if DmhAi.Auth.UserPreferences.conservative_token_saving?(user_id) do
+      messages = session_data["messages"] || []
+      filtered = filter_other_tasks(messages, anchor_task_num)
+      Map.put(session_data, "messages", filtered)
+    else
+      session_data
+    end
+  end
+
   defp build_core(session_data, images, files, web_context, memo_context) do
     # Exclude archived messages (previous periodic-task cycles) — visible in FE
     # but not relevant to the LLM's context.
@@ -777,7 +884,11 @@ defmodule DmhAi.Agent.ContextEngine do
     prefix =
       if summary do
         [
-          %{role: "user",      content: "[Summary of our conversation so far]\n#{summary}"},
+          %{role: "user",
+            content: "<conversation_summary>\n\n" <>
+                       "Summary of our conversation so far:\n\n" <>
+                       summary <>
+                       "\n\n</conversation_summary>"},
           %{role: "assistant", content: "Understood, I have the full context of our conversation."}
         ]
       else
