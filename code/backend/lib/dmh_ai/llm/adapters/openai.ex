@@ -28,6 +28,20 @@ defmodule DmhAi.LLM.Adapters.OpenAI do
   def build_body(model, messages, tools, stream, options) do
     base = %{model: model, messages: messages, stream: stream}
 
+    # OpenAI-compatible servers (including ollama-cloud) only emit a
+    # final usage chunk in streaming mode when the client opts in via
+    # `stream_options.include_usage=true`. Without it the runtime's
+    # `on_tokens` callback never fires for streaming calls and the
+    # session_token_stats / worker_token_stats counters stay at 0.
+    # Non-streaming calls always include `usage` in the response body
+    # so this option is only relevant for stream=true.
+    base =
+      if stream do
+        Map.put(base, :stream_options, %{include_usage: true})
+      else
+        base
+      end
+
     base =
       if tools != [] do
         wrapped = Enum.map(tools, fn t -> %{type: "function", function: t} end)
@@ -165,9 +179,14 @@ defmodule DmhAi.LLM.Adapters.OpenAI do
         :ok
     end
 
-    # Some providers stream chain-of-thought as `reasoning_content` or
-    # `thinking` alongside `delta.content`. Surface as thinking tokens.
-    for key <- ["reasoning_content", "thinking"] do
+    # Some providers stream chain-of-thought alongside `delta.content`
+    # in a separate field. Field name varies by provider:
+    #   - DeepSeek/some OpenAI-compat servers: `reasoning_content`
+    #   - ollama.com (gpt-oss, etc.): `reasoning`
+    #   - some upstreams: `thinking`
+    # Surface all of them as thinking tokens (routed to the runtime's
+    # thinking_buffer + the FE's "Thinking out loud" <details> block).
+    for key <- ["reasoning_content", "reasoning", "thinking"] do
       case delta[key] do
         token when is_binary(token) and token != "" ->
           send(ctx.reply_pid, {:thinking, token})

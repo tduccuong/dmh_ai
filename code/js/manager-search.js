@@ -171,17 +171,11 @@ UIManager.sendMessage = async function() {
     const pipelineController = new AbortController();
     self._streamController = pipelineController;
     document.getElementById('send-btn').disabled = true;
-
-    // Initial status bar shows "thinking" — the model hasn't produced any
-    // visible output yet. `_updateStreamPlaceholder` flips the status to
-    // "answering" the first time stream_buffer becomes non-empty, and at
-    // that same moment reveals the assistant message row (creates the
-    // header + unhides the placeholder). For Assistant-mode turns that
-    // never stream (e.g. pure tool-chain with the final text arriving
-    // via append_session_message only), the placeholder stays hidden —
-    // onComplete's renderChat rebuilds from session.messages and
-    // renders the real message from scratch in its natural slot.
-    self.setStatusHtml(modeRoleHtml(sessionAtSend) + t('thinking'));
+    // Status bar stays at "Waiting for <Role>..." (set at the top of this
+    // function) until the BE has acknowledged the POST and the chain has
+    // actually started — at which point we flip to "<Role> is thinking..."
+    // right before pollTurnToCompletion takes over. Setting "thinking"
+    // here would lie about the BE's state during the POST round-trip.
 
     // Called by pollTurnToCompletion once the turn is done. The final
     // assistant message has already been merged into sessionAtSend.messages
@@ -317,6 +311,14 @@ UIManager.sendMessage = async function() {
                 self.renderChat();
             }
         }
+
+        // BE has acknowledged the message — the chain is starting. Do
+        // NOT flip status here. The prelude "Waiting for <Role>..." stays
+        // visible until pollTurnToCompletion's first tick observes one
+        // of: thinking_buffer non-empty (model is producing chain-of-
+        // thought), running_tool_call non-null (a tool is in flight),
+        // or stream_buffer non-empty (final answer streaming). The
+        // status state-machine lives entirely inside the polling tick.
 
         // Kick off the turn-watching polling loop. Runs until a new
         // assistant message has landed AND the stream_buffer has cleared
@@ -588,6 +590,51 @@ UIManager.pollTurnToCompletion = function(sessionAtSend, onComplete, onError, ab
             // thinking-done transition (strip spinner + auto-collapse).
             self._updateThinkingPlaceholder(sessionAtSend, data.thinking_buffer, data.stream_buffer);
 
+            // Status-bar state machine for this user-initiated turn:
+            //
+            //   stream_buffer non-empty                → "answering"
+            //   thinking_buffer OR running_tool_call   → "thinking"
+            //   OR any session_progress row pending
+            //   none of the above                      → leave as-is
+            //                                           (the prelude
+            //                                           "Waiting for <Role>…"
+            //                                           from sendMessage
+            //                                           stays until the
+            //                                           first ACTUAL
+            //                                           activity signal)
+            //
+            // Why not `chain_in_flight`? It flips true the moment the BE
+            // dispatches the chain — i.e. before any visible work has
+            // started. Using it would eclipse the "Waiting for…" prelude
+            // within the POST round-trip + first-poll window (~50-200 ms),
+            // skipping that phase entirely.
+            //
+            // Real activity signals:
+            //   - `thinking_buffer` non-empty: chain-of-thought tokens
+            //     are streaming (gpt-oss reasoning, Anthropic <thinking>).
+            //   - `running_tool_call` non-null: a long-running tool is
+            //     mid-flight.
+            //   - any pending session_progress row: a short tool call,
+            //     a web search (confidant_websearch / tool kinds), or
+            //     similar work has been dispatched.
+            //
+            // Skip when the user has switched away — the destination
+            // session owns its own status. (Switch-back restoration
+            // lives in switchSession via _streamMap.)
+            if (self.currentSession && self.currentSession.id === sessionAtSend.id) {
+                var hasPendingProgress =
+                    (sessionAtSend.progress || []).some(function(p) { return p && p.status === 'pending'; });
+                var statusMode  = (sessionAtSend.mode) || 'confidant';
+                var statusIcon  = (typeof MODE_ICONS !== 'undefined' && MODE_ICONS[statusMode]) || '';
+                var statusLabel = statusMode === 'assistant' ? t('modeAssistant') : t('modeConfidant');
+
+                if (data.stream_buffer) {
+                    self.setStatusHtml(statusIcon + statusLabel + t('answering'));
+                } else if (data.thinking_buffer || data.running_tool_call || hasPendingProgress) {
+                    self.setStatusHtml(statusIcon + statusLabel + t('thinking'));
+                }
+            }
+
             // Long-running tool surfacing (see specs/architecture.md
             // §Long-running tool execution). The BE ships
             // {tool_call_id, progress_row_id, started_at_ms} while a
@@ -681,11 +728,29 @@ UIManager.pollTurnToCompletion = function(sessionAtSend, onComplete, onError, ab
                 return;
             }
 
-            // Adaptive cadence: 500ms while final-text streaming
-            // (sub-second visual update of new tokens), 2s otherwise
-            // (tool-call wait — sub-second polling here just burns
-            // rate-limit budget without improving perceived latency).
-            var nextDelay = data.stream_buffer ? STREAMING_POLL_MS : TOOL_WAIT_POLL_MS;
+            // Adaptive cadence:
+            //
+            // - 500ms while ANY token stream is active — either final
+            //   answer (`stream_buffer`) or chain-of-thought
+            //   (`thinking_buffer`, e.g. gpt-oss reasoning,
+            //   Anthropic <thinking>). Both are progressive UI surfaces
+            //   that feel choppy at 2s.
+            // - 500ms during the first ~3s of the turn regardless of
+            //   signals. Otherwise, if the first tick observes nothing
+            //   yet (BE just dispatched, no flush yet), `nextDelay` would
+            //   stick at 2s and a fast reasoning turn that completes in
+            //   ~3s might never be observed mid-flight at all — the FE
+            //   only sees the persisted assistant message at the end,
+            //   leaving the "Thinking out loud" <details> block popping
+            //   in alongside the final answer instead of streaming live.
+            // - 2s in steady-state tool waits (long-running run_script,
+            //   browser_task) — there sub-second polling just burns
+            //   rate-limit budget without improving perceived latency.
+            var STARTUP_FAST_POLLS = 6;  // first ~3s @ 500ms cadence
+            var nextDelay =
+              (data.stream_buffer || data.thinking_buffer || pollCount < STARTUP_FAST_POLLS)
+                ? STREAMING_POLL_MS
+                : TOOL_WAIT_POLL_MS;
             pollTimeoutHandle = setTimeout(tick, nextDelay);
         } catch (e) {
             finish(function() { onError(e); });
@@ -806,15 +871,13 @@ UIManager._updateStreamPlaceholder = function(sessionAtSend, streamBuffer) {
     }
 
     // First non-empty stream_buffer means the LLM just produced its
-    // first word of the final answer. Flip the status indicator from
-    // "thinking" to "answering". The assistant placeholder (header +
-    // body) is already visible from sendMessage; nothing to reveal.
+    // first word of the final answer. Mark hasContentFlag for the
+    // mid-chain transition reset above (and for switchSession's
+    // status-restore-on-switch-back logic in manager-app.js).
+    // The actual status-bar flip to "answering" lives in
+    // pollTurnToCompletion's tick — see the state-machine comment there.
     if (!entry.hasContentFlag) {
         entry.hasContentFlag = true;
-        var mode = (sessionAtSend && sessionAtSend.mode) || 'confidant';
-        var icon = (typeof MODE_ICONS !== 'undefined' && MODE_ICONS[mode]) || '';
-        var label = mode === 'assistant' ? t('modeAssistant') : t('modeConfidant');
-        this.setStatusHtml(icon + label + t('answering'));
     }
 
     entry.content = streamBuffer;

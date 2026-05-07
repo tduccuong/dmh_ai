@@ -329,6 +329,33 @@ UIManager.switchSession = async function(id) {
     });
     this.currentSession = await SessionStore.getSession(id);
     await SessionStore.setCurrentSessionId(id);
+
+    // If the session we just switched into still has an in-flight chain
+    // (its `_streamMap` entry survived the away-and-back), restore an
+    // honest status phrase. The streamMap only tracks stream-buffer
+    // state (`hasContentFlag`) — we don't carry thinking/tool flags
+    // here. So:
+    //
+    //   hasContentFlag → "<Role> is streaming the answer..." (strict).
+    //   else            → "Waiting for <Role>..." (best-effort; the
+    //                     next pollTurnToCompletion tick refines to
+    //                     "thinking" within 0.5–2 s if thinking_buffer
+    //                     or running_tool_call is active, or leaves it
+    //                     as "Waiting for..." if neither — matching
+    //                     the strict state machine in
+    //                     manager-search.js's tick).
+    var streamEntry = this._streamMap && this._streamMap.get(id);
+    if (streamEntry) {
+        var streamMode = (this.currentSession.mode) || 'confidant';
+        var streamIcon = (typeof MODE_ICONS !== 'undefined' && MODE_ICONS[streamMode]) || '';
+        var streamLabel = streamMode === 'assistant' ? t('modeAssistant') : t('modeConfidant');
+        if (streamEntry.hasContentFlag) {
+            this.setStatusHtml(streamIcon + streamLabel + t('answering'));
+        } else {
+            this.setStatusHtml(t('waitingFor') + streamIcon + streamLabel + '...');
+        }
+    }
+
     this.clearTaskStatusArea();
     // Reset Stop button — the new session's first /poll will re-source
     // the truth. Without this reset, the button would stick visible
@@ -434,6 +461,8 @@ UIManager.startProgressPolling = function() {
         var isWorking = false;
         var streamBuffer = null;
         var chainInFlight = false;
+        var thinkingBuffer = null;
+        var runningToolCall = null;
         var changed = false;
         try {
             var res = await apiFetch(url);
@@ -516,6 +545,8 @@ UIManager.startProgressPolling = function() {
                 isWorking = !!data.is_working;
                 streamBuffer = data.stream_buffer;
                 chainInFlight = !!data.chain_in_flight;
+                thinkingBuffer = data.thinking_buffer;
+                runningToolCall = data.running_tool_call;
                 self._applyAgentBusy(self.currentSession.id, data.agent_busy);
 
                 // Long-running tool surfacing — see manager-search.js
@@ -559,7 +590,9 @@ UIManager.startProgressPolling = function() {
         // the user when nothing is actually thinking. Polling cadence
         // still uses `is_working` (we keep tracking it for the
         // setTimeout below).
-        self._syncAutoStatus(chainInFlight, streamBuffer);
+        var hasPendingProgress =
+            (self.currentSession.progress || []).some(function(p) { return p && p.status === 'pending'; });
+        self._syncAutoStatus(chainInFlight, streamBuffer, thinkingBuffer, runningToolCall, hasPendingProgress);
 
         var nextMs = isWorking ? 500 : 5000;
         self._progressPoll = setTimeout(tick, nextMs);
@@ -799,12 +832,19 @@ UIManager.openBrowserConsentModal = async function() {
     }
 };
 
-// Keep the input-area status bar ("Assistant is thinking..." /
-// "...streaming the answer...") coherent with the BE's
+// Keep the input-area status bar coherent with the BE's
 // `chain_in_flight` flag whenever the FE isn't already running
 // `pollTurnToCompletion` (which manages the phrase itself during
 // user-initiated turns). Called from `startProgressPolling`'s tick;
 // idempotent.
+//
+// State machine (mirrors pollTurnToCompletion's tick — the strict
+// shape: stream > thinking > waiting):
+//
+//   chain_in_flight && stream_buffer                    → "answering"
+//   chain_in_flight && (thinking_buffer || tool active) → "thinking"
+//   chain_in_flight && none of the above                → "Waiting for…"
+//   !chain_in_flight                                    → clear
 //
 // We gate on `chain_in_flight` (a chain loop is ACTUALLY iterating)
 // rather than `is_working` (which stays true for periodic-armed
@@ -816,16 +856,28 @@ UIManager.openBrowserConsentModal = async function() {
 // `_autoStatusActive` tracks ownership: only clear the status bar if
 // we were the ones who set it, so attachment / voice / iOS-hint
 // callers that set their own status aren't clobbered.
-UIManager._syncAutoStatus = function(chainInFlight, streamBuffer) {
+UIManager._syncAutoStatus = function(chainInFlight, streamBuffer, thinkingBuffer, runningToolCall, hasPendingProgress) {
     if (!this.currentSession) return;
     var mode  = (this.currentSession.mode) || 'confidant';
     var icon  = (typeof MODE_ICONS !== 'undefined' && MODE_ICONS[mode]) || '';
     var label = mode === 'assistant' ? t('modeAssistant') : t('modeConfidant');
 
+    // Same state machine as pollTurnToCompletion — see manager-search.js
+    // §"Status-bar state machine" for the rationale. `chain_in_flight`
+    // alone is too coarse (eclipses the "Waiting for…" prelude); we want
+    // the actual-activity signals.
     if (chainInFlight) {
-        var phraseKey = streamBuffer ? 'answering' : 'thinking';
-        this.setStatusHtml(icon + label + t(phraseKey));
-        this._autoStatusActive = true;
+        if (streamBuffer) {
+            this.setStatusHtml(icon + label + t('answering'));
+            this._autoStatusActive = true;
+        } else if (thinkingBuffer || runningToolCall || hasPendingProgress) {
+            this.setStatusHtml(icon + label + t('thinking'));
+            this._autoStatusActive = true;
+        } else if (this._autoStatusActive) {
+            // Chain is iterating but no visible activity yet — fall back
+            // to the prelude shape so the bar is honest about it.
+            this.setStatusHtml(t('waitingFor') + icon + label + '...');
+        }
     } else if (this._autoStatusActive) {
         this.setStatus('');
         this._autoStatusActive = false;

@@ -1124,26 +1124,31 @@ UIManager.renderChat = function() {
     });
 
     // Streaming placeholder handling:
-    //   - If we detached an existing placeholder at the top → reattach the
-    //     SAME node. Preserves its content + node identity for
+    //   - If we detached an existing placeholder at the top AND a chain
+    //     is still in flight for this session → reattach the SAME node.
+    //     Preserves its content + node identity for
     //     `_updateStreamPlaceholder` to keep writing into.
-    //   - Otherwise (initial render / session reload), build a fresh
-    //     placeholder from `_streamMap` if one is pending.
-    // Reattach the detached placeholder ONLY if it belongs to the
-    // session we're now viewing. Otherwise the in-flight UI from
-    // session A would visually leak into session B's chat container.
-    // The BE chain keeps running independently, and `_streamMap` is
-    // keyed by session ID — when the user switches BACK to session A,
-    // the `else` branch below rebuilds the placeholder fresh from the
-    // surviving `_streamMap` entry, recovering the in-flight UI.
-    if (streamingMessage && streamingMessage.dataset.sessionId === this.currentSession.id) {
+    //   - Otherwise (initial render / session reload / chain just done),
+    //     build a fresh placeholder from `_streamMap` if one is pending.
+    //
+    // Both branches are gated on `_streamMap.get(currentSession.id)`. The
+    // sessionId match alone is NOT enough: when a Confidant turn finishes
+    // while the user is on a different session, the user's later switch-
+    // back finds a fresh placeholder built mid-flight (from `_streamMap`)
+    // sitting at the timeline tail. `onComplete`'s subsequent renderChat
+    // would then re-detach + re-attach that placeholder AFTER the just-
+    // appended final answer — producing a sticky empty `Confidant`-header
+    // block below every subsequent answer. Gating on `_streamMap` drops
+    // the placeholder once the chain has actually completed.
+    var streamEntry = this._streamMap.get(this.currentSession.id);
+    if (streamingMessage && streamingMessage.dataset.sessionId === this.currentSession.id && streamEntry) {
         container.appendChild(streamingMessage);
     } else {
         // Either the detached placeholder is for a different session
         // (drop it from this view; its `_streamMap` entry survives),
-        // or there was no placeholder. Build a fresh one when this
-        // session has an in-flight stream.
-        var streamEntry = this._streamMap.get(this.currentSession.id);
+        // or the chain finished and no placeholder is needed, or
+        // there was no placeholder to begin with. Build a fresh one
+        // only when this session has an in-flight stream.
         if (streamEntry) {
             var streamDiv = document.createElement('div');
             streamDiv.className = 'message assistant';
