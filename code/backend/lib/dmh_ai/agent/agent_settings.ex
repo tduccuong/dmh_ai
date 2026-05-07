@@ -134,6 +134,13 @@ defmodule DmhAi.Agent.AgentSettings do
   # then runs without screenshots and progress rows still render
   # the action label, just no thumbnail.
   @browser_screenshot_enabled_default true
+  # Hard ceiling on the rendered `view` returned by the daemon's
+  # accessibility_snapshot command. Last-line defence against context
+  # blow-up on multilingual mega-pages — without this a single
+  # browser_task observation can dump 50K+ tokens into the chain.
+  # See arch_wiki/dmh_ai/architecture.md §"Observation payload sizing".
+  # Keep in lockstep with browser_daemon.py DEFAULT_MAX_OBSERVATION_CHARS.
+  @browser_max_observation_chars_default 12_000
 
   # LLM-account rotation throttle durations. Applied by
   # `DmhAi.Agent.LLM` when an account hits a rate-limit (HTTP 429 or
@@ -274,8 +281,8 @@ defmodule DmhAi.Agent.AgentSettings do
   @kb_embedding_dim_default 1024
   @kb_embedding_batch_size_default 32
 
-  # Cap on memo hits attached to the `[memo context]` block in
-  # Confidant's auto-retrieve pre-step. The score threshold already
+  # Cap on memo hits attached to the `<augmented_facts type="memo">`
+  # block in Confidant's auto-retrieve pre-step. The score threshold already
   # filters out weak hits; this is a safety against a user whose
   # memo store has many similar entries (e.g. twenty bank-related
   # notes) so the prompt doesn't bloat. See specs/commands.md
@@ -402,6 +409,11 @@ defmodule DmhAi.Agent.AgentSettings do
   @spec browser_screenshot_enabled() :: boolean()
   def browser_screenshot_enabled,
     do: bool_setting("browserScreenshotEnabled", @browser_screenshot_enabled_default)
+
+  @doc "Hard ceiling on the rendered `view` returned by accessibility_snapshot. Truncates with a recovery hint above this size; last-line defence against context blow-up on mega-pages."
+  @spec browser_max_observation_chars() :: pos_integer()
+  def browser_max_observation_chars,
+    do: int_setting("browserMaxObservationChars", @browser_max_observation_chars_default)
 
   @doc "Runtime poll cadence (ms) for in-flight `run_script` processes."
   @spec tool_run_poll_interval_ms() :: pos_integer()
@@ -620,8 +632,8 @@ defmodule DmhAi.Agent.AgentSettings do
   def learn_url_concurrency, do: int_setting("learnUrlConcurrency", @learn_url_concurrency_default)
 
   @doc """
-  Cap on memo hits included in the `[memo context]` block injected
-  into Confidant prompts (auto-retrieve pre-step). Top-K is the
+  Cap on memo hits included in the `<augmented_facts type="memo">`
+  block injected into Confidant prompts (auto-retrieve pre-step). Top-K is the
   ONLY gate — no score floor (the downstream LLM judges relevance
   from content, see specs/commands.md § Confidant memo auto-retrieve).
   This is a safety against

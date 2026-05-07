@@ -37,8 +37,9 @@ defmodule DmhAi.Browser.Loop do
   ## v0 limitations (see arch_wiki/dmh_ai/architecture.md §Browser tools)
 
     - Vision is OFF: model never sees the page image; it operates from
-      a11y tree + extracted text. Screenshots are taken for FE display
-      but not sent to the LLM in v0.
+      the compact a11y view + extracted text (see arch_wiki/dmh_ai/
+      architecture.md §"Observation payload sizing"). Screenshots are
+      taken for FE display but not sent to the LLM in v0.
     - Single global asyncio lock inside the daemon serialises every
       turn across all users. Two concurrent `browser_task` calls queue.
     - Cookie state is plaintext at `/work/<email>/.browser_state.json`
@@ -202,14 +203,19 @@ defmodule DmhAi.Browser.Loop do
   # ── observe ─────────────────────────────────────────────────────────────────
 
   defp observe(state) do
+    snap_args = %{"max_chars" => AgentSettings.browser_max_observation_chars()}
+
     with {:ok, %{"text" => text} = txt} <-
            DaemonClient.call("extract_text", %{"max_chars" => 10_000}, state.user_id, state.email),
-         {:ok, %{"tree" => tree}} <-
-           DaemonClient.call("accessibility_snapshot", %{}, state.user_id, state.email) do
+         {:ok, %{"view" => view} = snap} <-
+           DaemonClient.call("accessibility_snapshot", snap_args, state.user_id, state.email) do
       {:ok, %{
-        url:  Map.get(txt, "url", ""),
-        text: text,
-        tree: tree
+        url:        Map.get(txt, "url", ""),
+        text:       text,
+        view:       view,
+        truncated:  Map.get(snap, "truncated", false),
+        kept:       Map.get(snap, "kept", 0),
+        dropped:    Map.get(snap, "dropped", %{})
       }}
     else
       {:error, {:daemon_error, %{message: msg}}} ->
@@ -322,7 +328,11 @@ defmodule DmhAi.Browser.Loop do
       wait_for_selector(selector, timeout?: ms)
       wait_for_load(state?: "load|domcontentloaded|networkidle")
       extract_text(selector?: "css")          — pulls inner_text
-      accessibility_snapshot()                — already provided each observe; no need to call
+      accessibility_snapshot(selector?: "css") — re-observe a specific
+                                                 subtree if the view was
+                                                 truncated; otherwise no
+                                                 need to call (already
+                                                 provided each observe)
       click(selector)
       type(selector, text)
       fill(selector, value)                   — for <input>
@@ -362,6 +372,13 @@ defmodule DmhAi.Browser.Loop do
     history_block =
       if history_block == "", do: "  (none — this is turn 0)", else: history_block
 
+    truncation_note =
+      if observation.truncated do
+        "(view truncated — call accessibility_snapshot with a selector arg to drill into a specific section if needed)"
+      else
+        ""
+      end
+
     """
     [TURN #{turn}]
     URL: #{observation.url}
@@ -369,8 +386,9 @@ defmodule DmhAi.Browser.Loop do
     [PAGE TEXT (first 10 KB)]
     #{observation.text || "(empty)"}
 
-    [ACCESSIBILITY TREE]
-    #{Jason.encode!(observation.tree, pretty: true) |> String.slice(0, 6_000)}
+    [INTERACTIVE / STRUCTURAL VIEW]
+    #{observation.view}
+    #{truncation_note}
 
     [RECENT ACTIONS]
     #{history_block}

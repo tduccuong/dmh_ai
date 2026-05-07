@@ -89,8 +89,10 @@ defmodule Itgr.ContextEngine do
 
     msgs = ContextEngine.build_confidant_messages(sd)
 
-    # "recent question" should appear as the last message (build_current_msg converts it)
-    assert find_msg(msgs, "user", &(&1 == "recent question")) != nil
+    # "recent question" should appear as the bare-content opener of the last
+    # user message (build_current_msg appends a <runtime_instruction> block
+    # after it in the Confidant pipeline).
+    assert find_msg(msgs, "user", &String.starts_with?(&1, "recent question")) != nil
     # "very old question" should NOT appear in history (it is before the cutoff)
     # (it might appear as a keyword snippet only if keywords match)
     history_contents =
@@ -104,13 +106,18 @@ defmodule Itgr.ContextEngine do
     refute "very old question" in history_contents
   end
 
-  test "web_context frames last user message with search results" do
+  test "web_context wraps last user message in augmented_facts block" do
     sd = session(messages: [user_msg("latest news")])
     msgs = ContextEngine.build_confidant_messages(sd, web_context: "Search result: headline A")
 
     last_user = msgs |> Enum.filter(&(&1.role == "user")) |> List.last()
-    assert String.contains?(last_user.content, "User request: latest news")
+    # Bare user content goes first, no "User request:" prefix.
+    assert String.starts_with?(last_user.content, "latest news")
+    # Search results live in <augmented_facts type="web_search">.
+    assert String.contains?(last_user.content, ~s|<augmented_facts type="web_search"|)
     assert String.contains?(last_user.content, "Search result: headline A")
+    # Every Confidant user message ends with a runtime_instruction block.
+    assert String.contains?(last_user.content, "<runtime_instruction>")
   end
 
   test "files are appended to the last user message" do

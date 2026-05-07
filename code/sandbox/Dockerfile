@@ -39,11 +39,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # output the model parses.
 RUN mkdir -p /etc/ssh && printf 'StrictHostKeyChecking accept-new\nLogLevel ERROR\n' >> /etc/ssh/ssh_config
 
-# Common Python HTTP libraries the model uses in run_script.
+# Common Python HTTP libraries the model uses in run_script,
+# plus the Playwright Python client. The base image ships
+# Chromium/Firefox/WebKit binaries and the `playwright` CLI but
+# does NOT install the Python module on the system Python (its
+# build step uses a venv that's then removed). Pin the Python
+# client to the same minor version as the base image's bundled
+# browsers to avoid client/binary protocol mismatches.
 # `--break-system-packages` is required on Debian's PEP 668 setup;
 # the sandbox is a single-purpose container, OS-Python conflicts
 # don't matter here.
-RUN pip3 install --no-cache-dir --break-system-packages requests httpx
+RUN pip3 install --no-cache-dir --break-system-packages \
+      requests httpx \
+      "playwright==1.49.0"
 
 # Master service identity inside the sandbox — used by docker exec -u
 # for admin-side operations and matched by the iptables --uid-owner

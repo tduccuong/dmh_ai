@@ -3643,8 +3643,8 @@ defmodule DmhAi.Agent.UserAgent do
   # (already in `current_content`) and take up to 2 prior.
   #
   # Returns `{memo_block, memo_hits}`:
-  #   * `memo_block` — the formatted `[memo context]` string for the
-  #                    Confidant LLM prompt; populated with all
+  #   * `memo_block` — body for the `<augmented_facts type="memo">` block
+  #                    in the Confidant LLM prompt; populated with all
   #                    decrypted top-K hits (the framing tells the
   #                    model "use any that are relevant; ignore the
   #                    rest"). `nil` only on retrieval infrastructure
@@ -3657,7 +3657,7 @@ defmodule DmhAi.Agent.UserAgent do
     # Memo content is AES-GCM ciphertext at rest; we need the user's
     # MMK to surface plaintext to the model. No key → user is offline
     # / token expired / never logged in this BE process. Skip the
-    # whole `[memo context]` block in that case (fail soft — the
+    # whole `<augmented_facts type="memo">` block in that case (fail soft — the
     # Confidant turn just answers without memo grounding, exactly as
     # if the user had no relevant memos saved).
     case __MODULE__.get_memo_key(user_id) do
@@ -3743,7 +3743,7 @@ defmodule DmhAi.Agent.UserAgent do
     end
   end
 
-  # `[memo context]` block — two states. See specs/commands.md.
+  # `<augmented_facts type="memo">` block body — two states. See specs/commands.md.
   #
   # FOUND state: bullets of hit chunk_text + language rule (cosine
   # retrieval is multilingual via qwen3-embedding so a VN question
@@ -3758,13 +3758,16 @@ defmodule DmhAi.Agent.UserAgent do
   # system-prompt rules. This avoids putting a "is this a personal
   # question?" classification burden on the model, which is exactly
   # the gate problem we hit before.
+  # Body content for the `<augmented_facts type="memo">` block. Two
+  # variants — empty hits (signal-only with usage rules) vs non-empty
+  # (bullets list with usage rules). The wrapping XML tag is added by
+  # `ContextEngine.build_current_msg/4`; this helper returns just the
+  # inside-the-tag text.
   defp format_memo_context_block([]) do
-    "[memo context]\n" <>
-      "We checked the user's saved memos for this question. Nothing relevant found.\n\n" <>
+    "We checked the user's saved memos for this question. Nothing relevant found.\n\n" <>
       "How to use this signal:\n" <>
       "- IF the user's message itself references their memo store (e.g. words like \"memo\", \"saved\", phrases like \"search memo …\", \"find in memo …\", \"look up memo …\", \"do I have a memo on …\", \"memo about …\", \"memo contains …\"): you MUST tell the user honestly that no saved memo matches their question. Do NOT substitute general knowledge, do NOT invent.\n" <>
-      "- OTHERWISE (the user is asking a normal question or chatting and never mentioned the memo store): ignore this block entirely and answer per your usual system-prompt instructions.\n" <>
-      "[/memo context]"
+      "- OTHERWISE (the user is asking a normal question or chatting and never mentioned the memo store): ignore this block entirely and answer per your usual system-prompt instructions."
   end
 
   defp format_memo_context_block(hits) do
@@ -3774,10 +3777,8 @@ defmodule DmhAi.Agent.UserAgent do
         "- " <> String.replace(h.chunk_text || "", "\n", " ")
       end)
 
-    "[memo context]\n" <>
-      "The user previously saved these personal notes. Use any that are relevant to the question; ignore the rest. The notes may be in a different language than the user's question — translate any facts you cite. Reply in the user's question language, NOT the notes' language.\n\n" <>
-      bullets <>
-      "\n[/memo context]"
+    "The user previously saved these personal notes. Use any that are relevant to the question; ignore the rest. The notes may be in a different language than the user's question — translate any facts you cite. Reply in the user's question language, NOT the notes' language.\n\n" <>
+      bullets
   end
 
   defp build_web_context(_content, %{snippets: [], pages: []}, _reply_pid), do: nil

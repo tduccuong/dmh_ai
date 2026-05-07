@@ -63,7 +63,7 @@ defmodule DmhAi.Agent.ContextEngine do
     - `:image_descriptions` — list of %{name, description} from the image_descriptions table
     - `:video_descriptions` — list of %{name, description} from the video_descriptions table
     - `:web_context`        — formatted web search results
-    - `:memo_context`       — formatted `[memo context]` block (Format 2);
+    - `:memo_context`       — body for the `<augmented_facts type="memo">` block;
                               prepended to the current user message at build
                               time, NEVER persisted to session.messages.
                               See specs/commands.md §Confidant memo auto-retrieve.
@@ -92,7 +92,7 @@ defmodule DmhAi.Agent.ContextEngine do
                    )}
 
     {prefix, history_llm, relevant_msgs, last_msgs} =
-      build_core(session_data, images, files, web_context, memo_context)
+      build_core(session_data, images, files, web_context, memo_context, :confidant)
 
     [system_msg] ++ prefix ++ history_llm ++ relevant_msgs ++ last_msgs
   end
@@ -140,7 +140,7 @@ defmodule DmhAi.Agent.ContextEngine do
     session_data = maybe_filter_other_tasks(session_data, user_id, anchor_task_num)
 
     {prefix, history_llm, relevant_msgs, last_msgs} =
-      build_core(session_data, [], files, nil, nil)
+      build_core(session_data, [], files, nil, nil, :assistant)
 
     # Re-inject the last N turns' tool_call / tool_result messages right
     # before their matching final-assistant text in history. Lets the
@@ -852,7 +852,8 @@ defmodule DmhAi.Agent.ContextEngine do
     end
   end
 
-  defp build_core(session_data, images, files, web_context, memo_context) do
+  defp build_core(session_data, images, files, web_context, memo_context, pipeline)
+       when pipeline in [:confidant, :assistant] do
     # Exclude archived messages (previous periodic-task cycles) — visible in FE
     # but not relevant to the LLM's context.
     # Also exclude `kind: "command"` (user's `/wiki …` text) and
@@ -896,7 +897,7 @@ defmodule DmhAi.Agent.ContextEngine do
     # INTO the last user message (replacing it).
     {history, last_msgs} =
       case Enum.split(recent, -1) do
-        {h, [last]} -> {h, [build_current_msg(last, images, files, web_context, memo_context)]}
+        {h, [last]} -> {h, [build_current_msg(last, images, files, web_context, memo_context, pipeline)]}
         {h, []}     -> {h, []}
       end
 
@@ -905,16 +906,76 @@ defmodule DmhAi.Agent.ContextEngine do
     {prefix, history_llm, relevant_msgs, last_msgs}
   end
 
-  # Build the last (current) user message, injecting images, file content,
-  # web search results, and the memo auto-retrieve block.
-  # When web_context is present, the message body is replaced with the
-  # frontend-style framing:
-  #   "User request: ...\n\nWeb search results (retrieved DATE):\n...\n\nUsing the..."
-  # When memo_context is present, the Format-2 `[memo context]` block is
-  # PREPENDED to whatever body resulted (web-framed or plain). Build-time
-  # only — never persisted; see specs/commands.md §Confidant memo
-  # auto-retrieve.
-  defp build_current_msg(msg, images, files, web_context, memo_context) do
+  # Build the last (current) user message — pipeline-specific.
+  #
+  # Confidant: canonical tagged shape, see arch_wiki/dmh_ai/architecture.md
+  # §"Per-turn user-message structure":
+  #
+  #   <bare content>
+  #   [if files] <attachments>… file names …</attachments>
+  #   [if memo]  <augmented_facts type="memo">…</augmented_facts>
+  #   [if web]   <augmented_facts type="web_search" retrieved="…">…</augmented_facts>
+  #   [per file] <augmented_facts type="file" name="…">…content…</augmented_facts>
+  #   <runtime_instruction>… focus on ongoing conversation … </runtime_instruction>
+  #
+  # Assistant: legacy inline shape — bare content + per-file `[File: name]`
+  # fenced block. NO `<attachments>` user-message block (the Assistant
+  # system prompt uses that XML tag for its OWN teaching section about
+  # `📎 <path>` markers — duplicating the tag at message level would
+  # collide). NO `<augmented_facts>` (Assistant has no auto-retrieve;
+  # facts arrive via tool results). NO `<runtime_instruction>` (Assistant's
+  # tool-driven runtime guidance lives entirely in the system prompt;
+  # a per-turn injection would compete with task-anchored reasoning).
+  #
+  # Images are attached multimodally via `Map.put(llm_msg, :images, …)` —
+  # they're NOT in the text body. The system prompt carries
+  # image_descriptions / video_descriptions separately.
+  #
+  # Build-time only — never persisted.
+  defp build_current_msg(msg, images, files, web_context, memo_context, :confidant) do
+    base = msg["content"] || msg[:content] || ""
+
+    attachments_block =
+      case files do
+        [] ->
+          ""
+
+        _ ->
+          names = Enum.map_join(files, "\n", fn f -> "- #{f["name"]}" end)
+          "<attachments>\n#{names}\n</attachments>"
+      end
+
+    memo_block =
+      if is_binary(memo_context) and memo_context != "" do
+        ~s|<augmented_facts type="memo">\n| <> memo_context <> "\n</augmented_facts>"
+      else
+        ""
+      end
+
+    web_block =
+      if is_binary(web_context) and web_context != "" do
+        today = Date.to_string(Date.utc_today())
+        ~s|<augmented_facts type="web_search" retrieved="#{today}">\n| <>
+          web_context <> "\n</augmented_facts>"
+      else
+        ""
+      end
+
+    file_blocks =
+      Enum.map_join(files, "\n\n", fn f ->
+        ~s|<augmented_facts type="file" name="#{f["name"]}">\n| <>
+          (f["content"] || "") <> "\n</augmented_facts>"
+      end)
+
+    content =
+      [base, attachments_block, memo_block, web_block, file_blocks, confidant_runtime_instruction()]
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.join("\n\n")
+
+    finalize_current_msg(msg, images, content)
+  end
+
+  defp build_current_msg(msg, images, files, _web_context, _memo_context, :assistant) do
     base = msg["content"] || msg[:content] || ""
 
     file_block =
@@ -922,41 +983,21 @@ defmodule DmhAi.Agent.ContextEngine do
         "[File: #{f["name"]}]\n```\n#{f["content"]}\n```"
       end)
 
-    body =
-      if is_binary(web_context) and web_context != "" do
-        today = Date.to_string(Date.utc_today())
-
-        framed =
-          "User request: #{base}\n\n" <>
-            "Web search results (retrieved #{today}):\n#{web_context}\n\n" <>
-            "Using the user request and the web search results above, answer the user. " <>
-            "Draw on the sources — include specific facts, figures, and names rather than vague generalities. " <>
-            "Ignore content that is clearly unrelated to the user request; focus only on relevant facts."
-
-        [framed, file_block]
-        |> Enum.reject(&(&1 == ""))
-        |> Enum.join("\n\n")
-      else
-        [base, file_block]
-        |> Enum.reject(&(&1 == ""))
-        |> Enum.join("\n\n")
-      end
-
     content =
-      if is_binary(memo_context) and memo_context != "" do
-        memo_context <> "\n\n" <> body
-      else
-        body
-      end
+      [base, file_block]
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.join("\n\n")
 
+    finalize_current_msg(msg, images, content)
+  end
+
+  # Common llm_msg packaging — preserve ts (load-bearing for mid-chain
+  # splice floor in UserAgent.max_user_ts_in_messages/1; without it, the
+  # floor collapses to 0 and splice_mid_chain_user_msgs re-appends the
+  # current user message as a duplicate) and attach images multimodally.
+  defp finalize_current_msg(msg, images, content) do
     llm_msg = %{role: "user", content: content}
 
-    # Preserve `ts` from the source DB row. Downstream, UserAgent's
-    # `max_user_ts_in_messages/1` scans the LLM input for the highest
-    # user-role `ts` to compute the mid-chain-splice floor. Without ts
-    # here, floor collapses to 0 and `splice_mid_chain_user_msgs` then
-    # re-appends the current user message (ts > 0) as a duplicate —
-    # the model saw two identical `[USER]` blocks every turn.
     llm_msg =
       case msg[:ts] || msg["ts"] do
         ts when is_integer(ts) -> Map.put(llm_msg, :ts, ts)
@@ -964,6 +1005,20 @@ defmodule DmhAi.Agent.ContextEngine do
       end
 
     if images != [], do: Map.put(llm_msg, :images, images), else: llm_msg
+  end
+
+  # Per-turn runtime guidance appended to every Confidant user message.
+  # Tells the model the message is part of an ongoing conversation (not a
+  # fresh stand-alone request), and how to use any <augmented_facts>
+  # blocks the runtime supplied above. See arch_wiki/dmh_ai/architecture.md
+  # §"Per-turn user-message structure". Assistant pipeline does NOT use
+  # this — its tool-driven runtime guidance lives in the system prompt.
+  defp confidant_runtime_instruction do
+    """
+    <runtime_instruction>
+    Craft the most accurate, comprehensive answer to the user based on the ongoing conversation. Focus on the topic emerging from the most recent turns of the conversation — when the user's latest message refers implicitly to a subject already raised, it extends the prior topic; bridge them in your answer rather than treating the latest message as a fresh, isolated question. If <augmented_facts> blocks appear above, use their content as reference material to ground specific facts, figures, and names. Even when the augmented_facts cover only one side of the bridged topic, still relate your answer to the broader thread rather than restricting yourself to what the augmented_facts describe.
+    </runtime_instruction>\
+    """
   end
 
   # Retrieve the top-K keyword-relevant user→assistant pairs from old messages.

@@ -74,7 +74,10 @@ defmodule DmhAi.Web.Search do
   - IT    : code, programming, technical docs, GitHub, StackOverflow, library questions
   - GENERAL: everything else needing fresh or current data
 
-  Step 3 — If YES: generate 1-4 keyword queries. Rules:
+  Step 3 — Follow-up expansion (when applicable).
+  If the new message refers implicitly to a subject already established in `Recent user messages` (omits a subject, uses a pronoun-like reference, or is grammatically a continuation rather than a stand-alone question), it is a continuation of the prior topic. Every query you emit must combine the new term WITH the prior topic from the recent turns — never search for a continuation message in isolation.
+
+  Step 4 — If YES: generate 1-4 keyword queries. Rules:
   - One query per language (dominant language first, then English if topic has English sources, then any explicitly relevant language)
   - Keyword-style only: NO sentences, NO filler words (für, mit, und, the, de, pour…)
   - 4-8 words per query; keep all proper names, brand names, product names exactly as-is

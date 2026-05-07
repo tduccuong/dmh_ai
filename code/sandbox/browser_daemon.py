@@ -47,6 +47,155 @@ DEFAULT_CMD_TIMEOUT_MS = 15_000
 # How often the idle watchdog wakes up to check the timer.
 WATCHDOG_INTERVAL_S = 30
 
+# Hard ceiling on the rendered accessibility view if Loop doesn't pass
+# a max_chars override. Matches `browserMaxObservationChars` default in
+# AgentSettings — see arch_wiki/dmh_ai/architecture.md §"Observation
+# payload sizing". Keep in lockstep when changing.
+DEFAULT_MAX_OBSERVATION_CHARS = 12_000
+
+# Static-text node-name cap inside the rendered view. Each "text" /
+# "paragraph" / "generic" node's accessible name is truncated to this
+# many chars — enough to identify a paragraph or tile while keeping
+# the rendered view dense.
+STATIC_TEXT_CAP = 80
+
+# Role buckets for the compact a11y renderer.
+#
+# - INTERACTIVE: things the model can issue commands against. Rendered
+#   with role + accessible name + relevant states (disabled, checked,
+#   expanded, required, selected). The model picks selectors from the
+#   accessible name.
+# - STRUCTURAL: page-outline anchors. Rendered with role + name. Useful
+#   for the model to understand layout ("main", "navigation", "form")
+#   without exposing every contained child.
+# - STATIC_TEXT: informative-only nodes. Name truncated to STATIC_TEXT_CAP.
+#
+# Anything not in these three buckets (or with role we don't classify,
+# or with no accessible name on a text-only node) is dropped — counted
+# as `dropped.ignored`. ARIA-hidden / presentational nodes never reach
+# us; Playwright's `interesting_only=True` filters them upstream.
+INTERACTIVE_ROLES = frozenset({
+    "button", "link", "textbox", "checkbox", "radio", "combobox",
+    "menuitem", "menuitemcheckbox", "menuitemradio", "switch",
+    "searchbox", "spinbutton", "slider", "tab", "treeitem", "option",
+    "listbox", "menubar",
+})
+STRUCTURAL_ROLES = frozenset({
+    "heading", "region", "navigation", "main", "banner", "contentinfo",
+    "complementary", "form", "list", "listitem", "table", "row", "cell",
+    "columnheader", "rowheader", "article", "section", "dialog",
+    "alertdialog", "tablist", "tabpanel", "search",
+})
+STATIC_TEXT_ROLES = frozenset({"text", "paragraph", "generic", "StaticText"})
+
+
+def _format_node(n: dict):
+    """Classify and format a single a11y node.
+
+    Returns (bucket, line_or_None) where bucket is "kept" |
+    "summarised" | "ignored". For "ignored" the line is None.
+    """
+    role = (n.get("role") or "").lower()
+    name = (n.get("name") or "").strip()
+
+    if role in INTERACTIVE_ROLES:
+        line = f'{role} "{name[:160]}"' if name else role
+        states = []
+        if n.get("disabled"):
+            states.append("disabled")
+        ck = n.get("checked")
+        if ck is True:
+            states.append("checked")
+        elif ck == "mixed":
+            states.append("checked-mixed")
+        if "expanded" in n and n.get("expanded") is not None:
+            states.append("expanded" if n["expanded"] else "collapsed")
+        if n.get("required"):
+            states.append("required")
+        if n.get("selected"):
+            states.append("selected")
+        if states:
+            line += " (" + ",".join(states) + ")"
+        return ("kept", line)
+
+    if role in STRUCTURAL_ROLES:
+        line = f'{role} "{name[:160]}"' if name else role
+        return ("kept", line)
+
+    if role in STATIC_TEXT_ROLES:
+        if not name:
+            return ("ignored", None)
+        t = name if len(name) <= STATIC_TEXT_CAP else name[:STATIC_TEXT_CAP] + " …"
+        return ("summarised", f'text "{t}"')
+
+    return ("ignored", None)
+
+
+def _count_subtree(children) -> int:
+    n = 0
+    for c in children or []:
+        if isinstance(c, dict):
+            n += 1 + _count_subtree(c.get("children") or [])
+    return n
+
+
+def render_a11y(node, max_chars: int):
+    """Flatten a Playwright a11y tree into a compact indented text view.
+
+    Returns (view, kept, dropped, truncated).
+
+    - view: flat indented text (one node per line), with a recovery
+      hint appended if truncation fired.
+    - kept: count of interactive + structural nodes rendered in full.
+    - dropped: dict with counts for "summarised" (text nodes whose
+      name was truncated to STATIC_TEXT_CAP), "ignored" (nodes the
+      classifier skipped — unrecognised role or text-with-no-name),
+      and "size_cap" (nodes not rendered because the cap fired —
+      counted as remaining-tree-size, approximate).
+    - truncated: True if the cap fired before we walked the whole tree.
+    """
+    lines = []
+    counters = {"kept": 0, "summarised": 0, "ignored": 0, "size_cap": 0}
+    state = {"running": 0, "truncated": False}
+
+    def walk(n, depth):
+        if state["truncated"] or not isinstance(n, dict):
+            return
+        bucket, line = _format_node(n)
+        children = n.get("children") or []
+
+        if line is None:
+            counters["ignored"] += 1
+            # Recurse without indenting — generic wrappers shouldn't
+            # consume vertical depth; their interactive descendants
+            # still surface at the parent's level.
+            for c in children:
+                walk(c, depth)
+            return
+
+        indent = "  " * depth
+        full = indent + line
+        cost = len(full) + 1  # newline
+        if state["running"] + cost > max_chars:
+            state["truncated"] = True
+            counters["size_cap"] += 1 + _count_subtree(children)
+            return
+        lines.append(full)
+        state["running"] += cost
+        counters[bucket] += 1
+        for c in children:
+            walk(c, depth + 1)
+
+    walk(node, 0)
+    view = "\n".join(lines) if lines else "(empty)"
+    if state["truncated"]:
+        view += (
+            "\n… [view truncated; ask for a specific section, e.g. "
+            '{"command":"accessibility_snapshot","args":{"selector":"main"}}]'
+        )
+    kept = counters.pop("kept")
+    return view, kept, counters, state["truncated"]
+
 
 # ── Daemon ────────────────────────────────────────────────────────────────────
 
@@ -181,8 +330,42 @@ class Daemon:
             return {"text": text, "url": page.url}
 
         if command == "accessibility_snapshot":
-            tree = await page.accessibility.snapshot(interesting_only=True)
-            return {"tree": tree, "url": page.url}
+            sel = args.get("selector")
+            max_chars = int(args.get("max_chars", DEFAULT_MAX_OBSERVATION_CHARS))
+
+            if sel:
+                handle = await page.locator(sel).first.element_handle(timeout=timeout)
+                if handle is None:
+                    return {
+                        "view": f"(selector not found: {sel})",
+                        "url": page.url,
+                        "kept": 0,
+                        "dropped": {"summarised": 0, "ignored": 0, "size_cap": 0},
+                        "truncated": False,
+                    }
+                tree = await page.accessibility.snapshot(
+                    interesting_only=True, root=handle
+                )
+            else:
+                tree = await page.accessibility.snapshot(interesting_only=True)
+
+            if not tree:
+                return {
+                    "view": "(empty)",
+                    "url": page.url,
+                    "kept": 0,
+                    "dropped": {"summarised": 0, "ignored": 0, "size_cap": 0},
+                    "truncated": False,
+                }
+
+            view, kept, dropped, truncated = render_a11y(tree, max_chars)
+            return {
+                "view": view,
+                "url": page.url,
+                "kept": kept,
+                "dropped": dropped,
+                "truncated": truncated,
+            }
 
         if command == "screenshot":
             path = args["path"]
@@ -284,6 +467,16 @@ class Daemon:
 
         finally:
             try:
+                # asyncio.StreamWriter.write() is non-blocking; bytes sit in
+                # the transport buffer until the event loop flushes them.
+                # close() schedules an EOF without waiting for that flush, so
+                # for any reply larger than the transport buffer the EOF
+                # races the tail bytes — peer reads a truncated JSON line and
+                # JSONDecodeError fires on the master side. drain() blocks
+                # until the buffer drops below the high-water mark; on a
+                # one-reply-per-connection protocol that means everything is
+                # on the wire. Idempotent when no bytes are queued.
+                await writer.drain()
                 writer.close()
                 await writer.wait_closed()
             except Exception:
