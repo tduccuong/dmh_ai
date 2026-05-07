@@ -139,8 +139,45 @@ var _subLabelOffsets = new Map();
 // in core.js for the patterns.
 function writeProgressLabel(label, raw, _kind) {
     var safe = redactProgressLabel(raw || '');
-    label.textContent = safe;
-    label.title = safe;
+
+    // BrowserTask sub_labels carry the per-step screenshot path as a
+    // `— .browser/<file>.png` suffix appended by Browser.Loop. Strip
+    // it from the visible text and render a small inline thumbnail
+    // pulled from /sessions/:id/browser-screenshot/:file. Detection is
+    // pattern-based (cheap, no schema field): only matches the literal
+    // `.browser/<file>.png` shape Browser.Loop emits, so other tools'
+    // sub_labels are untouched.
+    var shotMatch = safe.match(/\s*[—\-]\s*\.browser\/([\w.\-]+\.png)\s*$/);
+    var shotFile  = shotMatch ? shotMatch[1] : null;
+    var textPart  = shotFile ? safe.slice(0, shotMatch.index).replace(/\s+$/, '') : safe;
+
+    label.textContent = textPart;
+    label.title = textPart;
+
+    if (shotFile && typeof UIManager !== 'undefined' && UIManager.currentSession && UIManager.currentSession.id) {
+        var img = document.createElement('img');
+        img.className = 'browser-step-thumb';
+        img.alt = 'step screenshot';
+        img.loading = 'lazy';
+        img.style.cursor = 'pointer';
+        label.appendChild(img);
+
+        // Auth is `Authorization: Bearer <token>` — `<img src=…>` only
+        // sends cookies, not Authorization headers, so a direct
+        // `img.src = url` would 401. Same blob-URL pattern as the
+        // lightbox in ui.js: apiFetch (which adds the Bearer header)
+        // → blob → object URL → img.src.
+        var url = '/sessions/' + encodeURIComponent(UIManager.currentSession.id) +
+                  '/browser-screenshot/' + encodeURIComponent(shotFile);
+        apiFetch(url)
+            .then(function(r) { if (!r.ok) throw new Error('shot fetch ' + r.status); return r.blob(); })
+            .then(function(blob) {
+                var objUrl = URL.createObjectURL(blob);
+                img.src = objUrl;
+                img.addEventListener('click', function() { window.open(objUrl, '_blank', 'noopener'); });
+            })
+            .catch(function() { /* leave the broken-image rectangle hidden via CSS or just empty */ });
+    }
 }
 
 // Walk every pending tool-like row whose sub_labels list overflows
@@ -309,53 +346,79 @@ function renderProgressRow(row) {
 
     div.appendChild(header);
 
-    // Sliding sub-labels window — render up to SUB_LABEL_WINDOW_SIZE
-    // lines and advance the visible slice every SUB_LABEL_SLIDE_MS
-    // while the row is pending. Once done, freeze on the LAST window
-    // (most recent activity). Keeps the chat compact even when the
-    // BE writes many sub_labels for one tool-like row.
+    // Sub-labels rendering — two layouts depending on what the parent
+    // tool row represents:
+    //
+    //   - **Sequential** (BrowserTask): each sub_label is a discrete
+    //     ordered step in a multi-turn loop ("step 0:", "step 1:", …).
+    //     Stack ALL of them, oldest at top, newest at bottom; no slider.
+    //     Reads as a real activity log the user can follow.
+    //
+    //   - **Rotating** (web_search and other tools with parallel
+    //     internals): sub_labels are concurrent sub-activities with no
+    //     inherent order — sliding window keeps the chat compact while
+    //     surfacing what's currently active.
+    //
+    // Layout is detected from the parent label prefix today (cheap, no
+    // schema change). If we add more sequential-style tools later,
+    // promote this to an explicit `sub_labels_layout` field on the row.
     if (isToolLikeKind(row.kind)
         && Array.isArray(row.sub_labels) && row.sub_labels.length > 0) {
-        var subs    = row.sub_labels;
-        var winSize = Math.min(SUB_LABEL_WINDOW_SIZE, subs.length);
-
-        // Pick the starting offset:
-        //   - done   → last winSize entries (final state, most recent
-        //             activity).
-        //   - pending → preserved offset across re-renders if any
-        //             (we re-render every BE poll when sub_labels
-        //             grows; without preservation the window resets
-        //             to 0 and the slider jumps backward visually).
-        //             Capped at the new maxOffset so a shrunk list
-        //             can't point past the end.
-        var maxOffset = Math.max(0, subs.length - winSize);
-        var startIdx;
-        if (row.status === 'done') {
-            startIdx = maxOffset;
-            _subLabelOffsets.delete(String(row.id));
-        } else {
-            var preserved = _subLabelOffsets.get(String(row.id));
-            startIdx = (typeof preserved === 'number')
-                ? Math.min(preserved, maxOffset)
-                : 0;
-        }
+        var subs = row.sub_labels;
+        var sequential = (typeof row.label === 'string' && row.label.startsWith('BrowserTask '));
 
         var sublist = document.createElement('div');
         sublist.className = 'progress-sub-labels';
-        sublist.dataset.rowid  = String(row.id);
-        sublist.dataset.subs   = JSON.stringify(subs);
-        sublist.dataset.offset = String(startIdx);
 
-        for (var i = 0; i < winSize; i++) {
-            var subLine = document.createElement('div');
-            subLine.className = 'progress-sub-label';
-            writeProgressLabel(subLine, subs[startIdx + i], row.kind);
-            sublist.appendChild(subLine);
-        }
-        div.appendChild(sublist);
+        if (sequential) {
+            // Linear stack — show all entries (capped to @sub_labels_cap=20
+            // by the BE's `append_sub_label`, so size is bounded).
+            for (var li = 0; li < subs.length; li++) {
+                var subLineL = document.createElement('div');
+                subLineL.className = 'progress-sub-label';
+                writeProgressLabel(subLineL, subs[li], row.kind);
+                sublist.appendChild(subLineL);
+            }
+            div.appendChild(sublist);
+        } else {
+            var winSize = Math.min(SUB_LABEL_WINDOW_SIZE, subs.length);
 
-        if (row.status === 'pending' && subs.length > winSize) {
-            _ensureSubLabelSlider();
+            // Pick the starting offset:
+            //   - done   → last winSize entries (final state, most recent
+            //             activity).
+            //   - pending → preserved offset across re-renders if any
+            //             (we re-render every BE poll when sub_labels
+            //             grows; without preservation the window resets
+            //             to 0 and the slider jumps backward visually).
+            //             Capped at the new maxOffset so a shrunk list
+            //             can't point past the end.
+            var maxOffset = Math.max(0, subs.length - winSize);
+            var startIdx;
+            if (row.status === 'done') {
+                startIdx = maxOffset;
+                _subLabelOffsets.delete(String(row.id));
+            } else {
+                var preserved = _subLabelOffsets.get(String(row.id));
+                startIdx = (typeof preserved === 'number')
+                    ? Math.min(preserved, maxOffset)
+                    : 0;
+            }
+
+            sublist.dataset.rowid  = String(row.id);
+            sublist.dataset.subs   = JSON.stringify(subs);
+            sublist.dataset.offset = String(startIdx);
+
+            for (var i = 0; i < winSize; i++) {
+                var subLine = document.createElement('div');
+                subLine.className = 'progress-sub-label';
+                writeProgressLabel(subLine, subs[startIdx + i], row.kind);
+                sublist.appendChild(subLine);
+            }
+            div.appendChild(sublist);
+
+            if (row.status === 'pending' && subs.length > winSize) {
+                _ensureSubLabelSlider();
+            }
         }
     }
 

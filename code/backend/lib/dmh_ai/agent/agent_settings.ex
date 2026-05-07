@@ -129,7 +129,7 @@ defmodule DmhAi.Agent.AgentSettings do
   # hosts reclaim Chromium memory; start.sh's supervisor relaunches
   # it on next demand.
   @browser_daemon_idle_shutdown_ms_default 1_800_000
-  # Per-turn screenshot capture for the FE's browser_step rows.
+  # Per-turn screenshot capture for the FE's per-step browser sub_labels.
   # Operators on tighter Pi storage can flip this off — the loop
   # then runs without screenshots and progress rows still render
   # the action label, just no thumbnail.

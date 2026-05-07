@@ -103,6 +103,28 @@ defmodule DmhAi.Constants do
     Path.join([@workspaces_dir, to_string(email), sanitize(session_id)])
   end
 
+  # Sandbox-side bind-mount root for the workspaces tree. The same host
+  # directory is mounted into the master container at `@workspaces_dir`
+  # (`/data/user_workspaces`) and into the sandbox container at this
+  # path (`/work`) — see dist/docker-compose.yml. Anything the master
+  # tells the sandbox daemon to write to has to use the SANDBOX-side
+  # path, otherwise the daemon's `os.makedirs(...)` creates the
+  # directory in the sandbox container's ephemeral filesystem and the
+  # file vanishes on container restart instead of landing on the host.
+  @sandbox_workspaces_dir "/work"
+
+  @doc """
+  Workspace directory for a session expressed in the SANDBOX container's
+  filesystem view. Use whenever the master is computing a path it will
+  pass to the daemon (e.g. browser_task screenshot target). Resolves to
+  the SAME host directory as `session_workspace_dir/2` — just the
+  sandbox-side bind-mount alias.
+  """
+  @spec session_workspace_dir_sandbox(String.t(), String.t()) :: String.t()
+  def session_workspace_dir_sandbox(email, session_id) do
+    Path.join([@sandbox_workspaces_dir, to_string(email), sanitize(session_id)])
+  end
+
   @doc """
   Per-user keystore directory — a sibling of the per-session roots, never
   inside any session. Long-lived material that must outlive session

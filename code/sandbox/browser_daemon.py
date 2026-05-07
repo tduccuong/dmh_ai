@@ -321,13 +321,26 @@ class Daemon:
 
         if command == "extract_text":
             sel = args.get("selector", "body")
-            text = await page.locator(sel).first.inner_text(timeout=timeout)
-            # Cap aggressive output sizes — runtime caps the trace log
-            # again, but trimming here saves IPC traffic on Pi.
+            locator = page.locator(sel)
+            # Wait for at least one matching element to appear; preserves
+            # the previous "raise TimeoutError on no match" semantics so
+            # the agent loop sees an honest error when its selector
+            # doesn't resolve.
+            await locator.first.wait_for(timeout=timeout)
+            # Then read ALL matches, not just the first. The previous
+            # `.first.inner_text()` returned only the head of a plural
+            # match, which mislead the agent into thinking its selector
+            # was wrong (e.g. `.titleline > a` matched all 30 HN story
+            # titles but the daemon returned only "California leaders…",
+            # so the agent kept refining the selector and looping). With
+            # `all_inner_texts()` a plural selector returns all matches
+            # joined by newlines, which is what the agent expects.
+            texts = await locator.all_inner_texts()
+            text = "\n".join(t.strip() for t in texts if t.strip())
             cap = int(args.get("max_chars", 20_000))
             if len(text) > cap:
                 text = text[:cap] + f"\n\n[…truncated at {cap} chars]"
-            return {"text": text, "url": page.url}
+            return {"text": text, "url": page.url, "matches": len(texts)}
 
         if command == "accessibility_snapshot":
             sel = args.get("selector")
