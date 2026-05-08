@@ -2757,8 +2757,7 @@ defmodule DmhAi.Agent.UserAgent do
         DmhAi.Agent.ModelBehaviorStats.record(
           role, model, "escalated_#{issue}", "")
 
-        user_msg = "Internal AI model error — we're investigating and working to fix. " <>
-                     "Sorry for the inconvenience."
+        user_msg = circuit_breaker_message(issue)
         StreamBuffer.clear(ctx.session_id, ctx.user_id)
         ThinkingBuffer.clear(ctx.session_id, ctx.user_id)
         {:ok, _} = append_session_message(ctx.session_id, ctx.user_id,
@@ -2766,6 +2765,21 @@ defmodule DmhAi.Agent.UserAgent do
         :aborted
     end
   end
+
+  # User-facing message when the 3-strike circuit-breaker fires. The issue
+  # atom names *what* the model kept doing wrong; the message tells the user
+  # honestly that an internal limit hit, names the shape of the limit so the
+  # user knows whether to rephrase / split / give up, and apologises.
+  # Avoids "internal AI model error" — the model didn't error, it kept
+  # tripping a safety rule.
+  defp circuit_breaker_message(:run_script_probe_budget),
+    do: "I ran out of tool-call budget for this task. I'm sorry — please split this into smaller steps, or tell me the specific question I should answer instead of probing."
+
+  defp circuit_breaker_message(:no_consecutive_web_search),
+    do: "I ran out of search budget for this task. I'm sorry — please narrow down what you're looking for."
+
+  defp circuit_breaker_message(_other),
+    do: "I hit an internal safety limit on this task — I was repeating the same kind of mistake too many times. I'm sorry — please rephrase or try again."
 
   # Auto-close runs at end of text turn (chain end). PERIODIC-ONLY —
   # one_off tasks stay `ongoing` across chains until the model

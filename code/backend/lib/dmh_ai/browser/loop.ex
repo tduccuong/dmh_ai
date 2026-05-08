@@ -89,9 +89,9 @@ defmodule DmhAi.Browser.Loop do
         constraints:     constraints || "",
         started_at:      System.monotonic_time(:millisecond),
         # Master and sandbox bind-mount the workspaces tree at the same
-        # container path (see CLAUDE.md "Container mounts" rule), so a
-        # single screenshot_dir works for both File.mkdir_p on master
-        # and as the path arg in the daemon's screenshot command.
+        # container path, so a single screenshot_dir works for both
+        # File.mkdir_p on master and as the path arg in the daemon's
+        # screenshot command.
         screenshot_dir: screenshot_dir(email, session_id),
         max_turns:       AgentSettings.browser_max_turns_per_task(),
         max_runtime:     AgentSettings.browser_max_runtime_ms(),

@@ -182,7 +182,7 @@ services:
       # sandbox processes. Both mounts use the SAME container path as
       # the master side (/data/user_assets, /data/user_workspaces) so
       # a path string built on master is consumable inside the sandbox
-      # without translation. See CLAUDE.md "Container mounts" rule.
+      # without translation.
       - ${DMHAI_HOME:-.}/user_assets:/data/user_assets:ro
       - ${DMHAI_HOME:-.}/user_workspaces:/data/user_workspaces
       # Browser-daemon socket directory. Daemon binds

@@ -38,9 +38,8 @@ SOCK_PATH = os.environ.get("BROWSER_SOCK_PATH", "/var/run/dmh-browser/daemon.soc
 IDLE_SHUTDOWN_S = int(os.environ.get("BROWSER_IDLE_SHUTDOWN_S", "1800"))
 
 # Workspace root. Same host directory mounted at the same path on
-# master AND sandbox (see CLAUDE.md "Container mounts" rule), so a
-# path built on master is consumable here without translation. Per-
-# user Playwright storage_state lives at
+# master AND sandbox, so a path built on master is consumable here
+# without translation. Per-user Playwright storage_state lives at
 # /data/user_workspaces/<email>/.browser_state.json.
 WORK_ROOT = "/data/user_workspaces"
 
