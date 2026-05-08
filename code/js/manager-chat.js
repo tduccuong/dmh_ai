@@ -140,18 +140,23 @@ var _subLabelOffsets = new Map();
 function writeProgressLabel(label, raw, _kind) {
     var safe = redactProgressLabel(raw || '');
 
-    // BrowserTask sub_labels carry the per-step screenshot path as a
+    // BrowserNavigate sub_labels carry the per-step screenshot path as a
     // `— .browser/<file>.png` suffix appended by Browser.Loop. Strip
-    // it from the visible text and render a small inline thumbnail
-    // pulled from /sessions/:id/browser-screenshot/:file. Detection is
-    // pattern-based (cheap, no schema field): only matches the literal
-    // `.browser/<file>.png` shape Browser.Loop emits, so other tools'
-    // sub_labels are untouched.
+    // it from the visible text and render a small thumbnail ABOVE the
+    // text (CSS column layout, see app.css `.progress-sub-label`).
+    // Putting the image first means a long step text (~200 chars of
+    // model `reason`) gets ellipsized horizontally without clipping
+    // the thumbnail off-screen — which was the symptom of "screenshots
+    // disappear after a few steps".
     var shotMatch = safe.match(/\s*[—\-]\s*\.browser\/([\w.\-]+\.png)\s*$/);
     var shotFile  = shotMatch ? shotMatch[1] : null;
     var textPart  = shotFile ? safe.slice(0, shotMatch.index).replace(/\s+$/, '') : safe;
 
-    label.textContent = textPart;
+    // Clear any previous content. Image (if any) goes first so the
+    // CSS column layout renders it at the top of the cell; text goes
+    // in a child span so the ellipsis-truncation rule applies only to
+    // the text run, not to the image.
+    label.textContent = '';
     label.title = textPart;
 
     if (shotFile && typeof UIManager !== 'undefined' && UIManager.currentSession && UIManager.currentSession.id) {
@@ -178,6 +183,11 @@ function writeProgressLabel(label, raw, _kind) {
             })
             .catch(function() { /* leave the broken-image rectangle hidden via CSS or just empty */ });
     }
+
+    var textSpan = document.createElement('span');
+    textSpan.className = 'step-text';
+    textSpan.textContent = textPart;
+    label.appendChild(textSpan);
 }
 
 // Walk every pending tool-like row whose sub_labels list overflows
@@ -349,7 +359,7 @@ function renderProgressRow(row) {
     // Sub-labels rendering — two layouts depending on what the parent
     // tool row represents:
     //
-    //   - **Sequential** (BrowserTask): each sub_label is a discrete
+    //   - **Sequential** (BrowserNavigate): each sub_label is a discrete
     //     ordered step in a multi-turn loop ("step 0:", "step 1:", …).
     //     Stack ALL of them, oldest at top, newest at bottom; no slider.
     //     Reads as a real activity log the user can follow.
@@ -365,7 +375,7 @@ function renderProgressRow(row) {
     if (isToolLikeKind(row.kind)
         && Array.isArray(row.sub_labels) && row.sub_labels.length > 0) {
         var subs = row.sub_labels;
-        var sequential = (typeof row.label === 'string' && row.label.startsWith('BrowserTask '));
+        var sequential = (typeof row.label === 'string' && row.label.startsWith('BrowserNavigate '));
 
         var sublist = document.createElement('div');
         sublist.className = 'progress-sub-labels';

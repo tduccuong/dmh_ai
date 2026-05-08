@@ -114,6 +114,26 @@ defmodule DmhAi.Router do
     Proxy.post_local_api(conn, sub)
   end
 
+  # ─── PUT /ai_pools — loopback-only bulk import for fresh-install bootstrap ──
+  #
+  # Accepts a `pools.json` (same shape as the operator seed file at
+  # `/data/pools.json`) and inserts each pool that doesn't already exist
+  # by name. Gated to the loopback interface so anyone with shell access
+  # to the host can curl-import their LLM-account config without first
+  # going through admin login. Remote pool management uses the
+  # authenticated `/admin/pools/*` routes.
+  #
+  # Example:
+  #   curl http://127.0.0.1:8080/ai_pools -XPUT \
+  #     --data-binary @/path/to/pools.json
+  put "/ai_pools" do
+    if loopback?(conn) do
+      AdminPools.put_ai_pools(conn)
+    else
+      Proxy.json(conn, 403, %{error: "Forbidden — /ai_pools accepts loopback requests only"})
+    end
+  end
+
   # ─── Authenticated GET routes ─────────────────────────────────────────────────
 
   get "/users" do
@@ -423,7 +443,7 @@ defmodule DmhAi.Router do
     end
   end
 
-  # Per-session browser_task per-step screenshot. Serves PNGs from
+  # Per-session browser_navigate per-step screenshot. Serves PNGs from
   # `<session_workspace>/.browser/<file_name>`. Owned by the runtime
   # (Browser.Loop writes via the daemon), not the model — so unlike
   # the wider workspace tree (intentionally not served by /assets),
@@ -574,7 +594,7 @@ defmodule DmhAi.Router do
   end
 
   # DELETE /auth/me/browser-consent — revoke. Nulls both columns; the
-  # next browser_task invocation will re-prompt.
+  # next browser_navigate invocation will re-prompt.
   delete "/auth/me/browser-consent" do
     with {:ok, conn, user} <- check_auth(conn) do
       Auth.delete_browser_consent(conn, user)
@@ -725,6 +745,17 @@ defmodule DmhAi.Router do
         {:ok, conn, user}
     end
   end
+
+  # Loopback-only gate for /ai_pools and any other host-local
+  # convenience endpoints. Trusts conn.remote_ip directly — does NOT
+  # consult X-Forwarded-For, since a forwarded header is operator-
+  # controlled at the proxy level and we must NOT let an external
+  # client spoof loopback access. Behind a reverse proxy the operator
+  # is expected to filter /ai_pools at the proxy layer (or just not
+  # forward it).
+  defp loopback?(%Plug.Conn{remote_ip: {127, _, _, _}}), do: true
+  defp loopback?(%Plug.Conn{remote_ip: {0, 0, 0, 0, 0, 0, 0, 1}}), do: true
+  defp loopback?(_), do: false
 
   # Best-effort client IP for non-security purposes (UI language hint).
   # When behind a reverse proxy (nginx, traefik, Caddy) `conn.remote_ip`

@@ -114,13 +114,18 @@ defmodule DmhAi.Agent.AgentSettings do
   # naming.
   @session_namer_user_msg_count_default 4
 
-  # Browser tool — `Tools.BrowserTask` drives a sandboxed Chromium via
+  # Browser tool — `Tools.BrowserNavigate` drives a sandboxed Chromium via
   # a Python Playwright daemon. Each iteration of the action loop
   # (observe page → ask LLM → click/type → observe) costs one
   # `browser_agent_model` call. The tool runs subject to a per-task
   # turn cap, a wall-clock max-runtime, and a per-user concurrency
   # limit (one browser process at a time by default).
   @browser_agent_model_role_default "swiftModel"
+  # Vision-distillation model — runs once per browser-loop turn on the
+  # screenshot to produce a goal-relevant JSON summary that the action
+  # LLM consumes in place of raw a11y / extract_text dumps. MUST be
+  # vision-capable. Same role plumbing as browserAgentModelRole.
+  @browser_distill_model_role_default "swiftModel"
   @browser_max_runtime_ms_default 1_800_000
   @browser_max_turns_per_task_default 50
   @browser_concurrency_per_user_default 1
@@ -137,7 +142,7 @@ defmodule DmhAi.Agent.AgentSettings do
   # Hard ceiling on the rendered `view` returned by the daemon's
   # accessibility_snapshot command. Last-line defence against context
   # blow-up on multilingual mega-pages — without this a single
-  # browser_task observation can dump 50K+ tokens into the chain.
+  # browser_navigate observation can dump 50K+ tokens into the chain.
   # See arch_wiki/dmh_ai/architecture.md §"Observation payload sizing".
   # Keep in lockstep with browser_daemon.py DEFAULT_MAX_OBSERVATION_CHARS.
   @browser_max_observation_chars_default 12_000
@@ -385,7 +390,18 @@ defmodule DmhAi.Agent.AgentSettings do
     model_for(role)
   end
 
-  @doc "Hard wall-clock cap (ms) on a single browser_task invocation. Past this the daemon is killed."
+  @doc """
+  Vision-distillation model resolved through `model_for/1`. Runs once
+  per browser-loop turn on the screenshot. Defaults to the same role as
+  `browserAgentModelRole` (typically `swiftModel`).
+  """
+  @spec browser_distill_model() :: String.t()
+  def browser_distill_model do
+    role = string_setting("browserDistillModelRole", @browser_distill_model_role_default)
+    model_for(role)
+  end
+
+  @doc "Hard wall-clock cap (ms) on a single browser_navigate invocation. Past this the daemon is killed."
   @spec browser_max_runtime_ms() :: pos_integer()
   def browser_max_runtime_ms,
     do: int_setting("browserMaxRuntimeMs", @browser_max_runtime_ms_default)
@@ -395,7 +411,7 @@ defmodule DmhAi.Agent.AgentSettings do
   def browser_max_turns_per_task,
     do: int_setting("browserMaxTurnsPerTask", @browser_max_turns_per_task_default)
 
-  @doc "Maximum number of concurrent browser_task invocations per user."
+  @doc "Maximum number of concurrent browser_navigate invocations per user."
   @spec browser_concurrency_per_user() :: pos_integer()
   def browser_concurrency_per_user,
     do: int_setting("browserConcurrencyPerUser", @browser_concurrency_per_user_default)

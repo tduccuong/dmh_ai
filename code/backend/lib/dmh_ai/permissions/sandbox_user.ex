@@ -55,7 +55,7 @@ defmodule DmhAi.Permissions.SandboxUser do
   Provision (or no-op) the sandbox-side state for `user`. Returns
   `{:ok, uid}` on success, `{:error, reason}` if any step failed. The
   caller — typically `run_script` — uses `uid` to build the
-  `docker exec -u dmh_ai-u<uid> -w /work/<email>/<session>/ …`
+  `docker exec -u dmh_ai-u<uid> -w /data/user_workspaces/<email>/<session>/ …`
   command.
   """
   @spec ensure_provisioned(user_ref()) :: {:ok, non_neg_integer()} | {:error, String.t()}
@@ -63,9 +63,58 @@ defmodule DmhAi.Permissions.SandboxUser do
     with {:ok, uid}      <- ensure_uid(user_id),
          :ok             <- ensure_os_user(uid),
          :ok             <- ensure_host_dirs(email, uid),
-         :ok             <- ensure_sandbox_workspace_perms(email, uid) do
+         :ok             <- ensure_sandbox_workspace_perms(email, uid),
+         :ok             <- ensure_sandbox_assets_perms(email, uid) do
       {:ok, uid}
     end
+  end
+
+  @doc """
+  Resolve the consuming sandbox UID for a user. Admins use the fixed
+  master UID (`@uid_base`, see `dmh_ai-master-u` in the sandbox image);
+  non-admins go through full provisioning. The returned uid is what
+  callers should chown user-owned files to so the sandbox process
+  consuming them (running as that uid) can read.
+  """
+  @spec uid_for(map()) :: {:ok, non_neg_integer()} | {:error, String.t()}
+  def uid_for(%{role: "admin", email: email}) when is_binary(email) and email != "" do
+    uid = master_uid()
+    with :ok <- ensure_host_dirs(email, uid),
+         :ok <- ensure_sandbox_workspace_perms(email, uid),
+         :ok <- ensure_sandbox_assets_perms(email, uid) do
+      {:ok, uid}
+    end
+  end
+
+  def uid_for(%{id: _, email: _} = user), do: ensure_provisioned(user)
+
+  def uid_for(_), do: {:error, "uid_for: missing :id/:email or unknown role shape"}
+
+  @doc """
+  Materialise a per-user file under `_keystore/<rel_path>` with the
+  given mode and ownership = consuming uid (so the sandbox process
+  running as that uid can read it). The only sanctioned writer into
+  `/data/user_assets/<email>/_keystore/`. Resolves the uid via
+  `uid_for/1`, ensures the email + keystore dirs exist with mode 0700
+  owned by uid, then writes / chmods / chowns the target file.
+
+  Returns `{:ok, abs_path}` on success.
+  """
+  @spec write_keystore_file(map(), Path.t(), iodata(), non_neg_integer()) ::
+          {:ok, String.t()} | {:error, String.t()}
+  def write_keystore_file(%{email: email} = user, rel_path, contents, mode)
+      when is_binary(email) and is_binary(rel_path) and is_integer(mode) do
+    with {:ok, uid}    <- uid_for(user),
+         :ok           <- ensure_keystore_dir(email, uid),
+         abs_path      = Path.join(Constants.user_keystore_dir(email), rel_path),
+         :ok           <- File.mkdir_p(Path.dirname(abs_path)),
+         :ok           <- (File.write!(abs_path, contents); :ok),
+         :ok           <- (File.chmod!(abs_path, mode); :ok),
+         :ok           <- chown_path(abs_path, uid) do
+      {:ok, abs_path}
+    end
+  rescue
+    e -> {:error, "write_keystore_file: #{Exception.message(e)}"}
   end
 
   @doc "Username inside the sandbox for a given UID."
@@ -208,17 +257,70 @@ defmodule DmhAi.Permissions.SandboxUser do
   # The host-side mkdir made `<workspaces>/<email>/` owned by the
   # right user, but we may need finer perms on contents (sub-dirs
   # auto-created by tools). Sandbox runs as root and sees the same
-  # tree at `/work/<email>/`, so a `chown -R` from inside the
-  # container is a clean way to repair perms after a session-dir
-  # was created earlier under a different uid.
+  # tree at `/data/user_workspaces/<email>/`, so a `chown -R` from
+  # inside the container is a clean way to repair perms after a
+  # session-dir was created earlier under a different uid.
   defp ensure_sandbox_workspace_perms(email, uid) do
     safe = email |> to_string() |> String.replace("'", "'\\''")
-    cmd = "chown -R #{uid}:#{uid} '/work/#{safe}' 2>/dev/null; chmod 0700 '/work/#{safe}'"
+    cmd = "chown -R #{uid}:#{uid} '/data/user_workspaces/#{safe}' 2>/dev/null; chmod 0700 '/data/user_workspaces/#{safe}'"
 
     case docker(["exec", Sandbox.container_name(), "sh", "-c", cmd], @docker_timeout_ms) do
       {:ok, _, _} -> :ok
       :timeout -> {:error, "chown -R inside sandbox timed out"}
       {:error, reason} -> {:error, "chown -R inside sandbox failed: #{inspect(reason)}"}
+    end
+  end
+
+  # Mirror of `ensure_sandbox_workspace_perms/2` for the assets tree.
+  # `user_assets/<email>/` is RO-mounted into the sandbox and seeded
+  # by master with files owned by master's container-root user; without
+  # this recursive chown the per-user OS account can traverse the
+  # email directory (mode 0700 owned by uid) but cannot read anything
+  # master wrote inside it (`_keystore/.ssh/<key>` etc., mode 0600
+  # owned by root). After the sweep every file under `<email>/` is
+  # owned by `uid`, mode 0700 still applies on the email dir, so the
+  # per-user process reads its own files and other users' subtrees
+  # remain EACCES.
+  defp ensure_sandbox_assets_perms(email, uid) do
+    safe = email |> to_string() |> String.replace("'", "'\\''")
+    cmd = "chown -R #{uid}:#{uid} '/data/user_assets/#{safe}' 2>/dev/null; chmod 0700 '/data/user_assets/#{safe}'"
+
+    case docker(["exec", Sandbox.container_name(), "sh", "-c", cmd], @docker_timeout_ms) do
+      {:ok, _, _} -> :ok
+      :timeout -> {:error, "chown -R inside sandbox (assets) timed out"}
+      {:error, reason} -> {:error, "chown -R inside sandbox (assets) failed: #{inspect(reason)}"}
+    end
+  end
+
+  # Idempotent: ensure `<email>/` and `<email>/_keystore/` both exist,
+  # are owned by `uid`, mode 0700. Master is root so chown propagates
+  # through the bind-mount to the host. Called from
+  # `write_keystore_file/4` before any file is written.
+  defp ensure_keystore_dir(email, uid) do
+    email_dir = Path.join(Constants.assets_dir(), to_string(email))
+    keystore  = Path.join(email_dir, "_keystore")
+
+    File.mkdir_p!(email_dir)
+    File.mkdir_p!(keystore)
+
+    with :ok <- chown_path(email_dir, uid),
+         :ok <- chown_path(keystore, uid) do
+      File.chmod!(email_dir, 0o700)
+      File.chmod!(keystore, 0o700)
+      :ok
+    end
+  rescue
+    e -> {:error, "ensure_keystore_dir: #{Exception.message(e)}"}
+  end
+
+  # `chown <uid>:<uid> <path>` via :os.cmd. Master runs as root so
+  # this works without sudo. Quotes the path defensively for shell.
+  defp chown_path(path, uid) when is_integer(uid) do
+    safe = String.replace(to_string(path), "'", "'\\''")
+    cmd  = "chown #{uid}:#{uid} '#{safe}'"
+    case :os.cmd(String.to_charlist(cmd)) do
+      [] -> :ok
+      out -> {:error, "chown failed: #{IO.iodata_to_binary([out])}"}
     end
   end
 

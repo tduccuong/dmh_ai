@@ -1,7 +1,7 @@
 # Integration tests: browser-tools consent gate (v0 phase 1).
 #
 # Coverage:
-#   - Tools.BrowserTask blocks with status="needs_consent" on a fresh
+#   - Tools.BrowserNavigate blocks with status="needs_consent" on a fresh
 #     user (NULL watermark) and writes a kind="browser_consent_required"
 #     session_progress row carrying the canonical consent text.
 #   - Status reason text differentiates :never_accepted vs :hash_mismatch.
@@ -20,7 +20,7 @@
 defmodule Itgr.BrowserConsent do
   use ExUnit.Case, async: false
 
-  alias DmhAi.{Repo, Browser.ConsentText, Tools.BrowserTask}
+  alias DmhAi.{Repo, Browser.ConsentText, Tools.BrowserNavigate}
   alias DmhAi.Handlers.Auth, as: AuthHandler
   import Ecto.Adapters.SQL, only: [query!: 3]
   import Plug.Conn, only: [put_req_header: 3]
@@ -92,15 +92,15 @@ defmodule Itgr.BrowserConsent do
     seed_session(sid, user_id)
 
     assert {:ok, %{status: "needs_consent", reason: reason}} =
-             BrowserTask.execute(browser_args(), %{user_id: user_id, session_id: sid})
+             BrowserNavigate.execute(browser_args(), %{user_id: user_id, session_id: sid})
 
     assert reason =~ "must read and accept"
 
     # Row label is a short marker — the full canonical text comes
     # from GET /auth/me/browser-consent at modal-open time. See the
-    # comment on @progress_marker in Tools.BrowserTask.
+    # comment on @progress_marker in Tools.BrowserNavigate.
     assert [marker] = progress_rows_of_kind(sid, "browser_consent_required")
-    assert marker == BrowserTask.progress_marker()
+    assert marker == BrowserNavigate.progress_marker()
   end
 
   # ─── consent state lookup ─────────────────────────────────────────────────
@@ -109,20 +109,20 @@ defmodule Itgr.BrowserConsent do
     user_id = uid()
     seed_user(user_id)
 
-    assert :never_accepted = BrowserTask.consent_state(user_id)
+    assert :never_accepted = BrowserNavigate.consent_state(user_id)
 
     # Inject a stale hash (simulates a user who accepted under a
     # previous canonical text).
     query!(Repo,
       "UPDATE users SET browser_consent_at=?, browser_consent_text_hash=? WHERE id=?",
       [1, "stalehash", user_id])
-    assert :hash_mismatch = BrowserTask.consent_state(user_id)
+    assert :hash_mismatch = BrowserNavigate.consent_state(user_id)
 
     # Update to the current hash.
     query!(Repo,
       "UPDATE users SET browser_consent_at=?, browser_consent_text_hash=? WHERE id=?",
       [System.os_time(:millisecond), ConsentText.hash(), user_id])
-    assert :consented = BrowserTask.consent_state(user_id)
+    assert :consented = BrowserNavigate.consent_state(user_id)
   end
 
   # ─── once accepted, gate passes (Phase 1: phase-2-not-enabled error) ──────
@@ -144,7 +144,7 @@ defmodule Itgr.BrowserConsent do
     # it returns the Phase-1 placeholder shape (`:ok` with a distinct
     # status string) so the model can clearly tell consent passed.
     assert {:ok, %{status: status, reason: reason}} =
-             BrowserTask.execute(browser_args(), %{user_id: user_id, session_id: sid})
+             BrowserNavigate.execute(browser_args(), %{user_id: user_id, session_id: sid})
 
     assert status == "browser_action_loop_pending"
     assert reason =~ "Consent recorded"
@@ -191,7 +191,7 @@ defmodule Itgr.BrowserConsent do
 
     # Tool re-prompts.
     assert {:ok, %{status: "needs_consent"}} =
-             BrowserTask.execute(browser_args(), %{user_id: user_id, session_id: sid})
+             BrowserNavigate.execute(browser_args(), %{user_id: user_id, session_id: sid})
   end
 
   # ─── GET payload shape ────────────────────────────────────────────────────
@@ -221,7 +221,7 @@ defmodule Itgr.BrowserConsent do
     args = %{"url" => "http://example.com", "goal" => "x"}
 
     assert {:error, msg} =
-             BrowserTask.execute(args, %{user_id: user_id, session_id: sid})
+             BrowserNavigate.execute(args, %{user_id: user_id, session_id: sid})
 
     assert msg =~ "https://"
     # No consent prompt fired — the URL check rejected first.
@@ -233,7 +233,7 @@ defmodule Itgr.BrowserConsent do
     seed_user(user_id)
 
     args = %{"url" => "https://example.com"}
-    assert {:error, msg} = BrowserTask.execute(args, %{user_id: user_id, session_id: uid()})
+    assert {:error, msg} = BrowserNavigate.execute(args, %{user_id: user_id, session_id: uid()})
     assert msg =~ "goal"
   end
 

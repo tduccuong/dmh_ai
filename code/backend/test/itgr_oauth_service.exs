@@ -171,7 +171,7 @@ defmodule Itgr.OAuthService do
                                        ctx_for(user, sess, n))
 
     assert msg =~ "No OAuth services are configured"
-    assert msg =~ "browser_task"
+    assert msg =~ "browser_navigate"
     assert msg =~ "web_search"
   end
 

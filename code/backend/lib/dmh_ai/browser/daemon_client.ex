@@ -129,8 +129,41 @@ defmodule DmhAi.Browser.DaemonClient do
 
   # ── private ──────────────────────────────────────────────────────────────────
 
+  # Max single-response size accepted from the daemon. This is a
+  # TRANSPORT-layer cap and has nothing to do with what reaches the LLM
+  # context — the daemon's own `accessibility_snapshot` view is already
+  # capped to `browserMaxObservationChars` (12 K chars) and
+  # `extract_text` to `max_chars` (20 K chars). After JSON envelope
+  # quoting+escaping the realistic worst-case wire size is ~80 KB;
+  # 256 KiB is ~3× that — plenty of headroom for the largest legit
+  # response while still capping a runaway / hostile one. This bounds
+  # BOTH the `line_length` packet limit AND `recbuf` so the transport
+  # never silently truncates legitimate responses (the failure mode
+  # that produced `Jason.DecodeError{position: 9216, …}` on
+  # multi-KB views).
+  @max_response_bytes 256 * 1024
+
   defp do_call(line) do
-    opts = [:binary, active: false, packet: :line]
+    # `packet: :line` mode TRUNCATES lines longer than `packet_size`
+    # (defaults to a small kernel-buffer-tied value, typically 8–16 KB
+    # on AF_UNIX) — the failure mode that produced
+    # `Jason.DecodeError{position: 9216}` on large daemon responses.
+    # Lift `packet_size` to @max_response_bytes so the line packet
+    # mode delivers full lines.
+    #
+    # Note: NOT `line_length` (raises `:badarg` from `gen_tcp.connect/4`
+    # in OTP 27 — appears to no longer be a valid connect option) and
+    # NOT `recbuf` (maps to `SO_RCVBUF`, bounded by the kernel's
+    # `net.core.rmem_max` ≈ 208 KB; over that raises `:einval`).
+    # `packet_size` is the documented Erlang-side accumulator cap for
+    # length-prefixed AND line-delimited packet modes; no kernel
+    # involvement.
+    opts = [
+      :binary,
+      active: false,
+      packet: :line,
+      packet_size: @max_response_bytes
+    ]
 
     case :gen_tcp.connect({:local, @sock_path}, 0, opts, @connect_timeout_ms) do
       {:ok, sock} ->

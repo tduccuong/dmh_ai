@@ -744,7 +744,7 @@ UIManager.pollTurnToCompletion = function(sessionAtSend, onComplete, onError, ab
             //   leaving the "Thinking out loud" <details> block popping
             //   in alongside the final answer instead of streaming live.
             // - 2s in steady-state tool waits (long-running run_script,
-            //   browser_task) — there sub-second polling just burns
+            //   browser_navigate) — there sub-second polling just burns
             //   rate-limit budget without improving perceived latency.
             var STARTUP_FAST_POLLS = 6;  // first ~3s @ 500ms cadence
             var nextDelay =

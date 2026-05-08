@@ -37,9 +37,12 @@ SOCK_PATH = os.environ.get("BROWSER_SOCK_PATH", "/var/run/dmh-browser/daemon.soc
 # reclaim ~150–250 MB of RSS this way.
 IDLE_SHUTDOWN_S = int(os.environ.get("BROWSER_IDLE_SHUTDOWN_S", "1800"))
 
-# Workspace root, bind-mounted into the container at /work. Per-user
-# Playwright storage_state lives at /work/<email>/.browser_state.json.
-WORK_ROOT = "/work"
+# Workspace root. Same host directory mounted at the same path on
+# master AND sandbox (see CLAUDE.md "Container mounts" rule), so a
+# path built on master is consumable here without translation. Per-
+# user Playwright storage_state lives at
+# /data/user_workspaces/<email>/.browser_state.json.
+WORK_ROOT = "/data/user_workspaces"
 
 # Per-command default timeout (ms). Overridable per-call via args.timeout.
 DEFAULT_CMD_TIMEOUT_MS = 15_000
@@ -230,8 +233,8 @@ class Daemon:
         """Lazy-create or return the cached BrowserContext for `user_id`.
 
         On first creation, attempts to load Playwright `storage_state`
-        from `/work/<email>/.browser_state.json` so cookies persist
-        across calls.
+        from `/data/user_workspaces/<email>/.browser_state.json` so
+        cookies persist across calls.
         """
         info = self.contexts.get(user_id)
         if info is not None:

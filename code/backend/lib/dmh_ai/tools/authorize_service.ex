@@ -23,7 +23,7 @@ defmodule DmhAi.Tools.AuthorizeService do
     * If the target doesn't match any catalog entry → return a
       structured `{:error, ...}` telling the model to either ask
       the admin to add the service or fall back to alternatives
-      (browser_task, honest decline).
+      (browser_navigate, honest decline).
 
   This is the chat-driven counterpart to `connect_mcp`. Both end at
   the same `/oauth/callback` URL; the `flow_kind` column on the
@@ -125,7 +125,7 @@ defmodule DmhAi.Tools.AuthorizeService do
   # nothing close at all, tell the user the service isn't configured
   # and offer fallbacks (browser, web_search, honest decline).
   defp none_message(_target_in, []) do
-    "No OAuth services are configured in this deployment. Tell the user honestly: this DMH-AI install has no OAuth catalog yet (the operator hasn't wired any). Offer alternatives: `browser_task` (when available, drives the user-facing site), `web_search` (for public info that doesn't need auth), or honest decline. Suggest they ask the operator to add the service to the OAuth catalog."
+    "No OAuth services are configured in this deployment. Tell the user honestly: this DMH-AI install has no OAuth catalog yet (the operator hasn't wired any). Offer alternatives: `browser_navigate` (when available, drives the user-facing site), `web_search` (for public info that doesn't need auth), or honest decline. Suggest they ask the operator to add the service to the OAuth catalog."
   end
 
   defp none_message(target_in, candidates) do
@@ -133,7 +133,7 @@ defmodule DmhAi.Tools.AuthorizeService do
       format_candidate_list(candidates) <>
       "\nTell the user truthfully that `#{target_in}` didn't resolve, list the closest configured services above by slug, " <>
       "and ask them to pick one OR give a URL for the service they actually want. " <>
-      "If none of the candidates fit and the user can't supply a URL, the service isn't wired up here — offer `browser_task` " <>
+      "If none of the candidates fit and the user can't supply a URL, the service isn't wired up here — offer `browser_navigate` " <>
       "(when available), `web_search` (for public info), or honest decline. Don't guess and retry."
   end
 

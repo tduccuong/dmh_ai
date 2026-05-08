@@ -508,7 +508,7 @@ defmodule DmhAi.Handlers.Auth do
   #     fires `{:auto_resume_assistant, session_id}` to the user's
   #     UserAgent after the watermark write. Same pattern as the
   #     OAuth/MCP callback — the chain that hit `needs_consent`
-  #     auto-retries `browser_task` instead of leaving the user with
+  #     auto-retries `browser_navigate` instead of leaving the user with
   #     a stale "blocked" message.
   def post_browser_consent(conn, user) do
     {:ok, body, conn} = read_body(conn)
@@ -560,7 +560,7 @@ defmodule DmhAi.Handlers.Auth do
     end
   end
 
-  # DELETE /auth/me/browser-consent — revoke. Next browser_task
+  # DELETE /auth/me/browser-consent — revoke. Next browser_navigate
   # invocation re-prompts.
   def delete_browser_consent(conn, user) do
     query!(Repo,

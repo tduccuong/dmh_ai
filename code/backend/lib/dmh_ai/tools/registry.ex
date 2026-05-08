@@ -51,7 +51,7 @@ defmodule DmhAi.Tools.Registry do
     DmhAi.Tools.ProvisionSshIdentity,
     DmhAi.Tools.FetchWiki,
     DmhAi.Tools.FetchMemo,
-    DmhAi.Tools.BrowserTask,
+    DmhAi.Tools.BrowserNavigate,
     DmhAi.Tools.AuthorizeService
   ]
 

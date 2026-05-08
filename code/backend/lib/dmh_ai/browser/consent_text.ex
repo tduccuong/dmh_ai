@@ -6,7 +6,7 @@
 defmodule DmhAi.Browser.ConsentText do
   @moduledoc """
   Single source of truth for the browser-tools consent text the user
-  must accept before any `browser_task` invocation can proceed.
+  must accept before any `browser_navigate` invocation can proceed.
 
   The text is treated as a versioned artifact: changing it produces a
   new sha256 hash and forces every user to re-accept. This is the

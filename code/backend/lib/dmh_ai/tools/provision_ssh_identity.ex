@@ -52,6 +52,7 @@ defmodule DmhAi.Tools.ProvisionSshIdentity do
   @behaviour DmhAi.Tools.Behaviour
 
   alias DmhAi.Auth.Credentials
+  alias DmhAi.Permissions.SandboxUser
 
   @default_user_marker "_default_"
 
@@ -85,8 +86,9 @@ defmodule DmhAi.Tools.ProvisionSshIdentity do
 
   @impl true
   def execute(%{"host" => host}, ctx) when is_binary(host) and host != "" do
-    user_id  = ctx[:user_id] || ctx["user_id"]
-    keystore = Map.fetch!(ctx, :keystore_dir)
+    user_id    = ctx[:user_id]    || ctx["user_id"]
+    user_email = ctx[:user_email] || ctx["user_email"]
+    user_role  = ctx[:user_role]  || ctx["user_role"]
 
     {remote_user, host_part} = split_user_and_host(host)
 
@@ -94,24 +96,28 @@ defmodule DmhAi.Tools.ProvisionSshIdentity do
       not is_binary(user_id) or user_id == "" ->
         {:error, "no user_id in context"}
 
+      not is_binary(user_email) or user_email == "" ->
+        {:error, "no user_email in context"}
+
       host_part == "" ->
         {:error, "host argument is empty after normalisation"}
 
       true ->
+        user   = %{id: user_id, email: user_email, role: user_role || ""}
         target = "ssh:" <> host_part
 
         case Credentials.lookup(user_id, target, remote_user) do
           %{kind: "ssh_identity", payload: %{"private_key" => priv, "public_key" => pub}} ->
-            path = materialize(keystore, remote_user, host_part, priv, pub)
-
-            {:ok, %{
-              status:           "ready",
-              host:             host_part,
-              remote_user:      remote_user,
-              private_key_path: path,
-              public_key:       pub,
-              hint:             ssh_hint(path, remote_user, host_part)
-            }}
+            with {:ok, path} <- materialize(user, remote_user, host_part, priv, pub) do
+              {:ok, %{
+                status:           "ready",
+                host:             host_part,
+                remote_user:      remote_user,
+                private_key_path: path,
+                public_key:       pub,
+                hint:             ssh_hint(path, remote_user, host_part)
+              }}
+            end
 
           _ ->
             case generate_keypair(remote_user, host_part) do
@@ -129,21 +135,22 @@ defmodule DmhAi.Tools.ProvisionSshIdentity do
                              format_user_host(remote_user, host_part)
                 )
 
-                path = materialize(keystore, remote_user, host_part, priv, pub)
-                user_host = format_user_host(remote_user, host_part)
+                with {:ok, path} <- materialize(user, remote_user, host_part, priv, pub) do
+                  user_host = format_user_host(remote_user, host_part)
 
-                {:ok, %{
-                  status:           "needs_setup",
-                  host:             host_part,
-                  remote_user:      remote_user,
-                  private_key_path: path,
-                  public_key:       pub,
-                  options: %{
-                    password:        "If the remote server allows password authentication, ask the user for the password (use `request_input`). Once received, install this identity's public key on the remote in one shot, e.g.:\n\n  sshpass -p <password> ssh-copy-id -i #{path}.pub -o StrictHostKeyChecking=accept-new #{user_host}\n\nThen subsequent connects use `ssh -i #{path} #{user_host}` and never need the password again.",
-                    authorized_keys: "If the server only allows pubkey auth (no password login), relay this public key to the user and ask them to run, on the remote, ONCE:\n\n  mkdir -p ~/.ssh && chmod 700 ~/.ssh\n  echo '#{pub}' >> ~/.ssh/authorized_keys\n  chmod 600 ~/.ssh/authorized_keys\n\nWhen the user confirms it's done, retry `ssh -i #{path} #{user_host}` to verify connectivity."
-                  },
-                  message: "First-time identity provisioned. Relay the public key and the two setup options to the user as a clear bullet list, then wait for them to either (a) provide a password (use request_input) or (b) confirm they've installed the public key on the remote. Do NOT ask for their personal private key."
-                }}
+                  {:ok, %{
+                    status:           "needs_setup",
+                    host:             host_part,
+                    remote_user:      remote_user,
+                    private_key_path: path,
+                    public_key:       pub,
+                    options: %{
+                      password:        "If the remote server allows password authentication, ask the user for the password (use `request_input`). Once received, install this identity's public key on the remote in one shot, e.g.:\n\n  sshpass -p <password> ssh-copy-id -i #{path}.pub -o StrictHostKeyChecking=accept-new #{user_host}\n\nThen subsequent connects use `ssh -i #{path} #{user_host}` and never need the password again.",
+                      authorized_keys: "If the server only allows pubkey auth (no password login), relay this public key to the user and ask them to run, on the remote, ONCE:\n\n  mkdir -p ~/.ssh && chmod 700 ~/.ssh\n  echo '#{pub}' >> ~/.ssh/authorized_keys\n  chmod 600 ~/.ssh/authorized_keys\n\nWhen the user confirms it's done, retry `ssh -i #{path} #{user_host}` to verify connectivity."
+                    },
+                    message: "First-time identity provisioned. Relay the public key and the two setup options to the user as a clear bullet list, then wait for them to either (a) provide a password (use request_input) or (b) confirm they've installed the public key on the remote. Do NOT ask for their personal private key."
+                  }}
+                end
 
               {:error, reason} ->
                 {:error, "ssh-keygen failed: #{reason}"}
@@ -232,17 +239,20 @@ defmodule DmhAi.Tools.ProvisionSshIdentity do
     e -> {:error, Exception.message(e)}
   end
 
-  defp materialize(keystore, remote_user, host_part, priv, pub) do
-    File.mkdir_p!(Path.join(keystore, ".ssh"))
-    {priv_path, pub_path} = materialised_paths(keystore, remote_user, host_part)
+  # Write the keypair to disk using `Permissions.SandboxUser.write_keystore_file/4`,
+  # which owns the path layout (`<email>/_keystore/.ssh/<slug>`),
+  # mode (0600 priv, 0644 pub), and ownership (chowned to the
+  # consuming sandbox uid so `run_script` can read the private key
+  # when invoking ssh). Returns `{:ok, priv_path}` for the model.
+  defp materialize(user, remote_user, host_part, priv, pub) do
+    slug     = slug_for(remote_user, host_part)
+    rel_priv = Path.join(".ssh", slug)
+    rel_pub  = rel_priv <> ".pub"
 
-    File.write!(priv_path, priv)
-    File.chmod!(priv_path, 0o600)
-
-    File.write!(pub_path, pub)
-    File.chmod!(pub_path, 0o644)
-
-    priv_path
+    with {:ok, priv_path} <- SandboxUser.write_keystore_file(user, rel_priv, priv, 0o600),
+         {:ok, _pub_path} <- SandboxUser.write_keystore_file(user, rel_pub,  pub,  0o644) do
+      {:ok, priv_path}
+    end
   end
 
   defp sanitise_user(user) do

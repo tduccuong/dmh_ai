@@ -855,13 +855,36 @@ defmodule DmhAi.Agent.LLM do
         names = Enum.map_join(calls, ",", fn c -> get_in(c, ["function", "name"]) || "?" end)
         "[#{role}→#{names}]"
       else
-        snippet = content |> to_string() |> String.slice(0, 100) |> String.replace("\n", "↵")
+        snippet =
+          content
+          |> content_to_log_string()
+          |> String.slice(0, 100)
+          |> String.replace("\n", "↵")
+
         "[#{role}]#{snippet}"
       end
     end)
     result = Enum.join(parts, " | ")
     if String.length(result) > 1000, do: String.slice(result, 0, 1000) <> "…", else: result
   end
+
+  # OpenAI vision messages use `content` as a LIST of typed blocks
+  # (`%{type: "text", text: "..."}`, `%{type: "image_url", image_url: ...}`),
+  # not a plain string. `to_string/1` would crash on that shape.
+  # Flatten to a one-line preview: text blocks inline, images as a
+  # short `[image]` marker so SysLog stays readable without dumping
+  # base64.
+  defp content_to_log_string(content) when is_binary(content), do: content
+  defp content_to_log_string(content) when is_list(content) do
+    Enum.map_join(content, "", fn
+      %{type: "text", text: t}        when is_binary(t) -> t
+      %{"type" => "text", "text" => t} when is_binary(t) -> t
+      %{type: "image_url"}                              -> "[image]"
+      %{"type" => "image_url"}                          -> "[image]"
+      other                                             -> inspect(other, limit: 30)
+    end)
+  end
+  defp content_to_log_string(other), do: inspect(other, limit: 30)
 
   defp maybe_trace(nil, _model_str, _messages, _tools, _result), do: :ok
   defp maybe_trace(meta, model_str, messages, tools, result) do

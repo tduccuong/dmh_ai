@@ -3,7 +3,7 @@
 # See the LICENSE file in the repository root for full details.
 # For commercial inquiries, contact: tduccuong@gmail.com
 
-defmodule DmhAi.Tools.BrowserTask do
+defmodule DmhAi.Tools.BrowserNavigate do
   @moduledoc """
   Drives a real Chromium browser inside the sandbox to carry out
   authenticated, multi-step tasks on the user's behalf — *"go to
@@ -47,7 +47,7 @@ defmodule DmhAi.Tools.BrowserTask do
        the runtime's perspective.
 
   After the user accepts via `POST /auth/me/browser-consent`, the
-  next `browser_task` invocation passes the gate and dispatches to
+  next `browser_navigate` invocation passes the gate and dispatches to
   `Browser.Loop.run/4`.
   """
 
@@ -60,7 +60,7 @@ defmodule DmhAi.Tools.BrowserTask do
   require Logger
 
   @impl true
-  def name, do: "browser_task"
+  def name, do: "browser_navigate"
 
   @impl true
   def description do
@@ -101,13 +101,13 @@ defmodule DmhAi.Tools.BrowserTask do
 
     cond do
       not is_binary(user_id) or user_id == "" ->
-        {:error, "browser_task called without user_id in context"}
+        {:error, "browser_navigate called without user_id in context"}
 
       not valid_url?(args["url"]) ->
-        {:error, "browser_task: `url` must be an https:// URL"}
+        {:error, "browser_navigate: `url` must be an https:// URL"}
 
       not (is_binary(args["goal"]) and args["goal"] != "") ->
-        {:error, "browser_task: `goal` is required"}
+        {:error, "browser_navigate: `goal` is required"}
 
       true ->
         case consent_state(user_id) do

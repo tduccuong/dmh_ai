@@ -58,7 +58,7 @@ defmodule DmhAi.Agent.Police do
     "request_input",
     "connect_mcp",
     "provision_ssh_identity",
-    "browser_task",
+    "browser_navigate",
     "authorize_service"
   ]
 
@@ -1406,16 +1406,23 @@ defmodule DmhAi.Agent.Police do
   back-to-back with the previous tool call also being `run_script`,
   return an educational note that the runtime prepends to the tool
   result. The script still runs and the model still gets its output
-  — the note teaches it to compose remaining commands into ONE script
-  next time.
+  — the note teaches it what a proper `run_script` looks like and
+  how to recognise two distinct anti-patterns it might be falling
+  into.
 
   Distinct from `check_run_script_probe_budget` (hard rejection at
   N total calls) and `check_no_consecutive_web_search` (hard rejection
   on consecutive web_search). Here the friction is too low to justify
   blocking — the legitimate probe-then-compose pattern (see system
   prompt §Working with external APIs) IS two consecutive `run_script`s
-  — but we still want to push back when the second one is just another
-  single-curl that should have been folded into the first.
+  — but we still want to push back when (a) the next call is a thin
+  one-liner that should have been part of the previous one, OR (b)
+  the next call repeats a script that just failed in the same way.
+
+  The advisory text deliberately does NOT include concrete tool
+  examples (`ls -R`, `find`, `cat`, etc.) so the model has to choose
+  the right investigative move based on the situation. Shape-level
+  teaching only.
 
   Returns `nil` (no nudge) or a binary advisory the caller prepends
   to the tool result content. No `[[ISSUE:...]]` marker — this isn't
@@ -1431,11 +1438,15 @@ defmodule DmhAi.Agent.Police do
         DmhAi.SysLog.log("[POLICE] NUDGE consecutive_run_script")
 
         "[NOTE — RUNTIME GUIDANCE]\n" <>
-          "You have called 2 consecutive `run_script`s, each with very thin " <>
-          "content. This is ANTI-PATTERN because tool calling is very " <>
-          "EXPENSIVE. If your next tool call is `run_script` again, you " <>
-          "MUST chain ALL your remaining commands in that SINGLE script. " <>
-          "Think and plan carefully.\n" <>
+          "2 consecutive `run_script`s. Tool calls are EXPENSIVE. A proper " <>
+          "script is multi-line and sectioned, doing one coherent unit of " <>
+          "work — not one-liners feeding one-liners.\n\n" <>
+          "Two anti-patterns to check before your next `run_script`:\n" <>
+          "(1) thin probe → expand into a proper multi-section script.\n" <>
+          "(2) repeating a script that just failed the same way → STOP. " <>
+          "Investigate the system state, re-plan with what you find. " <>
+          "Wrapping error-handling around a wrong assumption is not " <>
+          "investigation.\n" <>
           "[END NOTE]\n\n"
 
       _ ->

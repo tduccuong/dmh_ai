@@ -61,7 +61,7 @@ defmodule DmhAi.DB.Init do
       profile TEXT DEFAULT '',
       preferences TEXT,                       -- per-user JSON blob: token-saving toggle, future personal prefs
       last_profile_extracted_msg_ts INTEGER,  -- ProfileExtractor watermark
-      browser_consent_at INTEGER,             -- consent gate for browser_task tool
+      browser_consent_at INTEGER,             -- consent gate for browser_navigate tool
       browser_consent_text_hash TEXT,         -- sha256 of accepted consent text; mismatch re-prompts
       memo_kdf_salt BLOB,                     -- per-user PBKDF2 salt for the memo wrap-key
       memo_wrapped_mmk BLOB,                  -- master memo key wrapped under the wrap-key (0x01 ‖ iv ‖ tag ‖ ct)

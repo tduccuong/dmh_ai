@@ -108,6 +108,60 @@ defmodule DmhAi.Handlers.AdminPools do
     end)
   end
 
+  # ─── Loopback-only bulk import ───────────────────────────────────────────
+
+  @doc """
+  PUT /ai_pools — operator-friendly bulk import from a `pools.json` file.
+  Accepts the SAME shape as the seed file in `temp/pools.json` /
+  `/data/pools.json`:
+
+      { "pools": [ { "name": "...", "protocol": "...", ... }, ... ] }
+
+  Idempotent: pools with an existing `name` are skipped. New pools are
+  inserted. Wraps the existing `import_many/2` semantics (which takes a
+  bare array) but accepts the wrapped object the seed file uses, so an
+  operator can `curl -XPUT --data-binary @/path/to/pools.json
+  http://127.0.0.1:8080/ai_pools` directly without unwrapping.
+
+  Loopback-only — see `Router` for the IP gate. This is a fresh-install
+  bootstrap convenience; remote pool management still goes through the
+  authenticated `/admin/pools/*` routes.
+  """
+  def put_ai_pools(conn) do
+    {:ok, body, conn} = read_body(conn)
+
+    case Jason.decode(body || "{}") do
+      {:ok, %{"pools" => pools}} when is_list(pools) ->
+        summary = do_import(pools)
+
+        flat_errors =
+          Enum.map(summary.errors, fn {name, reason} ->
+            %{name: name, error: to_string(reason)}
+          end)
+
+        Proxy.json(conn, 200, Map.put(summary, :errors, flat_errors))
+
+      {:ok, list} when is_list(list) ->
+        # Tolerate the bare-array shape too (matches /admin/pools/import_many).
+        summary = do_import(list)
+
+        flat_errors =
+          Enum.map(summary.errors, fn {name, reason} ->
+            %{name: name, error: to_string(reason)}
+          end)
+
+        Proxy.json(conn, 200, Map.put(summary, :errors, flat_errors))
+
+      {:ok, _} ->
+        Proxy.json(conn, 400, %{
+          error: "body must be either {\"pools\": [...]} or a JSON array of pool entries"
+        })
+
+      {:error, _} ->
+        Proxy.json(conn, 400, %{error: "body must be valid JSON"})
+    end
+  end
+
   # ─── Update ──────────────────────────────────────────────────────────────
 
   def update(conn, user, id_str) do

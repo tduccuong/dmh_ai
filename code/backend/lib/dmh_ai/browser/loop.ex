@@ -6,7 +6,7 @@
 defmodule DmhAi.Browser.Loop do
   @moduledoc """
   Phase 3 of #215 — observe→ask→act loop driving the sandbox-side
-  browser daemon (`Browser.DaemonClient`) on behalf of `Tools.BrowserTask`.
+  browser daemon (`Browser.DaemonClient`) on behalf of `Tools.BrowserNavigate`.
 
   ## Loop shape
 
@@ -20,7 +20,7 @@ defmodule DmhAi.Browser.Loop do
       "complete" → return {:ok, completed}
       "abort"    → return {:ok, aborted}
       <command>  → daemon.dispatch ; append (decision, result) to history
-    append a sub_label to the parent BrowserTask progress row
+    append a sub_label to the parent BrowserNavigate progress row
     halt if turn ≥ browserMaxTurnsPerTask OR elapsed ≥ browserMaxRuntimeMs
   ```
 
@@ -41,9 +41,10 @@ defmodule DmhAi.Browser.Loop do
       architecture.md §"Observation payload sizing"). Screenshots are
       taken for FE display but not sent to the LLM in v0.
     - Single global asyncio lock inside the daemon serialises every
-      turn across all users. Two concurrent `browser_task` calls queue.
-    - Cookie state is plaintext at `/work/<email>/.browser_state.json`
-      under the existing chmod-0700 user-workspace fence.
+      turn across all users. Two concurrent `browser_navigate` calls queue.
+    - Cookie state is plaintext at
+      `/data/user_workspaces/<email>/.browser_state.json` under the
+      existing chmod-0700 user-workspace fence.
     - No `evaluate(js)` command — extract structured data via
       `extract_text` with selectors, or call `accessibility_snapshot`.
     - Payment / final-submit clicks are NOT enforcement-gated in v0;
@@ -71,7 +72,7 @@ defmodule DmhAi.Browser.Loop do
 
     if not is_binary(user_id) or user_id == "" or
        not is_binary(session_id) or session_id == "" do
-      {:error, "browser_task loop: missing user_id/session_id in ctx"}
+      {:error, "browser_navigate loop: missing user_id/session_id in ctx"}
     else
       state = %{
         user_id:         user_id,
@@ -81,21 +82,17 @@ defmodule DmhAi.Browser.Loop do
         # Parent `kind: tool` row id, threaded by execute_tools/3. Each
         # browser-step appends its human-readable label as a sub_label
         # on this row (same render path as web_search), so the FE shows
-        # per-step activity nested under the parent BrowserTask row
+        # per-step activity nested under the parent BrowserNavigate row
         # rather than as flat siblings.
         progress_row_id: ctx[:progress_row_id] || ctx["progress_row_id"],
         goal:            goal,
         constraints:     constraints || "",
         started_at:      System.monotonic_time(:millisecond),
-        # screenshot_dir is the MASTER-side path (used for File.mkdir_p
-        # so the host directory exists); screenshot_dir_sandbox is the
-        # SAME host directory addressed through the sandbox container's
-        # bind-mount alias (used as the path arg in the daemon's
-        # screenshot command). Without this split the daemon's makedirs
-        # would create the directory inside the sandbox's ephemeral
-        # container fs and the PNG would vanish.
-        screenshot_dir:         screenshot_dir(email, session_id),
-        screenshot_dir_sandbox: screenshot_dir_sandbox(email, session_id),
+        # Master and sandbox bind-mount the workspaces tree at the same
+        # container path (see CLAUDE.md "Container mounts" rule), so a
+        # single screenshot_dir works for both File.mkdir_p on master
+        # and as the path arg in the daemon's screenshot command.
+        screenshot_dir: screenshot_dir(email, session_id),
         max_turns:       AgentSettings.browser_max_turns_per_task(),
         max_runtime:     AgentSettings.browser_max_runtime_ms(),
         screenshots:     AgentSettings.browser_screenshot_enabled(),
@@ -110,18 +107,18 @@ defmodule DmhAi.Browser.Loop do
 
         {:error, :daemon_unreachable} ->
           {:error,
-           "browser_task: the browser daemon is unreachable. Is the sandbox container running and is the bind-mount " <>
+           "browser_navigate: the browser daemon is unreachable. Is the sandbox container running and is the bind-mount " <>
              "/data/run/dmh-browser configured? Tell the user this is an operator issue, not a problem they can fix."}
 
         {:error, {:daemon_error, %{message: msg}}} ->
           if auth_handoff?(msg) do
             handoff(state, msg)
           else
-            {:error, "browser_task: initial navigate failed: #{msg}"}
+            {:error, "browser_navigate: initial navigate failed: #{msg}"}
           end
 
         {:error, reason} ->
-          {:error, "browser_task: initial navigate failed: #{inspect(reason)}"}
+          {:error, "browser_navigate: initial navigate failed: #{inspect(reason)}"}
       end
     end
   end
@@ -153,8 +150,8 @@ defmodule DmhAi.Browser.Loop do
          }}
 
       true ->
-        with {:ok, observation}    <- observe(state),
-             screenshot_path       <- maybe_screenshot(turn, state),
+        with screenshot_path       <- maybe_screenshot(turn, state),
+             {:ok, observation}    <- observe(state, screenshot_path),
              {:ok, decision_json}  <- ask_model(state, observation, history, turn) do
           case parse_decision(decision_json) do
             {:ok, decision} ->
@@ -167,7 +164,7 @@ defmodule DmhAi.Browser.Loop do
               # self-corrects (most common case: emitting `args:
               # {".css-selector"}` instead of `args: {"selector": "…"}`).
               # Without this self-correction loop, a single bad emit
-              # killed the whole `browser_task` invocation and the
+              # killed the whole `browser_navigate` invocation and the
               # outer Assistant fell back to `web_fetch` blind.
               Logger.warning("[Browser.Loop] turn #{turn} bad JSON, retrying: #{inspect(parse_err)}")
               loop(
@@ -177,9 +174,22 @@ defmodule DmhAi.Browser.Loop do
               )
           end
         else
+          {:error, :vision_unavailable, reason} ->
+            # Vision pre-processor is offline OR rejected the image
+            # (e.g., configured swiftModel is text-only). Don't let the
+            # action LLM free-style a recovery — surface honestly to
+            # the outer Assistant, which relays to the user.
+            Logger.warning("[Browser.Loop] turn #{turn} vision_unavailable: #{reason}")
+            {:ok,
+             %{
+               status: "vision_unavailable",
+               turns:  turn,
+               reason: reason
+             }}
+
           {:error, reason} ->
             Logger.warning("[Browser.Loop] turn #{turn} aborted: #{inspect(reason)}")
-            {:error, "browser_task turn #{turn}: #{inspect(reason)}"}
+            {:error, "browser_navigate turn #{turn}: #{inspect(reason)}"}
         end
     end
   end
@@ -221,7 +231,7 @@ defmodule DmhAi.Browser.Loop do
         end
 
       {:error, :daemon_unreachable} ->
-        {:error, "browser_task: daemon went unreachable mid-task at turn #{turn}"}
+        {:error, "browser_navigate: daemon went unreachable mid-task at turn #{turn}"}
 
       {:error, reason} ->
         loop(turn + 1, append_history(history, d, {:error, inspect(reason)}), state)
@@ -232,29 +242,322 @@ defmodule DmhAi.Browser.Loop do
     {:error, "model returned malformed decision: #{inspect(decision)}"}
   end
 
-  # ── observe ─────────────────────────────────────────────────────────────────
+  # ── observe (vision-distilled, Shape 4) ────────────────────────────────────
 
-  defp observe(state) do
-    snap_args = %{"max_chars" => AgentSettings.browser_max_observation_chars()}
+  # Per-turn observation pipeline:
+  #   1. Read the just-captured screenshot PNG from disk.
+  #   2. Run a small vision-capable LLM (`browserDistillModel`) over it
+  #      with the user's goal as context, getting back a JSON
+  #      summary + relevant_elements list.
+  #   3. Action LLM consumes ONLY that JSON. Per-turn `extract_text` /
+  #      `accessibility_snapshot` calls into the daemon are no longer
+  #      part of observe — the action LLM may still call them
+  #      explicitly when it needs verbatim text from a specific
+  #      selector.
+  #
+  # Failure mode: if the screenshot is missing or the distill LLM call
+  # fails / returns malformed JSON, fall back to a placeholder distilled
+  # JSON noting the failure. The action LLM then has to drive blind
+  # (or call accessibility_snapshot itself) but the loop keeps running
+  # rather than aborting the whole tool.
+  defp observe(_state, nil) do
+    {:error, :vision_unavailable,
+     "Cannot run a browser_navigate without screenshots — `browserScreenshotEnabled` is off " <>
+       "OR the screenshot capture failed. Vision-distillation requires the per-turn PNG. " <>
+       "Tell the user honestly and ask whether to enable screenshots and retry."}
+  end
 
-    with {:ok, %{"text" => text} = txt} <-
-           DaemonClient.call("extract_text", %{"max_chars" => 10_000}, state.user_id, state.email),
-         {:ok, %{"view" => view} = snap} <-
-           DaemonClient.call("accessibility_snapshot", snap_args, state.user_id, state.email) do
-      {:ok, %{
-        url:        Map.get(txt, "url", ""),
-        text:       text,
-        view:       view,
-        truncated:  Map.get(snap, "truncated", false),
-        kept:       Map.get(snap, "kept", 0),
-        dropped:    Map.get(snap, "dropped", %{})
-      }}
-    else
-      {:error, {:daemon_error, %{message: msg}}} ->
-        {:error, "observe failed: #{msg}"}
+  defp observe(state, rel_path) when is_binary(rel_path) do
+    abs_path = Path.join(state.screenshot_dir, rel_path)
 
-      err ->
-        err
+    case File.read(abs_path) do
+      {:ok, _png_bytes} ->
+        case distill(state, abs_path) do
+          {:ok, json} ->
+            {:ok, %{url: current_url(state), distilled: json}}
+
+          {:error, :vision_unavailable, reason} ->
+            {:error, :vision_unavailable, reason}
+        end
+
+      {:error, reason} ->
+        Logger.warning("[Browser.Loop] could not read screenshot #{abs_path}: #{inspect(reason)}")
+        {:error, :vision_unavailable,
+         "Screenshot file not readable: #{inspect(reason)}. Tell the user honestly; ask whether to retry."}
+    end
+  end
+
+  # Best-effort URL fetch — the daemon's most recent navigate response
+  # carried the URL; we hold it on state once it lands. Falls back to
+  # the start_url for turn 0.
+  defp current_url(state), do: Map.get(state, :url, "")
+
+  # Cap the side fed to the vision LLM. The Playwright daemon captures
+  # at native viewport (~1280×800); that's wasteful both for the wire
+  # (~120 KB base64) and for the vision API's tile budget. 1024 wide is
+  # enough for the LLM to read button labels and headings while keeping
+  # the payload under 70 KB.
+  @distill_max_side 1024
+
+  defp distill(state, screenshot_abs_path) when is_binary(screenshot_abs_path) do
+    model = AgentSettings.browser_distill_model()
+
+    case resize_for_vision(screenshot_abs_path) do
+      {:ok, png_bytes} ->
+        do_distill(state, model, png_bytes)
+
+      {:error, reason} ->
+        {:error, :vision_unavailable,
+         "Could not prepare screenshot for vision pre-processor: #{reason}. " <>
+           "Tell the user honestly; ask whether to retry."}
+    end
+  end
+
+  defp do_distill(state, model, png_bytes) do
+    sys_prompt = """
+    You are a vision pre-processor inside a browser-agent loop. Examine
+    the screenshot. Identify what's relevant to the agent's goal. Reply
+    with ONE JSON object — no prose, no code fences:
+
+      {
+        "summary":           "<one paragraph: what is on this page right now>",
+        "relevant_elements": [
+          {"label": "<exact visible text or accessible name>",
+           "role":  "<button | link | textbox | checkbox | …>"},
+          … 3-7 entries …
+        ],
+        "blocking":          null
+      }
+
+    DO NOT invent CSS selectors, IDs, classes, or `data-*` attributes —
+    you can ONLY see the rendered pixels, not the DOM, so any selector
+    you guess will be wrong. Report only what you can READ from the
+    screenshot: the visible label text and the apparent role. The
+    downstream action LLM will derive a real selector from the live
+    accessibility tree using your label.
+
+    Use `blocking` to flag a captcha / login wall / cookie modal that
+    must be cleared before the goal can progress; otherwise null.
+    Stay concise — this is fed verbatim to a downstream action LLM.
+    """
+
+    user_text = """
+    Goal: #{state.goal}
+    Constraints: #{if state.constraints == "", do: "(none)", else: state.constraints}
+    """
+
+    image_url = "data:image/png;base64," <> Base.encode64(png_bytes)
+
+    # OpenAI-format vision message: content is a list of typed blocks.
+    user_msg = %{
+      role: "user",
+      content: [
+        %{type: "text",      text: user_text},
+        %{type: "image_url", image_url: %{url: image_url, detail: "auto"}}
+      ]
+    }
+
+    messages = [%{role: "system", content: sys_prompt}, user_msg]
+
+    on_tokens = fn rx, tx ->
+      DmhAi.Agent.TokenTracker.add_master(state.session_id, state.user_id, rx, tx)
+    end
+
+    trace = %{origin: "assistant", path: "Browser.Loop.distill",
+              role: "BrowserDistiller", phase: "distill"}
+
+    case LLM.call(model, messages, on_tokens: on_tokens, trace: trace) do
+      {:ok, text} when is_binary(text) and text != "" ->
+        case parse_distill_payload(text) do
+          {:ok, json_str} ->
+            {:ok, json_str}
+
+          {:error, why} ->
+            Logger.warning(
+              "[Browser.Loop] distill payload unparseable (#{why}); raw=#{String.slice(text, 0, 400)}"
+            )
+
+            {:error, :vision_unavailable,
+             "Browser navigation stuck on invalid distilled data — #{why}. " <>
+               "Tell the user verbatim: \"Browser navigation stuck on invalid distilled data\" " <>
+               "and stop. Do not retry on your own."}
+        end
+
+      other ->
+        Logger.warning("[Browser.Loop] distill LLM call failed: #{inspect(other, limit: 80)}")
+        {:error, :vision_unavailable,
+         "Vision pre-processor LLM call failed (#{inspect(elem(other, 1), limit: 80)}). " <>
+           "The configured `swiftModel` may not support image input, or the upstream model is " <>
+           "unreachable. Tell the user honestly; ask whether to switch the swiftModel setting " <>
+           "or retry. Do NOT attempt to navigate elsewhere or guess at the page state."}
+    end
+  end
+
+  # Parse and validate the vision LLM's distillation reply. The model is
+  # instructed to return ONE JSON object ({summary, relevant_elements,
+  # blocking}), no fences. In practice it sometimes returns:
+  #
+  #   - the JSON wrapped in ```json … ``` fences
+  #   - JS-style line comments (// like this) after array entries
+  #   - block comments (/* … */)
+  #   - trailing commas before } or ]
+  #   - `blocking` as an object {type, message} instead of null|string
+  #   - elements missing `label` or `role`
+  #
+  # Rather than abort the whole browse loop on any of these, we sanitise
+  # and normalise. Only when the payload is genuinely unsalvageable
+  # (no JSON, decode fails, required fields wrong-typed) do we surface
+  # `:vision_unavailable` with a "Browser navigation stuck on invalid
+  # distilled data" message the assistant relays verbatim to the user.
+  defp parse_distill_payload(text) do
+    with {:ok, raw}        <- find_json_object(text),
+         sanitised          = sanitise_jsonish(raw),
+         {:ok, decoded}     <- decode_or_explain(sanitised),
+         {:ok, normalised}  <- normalise_distill_shape(decoded) do
+      {:ok, Jason.encode!(normalised, pretty: true)}
+    end
+  end
+
+  defp find_json_object(text) do
+    case extract_json(text) do
+      {:ok, json} -> {:ok, json}
+      :error      -> {:error, "no JSON object found in vision pre-processor reply"}
+    end
+  end
+
+  defp decode_or_explain(json) do
+    case Jason.decode(json) do
+      {:ok, m}             -> {:ok, m}
+      {:error, %Jason.DecodeError{position: pos}} ->
+        {:error, "JSON decode failed near position #{pos} (after sanitising fences/comments/trailing commas)"}
+      {:error, _}          -> {:error, "JSON decode failed"}
+    end
+  end
+
+  # Strip JS-isms that the vision model sometimes emits inside an
+  # otherwise-JSON payload. Comment-stripping is STRING-AWARE — it walks
+  # the input char by char tracking whether the cursor is inside a JSON
+  # string literal, so a `//` or `/*` inside a `"label"` value (think
+  # URLs in labels, or the literal text "// please fill in") is not
+  # eaten by the strip.
+  defp sanitise_jsonish(json) do
+    json
+    |> strip_comments_string_aware()
+    |> strip_trailing_commas()
+  end
+
+  defp strip_comments_string_aware(input), do: do_strip_comments(input, [], :code)
+
+  defp do_strip_comments(<<>>, acc, _),
+    do: acc |> Enum.reverse() |> IO.iodata_to_binary()
+
+  # Inside a string: handle backslash-escapes so `\"` doesn't look like
+  # a string terminator.
+  defp do_strip_comments(<<"\\", c::utf8, rest::binary>>, acc, :str),
+    do: do_strip_comments(rest, [<<c::utf8>>, "\\" | acc], :str)
+
+  defp do_strip_comments(<<"\"", rest::binary>>, acc, :str),
+    do: do_strip_comments(rest, ["\"" | acc], :code)
+
+  defp do_strip_comments(<<c::utf8, rest::binary>>, acc, :str),
+    do: do_strip_comments(rest, [<<c::utf8>> | acc], :str)
+
+  # In code mode: detect string starts and comments.
+  defp do_strip_comments(<<"\"", rest::binary>>, acc, :code),
+    do: do_strip_comments(rest, ["\"" | acc], :str)
+
+  defp do_strip_comments(<<"//", rest::binary>>, acc, :code) do
+    case :binary.split(rest, "\n") do
+      [_, after_nl] -> do_strip_comments(after_nl, ["\n" | acc], :code)
+      [_]           -> do_strip_comments(<<>>, acc, :code)
+    end
+  end
+
+  defp do_strip_comments(<<"/*", rest::binary>>, acc, :code) do
+    case :binary.split(rest, "*/") do
+      [_, after_block] -> do_strip_comments(after_block, acc, :code)
+      [_]              -> do_strip_comments(<<>>, acc, :code)
+    end
+  end
+
+  defp do_strip_comments(<<c::utf8, rest::binary>>, acc, :code),
+    do: do_strip_comments(rest, [<<c::utf8>> | acc], :code)
+
+  # Trailing comma before `}` or `]` is JS-permissive but invalid JSON.
+  # The simple regex form would match inside string literals too; in
+  # the distill payload labels can contain `,` followed by space and
+  # `]`/`}` only by extreme bad luck, so we accept that risk for now.
+  defp strip_trailing_commas(input),
+    do: String.replace(input, ~r/,(\s*[}\]])/, "\\1")
+
+  # Normalise to the canonical shape the action LLM expects.
+  # Required: `summary` (string), `relevant_elements` (list).
+  # Optional: `blocking` (null|string|object-with-message).
+  defp normalise_distill_shape(m) when is_map(m) do
+    summary  = Map.get(m, "summary")
+    elements = Map.get(m, "relevant_elements")
+
+    cond do
+      not is_binary(summary) ->
+        {:error, "missing or non-string `summary` field"}
+
+      not is_list(elements) ->
+        {:error, "missing or non-list `relevant_elements` field"}
+
+      true ->
+        normalised_elements =
+          elements
+          |> Enum.map(&normalise_element/1)
+          |> Enum.reject(&is_nil/1)
+
+        {:ok,
+         %{
+           "summary"           => summary,
+           "relevant_elements" => normalised_elements,
+           "blocking"          => normalise_blocking(Map.get(m, "blocking"))
+         }}
+    end
+  end
+
+  defp normalise_distill_shape(_),
+    do: {:error, "top-level distill payload is not a JSON object"}
+
+  defp normalise_element(%{"label" => l, "role" => r}) when is_binary(l) and is_binary(r),
+    do: %{"label" => l, "role" => r}
+
+  defp normalise_element(_), do: nil
+
+  defp normalise_blocking(nil), do: nil
+  defp normalise_blocking(""),  do: nil
+  defp normalise_blocking(s) when is_binary(s), do: s
+  defp normalise_blocking(%{"message" => m}) when is_binary(m), do: m
+  defp normalise_blocking(%{"reason"  => m}) when is_binary(m), do: m
+  defp normalise_blocking(_), do: nil
+
+  # Shrink the screenshot before base64-encoding for the vision LLM.
+  # Uses libvips' `vipsthumbnail` (in master image — see code/Dockerfile):
+  # ~10× faster than ImageMagick on PNG resize, single-purpose, no
+  # subprocess dependency chain. Output written to a tmp file; read back
+  # then deleted. On any failure, returns the error so the caller can
+  # surface it to the user (rather than silently sending a giant payload).
+  defp resize_for_vision(in_path) when is_binary(in_path) do
+    out_path = Path.join(System.tmp_dir!(), "dmh-shot-distill-#{:erlang.unique_integer([:positive])}.png")
+
+    try do
+      case System.cmd("vipsthumbnail",
+             [in_path, "-s", to_string(@distill_max_side), "-o", out_path],
+             stderr_to_stdout: true
+           ) do
+        {_, 0} ->
+          File.read(out_path)
+
+        {err, code} ->
+          {:error, "vipsthumbnail exit #{code}: #{String.slice(to_string(err), 0, 200)}"}
+      end
+    rescue
+      e -> {:error, "vipsthumbnail rescue: #{Exception.message(e)}"}
+    after
+      _ = File.rm(out_path)
     end
   end
 
@@ -262,31 +565,18 @@ defmodule DmhAi.Browser.Loop do
 
   defp maybe_screenshot(turn, state) do
     rel_path = "step_#{turn}.png"
-    # Daemon writes via its sandbox-side bind-mount alias of the same
-    # host directory the master created with mkdir_p. See state init in
-    # `run/4` for why these two paths exist.
-    sandbox_abs_path = Path.join(state.screenshot_dir_sandbox, rel_path)
-    case DaemonClient.call("screenshot", %{"path" => sandbox_abs_path}, state.user_id, state.email) do
+    abs_path = Path.join(state.screenshot_dir, rel_path)
+    case DaemonClient.call("screenshot", %{"path" => abs_path}, state.user_id, state.email) do
       {:ok, _}     -> rel_path
       {:error, _}  -> nil
     end
   end
 
-  # Master-side `.browser/` path — used for File.mkdir_p (host directory
-  # creation) and any file I/O the master itself does (e.g. cleanup,
-  # serving PNGs via /files).
+  # `.browser/` path under the session's workspace. Same path on master
+  # and inside the sandbox — both containers bind-mount the workspaces
+  # tree at the same container address.
   defp screenshot_dir(email, session_id) do
     DmhAi.Constants.session_workspace_dir(email, session_id)
-    |> Path.join(".browser")
-  end
-
-  # Sandbox-side `.browser/` path — used as the screenshot-target path
-  # in the daemon's `screenshot` command. Resolves to the SAME host
-  # directory as `screenshot_dir/2`; just the sandbox container's
-  # bind-mount alias for that host dir (`/work/...` vs the master's
-  # `/data/user_workspaces/...`).
-  defp screenshot_dir_sandbox(email, session_id) do
-    DmhAi.Constants.session_workspace_dir_sandbox(email, session_id)
     |> Path.join(".browser")
   end
 
@@ -366,7 +656,7 @@ defmodule DmhAi.Browser.Loop do
 
   defp system_prompt(state) do
     """
-    You are the action-selection model inside DMH-AI's `browser_task` loop.
+    You are the action-selection model inside DMH-AI's `browser_navigate` loop.
     A real Chromium browser is open; you observe each turn and pick ONE next
     action. The user's goal and constraints are restated below.
 
@@ -383,12 +673,16 @@ defmodule DmhAi.Browser.Loop do
       scroll(amount?: int) | scroll(to_selector: "css")  — scroll viewport
       wait_for_selector(selector, timeout?: ms)
       wait_for_load(state?: "load|domcontentloaded|networkidle")
-      extract_text(selector?: "css")          — pulls inner_text
-      accessibility_snapshot(selector?: "css") — re-observe a specific
-                                                 subtree if the view was
-                                                 truncated; otherwise no
-                                                 need to call (already
-                                                 provided each observe)
+      extract_text(selector?: "css")          — pulls all matching inner_text
+                                                 from the live page; useful when
+                                                 the distilled view is missing
+                                                 a specific text block you need
+                                                 verbatim
+      accessibility_snapshot(selector?: "css") — read structural a11y tree of
+                                                 the page or a subtree; useful
+                                                 when the distilled view didn't
+                                                 surface the element you want
+                                                 to act on
       click(selector)
       type(selector, text)
       fill(selector, value)                   — for <input>
@@ -398,11 +692,28 @@ defmodule DmhAi.Browser.Loop do
       abort                                   — give up; include `reason`
 
     Selector rules:
-      - Prefer CSS selectors derived from the accessibility tree's role/name.
-      - Use unique selectors. If multiple matches, narrow further.
-      - Never use raw IDs that look auto-generated (e.g. `#mat-input-1234`); they
-        change between page loads. Prefer aria-label, role, name, or stable
-        class combinations.
+      - The distilled view gives you LABELS + ROLES (visible text +
+        button/link/etc.) — it does NOT and CANNOT give you CSS
+        selectors. Vision can only see rendered pixels, never the DOM.
+      - To derive a real selector from a distilled label, call
+        `accessibility_snapshot` (whole page or a subtree) — that
+        result lists every `role "<accessible name>"` the page actually
+        exposes. Match the distilled label to a role+name in the
+        snapshot, then derive a Playwright selector from it. Examples:
+          - `button "Akzeptieren"` →  `button:has-text("Akzeptieren")`
+            (Playwright pseudo-selector — works in this runtime)
+          - `link "Mein Konto"`    →  `a:has-text("Mein Konto")`
+          - `textbox "Email"`      →  `input[aria-label="Email"]`
+            or `input[name="email"]` if the snapshot reveals it.
+      - Do NOT invent IDs, classes, or `data-*` attributes that the
+        snapshot didn't actually show — every selector you emit must
+        either come from the live a11y snapshot for THIS page, or be a
+        text/role pseudo-selector built from a label you just saw in
+        the distilled view.
+      - Use unique selectors. If multiple matches, narrow further by
+        scoping to a parent role (`dialog button:has-text("Akzeptieren")`).
+      - Never use raw IDs that look auto-generated
+        (e.g. `#mat-input-1234`) — they change between page loads.
 
     Hard rules:
       - NEVER click "Pay", "Submit order", "Place order", or any final-checkout
@@ -412,8 +723,10 @@ defmodule DmhAi.Browser.Loop do
       - When stuck (a selector keeps failing, the page seems to be a login wall
         or captcha), `abort` with a clear reason. Do not loop endlessly.
 
-    The site's URL, current text, and accessibility tree are below for THIS
-    turn. Pick ONE action and emit JSON.
+    The page's URL and a vision-distilled JSON view of the page are below
+    for THIS turn — the distilled view is produced by a vision pre-pass
+    over the screenshot and lists the elements most relevant to your goal.
+    Pick ONE action and emit JSON.
     """
   end
 
@@ -428,23 +741,12 @@ defmodule DmhAi.Browser.Loop do
     history_block =
       if history_block == "", do: "  (none — this is turn 0)", else: history_block
 
-    truncation_note =
-      if observation.truncated do
-        "(view truncated — call accessibility_snapshot with a selector arg to drill into a specific section if needed)"
-      else
-        ""
-      end
-
     """
     [TURN #{turn}]
     URL: #{observation.url}
 
-    [PAGE TEXT (first 10 KB)]
-    #{observation.text || "(empty)"}
-
-    [INTERACTIVE / STRUCTURAL VIEW]
-    #{observation.view}
-    #{truncation_note}
+    [DISTILLED VIEW]
+    #{observation.distilled}
 
     [RECENT ACTIONS]
     #{history_block}
@@ -506,11 +808,11 @@ defmodule DmhAi.Browser.Loop do
 
   # ── progress / handoff ─────────────────────────────────────────────────────
 
-  # Append a human-readable activity label to the parent BrowserTask
+  # Append a human-readable activity label to the parent BrowserNavigate
   # progress row's `sub_labels` JSON array — same render path web_search
   # uses for its SearXNG-fanout sub-activity. The FE rotates through the
   # parent's sub_labels and renders them indented under the parent row,
-  # so per-step browser activity reads as nested under the BrowserTask
+  # so per-step browser activity reads as nested under the BrowserNavigate
   # tool call rather than as flat siblings of unrelated tools.
   #
   # Label shape (from highest-fidelity to fallback):
@@ -601,7 +903,7 @@ defmodule DmhAi.Browser.Loop do
        reason:
          "The site put up a captcha or login wall the agent can't solve from inside the sandbox. " <>
            "Tell the user: open the same site in their own browser, complete the challenge / log in, then retry — " <>
-           "their cookies are persisted across calls so the browser_task's next attempt won't re-prompt.",
+           "their cookies are persisted across calls so the browser_navigate's next attempt won't re-prompt.",
        v1a_pending: true,
        upstream: String.slice(why, 0, 300)
      }}

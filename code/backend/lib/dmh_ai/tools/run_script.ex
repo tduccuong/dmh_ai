@@ -7,6 +7,7 @@ defmodule DmhAi.Tools.RunScript do
   @behaviour DmhAi.Tools.Behaviour
 
   alias DmhAi.Agent.{AgentSettings, RunningTools, Sandbox}
+  alias DmhAi.Constants
   alias DmhAi.Permissions.SandboxUser
 
   @max_output 50_000
@@ -245,9 +246,9 @@ defmodule DmhAi.Tools.RunScript do
   # Resolve `{:ok, %{username, sandbox_cwd}}` for the given ctx.
   # Username drives `docker exec -u`; sandbox_cwd drives `docker exec -w`.
   # `username` is the per-user OS account for non-admin users, or
-  # `dmh_ai-master-u` for admins. `sandbox_cwd` is the sandbox-side
-  # path the script runs in — `/work/<email>/<session>/` for users,
-  # `/work` for admin.
+  # `dmh_ai-master-u` for admins. `sandbox_cwd` is the path the script
+  # runs in — `/data/user_workspaces/<email>/<session>/` for users,
+  # `/data/user_workspaces` for admin.
   defp provision(ctx) do
     user_id = Map.get(ctx, :user_id) || ""
     email   = Map.get(ctx, :user_email) || ""
@@ -259,7 +260,7 @@ defmodule DmhAi.Tools.RunScript do
         {:ok,
          %{
            username:    SandboxUser.master_username(),
-           sandbox_cwd: "/work"
+           sandbox_cwd: Constants.workspaces_dir()
          }}
 
       user_id == "" or email == "" ->
@@ -282,16 +283,16 @@ defmodule DmhAi.Tools.RunScript do
     end
   end
 
-  # Sandbox-side path the script runs in. Falls back to `/work/<email>`
-  # when there's no session (rare — e.g. ad-hoc tool invocations
-  # outside a session loop). Master-side path is computed separately
-  # via `Constants.session_workspace_dir/2`.
-  defp sandbox_cwd_for(email, ""), do: Path.join("/work", to_string(email))
+  # Path the script runs in. Falls back to the workspaces root when
+  # there's no session (rare — e.g. ad-hoc tool invocations outside a
+  # session loop). Master and sandbox both mount the workspaces tree
+  # at the SAME container path, so this single path works in both
+  # views.
+  defp sandbox_cwd_for(email, ""),
+    do: Path.join(Constants.workspaces_dir(), to_string(email))
 
-  defp sandbox_cwd_for(email, session_id) do
-    safe_session = String.replace(to_string(session_id), ~r/[^\w\-]/, "_")
-    Path.join(["/work", to_string(email), safe_session])
-  end
+  defp sandbox_cwd_for(email, session_id),
+    do: Constants.session_workspace_dir(email, session_id)
 
   # ─── private ──────────────────────────────────────────────────────────────
 

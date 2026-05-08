@@ -746,7 +746,7 @@ UIManager.autoNameSession = async function(session, opts) {
 // ─── Browser-tools consent ────────────────────────────────────────────────
 //
 // When the BE emits a kind="browser_consent_required" session_progress row
-// (because Tools.BrowserTask hit a missing/stale consent), the FE's poll
+// (because Tools.BrowserNavigate hit a missing/stale consent), the FE's poll
 // handler calls openBrowserConsentModal() ONCE per row id. The modal
 // fetches the canonical text + hash from the server (so the text shown
 // and the hash POSTed always come from the same fresh GET — no race

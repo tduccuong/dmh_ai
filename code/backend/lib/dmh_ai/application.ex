@@ -9,8 +9,24 @@ defmodule DmhAi.Application do
 
   @impl true
   def start(_type, _args) do
+    # Supervision tree is :rest_for_one — children listed AFTER a
+    # given child are restarted along with it. This is what guarantees
+    # that:
+    #
+    #   1. DmhAi.Repo starts first.
+    #   2. DmhAi.DB.SchemaInit runs synchronously in its `init/1`,
+    #      creating tables (and running Permissions.Migration) before
+    #      ANY downstream child can query the DB.
+    #   3. TaskRuntime and other DB-touching children come up against
+    #      a guaranteed-populated schema.
+    #
+    # On a fresh install, without the explicit phasing above, TaskRuntime's
+    # 500-ms-after-boot `:rehydrate` query hits an empty DB, crashes,
+    # exceeds max_restarts, takes Repo down with it, and the entire
+    # supervision tree collapses. See `DmhAi.DB.SchemaInit` moduledoc.
     children = [
       DmhAi.Repo,
+      DmhAi.DB.SchemaInit,
       DmhAi.SysLog,
       DmhAi.DomainBlocker,
       {Finch,
@@ -47,13 +63,11 @@ defmodule DmhAi.Application do
         []
       end
 
-    opts = [strategy: :one_for_one, name: DmhAi.Supervisor]
+    opts = [strategy: :rest_for_one, name: DmhAi.Supervisor]
 
     case Supervisor.start_link(children, opts) do
       {:ok, pid} ->
         if Application.get_env(:dmh_ai, :run_startup_check, true), do: DmhAi.StartupCheck.run()
-        DmhAi.DB.Init.run()
-        DmhAi.Permissions.Migration.run()
         DmhAi.DomainBlocker.load_from_db()
         DmhAi.Agent.PendingPivots.init()
         DmhAi.Agent.ChainInFlight.init()

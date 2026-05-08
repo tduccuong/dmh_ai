@@ -177,10 +177,14 @@ services:
       - NET_ADMIN
     volumes:
       # Two-tree split per arch_wiki/dmh_ai/isolation.md.
-      # /assets is read-only; uploads + _keystore live here. /work is
-      # the only writable surface for sandbox processes.
-      - ${DMHAI_HOME:-.}/user_assets:/assets:ro
-      - ${DMHAI_HOME:-.}/user_workspaces:/work
+      # user_assets is mounted read-only (uploads + _keystore live
+      # here); user_workspaces is the only writable surface for
+      # sandbox processes. Both mounts use the SAME container path as
+      # the master side (/data/user_assets, /data/user_workspaces) so
+      # a path string built on master is consumable inside the sandbox
+      # without translation. See CLAUDE.md "Container mounts" rule.
+      - ${DMHAI_HOME:-.}/user_assets:/data/user_assets:ro
+      - ${DMHAI_HOME:-.}/user_workspaces:/data/user_workspaces
       # Browser-daemon socket directory. Daemon binds
       # /var/run/dmh-browser/daemon.sock at boot; same dir is bind-
       # mounted on the master side at /data/run/dmh-browser for
@@ -188,7 +192,7 @@ services:
       - ${DMHAI_HOME:-.}/run/dmh-browser:/var/run/dmh-browser
     # /sandbox-start.sh sets sysctl + iptables, spawns browser_daemon
     # under a supervisor loop, then `tail -f /dev/null`. Scripts
-    # arrive via `docker exec -u dmh_ai-u<uid> -w /work/<email>/<session>/`.
+    # arrive via `docker exec -u dmh_ai-u<uid> -w /data/user_workspaces/<email>/<session>/`.
 
   searxng:
     image: searxng/searxng:latest
@@ -300,8 +304,8 @@ services:
     cap_add:
       - NET_ADMIN
     volumes:
-      - ${INSTALL_DIR}/user_assets:/assets:ro
-      - ${INSTALL_DIR}/user_workspaces:/work
+      - ${INSTALL_DIR}/user_assets:/data/user_assets:ro
+      - ${INSTALL_DIR}/user_workspaces:/data/user_workspaces
       - ${INSTALL_DIR}/run/dmh-browser:/var/run/dmh-browser
 
   searxng:
