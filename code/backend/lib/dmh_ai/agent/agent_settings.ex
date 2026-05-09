@@ -97,6 +97,22 @@ defmodule DmhAi.Agent.AgentSettings do
   @task_archive_row_cap_default 60
   @task_archive_byte_cap_default 120_000
 
+  # Resume-time caps for `pickup_task`'s rehydrated transcript inside
+  # the `<requested_task_content>` envelope. Independent of the archive
+  # storage caps above (`task_archive_*_cap`); these tighten the
+  # rendered view shipped to the LLM on resume.
+  @task_resume_max_archive_entries_default 50
+  @task_resume_args_cap_default 400
+
+  # Inactive-task related-message classifier. When a chain starts with
+  # no active anchor AND the session has at least one inactive task,
+  # `Agent.Swift.classify_against_inactive/2` runs ONE batched call
+  # listing up to N most-recent inactive tasks and asks for a
+  # task_num or "none". On positive match the runtime prepends a
+  # guidance hint to the user message before the chain LLM call. See
+  # architecture.md §Inactive-task related-message classifier.
+  @task_resume_candidate_cap_default 8
+
   # ProfileExtractor batching. The extractor walks unprocessed user
   # messages across all of a user's sessions and only fires its single
   # LLM call once `profile_extract_batch_size` messages have accumulated
@@ -487,6 +503,33 @@ defmodule DmhAi.Agent.AgentSettings do
   @spec task_archive_byte_cap() :: pos_integer()
   def task_archive_byte_cap,
     do: int_setting("taskArchiveByteCap", @task_archive_byte_cap_default)
+
+  @doc """
+  Maximum number of archived messages rendered inside the
+  `<requested_task_content>` envelope returned by `pickup_task`. Only
+  the newest N are kept; older entries are silently truncated.
+  """
+  @spec task_resume_max_archive_entries() :: pos_integer()
+  def task_resume_max_archive_entries,
+    do: int_setting("taskResumeMaxArchiveEntries", @task_resume_max_archive_entries_default)
+
+  @doc """
+  Per-tool_call args cap for the `[assistant→tool_name] {args}` line in
+  the rehydrated transcript. Truncates oversized args (e.g. multi-KB
+  scripts) so a single noisy tool_call can't dominate the envelope.
+  """
+  @spec task_resume_args_cap() :: pos_integer()
+  def task_resume_args_cap,
+    do: int_setting("taskResumeArgsCap", @task_resume_args_cap_default)
+
+  @doc """
+  Maximum number of inactive tasks listed to the Swift classifier when
+  asking whether a chain-start user message is a follow-up to one of
+  them. Newest inactive tasks are kept first.
+  """
+  @spec task_resume_candidate_cap() :: pos_integer()
+  def task_resume_candidate_cap,
+    do: int_setting("taskResumeCandidateCap", @task_resume_candidate_cap_default)
 
   @doc """
   Rate-limit throttle duration (seconds). Applied to an LLM account

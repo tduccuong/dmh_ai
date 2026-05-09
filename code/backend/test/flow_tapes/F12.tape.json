@@ -1,0 +1,5 @@
+{
+  "flow_id": "F12",
+  "_note": "F12 — explicit cancel via session_walk. LLM is stubbed inline (Swift classifier + assistant turns), so the tape file is only used to satisfy the harness's tape-presence check.",
+  "turns": []
+}

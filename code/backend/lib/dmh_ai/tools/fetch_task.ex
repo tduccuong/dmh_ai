@@ -54,11 +54,18 @@ defmodule DmhAi.Tools.FetchTask do
          :ok <- require_session(session_id),
          {:ok, task_id} <- Tasks.resolve_num(session_id, task_num),
          %{} = task     <- Tasks.get(task_id) do
-      archive           = TaskChainArchive.fetch_for_task(task_id)
+      closed?           = task.task_status in ["done", "paused", "cancelled"]
+      archive           = TaskChainArchive.fetch_for_task(task_id) |> filter_archive(closed?)
       latest_archive_ts = TaskChainArchive.latest_archived_ts(task_id)
 
       live_conv = UserAgentMessages.messages_for_task_num(session_id, task_num, latest_archive_ts)
-      tool_bodies = ToolHistory.load_for_task_num(session_id, task_num)
+
+      # Closed-task tool bodies are evicted globally per the eviction
+      # policy (architecture.md §Tool-result eviction at task close);
+      # for ongoing/pending tasks we still expose them within the
+      # retention window.
+      tool_bodies =
+        if closed?, do: [], else: ToolHistory.load_for_task_num(session_id, task_num)
 
       activity =
         task_id
@@ -142,6 +149,17 @@ defmodule DmhAi.Tools.FetchTask do
       _                                       -> ContextEngine.extract_attachments(task.task_spec)
     end
   end
+
+  # For a closed task, drop role="tool" archive rows (their bodies
+  # were evicted at task close). Ongoing/pending tasks pass through
+  # unchanged so the model can still see tool exchanges from old
+  # chains that were aged out of `tool_history` but archived for
+  # reference.
+  defp filter_archive(rows, true = _closed?) do
+    Enum.reject(rows, &(Map.get(&1, :role) == "tool"))
+  end
+
+  defp filter_archive(rows, _false), do: rows
 
   # Cap each message's `content` to keep the stitched response from
   # exploding. Preview length intentionally generous for user/assistant

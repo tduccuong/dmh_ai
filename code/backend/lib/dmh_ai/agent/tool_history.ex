@@ -382,7 +382,18 @@ defmodule DmhAi.Agent.ToolHistory do
           {:ok, task_id} ->
             Enum.each(to_archive, fn entry ->
               msgs = Map.get(entry, "messages") || []
-              DmhAi.Agent.TaskChainArchive.append_raw(task_id, session_id, msgs)
+              # Drop tool-result messages on archive write — closed-task
+              # tool bodies are evicted globally per the eviction policy.
+              # The assistant's tool_call entry (in its `tool_calls`
+              # field) is kept, so the rehydrated transcript still shows
+              # `[assistant→tool_name] {args}`; the body that the call
+              # returned is gone.
+              user_assistant_only =
+                Enum.reject(msgs, fn m ->
+                  (m[:role] || m["role"]) == "tool"
+                end)
+
+              DmhAi.Agent.TaskChainArchive.append_raw(task_id, session_id, user_assistant_only)
             end)
 
           {:error, :not_found} ->

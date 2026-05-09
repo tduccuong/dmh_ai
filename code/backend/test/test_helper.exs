@@ -13,6 +13,12 @@ DmhAi.MemoCrypto.MasterKey.put(:crypto.strong_rand_bytes(32))
 #   mix test --only network
 ExUnit.configure(exclude: [:network, :known_design_bug])
 
+# Profile-aware setup helpers used by `test/flows/*.exs`. Loaded once
+# at suite start so the Mix.Task `flow` (and direct `mix test
+# test/flows/...`) can call into `DmhAi.Test.FlowHelper.setup_profile/1`
+# without each flow file requiring its own load_file/1 dance.
+Code.require_file("flow_helper.exs", __DIR__)
+
 defmodule T do
   @moduledoc "Shared test helpers."
 
@@ -52,6 +58,19 @@ defmodule T do
   def stub_llm_stream(fun) when is_function(fun, 4) do
     Application.put_env(:dmh_ai, :__llm_stream_stub__, fun)
     ExUnit.Callbacks.on_exit(fn -> Application.delete_env(:dmh_ai, :__llm_stream_stub__) end)
+  end
+
+  # Install a stub for `Tools.Registry.execute/3`. `fun` receives
+  # (name, args, ctx) and must return:
+  #   {:ok, result}      — fake the tool's output
+  #   {:error, reason}   — fake an error path
+  #   :passthrough       — let the real tool run
+  # The :passthrough escape lets a flow fake one tool (e.g. run_script,
+  # whose real path needs Docker) while letting bookkeeping verbs
+  # (create_task / pickup_task / mark_done) hit the real Registry.
+  def stub_tool(fun) when is_function(fun, 3) do
+    Application.put_env(:dmh_ai, :__tool_execute_stub__, fun)
+    ExUnit.Callbacks.on_exit(fn -> Application.delete_env(:dmh_ai, :__tool_execute_stub__) end)
   end
 
   # Install a stub for `DmhAi.MCP.Transport.request/3`. `fun` receives
@@ -123,6 +142,16 @@ defmodule T do
   #     ]
   @session_walk_chain_timeout_ms 6_000
 
+  # Settle window after a chain_end before declaring the system idle.
+  # Auto-pivot follow-ups (close-verb chain ends → GenServer fires
+  # :auto_resume_assistant → silent turn spawns) run AFTER the first
+  # chain_end. Snapshotting before they finish strands the test:
+  # session.messages doesn't yet have what the user would see. Wait
+  # for the GenServer's `current_task` slot to stay empty for this
+  # window before snapshotting — that's "queue truly drained."
+  @session_walk_settle_grace_ms 200
+  @session_walk_settle_poll_ms 25
+
   def session_walk(user_id, session_id, walk) when is_list(walk) do
     alias DmhAi.Agent.{AssistantCommand, SessionProgress, UserAgent}
     alias DmhAi.Repo
@@ -165,6 +194,20 @@ defmodule T do
         end
       end)
 
+      # Mirror the `Handlers.AgentChat.post_chat` path: persist the
+      # user message to `session.messages` BEFORE dispatching the
+      # chain. The handler does this in production; without the same
+      # step in tests, `last_msgs` in `build_assistant_messages` is
+      # empty and the LLM never sees the user's actual input.
+      anchor_num = DmhAi.Agent.Anchor.task_num_for(session_id)
+      user_message =
+        case anchor_num do
+          n when is_integer(n) -> %{role: "user", content: user_msg, task_num: n}
+          _                     -> %{role: "user", content: user_msg}
+        end
+
+      {:ok, _user_ts} = DmhAi.Agent.UserAgentMessages.append(session_id, user_id, user_message)
+
       cmd = %AssistantCommand{
         type:             :chat,
         content:          user_msg,
@@ -177,7 +220,7 @@ defmodule T do
 
       :ok = UserAgent.dispatch_assistant(user_id, cmd)
 
-      next_id = wait_for_chain_end(session_id, baseline_progress_id)
+      next_id = wait_for_chain_end(session_id, user_id, baseline_progress_id)
 
       %{rows: rows} =
         query!(Repo,
@@ -200,14 +243,32 @@ defmodule T do
     |> elem(0)
   end
 
-  defp wait_for_chain_end(session_id, baseline_id) do
-    alias DmhAi.Agent.SessionProgress
+  # Drive the chain to true idle. Two phases:
+  #   1. Wait for the first `chain_end` / `chain_aborted` row after
+  #      baseline — the user-initiated chain has produced its
+  #      termination signal.
+  #   2. Settle. A close-verb chain that auto-pivots queues a silent
+  #      follow-up turn; it spawns AFTER the first chain_end lands.
+  #      Wait until `UserAgent.current_turn_session_id(user_id)`
+  #      stays nil for `@session_walk_settle_grace_ms`. That's the
+  #      same "system idle for this user" view the FE eventually
+  #      converges on after `/poll` notices `ChainInFlight` is clear.
+  #
+  # Returns the LATEST chain_end / chain_aborted id seen so the next
+  # iteration's `baseline_id` excludes everything the system has
+  # already produced for this user message (including auto-pivot
+  # follow-ups).
+  defp wait_for_chain_end(session_id, user_id, baseline_id) do
     deadline = System.os_time(:millisecond) + @session_walk_chain_timeout_ms
 
-    do_wait_for_chain_end(session_id, baseline_id, deadline)
+    _first_id = wait_for_first_chain_end(session_id, baseline_id, deadline)
+    drain_until_idle(user_id, deadline, nil)
+    latest_chain_end_id(session_id, baseline_id) || raise(
+      "session_walk: lost track of chain_end after settle"
+    )
   end
 
-  defp do_wait_for_chain_end(session_id, baseline_id, deadline) do
+  defp wait_for_first_chain_end(session_id, baseline_id, deadline) do
     alias DmhAi.Agent.SessionProgress
 
     rows = SessionProgress.fetch_for_session(session_id, baseline_id)
@@ -221,8 +282,50 @@ defmodule T do
           raise "session_walk: chain didn't end within #{@session_walk_chain_timeout_ms}ms"
         else
           Process.sleep(20)
-          do_wait_for_chain_end(session_id, baseline_id, deadline)
+          wait_for_first_chain_end(session_id, baseline_id, deadline)
         end
+    end
+  end
+
+  # Block until the GenServer's current_task slot has been empty for
+  # `@session_walk_settle_grace_ms` continuously. `idle_since` is
+  # the wall-clock ts when we last observed idleness; resets to nil
+  # any time a chain re-enters flight. Returns `:ok` on settle or
+  # `:timeout` (the test's content asserts then catch the failure
+  # with a clearer message than a raised timeout would).
+  defp drain_until_idle(user_id, deadline, idle_since) do
+    alias DmhAi.Agent.UserAgent
+
+    cond do
+      System.os_time(:millisecond) > deadline ->
+        :timeout
+
+      UserAgent.current_turn_session_id(user_id) != nil ->
+        Process.sleep(@session_walk_settle_poll_ms)
+        drain_until_idle(user_id, deadline, nil)
+
+      is_nil(idle_since) ->
+        Process.sleep(@session_walk_settle_poll_ms)
+        drain_until_idle(user_id, deadline, System.os_time(:millisecond))
+
+      System.os_time(:millisecond) - idle_since >= @session_walk_settle_grace_ms ->
+        :ok
+
+      true ->
+        Process.sleep(@session_walk_settle_poll_ms)
+        drain_until_idle(user_id, deadline, idle_since)
+    end
+  end
+
+  defp latest_chain_end_id(session_id, baseline_id) do
+    alias DmhAi.Agent.SessionProgress
+
+    SessionProgress.fetch_for_session(session_id, baseline_id)
+    |> Enum.filter(fn r -> r.kind in ["chain_end", "chain_aborted"] end)
+    |> Enum.map(& &1.id)
+    |> case do
+      []  -> nil
+      ids -> Enum.max(ids)
     end
   end
 

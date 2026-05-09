@@ -447,20 +447,14 @@ defmodule DmhAi.Router do
   # `<session_workspace>/.browser/<file_name>`. Owned by the runtime
   # (Browser.Loop writes via the daemon), not the model — so unlike
   # the wider workspace tree (intentionally not served by /assets),
-  # this narrow path IS exposed for the FE thumbnail render.
-  #
-  # Explicit `else` arm — when `check_auth` 401s, it returns
-  # `{:error, conn}` (the 401 already-sent). Without unwrapping that
-  # tuple here, Plug.Router rejects the handler's return value with
-  # `expected dispatch/2 to return a Plug.Conn` and crashes the
-  # request. The `<img>` tag can't carry an Authorization header so
-  # this route hits the 401 branch anytime the FE forgets to use the
-  # apiFetch+blob pattern.
+  # this narrow path IS exposed for the FE thumbnail render. The
+  # `<img>` tag can't carry an Authorization header so this route
+  # hits the 401 branch any time the FE forgets to use the
+  # apiFetch+blob pattern — `check_auth/1` already sends 401 and
+  # the surrounding `with` returns the conn directly.
   get "/sessions/:session_id/browser-screenshot/:file_name" do
     with {:ok, conn, user} <- check_auth(conn) do
       Data.get_browser_screenshot(conn, user, session_id, file_name)
-    else
-      {:error, conn} -> conn
     end
   end
 
@@ -727,19 +721,30 @@ defmodule DmhAi.Router do
 
   # ─── Auth helper ──────────────────────────────────────────────────────────────
 
-  # Returns {:ok, conn, user} or sends 401 and returns the halted conn.
-  # The `with` pattern match on {:ok, ...} means halted conn falls through
-  # and becomes the return value of the `with` block (Elixir with semantics:
-  # when no else clause, the non-matching term is returned as-is).
+  # Two return shapes:
+  #
+  #   * `{:ok, conn, user}` — authenticated; route handler runs with
+  #     the user.
+  #   * `%Plug.Conn{}` (already 401-sent) — unauthenticated. Returned
+  #     as the conn directly so the surrounding `with` block:
+  #
+  #         with {:ok, conn, user} <- check_auth(conn) do
+  #           Handler.do_thing(conn, user)
+  #         end
+  #
+  #     falls through with the conn (Elixir `with` semantics: when no
+  #     `else` clause, the non-matching term is returned verbatim) —
+  #     and `Plug.Router` accepts a `Plug.Conn` from `dispatch/2`.
+  #
+  #     Returning `{:error, conn}` here would crash the request with
+  #     "expected dispatch/2 to return a Plug.Conn" because the tuple
+  #     leaks through the same `with` fall-through.
   defp check_auth(conn) do
     case AuthPlug.get_auth_user(conn) do
       nil ->
-        conn =
-          conn
-          |> put_resp_content_type("application/json")
-          |> send_resp(401, Jason.encode!(%{error: "Unauthorized"}))
-
-        {:error, conn}
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(401, Jason.encode!(%{error: "Unauthorized"}))
 
       user ->
         {:ok, conn, user}

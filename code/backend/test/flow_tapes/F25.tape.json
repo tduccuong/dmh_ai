@@ -1,0 +1,5 @@
+{
+  "flow_id": "F25",
+  "_note": "F25 — DB-only schema/admin idempotency assertions; no LLM calls.",
+  "turns": []
+}

@@ -496,6 +496,22 @@ defmodule DmhAi.Agent.Tasks do
     Enum.map(r.rows, &row_to_map/1)
   end
 
+  @doc """
+  Most-recent inactive tasks for a session — `done` / `paused` /
+  `cancelled` — newest first. Used by the Swift inactive-task classifier
+  at chain start to ask whether the user's message is a follow-up to one
+  of them. Limit caps the candidate count fed to Swift.
+  """
+  def recent_inactive_for_session(session_id, limit \\ 8) do
+    r = query!(Repo, """
+    SELECT #{@select_cols} FROM tasks
+    WHERE session_id=? AND task_status IN ('done', 'paused', 'cancelled')
+    ORDER BY updated_at DESC
+    LIMIT ?
+    """, [session_id, limit])
+    Enum.map(r.rows, &row_to_map/1)
+  end
+
   def delete_for_session(session_id) do
     query!(Repo, "DELETE FROM session_progress WHERE session_id=?", [session_id])
     query!(Repo, "DELETE FROM tasks WHERE session_id=?", [session_id])

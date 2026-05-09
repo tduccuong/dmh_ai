@@ -219,7 +219,21 @@ defmodule DmhAi.Tools.Registry do
   cannot kill the chain task or leave its progress row hanging.
   """
   def execute(name, args, ctx) when is_binary(name) do
-    do_execute(name, args, ctx)
+    # Test hook: Application.put_env(:dmh_ai, :__tool_execute_stub__, fn name, args, ctx -> ... end)
+    # Stub must return {:ok, result} | {:error, reason} — same shape as the real path.
+    # When a stub returns `:passthrough`, dispatch falls through to the real tool — lets
+    # a test fake just one tool (e.g. run_script) while letting bookkeeping verbs
+    # (create_task / pickup_task) hit the real Registry path.
+    case Application.get_env(:dmh_ai, :__tool_execute_stub__) do
+      nil ->
+        do_execute(name, args, ctx)
+
+      stub when is_function(stub, 3) ->
+        case stub.(name, args, ctx) do
+          :passthrough -> do_execute(name, args, ctx)
+          other        -> other
+        end
+    end
   rescue
     e ->
       Logger.error("[Tools.Registry] tool=#{name} raised: #{Exception.format(:error, e, __STACKTRACE__)}")

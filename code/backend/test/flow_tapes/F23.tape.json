@@ -1,0 +1,5 @@
+{
+  "flow_id": "F23",
+  "_note": "F23 exercises tool-result eviction at task close — pure backend integration; no LLM calls. Empty tape is intentional.",
+  "turns": []
+}

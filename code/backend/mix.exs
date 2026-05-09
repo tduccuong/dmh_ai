@@ -8,8 +8,12 @@ defmodule DmhAi.MixProject do
       elixir: "~> 1.16",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
-      test_load_filters: [~r/itgr_.*\.exs$/]
+      test_load_filters: [~r/itgr_.*\.exs$/, ~r/F\d{2}_.*\.exs$/]
     ]
+  end
+
+  def cli do
+    [preferred_envs: [flow: :test]]
   end
 
   def application do

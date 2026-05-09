@@ -200,7 +200,42 @@ defmodule DmhAi.Agent.ContextEngine do
 
     available_services_block = build_available_services_block(user_id)
 
+    # Optional runtime guidance — injected only when the chain-prep's
+    # inactive-task classifier returned a positive match. NOT persisted
+    # to session.messages; lives only in this LLM call. Prepended to
+    # the latest user message's content so the model reads the hint
+    # in the same message slot it reads the user's actual text.
+    last_msgs = maybe_prepend_runtime_hint(last_msgs, Keyword.get(opts, :runtime_resume_hint))
+
     [system_msg] ++ prefix ++ history_llm ++ relevant_msgs ++ task_list_block ++ available_services_block ++ extracted_files_block ++ anchor_block ++ last_msgs
+  end
+
+  # Prepend a runtime hint string to the content of the most-recent
+  # user-role message in `last_msgs`, leaving everything else
+  # untouched. Returns the list verbatim when the hint is nil/empty.
+  defp maybe_prepend_runtime_hint(last_msgs, nil), do: last_msgs
+  defp maybe_prepend_runtime_hint(last_msgs, ""), do: last_msgs
+
+  defp maybe_prepend_runtime_hint(last_msgs, hint) when is_binary(hint) do
+    last_user_idx =
+      last_msgs
+      |> Enum.with_index()
+      |> Enum.reverse()
+      |> Enum.find_value(fn {m, idx} ->
+        if (m[:role] || m["role"]) == "user", do: idx, else: nil
+      end)
+
+    case last_user_idx do
+      nil ->
+        last_msgs
+
+      idx ->
+        List.update_at(last_msgs, idx, fn m ->
+          old_content = m[:content] || m["content"] || ""
+          new_content = hint <> "\n\n" <> old_content
+          if Map.has_key?(m, :content), do: %{m | content: new_content}, else: %{m | "content" => new_content}
+        end)
+    end
   end
 
   # User-scoped catalog of services the user has authorized at some

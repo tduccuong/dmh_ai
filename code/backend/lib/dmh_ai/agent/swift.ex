@@ -155,6 +155,133 @@ defmodule DmhAi.Agent.Swift do
     end
   end
 
+  @doc """
+  Classify a chain-start user message against a list of inactive tasks
+  (`done` / `paused` / `cancelled`) in the same session. Returns
+  `{:match, task_num} | :none | :error`.
+
+  Single batched LLM call regardless of how many tasks the list
+  contains. The list is capped upstream via
+  `AgentSettings.task_resume_candidate_cap/0`.
+
+  Used by chain-prep when no active anchor exists. On `:match` the
+  runtime prepends a guidance hint to the user message in the LLM
+  call, nudging the model toward `pickup_task(N)` instead of
+  `create_task`. On `:none` the model decides between `create_task`,
+  plain text (chitchat / knowledge), or follow-up via the existing
+  intent matrix.
+
+  Inactive task entries: `%{task_num: integer, task_title: string,
+  task_spec: string}`. Spec is sliced to 120 chars in the prompt to
+  cap classifier input size.
+  """
+  @spec classify_against_inactive(String.t(), [map()]) ::
+          {:match, integer()} | :none | :error
+  def classify_against_inactive(_user_msg, []), do: :none
+
+  def classify_against_inactive(user_msg, inactive_tasks)
+      when is_binary(user_msg) and user_msg != "" and is_list(inactive_tasks) do
+    do_classify_against_inactive(user_msg, inactive_tasks)
+  end
+
+  def classify_against_inactive(_, _), do: :error
+
+  defp do_classify_against_inactive(user_msg, inactive_tasks) do
+    model = AgentSettings.swift_model()
+
+    messages = [
+      %{role: "system", content: classify_inactive_system_prompt()},
+      %{role: "user",
+        content: classify_inactive_user_prompt(user_msg, inactive_tasks)}
+    ]
+
+    trace = %{origin: "system", path: "Agent.Swift.classify_against_inactive",
+              role: "SwiftInactiveMatch", phase: "classify"}
+
+    case LLM.call(model, messages, options: %{temperature: 0}, trace: trace) do
+      {:ok, text} when is_binary(text) ->
+        parse_inactive_verdict(text, inactive_tasks)
+
+      {:ok, {:tool_calls, _}} ->
+        :error
+
+      {:error, reason} ->
+        Logger.warning("[Swift] classify_against_inactive error: #{inspect(reason)}")
+        :error
+    end
+  rescue
+    e ->
+      Logger.error("[Swift] classify_against_inactive raised: #{Exception.message(e)}")
+      :error
+  end
+
+  defp classify_inactive_system_prompt do
+    """
+    You decide whether a user's chain-start message is a substantive follow-up to one of a session's inactive tasks. Output exactly one token.
+
+    Reply with the task NUMBER (e.g. "3") if the user message is extending, fixing, retrying, or asking about the state of a specific listed task.
+
+    Reply "none" when:
+      - The user message is chitchat, an acknowledgment, or a greeting ("thanks", "ok", "got it", "hi").
+      - The user message is a knowledge question with no link to any listed task.
+      - The user message is a short reply that doesn't determine intent ("yes", "no").
+      - The user message is a brand-new objective unrelated to any listed task.
+
+    Reply with EXACTLY one token: a task number, or "none". No punctuation, no explanation.
+    """
+  end
+
+  defp classify_inactive_user_prompt(user_msg, inactive_tasks) do
+    bullets =
+      inactive_tasks
+      |> Enum.map(fn t ->
+        num    = Map.get(t, :task_num) || Map.get(t, "task_num")
+        title  = Map.get(t, :task_title) || Map.get(t, "task_title") || "(untitled)"
+        spec   = Map.get(t, :task_spec)  || Map.get(t, "task_spec")  || ""
+        snippet = spec |> to_string() |> String.replace(~r/\s+/, " ") |> String.slice(0, 120)
+        "- (#{num}) #{title} — #{snippet}"
+      end)
+      |> Enum.join("\n")
+
+    """
+    User message: #{user_msg}
+
+    Inactive tasks:
+    #{bullets}
+    """
+  end
+
+  defp parse_inactive_verdict(text, inactive_tasks) do
+    valid_nums = MapSet.new(Enum.map(inactive_tasks, &(Map.get(&1, :task_num) || Map.get(&1, "task_num"))))
+
+    norm =
+      text
+      |> String.trim()
+      |> String.split(~r/\W+/, trim: true)
+      |> List.first()
+      |> Kernel.||("")
+      |> String.downcase()
+
+    cond do
+      norm == "none" ->
+        :none
+
+      String.match?(norm, ~r/^\d+$/) ->
+        {n, _} = Integer.parse(norm)
+
+        if MapSet.member?(valid_nums, n) do
+          {:match, n}
+        else
+          Logger.warning("[Swift] classify_against_inactive returned unknown task_num=#{n}")
+          :none
+        end
+
+      true ->
+        Logger.warning("[Swift] classify_against_inactive unparseable: #{inspect(String.slice(text, 0, 80))}")
+        :error
+    end
+  end
+
   defp parse_verdict(text) do
     norm =
       text

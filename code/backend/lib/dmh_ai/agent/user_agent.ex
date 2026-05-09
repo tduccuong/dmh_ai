@@ -1656,6 +1656,53 @@ defmodule DmhAi.Agent.UserAgent do
     anchor = DmhAi.Agent.Anchor.resolve(session_id)
     anchor_task_num = anchor && anchor.task_num
 
+    # When no active anchor exists (typical state right after a
+    # complete_task / cancel_task), ask Swift whether the chain-start
+    # user message is a substantive follow-up to one of the session's
+    # inactive tasks. On a positive match the runtime injects a
+    # guidance hint into the LLM-call's user-message slot, nudging the
+    # model to `pickup_task(N)` instead of `create_task`. ONE Swift
+    # call regardless of how many inactive tasks exist (capped by
+    # `taskResumeCandidateCap`). On `:none` no hint is added — the
+    # model's existing intent matrix decides between chitchat (plain
+    # text), knowledge (plain text), and fresh objective
+    # (`create_task`). See architecture.md §Inactive-task related-
+    # message classifier.
+    runtime_resume_hint =
+      if is_nil(anchor_task_num) do
+        candidate_cap = AgentSettings.task_resume_candidate_cap()
+        inactive = Tasks.recent_inactive_for_session(session_id, candidate_cap)
+
+        case inactive do
+          [] ->
+            nil
+
+          tasks ->
+            classifier_input =
+              Enum.map(tasks, fn t ->
+                %{task_num: t.task_num, task_title: t.task_title, task_spec: t.task_spec}
+              end)
+
+            case DmhAi.Agent.Swift.classify_against_inactive(command.content, classifier_input) do
+              {:match, n} ->
+                matched =
+                  Enum.find(tasks, &(&1.task_num == n)) ||
+                    %{task_num: n, task_title: "(unknown)"}
+
+                "<runtime_hint>\n" <>
+                  "Your message looks related to closed task " <>
+                  "(#{matched.task_num}) \"#{matched.task_title}\". Look at the " <>
+                  "Task list block + your context. If you agree, prefer " <>
+                  "`pickup_task(#{matched.task_num})` over `create_task`. " <>
+                  "If unrelated, ignore this hint.\n" <>
+                  "</runtime_hint>"
+
+              _ ->
+                nil
+            end
+        end
+      end
+
     llm_messages =
       ContextEngine.build_assistant_messages(session_data,
         user_id:         user_id,
@@ -1668,7 +1715,10 @@ defmodule DmhAi.Agent.UserAgent do
         # Pass the chain-start anchor so the conservative-token-saving
         # filter can drop persisted messages tagged with other tasks
         # at chain start. nil = free-mode → filter is a no-op.
-        anchor_task_num: anchor_task_num
+        anchor_task_num: anchor_task_num,
+        # Optional runtime guidance prepended to the latest user message
+        # in the LLM-call only (NOT persisted). nil = no hint.
+        runtime_resume_hint: runtime_resume_hint
       )
 
     data_dir      = DmhAi.Constants.session_data_dir(email, session_id)
