@@ -509,6 +509,31 @@ defmodule DmhAi.Agent.LLM do
   # ─── Helpers ───────────────────────────────────────────────────────────────
 
   defp do_stream_request(url, headers, body, reply_pid, model_str, on_tokens, adapter) do
+    # Test hook (one layer DEEPER than `__llm_stream_stub__`). Lets a
+    # test fake a per-account HTTP response so the rotation/retry
+    # logic in `do_pool_stream/8` actually runs. Stub fn:
+    #   `(url, headers, body, %{kind: :stream, model: model_str,
+    #      reply_pid: pid, on_tokens: on_tokens, adapter: atom}) ->
+    #      {:ok, term} | {:error, atom} | {:error, {atom, term}}`
+    # — same shape `do_stream_request` itself returns, so the
+    # rotation logic can't tell the stub apart from a real
+    # provider response.
+    case Application.get_env(:dmh_ai, :__llm_request_stub__) do
+      stub when is_function(stub, 4) ->
+        stub.(url, headers, body, %{
+          kind:      :stream,
+          model:     model_str,
+          reply_pid: reply_pid,
+          on_tokens: on_tokens,
+          adapter:   adapter
+        })
+
+      _ ->
+        do_stream_request_live(url, headers, body, reply_pid, model_str, on_tokens, adapter)
+    end
+  end
+
+  defp do_stream_request_live(url, headers, body, reply_pid, model_str, on_tokens, adapter) do
     text_key    = {__MODULE__, :text,       self()}
     calls_key   = {__MODULE__, :calls,      self()}
     buf_key     = {__MODULE__, :buf,        self()}
@@ -677,6 +702,24 @@ defmodule DmhAi.Agent.LLM do
   end
 
   defp do_call_request(url, headers, body, model_str, on_tokens, adapter) when is_atom(adapter) do
+    # See `do_stream_request` for the rationale on this hook —
+    # tests use it to fake per-account HTTP responses so rotation
+    # logic exercises against deterministic transport outcomes.
+    case Application.get_env(:dmh_ai, :__llm_request_stub__) do
+      stub when is_function(stub, 4) ->
+        stub.(url, headers, body, %{
+          kind:      :call,
+          model:     model_str,
+          on_tokens: on_tokens,
+          adapter:   adapter
+        })
+
+      _ ->
+        do_call_request_live(url, headers, body, model_str, on_tokens, adapter)
+    end
+  end
+
+  defp do_call_request_live(url, headers, body, model_str, on_tokens, adapter) when is_atom(adapter) do
     # ── HTTP-path instrumentation (diagnostics for outbound call hangs) ──
     # Wraps Req.post with monotonic-time stamps around every boundary so we
     # can see exactly where a slow call is spending its time:

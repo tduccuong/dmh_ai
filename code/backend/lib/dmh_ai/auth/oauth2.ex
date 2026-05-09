@@ -105,7 +105,7 @@ defmodule DmhAi.Auth.OAuth2 do
       "scope"                      => Enum.join(scopes, " ")
     }
 
-    case Req.post(reg_url,
+    case http_post(reg_url,
            json: body,
            headers: [{"accept", "application/json"}],
            receive_timeout: @http_timeout_ms,
@@ -327,7 +327,7 @@ defmodule DmhAi.Auth.OAuth2 do
       body
     end
 
-    case Req.post(asm[:token_endpoint],
+    case http_post(asm[:token_endpoint],
            form: body,
            headers: [{"accept", "application/json"}],
            receive_timeout: @http_timeout_ms,
@@ -530,7 +530,7 @@ defmodule DmhAi.Auth.OAuth2 do
           body
       end
 
-    case Req.post(asm[:token_endpoint],
+    case http_post(asm[:token_endpoint],
            form: body,
            headers: [{"accept", "application/json"}],
            receive_timeout: @http_timeout_ms,
@@ -638,4 +638,17 @@ defmodule DmhAi.Auth.OAuth2 do
   end
 
   defp decode_body(_), do: %{}
+
+  # Single HTTP-POST seam for the three OAuth2 outbound calls
+  # (DCR registration + code/token exchange + refresh). Test hook:
+  # `Application.put_env(:dmh_ai, :__oauth2_http_stub__, fn url, opts -> ... end)`
+  # mirrors the existing `__llm_*_stub__` / `__tool_execute_stub__`
+  # patterns. Stub returns `{:ok, %{status: ..., body: ...}}` |
+  # `{:error, reason}` — same shape `Req.post/2` returns.
+  defp http_post(url, opts) do
+    case Application.get_env(:dmh_ai, :__oauth2_http_stub__) do
+      nil  -> Req.post(url, opts)
+      stub -> stub.(url, opts)
+    end
+  end
 end

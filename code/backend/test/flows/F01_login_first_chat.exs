@@ -272,12 +272,22 @@ defmodule DmhAi.Flows.F01LoginFirstChat do
 
   # ── helpers ──────────────────────────────────────────────────────
 
+  # `RateLimit` plug keys `/auth/*` on remote_ip; Hammer's bucket
+  # persists across tests, so back-to-back runs on the same host
+  # fill the 8/min bucket and follow-up tests get 429. Spread
+  # traffic across IP buckets via a random-per-request remote_ip
+  # in the private 10.x range.
+  defp random_ip do
+    {10, :rand.uniform(255), :rand.uniform(255), :rand.uniform(254)}
+  end
+
   defp post_json(path, body, opts \\ []) do
     json_body = Jason.encode!(body)
 
     conn =
       Plug.Test.conn(:post, path, json_body)
       |> Plug.Conn.put_req_header("content-type", "application/json")
+      |> Map.put(:remote_ip, random_ip())
 
     conn =
       case Keyword.get(opts, :token) do

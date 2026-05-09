@@ -183,16 +183,27 @@ defmodule DmhAi.Web.Search do
   @spec call_search_engine([map()], String.t(), keyword()) ::
           %{snippets: [map()], pages: [map()]}
   def call_search_engine(queries, category, opts \\ []) do
-    case do_call_search_engine(queries, category, opts) do
-      %{snippets: [], pages: []} = empty when category != "general" ->
-        Logger.info("[Web.Search] empty results for category=#{category}, retrying with general")
-        case do_call_search_engine(queries, "general", opts) do
-          %{snippets: [], pages: []} -> empty
-          retried -> retried
+    # Test hook: `Application.put_env(:dmh_ai, :__web_search_engine_stub__,
+    # fn queries, category, opts -> %{snippets: [...], pages: [...]} end)`
+    # mirrors the existing `__llm_*_stub__` / `__tool_execute_stub__` /
+    # `__oauth2_http_stub__` patterns. Bypasses both SearXNG and the
+    # page-fetcher so confidant + assistant tests don't need either.
+    case Application.get_env(:dmh_ai, :__web_search_engine_stub__) do
+      nil ->
+        case do_call_search_engine(queries, category, opts) do
+          %{snippets: [], pages: []} = empty when category != "general" ->
+            Logger.info("[Web.Search] empty results for category=#{category}, retrying with general")
+            case do_call_search_engine(queries, "general", opts) do
+              %{snippets: [], pages: []} -> empty
+              retried -> retried
+            end
+
+          result ->
+            result
         end
 
-      result ->
-        result
+      stub when is_function(stub, 3) ->
+        stub.(queries, category, opts)
     end
   end
 

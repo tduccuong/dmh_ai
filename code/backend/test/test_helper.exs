@@ -60,6 +60,40 @@ defmodule T do
     ExUnit.Callbacks.on_exit(fn -> Application.delete_env(:dmh_ai, :__llm_stream_stub__) end)
   end
 
+  # Install a stub at `LLM.do_stream_request/7` and `do_call_request/6`
+  # — one layer DEEPER than `__llm_stream_stub__`. Lets a test
+  # exercise the rotation/retry logic in `do_pool_stream` /
+  # `do_pool_call` against deterministic per-account transport
+  # outcomes. Stub fn:
+  #   `(url, headers, body, %{kind: :stream | :call, model, …}) ->
+  #     {:ok, text} | {:ok, {:tool_calls, calls}} |
+  #     {:error, :rate_limited | :quota_exhausted | :server_error |
+  #              {:rate_limited, ms} | term()}`
+  def stub_llm_request(fun) when is_function(fun, 4) do
+    Application.put_env(:dmh_ai, :__llm_request_stub__, fun)
+    ExUnit.Callbacks.on_exit(fn -> Application.delete_env(:dmh_ai, :__llm_request_stub__) end)
+  end
+
+  # Install a stub for `DmhAi.Web.Search.call_search_engine/3` —
+  # bypasses SearXNG + page-fetcher in confidant's web pre-step.
+  # `fun` receives `(queries, category, opts)` and must return
+  # `%{snippets: [map()], pages: [map()]}`.
+  def stub_web_search(fun) when is_function(fun, 3) do
+    Application.put_env(:dmh_ai, :__web_search_engine_stub__, fun)
+    ExUnit.Callbacks.on_exit(fn -> Application.delete_env(:dmh_ai, :__web_search_engine_stub__) end)
+  end
+
+  # Install a stub for `DmhAi.Auth.OAuth2`'s outbound HTTP POSTs
+  # (DCR + code/token exchange + refresh — single internal seam).
+  # `fun` receives `(url, opts)` (the same args `Req.post/2` would
+  # see) and must return one of:
+  #   {:ok, %{status: integer, body: term}}
+  #   {:error, reason}
+  def stub_oauth2_http(fun) when is_function(fun, 2) do
+    Application.put_env(:dmh_ai, :__oauth2_http_stub__, fun)
+    ExUnit.Callbacks.on_exit(fn -> Application.delete_env(:dmh_ai, :__oauth2_http_stub__) end)
+  end
+
   # Install a stub for `Tools.Registry.execute/3`. `fun` receives
   # (name, args, ctx) and must return:
   #   {:ok, result}      — fake the tool's output
