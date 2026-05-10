@@ -127,7 +127,13 @@ defmodule DmhAi.Handlers.Auth do
 
           display = name || hd(String.split(db_email, "@"))
 
-          json(conn, 200, %{
+          # Set the bearer also as a cookie so plain `<a>`-click
+          # navigations (browser doesn't add the Authorization header
+          # on those) still authenticate. AuthPlug.get_auth_user
+          # falls back to the cookie when no header is present.
+          conn
+          |> put_auth_cookie(token)
+          |> json(200, %{
             token: token,
             user: %{
               id: id,
@@ -188,23 +194,63 @@ defmodule DmhAi.Handlers.Auth do
 
   # POST /auth/logout
   def post_logout(conn) do
-    case get_req_header(conn, "authorization") do
-      ["Bearer " <> token | _] ->
-        token = String.trim(token)
+    # Pick up the bearer from the header OR the cookie — whichever
+    # the client used to authenticate. Either way we delete that
+    # specific token row and clear the cookie.
+    token = AuthPlug.bearer_from_conn(conn)
 
-        # Logout revokes the auth token but does NOT wipe the in-memory
-        # MMK cache. Per specs/memo_encryption.md, memo access must
-        # survive logout/login — the encryption key is master-key-
-        # wrapped on disk and re-unwraps lazily on the next memo
-        # activity (regardless of which session it happens in). The
-        # logout act here is purely about token revocation.
-        query!(Repo, "DELETE FROM auth_tokens WHERE token_hash=?", [AuthPlug.hash_token(token)])
-
-      _ ->
-        :ok
+    if is_binary(token) and token != "" do
+      # Logout revokes the auth token but does NOT wipe the in-memory
+      # MMK cache. Per specs/memo_encryption.md, memo access must
+      # survive logout/login — the encryption key is master-key-
+      # wrapped on disk and re-unwraps lazily on the next memo
+      # activity (regardless of which session it happens in). The
+      # logout act here is purely about token revocation.
+      query!(Repo, "DELETE FROM auth_tokens WHERE token_hash=?", [AuthPlug.hash_token(token)])
     end
 
-    json(conn, 200, %{ok: true})
+    conn
+    |> clear_auth_cookie()
+    |> json(200, %{ok: true})
+  end
+
+  # ── cookie helpers ─────────────────────────────────────────────────────
+
+  @auth_cookie "dmh_ai_token"
+  # 365 days — the cookie lifetime that bounds how long an idle
+  # browser keeps the credential. The server-side row is the
+  # authoritative source; deleting the row (logout, password change,
+  # admin revoke) invalidates the cookie regardless of its remaining
+  # max-age.
+  @auth_cookie_max_age 31_536_000
+
+  defp put_auth_cookie(conn, token) do
+    Plug.Conn.put_resp_cookie(conn, @auth_cookie, token,
+      http_only: true,
+      secure: secure_cookie?(conn),
+      same_site: "Strict",
+      max_age: @auth_cookie_max_age,
+      path: "/"
+    )
+  end
+
+  defp clear_auth_cookie(conn) do
+    Plug.Conn.delete_resp_cookie(conn, @auth_cookie,
+      http_only: true,
+      secure: secure_cookie?(conn),
+      same_site: "Strict",
+      path: "/"
+    )
+  end
+
+  # Set `Secure` only when the user-facing connection is HTTPS —
+  # either direct (`conn.scheme == :https`) or behind an HTTPS-
+  # terminating proxy that signals via `X-Forwarded-Proto: https`.
+  # Plain HTTP local-stage sessions skip the flag so the cookie still
+  # gets sent on `<a>`-click downloads during dev testing.
+  defp secure_cookie?(conn) do
+    conn.scheme == :https or
+      Enum.any?(get_req_header(conn, "x-forwarded-proto"), &(&1 == "https"))
   end
 
   # POST /users (admin: create user)

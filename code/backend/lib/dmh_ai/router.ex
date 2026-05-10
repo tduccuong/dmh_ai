@@ -464,9 +464,27 @@ defmodule DmhAi.Router do
     end
   end
 
-  get "/assets/:session_id/:file_id" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      Data.get_asset(conn, user, session_id, file_id)
+  # `/assets/<session_id>/<rest>` where `<rest>` is the path under
+  # `<session_data_dir>` — typically `uploaded/<filename>` (POST
+  # /assets writes here) or `published/<filename>` (mk_download_link
+  # writes here). Plug.Router's `*` glob captures multi-segment
+  # paths into a list of strings; the handler joins them back.
+  #
+  # Auth accepts EITHER (1) bearer header — used by the FE for
+  # programmatic image-preview fetches on uploaded attachments,
+  # OR (2) HMAC signature in `?expires=&sig=` — used by `<a>`-click
+  # downloads and by recipients of shared `mk_download_link` URLs
+  # (no DMH-AI account required). See architecture.md §Execution
+  # tools → mk_download_link → Signed URLs.
+  get "/assets/:session_id/*rest" do
+    rel_path = Path.join(rest)
+
+    case authorize_asset_access(conn, session_id, rel_path) do
+      {:ok, owner_email} ->
+        Data.get_asset(conn, %{email: owner_email}, session_id, rel_path)
+
+      {:error, conn} ->
+        conn
     end
   end
 
@@ -776,6 +794,61 @@ defmodule DmhAi.Router do
       user ->
         {:ok, conn, user}
     end
+  end
+
+  # `/assets/<session>/<rest>` accepts EITHER bearer auth (FE's
+  # programmatic fetches) OR a valid HMAC signature in the query
+  # string (`?expires=&sig=`, used by shareable download links).
+  # Returns `{:ok, owner_email}` on success, `{:error, conn}` after
+  # writing a 401/410 response.
+  defp authorize_asset_access(conn, session_id, rel_path) do
+    case AuthPlug.get_auth_user(conn) do
+      %{email: email} ->
+        {:ok, email}
+
+      nil ->
+        conn = Plug.Conn.fetch_query_params(conn)
+
+        case DmhAi.Auth.SignedUrl.verify(conn.query_params, session_id, rel_path) do
+          :ok ->
+            case session_owner_email(session_id) do
+              {:ok, email} ->
+                {:ok, email}
+
+              :error ->
+                {:error,
+                 conn
+                 |> put_resp_content_type("application/json")
+                 |> send_resp(404, Jason.encode!(%{error: "Not found"}))}
+            end
+
+          {:error, :expired} ->
+            {:error,
+             conn
+             |> put_resp_content_type("application/json")
+             |> send_resp(410, Jason.encode!(%{error: "Link expired"}))}
+
+          {:error, :invalid} ->
+            {:error,
+             conn
+             |> put_resp_content_type("application/json")
+             |> send_resp(401, Jason.encode!(%{error: "Unauthorized"}))}
+        end
+    end
+  end
+
+  defp session_owner_email(session_id) when is_binary(session_id) do
+    import Ecto.Adapters.SQL, only: [query!: 3]
+
+    case query!(DmhAi.Repo, """
+         SELECT u.email FROM sessions s JOIN users u ON s.user_id = u.id
+         WHERE s.id = ?
+         """, [session_id]) do
+      %{rows: [[email]]} when is_binary(email) -> {:ok, email}
+      _ -> :error
+    end
+  rescue
+    _ -> :error
   end
 
   # Loopback-only gate for /ai_pools and any other host-local

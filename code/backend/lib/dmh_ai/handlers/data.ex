@@ -27,28 +27,39 @@ defmodule DmhAi.Handlers.Data do
     |> send_resp(status, Jason.encode!(data))
   end
 
-  # GET /assets/:session_id/:file_id
-  # Serves user-uploaded files from <session_root>/data/. Worker-scratch files
-  # under <session_root>/workspace/ are intentionally not served —
-  # the worker should persist anything user-facing via signal(result) or by
-  # writing to the data/ subdir explicitly.
-  def get_asset(conn, user, session_id, file_id) do
-    data_dir    = DmhAi.Constants.session_data_dir(user.email, session_id)
-    file_path   = Path.expand(Path.join(data_dir, file_id))
-    assets_real = Path.expand(DmhAi.Constants.assets_dir())
+  # GET /assets/:session_id/*rest
+  # Serves files from <session_data_dir>. `rest` is the path under
+  # data/ — typically `uploaded/<filename>` (POST /assets writes
+  # here) or `published/<filename>` (mk_download_link writes here).
+  # Workspace files (under user_workspaces/) are intentionally NOT
+  # served here — the model surfaces those via mk_download_link,
+  # which copies them into data/published/.
+  def get_asset(conn, user, session_id, rest) when is_binary(rest) do
+    data_dir       = DmhAi.Constants.session_data_dir(user.email, session_id)
+    file_path      = Path.expand(Path.join(data_dir, rest))
+    data_dir_real  = Path.expand(data_dir)
+    basename       = Path.basename(file_path)
 
-    if String.starts_with?(file_path, assets_real) and File.regular?(file_path) do
-      mime = guess_mime(file_path)
-      display_name = Regex.replace(~r/^\d+_/, file_id, "")
-      data = File.read!(file_path)
+    cond do
+      not (String.starts_with?(file_path, data_dir_real <> "/") or file_path == data_dir_real) ->
+        json(conn, 400, %{error: "Invalid path"})
 
-      conn
-      |> put_resp_content_type(mime)
-      |> put_resp_header("content-disposition", "attachment; filename=\"#{display_name}\"")
-      |> put_resp_header("content-length", to_string(byte_size(data)))
-      |> send_resp(200, data)
-    else
-      json(conn, 404, %{error: "Not found"})
+      not File.regular?(file_path) ->
+        json(conn, 404, %{error: "Not found"})
+
+      true ->
+        mime = guess_mime(file_path)
+        # Strip the random publish prefix (`<8hex>_<basename>`) when
+        # naming the download. Uploads use a `<unix_ms>_` prefix; both
+        # patterns get cleaned here so the user sees the original name.
+        display_name = Regex.replace(~r/^[a-f0-9]{8,}_|^\d+_/, basename, "")
+        data = File.read!(file_path)
+
+        conn
+        |> put_resp_content_type(mime)
+        |> put_resp_header("content-disposition", "attachment; filename=\"#{display_name}\"")
+        |> put_resp_header("content-length", to_string(byte_size(data)))
+        |> send_resp(200, data)
     end
   end
 
@@ -502,14 +513,18 @@ defmodule DmhAi.Handlers.Data do
               max_mb = div(@max_original_video_bytes, 1_000_000)
               json(conn, 413, %{error: "Video too large — maximum supported size is #{max_mb} MB"})
             else
-              data_dir = DmhAi.Constants.session_data_dir(user.email, session_id)
-              File.mkdir_p!(data_dir)
+              uploaded_dir = DmhAi.Constants.session_uploaded_dir(user.email, session_id)
+              File.mkdir_p!(uploaded_dir)
 
               ts = :os.system_time(:millisecond)
               safe_name = "#{ts}_#{Regex.replace(~r/[^\w.\-]/, filename, "_")}"
-              File.write!(Path.join(data_dir, safe_name), raw)
+              File.write!(Path.join(uploaded_dir, safe_name), raw)
 
-              result = %{id: safe_name, name: filename, size: byte_size(raw)}
+              # `id` is the path the FE/model uses to round-trip back via
+              # GET /assets/<session>/<id>. Now that uploads live in a
+              # subdir, the id includes the subdir prefix.
+              upload_id = "uploaded/#{safe_name}"
+              result = %{id: upload_id, name: filename, size: byte_size(raw)}
 
               result =
                 cond do

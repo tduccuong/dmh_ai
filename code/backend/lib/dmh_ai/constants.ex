@@ -94,10 +94,32 @@ defmodule DmhAi.Constants do
     Path.join([assets_dir(), to_string(email), sanitize(session_id)])
   end
 
-  @doc "User-upload directory for a session."
+  @doc """
+  Asset-side data root for a session. Two siblings live underneath:
+
+    * `uploaded/` — POST /assets/<session> writes here (user-supplied
+       files attached to the chat).
+    * `published/` — `mk_download_link` writes here (model-emitted
+       deliverables surfaced as downloadable links).
+
+  Both are served by `GET /assets/<session>/<rest>` via a single
+  resolver under this path.
+  """
   @spec session_data_dir(String.t(), String.t()) :: String.t()
   def session_data_dir(email, session_id) do
     Path.join(session_root(email, session_id), "data")
+  end
+
+  @doc "Subdir of `session_data_dir/2` for user-uploaded attachments."
+  @spec session_uploaded_dir(String.t(), String.t()) :: String.t()
+  def session_uploaded_dir(email, session_id) do
+    Path.join(session_data_dir(email, session_id), "uploaded")
+  end
+
+  @doc "Subdir of `session_data_dir/2` for model-published deliverables."
+  @spec session_published_dir(String.t(), String.t()) :: String.t()
+  def session_published_dir(email, session_id) do
+    Path.join(session_data_dir(email, session_id), "published")
   end
 
   @doc """

@@ -69,6 +69,17 @@ defmodule DmhAi.Agent.AgentSettings do
   @tool_run_poll_interval_ms_default 2_000
   @run_script_max_runtime_ms_default 21_600_000
 
+  # `mk_download_link` per-call size cap. Files larger than this are
+  # rejected — keeps a runaway `cp /var/log/syslog` (or worse, a model
+  # publishing a 50 GB DB dump) from filling user_assets.
+  @publish_max_bytes_default 50_000_000
+
+  # `mk_download_link` URL signature TTL. A signed link works
+  # without a bearer token until expiry, so the URL can be shared
+  # with non-DMH-AI users. Default 7 days bounds the blast radius
+  # if a link is over-shared.
+  @publish_link_ttl_secs_default 604_800
+
   # Estimated usable context window (in tokens) of the assistant LLM.
   # Used by ContextEngine.should_compact? to derive the char-based
   # compaction trigger. Conservative floor across cloud models (many
@@ -456,6 +467,16 @@ defmodule DmhAi.Agent.AgentSettings do
   @spec run_script_max_runtime_ms() :: pos_integer()
   def run_script_max_runtime_ms,
     do: int_setting("runScriptMaxRuntimeMs", @run_script_max_runtime_ms_default)
+
+  @doc "Maximum size (bytes) of a single `mk_download_link` publish. Larger files are rejected."
+  @spec publish_max_bytes() :: pos_integer()
+  def publish_max_bytes,
+    do: int_setting("publishMaxBytes", @publish_max_bytes_default)
+
+  @doc "TTL (seconds) of a `mk_download_link` signed URL before the signature expires."
+  @spec publish_link_ttl_secs() :: pos_integer()
+  def publish_link_ttl_secs,
+    do: int_setting("publishLinkTtlSecs", @publish_link_ttl_secs_default)
 
   @doc "Minimum post-trim char count for an `extract_content` result to count as 'meaningful' (not blank/scanned)."
   @spec min_extracted_text_chars() :: pos_integer()

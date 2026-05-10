@@ -51,7 +51,22 @@ RUN mkdir -p /etc/ssh && printf 'StrictHostKeyChecking accept-new\nLogLevel ERRO
 # don't matter here.
 RUN pip3 install --no-cache-dir --break-system-packages \
       requests httpx \
-      "playwright==1.49.0"
+      "playwright==1.49.0" \
+      fpdf2 openpyxl python-docx Pillow matplotlib markdown pyyaml
+
+# Common deliverable libs preinstalled above:
+#   fpdf2          — PDF generation
+#   openpyxl       — .xlsx read/write
+#   python-docx    — .docx generation
+#   Pillow         — image processing (resize/crop/convert/draw)
+#   matplotlib     — chart rendering to PNG/SVG
+#   markdown       — markdown → HTML
+#   pyyaml         — YAML read/write
+# The model is taught (system prompt) that these are available
+# without pip-install. Anything outside this list will fail because
+# the per-user (non-admin) iptables fence in start.sh REJECTs all
+# LAN/loopback/RFC1918 egress for uid 10001+, so PyPI is unreachable
+# from a model-authored install attempt.
 
 # Master service identity inside the sandbox — used by docker exec -u
 # for admin-side operations and matched by the iptables --uid-owner

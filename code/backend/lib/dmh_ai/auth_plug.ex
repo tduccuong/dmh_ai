@@ -8,14 +8,20 @@ defmodule DmhAi.AuthPlug do
   alias DmhAi.Repo
   import Ecto.Adapters.SQL, only: [query!: 3]
 
+  @auth_cookie "dmh_ai_token"
+
   @doc """
-  Extracts the authenticated user from the Bearer token in the Authorization header.
+  Extract the authenticated user from the request. Tries the
+  `Authorization: Bearer …` header first; falls back to the
+  `dmh_ai_token` cookie set at login. The cookie path lets plain
+  `<a>`-click navigations (which browsers don't send the bearer
+  header on) authenticate naturally.
+
   Returns a user map or nil.
   """
   def get_auth_user(conn) do
-    case get_req_header(conn, "authorization") do
-      ["Bearer " <> token | _] ->
-        token = String.trim(token)
+    case bearer_from_conn(conn) do
+      token when is_binary(token) and token != "" ->
         # Hash before the WHERE; auth_tokens stores sha256(token), not
         # the raw bearer. See db/init.ex auth_tokens schema comment.
         token_hash = hash_token(token)
@@ -43,6 +49,28 @@ defmodule DmhAi.AuthPlug do
 
       _ ->
         nil
+    end
+  end
+
+  @doc """
+  Resolve the bearer token from the request, regardless of whether
+  the client sent it as an `Authorization` header or as the
+  `dmh_ai_token` cookie. Returns the trimmed token string, or nil
+  if neither carrier is present.
+  """
+  @spec bearer_from_conn(Plug.Conn.t()) :: String.t() | nil
+  def bearer_from_conn(conn) do
+    case get_req_header(conn, "authorization") do
+      ["Bearer " <> token | _] ->
+        String.trim(token)
+
+      _ ->
+        conn = Plug.Conn.fetch_cookies(conn)
+
+        case Map.get(conn.req_cookies, @auth_cookie) do
+          v when is_binary(v) and v != "" -> v
+          _ -> nil
+        end
     end
   end
 

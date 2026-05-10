@@ -52,7 +52,8 @@ defmodule DmhAi.Tools.Registry do
     DmhAi.Tools.FetchWiki,
     DmhAi.Tools.FetchMemo,
     DmhAi.Tools.BrowserNavigate,
-    DmhAi.Tools.AuthorizeService
+    DmhAi.Tools.AuthorizeService,
+    DmhAi.Tools.MkDownloadLink
   ]
 
   # Save tools — runtime-only (invoked by `/wiki` and `/memo` commands
