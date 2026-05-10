@@ -1434,20 +1434,41 @@ defmodule DmhAi.Agent.Police do
       when is_list(prior_messages) do
     case last_tool_call_name(prior_messages) do
       "run_script" ->
-        Logger.info("[Police] NUDGE consecutive_run_script")
-        DmhAi.SysLog.log("[POLICE] NUDGE consecutive_run_script")
+        # `prior_count` = number of run_scripts BEFORE this one.
+        # `prior_count = 1` means we're about to fire the 2nd; the
+        # advisory is most useful HERE (model has done one probe, is
+        # about to do a second — push toward compose-not-probe).
+        # `prior_count = 2` (the 3rd) is a "trust the model is now
+        # composing" turn — re-emitting the advisory after a properly
+        # composed script reads as a contradictory scolding.
+        # Alternating gives an unnerved turn between each push:
+        #   #2 → advisory   (you've gone consecutive — read step 1)
+        #   #3 → quiet      (composed? good; if not, you'll hear it)
+        #   #4 → advisory   (still consecutive — getting close)
+        #   #5 → quiet      (last clean shot before cap)
+        #   #6 → HARD reject from check_run_script_probe_budget
+        # So fire only when prior_count is ODD.
+        prior_count = count_run_script_calls(prior_messages)
+        budget      = DmhAi.Agent.AgentSettings.run_script_probe_budget()
 
-        "[NOTE — RUNTIME GUIDANCE]\n" <>
-          "2 consecutive `run_script`s. Tool calls are EXPENSIVE. A proper " <>
-          "script is multi-line and sectioned, doing one coherent unit of " <>
-          "work — not one-liners feeding one-liners.\n\n" <>
-          "Two anti-patterns to check before your next `run_script`:\n" <>
-          "(1) thin probe → expand into a proper multi-section script.\n" <>
-          "(2) repeating a script that just failed the same way → STOP. " <>
-          "Investigate the system state, re-plan with what you find. " <>
-          "Wrapping error-handling around a wrong assumption is not " <>
-          "investigation.\n" <>
-          "[END NOTE]\n\n"
+        if rem(prior_count, 2) != 1 do
+          nil
+        else
+          Logger.info("[Police] NUDGE consecutive_run_script count=#{prior_count + 1}/#{budget}")
+          DmhAi.SysLog.log("[POLICE] NUDGE consecutive_run_script count=#{prior_count + 1}/#{budget}")
+
+          "[⚠ RUNTIME WARNING — Consecutive `run_script`s used. The next-after-cap is REJECTED.]\n\n" <>
+          "Before probing again:\n\n" <>
+          "  1. SCAN your context FIRST. Re-read prior tool results, the user's " <>
+          "original ask, any docs you fetched. Most \"let me verify X\" is " <>
+          "already answered above. Re-probing wastes turns — the user is " <>
+          "waiting on the ANSWER, not on you re-checking known state.\n\n" <>
+          "  2. You MUST COMPOSE. If you have enough to do the full operation " <>
+          "in ONE multi-step script (bash-variables to chain values), stop " <>
+          "probing and emit it now. Probe-then-execute should be 2 turns, not 5.\n\n" <>
+          "  3. Previous script FAILED? Re-PLAN, don't re-PROBE the same shape. " <>
+          "A wrong assumption + retry = same wrong answer.\n\n"
+        end
 
       _ ->
         nil

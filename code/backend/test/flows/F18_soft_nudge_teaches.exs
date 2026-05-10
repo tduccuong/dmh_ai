@@ -161,7 +161,7 @@ defmodule DmhAi.Flows.F18SoftNudgeTeaches do
     rs2_content = (rs2_result["content"] || rs2_result[:content]) |> to_string()
 
     # Turn 0 — NO advisory.
-    refute rs1_content =~ "[NOTE — RUNTIME GUIDANCE]",
+    refute rs1_content =~ "⚠ RUNTIME WARNING",
            "first run_script should NOT carry the consecutive-advisory; got: #{inspect(rs1_content)}"
 
     # The stubbed body landed.
@@ -169,17 +169,20 @@ defmodule DmhAi.Flows.F18SoftNudgeTeaches do
            "first run_script result should contain the stubbed body; got: #{inspect(rs1_content)}"
 
     # Turn 1 — advisory present AND prepended (it leads the body).
-    assert String.starts_with?(rs2_content, "[NOTE — RUNTIME GUIDANCE]"),
-           "second run_script result should START with the advisory; got: #{inspect(rs2_content)}"
+    assert String.starts_with?(rs2_content, "[⚠ RUNTIME WARNING"),
+           "second run_script result should START with the alarming WARNING advisory; got: #{inspect(rs2_content)}"
 
-    assert rs2_content =~ "2 consecutive `run_script`s",
-           "advisory should mention 'consecutive run_scripts'; got: #{inspect(rs2_content)}"
+    assert rs2_content =~ "Consecutive `run_script`s used",
+           "advisory header should call out the consecutive-run_scripts pattern; got: #{inspect(rs2_content)}"
 
-    assert rs2_content =~ "anti-patterns",
-           "advisory should mention anti-patterns; got: #{inspect(rs2_content)}"
+    assert rs2_content =~ "SCAN your context FIRST",
+           "advisory should lead with the context-scan directive; got: #{inspect(rs2_content)}"
 
-    assert rs2_content =~ "[END NOTE]",
-           "advisory should be terminated by [END NOTE]; got: #{inspect(rs2_content)}"
+    assert rs2_content =~ "You MUST COMPOSE",
+           "advisory should command compose-not-probe; got: #{inspect(rs2_content)}"
+
+    assert rs2_content =~ "Re-PLAN, don't re-PROBE",
+           "advisory should cover the failure-replan rule; got: #{inspect(rs2_content)}"
 
     # Stubbed body is still present after the advisory prefix.
     assert rs2_content =~ "[stubbed run_script]",
@@ -219,5 +222,98 @@ defmodule DmhAi.Flows.F18SoftNudgeTeaches do
       |> Enum.any?(fn r -> Map.get(r, :kind) == "chain_end" end)
 
     assert chain_ended?, "expected a chain_end progress row at the end of the chain"
+  end
+
+  test "advisory alternates: fires on the 2nd and 4th run_script, NOT on the 3rd",
+       %{user_id: user_id, session_id: session_id} do
+    # If the model treats the 2nd-call advisory seriously and emits a
+    # properly-composed multi-step script as the 3rd call, scolding it
+    # AGAIN with the same advisory reads as a contradictory scolding.
+    # Police's `consecutive_run_script_advisory/2` therefore alternates:
+    # advisory on the 2nd, quiet on the 3rd, advisory again on the 4th
+    # (last-warning), quiet on the 5th, hard reject at the 6th from the
+    # `check_run_script_probe_budget` gate.
+
+    Tasks.insert(%{
+      user_id:     user_id,
+      session_id:  session_id,
+      task_type:   "one_off",
+      task_title:  "stress alternation",
+      task_spec:   "fire 4 run_scripts and observe the advisory rhythm",
+      task_status: "ongoing",
+      language:    "en"
+    })
+
+    T.stub_llm_call(fn _model, _msgs, _opts -> {:ok, "RELATED"} end)
+
+    T.stub_tool(fn name, args, _ctx ->
+      case name do
+        "run_script" ->
+          script = args["script"] || args[:script] || ""
+          {:ok, "[stubbed]\nscript=#{script}\nstdout=ok\nexit=0\n"}
+
+        _ ->
+          :passthrough
+      end
+    end)
+
+    [obs] =
+      T.session_walk(user_id, session_id, [
+        {"do four probes",
+         [
+           fn _msgs, _tools ->
+             {:tool_calls, [%{"id" => "rs-a-1", "type" => "function",
+               "function" => %{"name" => "run_script",
+                                "arguments" => %{"script" => "echo 1"}}}]}
+           end,
+           fn _msgs, _tools ->
+             {:tool_calls, [%{"id" => "rs-a-2", "type" => "function",
+               "function" => %{"name" => "run_script",
+                                "arguments" => %{"script" => "echo 2"}}}]}
+           end,
+           fn _msgs, _tools ->
+             {:tool_calls, [%{"id" => "rs-a-3", "type" => "function",
+               "function" => %{"name" => "run_script",
+                                "arguments" => %{"script" => "echo 3"}}}]}
+           end,
+           fn _msgs, _tools ->
+             {:tool_calls, [%{"id" => "rs-a-4", "type" => "function",
+               "function" => %{"name" => "run_script",
+                                "arguments" => %{"script" => "echo 4"}}}]}
+           end,
+           fn _msgs, _tools ->
+             {:text, "Done with the four probes."}
+           end
+         ]}
+      ])
+
+    tool_msgs =
+      obs.tool_history
+      |> Enum.flat_map(fn entry -> entry["messages"] || [] end)
+      |> Enum.filter(fn m -> (m["role"] || m[:role]) == "tool" end)
+      |> Enum.sort_by(fn m -> m["tool_call_id"] || m[:tool_call_id] end)
+
+    assert length(tool_msgs) == 4,
+           "expected 4 tool_result messages (one per run_script); got: #{length(tool_msgs)}"
+
+    [r1, r2, r3, r4] = tool_msgs
+    [c1, c2, c3, c4] = Enum.map([r1, r2, r3, r4], fn m ->
+      to_string(m["content"] || m[:content] || "")
+    end)
+
+    refute c1 =~ "⚠ RUNTIME WARNING",
+           "1st run_script must NOT carry the advisory; got: #{inspect(c1)}"
+
+    assert c2 =~ "⚠ RUNTIME WARNING",
+           "2nd run_script SHOULD carry the advisory; got: #{inspect(c2)}"
+
+    refute c3 =~ "⚠ RUNTIME WARNING",
+           "3rd run_script must NOT carry the advisory — alternation rule " <>
+             "(re-warning a properly-composed compose-turn would confuse the " <>
+             "model); got: #{inspect(c3)}"
+
+    assert c4 =~ "⚠ RUNTIME WARNING",
+           "4th run_script SHOULD carry the advisory (last warning before " <>
+             "the hard 6th-call cap); got: #{inspect(c4)}"
   end
 end
