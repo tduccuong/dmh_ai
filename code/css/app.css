@@ -586,8 +586,13 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
 .progress-row .progress-sub-label .browser-step-thumb:hover {
     border-color: #6a4ea0;
 }
-.progress-row .progress-sub-label::before {
-    content: '↳ ';              /* visual hierarchy hint */
+/* Hierarchy-hint arrow rendered INSIDE the text span (not on the
+ * flex-column parent), so it sits inline with the label text and
+ * shares the same ellipsis truncation. Putting it on the parent
+ * makes ::before a flex item that stacks above the text on narrow
+ * viewports — confirmed broken on mobile width. */
+.progress-row .progress-sub-label .step-text::before {
+    content: '↳ ';
     opacity: 0.55;
 }
 .progress-tool.progress-status-pending .progress-icon {
