@@ -349,7 +349,7 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
 .message.assistant p { margin-bottom: 12px; }
 .message.assistant p:last-child, .message.assistant ul:last-child, .message.assistant ol:last-child { margin-bottom: 0; }
 .message.assistant h1, .message.assistant h2, .message.assistant h3,
-.message.assistant h4, .message.assistant h5, .message.assistant h6 { color: #c8b8e8; margin: 18px 0 8px; font-weight: 600; }
+.message.assistant h4, .message.assistant h5, .message.assistant h6 { color: #c8b8e8; margin: 18px 0 16px; font-weight: 600; }
 .message.assistant h1 { font-size: 1.3em; } .message.assistant h2 { font-size: 1.15em; } .message.assistant h3 { font-size: 1em; }
 .message.assistant ul, .message.assistant ol { padding-left: 20px; margin-bottom: 12px; }
 .message.assistant li { margin-bottom: 5px; }
