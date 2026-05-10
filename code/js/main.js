@@ -45,7 +45,7 @@ function applyLanguage() {
     document.getElementById('about-legal-title').textContent = t('aboutLegalTitle');
     document.getElementById('about-license-line').innerHTML = '<strong style="color:#c8b8e8;">' + t('aboutLicenseLabel') + '</strong> ' + t('aboutLicenseBody');
     document.getElementById('about-attrib-line').textContent = t('aboutAttrib');
-    document.getElementById('about-source-line').innerHTML = '<strong style="color:#c8b8e8;">' + t('aboutSourceLabel') + '</strong> <a href="https://github.com/tduccuong/dmh_ai" target="_blank" rel="noopener noreferrer" style="color:#b098d8;">GitHub Repository</a>';
+    document.getElementById('about-source-line').innerHTML = '<strong style="color:#c8b8e8;">' + t('aboutSourceLabel') + '</strong> <a href="https://github.com/tduccuong/dmh_ai" target="_blank" rel="noopener noreferrer" style="color:#e8d6f0;">GitHub Repository</a>';
     document.getElementById('about-commercial-line').innerHTML = '<strong style="color:#c8b8e8;">' + t('aboutCommercialLabel') + '</strong> ' + t('aboutCommercialBody');
     document.getElementById('about-close').textContent = t('aboutClose');
 
@@ -645,13 +645,13 @@ const UIManager = {
     showUserProfiles: async function() {
         var overlay = document.getElementById('user-profiles-overlay');
         var content = document.getElementById('user-profiles-content');
-        content.innerHTML = '<div style="color:#504060;font-size:13px;padding:8px 0;">Loading...</div>';
+        content.innerHTML = '<div style="color:#cabae0;font-size:13px;padding:8px 0;">Loading...</div>';
         overlay.classList.add('visible');
         try {
             var res = await fetch('/admin/user-profiles', { headers: { 'Authorization': 'Bearer ' + Auth.token } });
             if (!res.ok) { content.innerHTML = '<div style="color:#e94560;font-size:13px;">Failed to load profiles.</div>'; return; }
             var users = await res.json();
-            if (!users.length) { content.innerHTML = '<div style="color:#504060;font-size:13px;font-style:italic;">No users found.</div>'; return; }
+            if (!users.length) { content.innerHTML = '<div style="color:#cabae0;font-size:13px;font-style:italic;">No users found.</div>'; return; }
             content.innerHTML = '';
             users.forEach(function(u) {
                 var section = document.createElement('div');

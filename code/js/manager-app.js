@@ -693,7 +693,7 @@ UIManager.showTokenStats = async function(sessionId, sessionName) {
         if (s.workers.length > 0) {
             workerRows = s.workers.map(function(w) {
                 var desc = w.description ? w.description.slice(0, 50) : w.task_id;
-                return '<tr><td style="padding:4px 8px 4px 0;color:#aaa;">' + desc + '</td>' +
+                return '<tr><td style="padding:4px 8px 4px 0;color:#d0d0d0;">' + desc + '</td>' +
                        '<td style="padding:4px 0;text-align:right;white-space:nowrap;">' + fmt(w.tx) + ' / ' + fmt(w.rx) + '</td></tr>';
             }).join('');
         }
@@ -701,9 +701,9 @@ UIManager.showTokenStats = async function(sessionId, sessionName) {
         var body =
             '<div style="font-size:13px;line-height:1.7;">' +
             '<table style="width:100%;border-collapse:collapse;">' +
-            '<tr><td style="padding:4px 8px 4px 0;color:#aaa;">Global total</td><td style="text-align:right;font-weight:600;">' + fmt(globalTotal) + '</td></tr>' +
-            '<tr><td style="padding:4px 8px 4px 0;color:#aaa;">This session total</td><td style="text-align:right;font-weight:600;">' + fmt(sessionTotal) + '</td></tr>' +
-            '<tr><td style="padding:4px 8px 4px 0;color:#aaa;">Master (tx / rx)</td><td style="text-align:right;">' + fmt(s.master.tx) + ' / ' + fmt(s.master.rx) + '</td></tr>' +
+            '<tr><td style="padding:4px 8px 4px 0;color:#d0d0d0;">Global total</td><td style="text-align:right;font-weight:600;">' + fmt(globalTotal) + '</td></tr>' +
+            '<tr><td style="padding:4px 8px 4px 0;color:#d0d0d0;">This session total</td><td style="text-align:right;font-weight:600;">' + fmt(sessionTotal) + '</td></tr>' +
+            '<tr><td style="padding:4px 8px 4px 0;color:#d0d0d0;">Master (tx / rx)</td><td style="text-align:right;">' + fmt(s.master.tx) + ' / ' + fmt(s.master.rx) + '</td></tr>' +
             (workerRows ? '<tr><td colspan="2" style="padding:8px 0 2px;font-weight:600;border-top:1px solid #333;margin-top:4px;">Background tasks (tx / rx)</td></tr>' + workerRows : '') +
             '</table></div>';
 

@@ -915,9 +915,9 @@ function buildMessageEntryNode(msg, sessionId, renderSession, progressRows) {
             if (msg.videos && msg.videos.length > 0) {
                 msg.videos.forEach(function(vid) {
                     var wrap = document.createElement('div');
-                    wrap.style.cssText = 'margin-top:8px;border:1px solid #281e38;border-radius:6px;overflow:hidden;max-width:280px;';
+                    wrap.style.cssText = 'margin-top:8px;border:1px solid #1c1430;border-radius:6px;overflow:hidden;max-width:280px;';
                     var header = document.createElement('div');
-                    header.style.cssText = 'background:#281e38;padding:4px 10px;font-size:12px;color:#d8c0a0;display:flex;justify-content:space-between;align-items:center;';
+                    header.style.cssText = 'background:#1c1430;padding:4px 10px;font-size:12px;color:#d8c0a0;display:flex;justify-content:space-between;align-items:center;';
                     var nameSpan = document.createElement('span');
                     nameSpan.textContent = '🎥 ' + (vid.name || 'video');
                     header.appendChild(nameSpan);
@@ -960,9 +960,9 @@ function buildMessageEntryNode(msg, sessionId, renderSession, progressRows) {
             if (msg.files && msg.files.length > 0) {
                 msg.files.forEach(function(f) {
                     var wrap = document.createElement('div');
-                    wrap.style.cssText = 'margin-top:8px;border:1px solid #281e38;border-radius:6px;overflow:hidden;max-width:420px;';
+                    wrap.style.cssText = 'margin-top:8px;border:1px solid #1c1430;border-radius:6px;overflow:hidden;max-width:420px;';
                     var header = document.createElement('div');
-                    header.style.cssText = 'background:#281e38;padding:4px 10px;font-size:12px;color:#d8c0a0;display:flex;justify-content:space-between;align-items:center;';
+                    header.style.cssText = 'background:#1c1430;padding:4px 10px;font-size:12px;color:#d8c0a0;display:flex;justify-content:space-between;align-items:center;';
                     var nameSpan = document.createElement('span');
                     nameSpan.textContent = '📄 ' + f.name;
                     header.appendChild(nameSpan);
@@ -988,7 +988,7 @@ function buildMessageEntryNode(msg, sessionId, renderSession, progressRows) {
                     wrap.appendChild(header);
                     if (f.snippet) {
                         var pre = document.createElement('pre');
-                        pre.style.cssText = 'margin:0;padding:8px 10px;font-size:11px;color:#9888a8;overflow:hidden;white-space:pre-wrap;word-break:break-all;';
+                        pre.style.cssText = 'margin:0;padding:8px 10px;font-size:11px;color:#f0e0f0;overflow:hidden;white-space:pre-wrap;word-break:break-all;';
                         pre.textContent = f.snippet;
                         wrap.appendChild(pre);
                     }
