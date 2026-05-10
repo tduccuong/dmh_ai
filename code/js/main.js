@@ -18,7 +18,7 @@ function applyLanguage() {
     document.getElementById('send-label').textContent = t('send');
     document.getElementById('attach-btn').title = t('attachFile');
     document.getElementById('error-message').textContent = t('cannotConnect');
-    document.querySelector('#error-banner button').textContent = t('retry');
+    document.getElementById('error-retry-btn').textContent = t('retry');
     document.getElementById('modal-cancel').textContent = t('cancel');
     document.getElementById('pw-warning-text').textContent = t('pwWarning');
     document.getElementById('pw-warning-btn').textContent = t('pwWarningBtn');
@@ -101,6 +101,7 @@ const UIManager = {
         function openSidebar() { sidebar.classList.remove('collapsed'); if (isMobile()) overlay.classList.add('visible'); headerLogo.style.display = 'none'; }
         toggle.addEventListener('click', function() { sidebar.classList.contains('collapsed') ? openSidebar() : closeSidebar(); });
         document.getElementById('header-new-chat-btn').addEventListener('click', function() { self.createNewSession(); });
+        document.getElementById('error-retry-btn').addEventListener('click', function() { location.reload(); });
         overlay.addEventListener('click', closeSidebar);
         document.getElementById('sidebar-close-btn').addEventListener('click', closeSidebar);
 

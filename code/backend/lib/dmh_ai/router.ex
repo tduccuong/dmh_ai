@@ -63,26 +63,42 @@ defmodule DmhAi.Router do
     |> send_resp(200, body)
   end
 
-  # GET /local-api/* — no auth required
+  # GET /local-api/* — proxies to the configured `miner` pool's
+  # base_url (typically the operator's local Ollama). Authentication
+  # required: without it, anyone hitting the BE through the public
+  # nginx endpoint can drive the operator's Ollama (model time +
+  # bandwidth) without going through chat.
   get "/local-api/*glob" do
-    sub = Enum.join(glob, "/")
-    Proxy.get_local_api(conn, sub)
+    with {:ok, conn, _user} <- check_auth(conn) do
+      sub = Enum.join(glob, "/")
+      Proxy.get_local_api(conn, sub)
+    end
   end
 
-  # GET /api/* — no auth, proxy to local Ollama (replaces nginx /api → :11434)
+  # GET /api/* — same handler as /local-api/*, same auth requirement.
   get "/api/*glob" do
-    sub = Enum.join(glob, "/")
-    Proxy.get_local_api(conn, sub)
+    with {:ok, conn, _user} <- check_auth(conn) do
+      sub = Enum.join(glob, "/")
+      Proxy.get_local_api(conn, sub)
+    end
   end
 
-  # GET /search — no auth required
+  # GET /search — direct SearXNG passthrough. Authenticated to keep
+  # the operator's SearXNG from being driven as an open relay (which
+  # gets the host IP banned from upstream search engines).
   get "/search" do
-    Proxy.get_search(conn)
+    with {:ok, conn, _user} <- check_auth(conn) do
+      Proxy.get_search(conn)
+    end
   end
 
-  # GET /fetch-page — no auth required
+  # GET /fetch-page — fetches arbitrary URLs the caller supplies.
+  # Authenticated: an unauthenticated caller turns this into an
+  # SSRF primitive (cloud metadata, internal LAN, etc).
   get "/fetch-page" do
-    Proxy.get_fetch_page(conn)
+    with {:ok, conn, _user} <- check_auth(conn) do
+      Proxy.get_fetch_page(conn)
+    end
   end
 
   # ─── POST no-auth ─────────────────────────────────────────────────────────────
@@ -95,23 +111,34 @@ defmodule DmhAi.Router do
     Auth.post_logout(conn)
   end
 
-  # POST /local-api/* — no auth required (streaming)
+  # POST /local-api/* — streaming proxy to the configured `miner`
+  # pool's base_url. Authenticated; same rationale as the GET above.
   post "/local-api/*glob" do
-    sub = Enum.join(glob, "/")
-    Proxy.post_local_api(conn, sub)
+    with {:ok, conn, _user} <- check_auth(conn) do
+      sub = Enum.join(glob, "/")
+      Proxy.post_local_api(conn, sub)
+    end
   end
 
-  # POST /api/show — capability check; backend models always support vision + video
+  # POST /api/show — capability stub for the legacy Ollama probe
+  # surface; backend models always support vision + video. No
+  # secrets surfaced, but auth-gated for symmetry with the other
+  # /api/* routes — there's no scenario where an unauthenticated
+  # client legitimately probes capabilities.
   post "/api/show" do
-    conn
-    |> put_resp_content_type("application/json")
-    |> send_resp(200, Jason.encode!(%{capabilities: ["vision", "video"]}))
+    with {:ok, conn, _user} <- check_auth(conn) do
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(200, Jason.encode!(%{capabilities: ["vision", "video"]}))
+    end
   end
 
-  # POST /api/* — no auth, proxy to local Ollama (replaces nginx /api → :11434)
+  # POST /api/* — same handler as POST /local-api/*, same auth.
   post "/api/*glob" do
-    sub = Enum.join(glob, "/")
-    Proxy.post_local_api(conn, sub)
+    with {:ok, conn, _user} <- check_auth(conn) do
+      sub = Enum.join(glob, "/")
+      Proxy.post_local_api(conn, sub)
+    end
   end
 
   # ─── PUT /ai_pools — loopback-only bulk import for fresh-install bootstrap ──
@@ -752,15 +779,35 @@ defmodule DmhAi.Router do
   end
 
   # Loopback-only gate for /ai_pools and any other host-local
-  # convenience endpoints. Trusts conn.remote_ip directly — does NOT
-  # consult X-Forwarded-For, since a forwarded header is operator-
-  # controlled at the proxy level and we must NOT let an external
-  # client spoof loopback access. Behind a reverse proxy the operator
-  # is expected to filter /ai_pools at the proxy layer (or just not
-  # forward it).
-  defp loopback?(%Plug.Conn{remote_ip: {127, _, _, _}}), do: true
-  defp loopback?(%Plug.Conn{remote_ip: {0, 0, 0, 0, 0, 0, 0, 1}}), do: true
-  defp loopback?(_), do: false
+  # convenience endpoints. Two invariants must hold:
+  #
+  #   1. `remote_ip` is the loopback address (127/8 or ::1).
+  #   2. NO `X-Forwarded-For` header is present.
+  #
+  # Behind a reverse proxy on the SAME host (the recommended deploy:
+  # nginx → 127.0.0.1:8080), every public request reaches the BE with
+  # `remote_ip = 127.0.0.1` — so check (1) alone is bypassed by the
+  # deployment topology. nginx (and every other reverse proxy) appends
+  # to `X-Forwarded-For` on every forwarded request, so the mere
+  # PRESENCE of the header proves the request was forwarded, even if
+  # the immediate hop was loopback. A real "operator typed `curl` on
+  # the host shell" request has no `X-F-F`.
+  #
+  # Asymmetric to `client_ip/1` below by design: `client_ip` is
+  # intentionally permissive (UI hint, never security); `loopback?` is
+  # intentionally restrictive (security gate). Both read X-F-F for
+  # opposite reasons — that's not a bug, it's the contract.
+  #
+  # An attacker hitting the BE directly (port 8080 exposed) with a
+  # spoofed `X-Forwarded-For: 1.2.3.4` is now correctly 403'd —
+  # presence disqualifies, the value doesn't matter.
+  defp loopback?(conn) do
+    ip_loopback?(conn.remote_ip) and Plug.Conn.get_req_header(conn, "x-forwarded-for") == []
+  end
+
+  defp ip_loopback?({127, _, _, _}),           do: true
+  defp ip_loopback?({0, 0, 0, 0, 0, 0, 0, 1}), do: true
+  defp ip_loopback?(_),                         do: false
 
   # Best-effort client IP for non-security purposes (UI language hint).
   # When behind a reverse proxy (nginx, traefik, Caddy) `conn.remote_ip`

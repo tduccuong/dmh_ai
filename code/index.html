@@ -26,11 +26,7 @@
     <script src="/mammoth.min.js"></script>
     <script src="/xlsx.min.js"></script>
     <script src="/heic2any.min.js"></script>
-    <script type="module">
-        import * as pdfjsLib from '/pdf.min.js';
-        pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.js';
-        window.pdfjsLib = pdfjsLib;
-    </script>
+    <script type="module" src="/js/pdfjs-loader.js"></script>
 </head>
 <body>
     <div class="sidebar-overlay" id="sidebar-overlay"></div>
@@ -63,7 +59,7 @@
         </div>
         <div class="error-banner" id="error-banner">
             <span id="error-message">Cannot connect to Ollama</span>
-            <button onclick="location.reload()">Retry</button>
+            <button id="error-retry-btn">Retry</button>
         </div>
         <div class="header">
             <img id="header-logo" src="/logo.png" style="display:none;height:36px;width:36px;border-radius:4px;object-fit:contain;flex-shrink:0;align-self:center;">
@@ -307,7 +303,7 @@
 <script src="/js/import-dialog.js" defer></script>
 <script src="/js/manager-catalog.js" defer></script>
 <script src="/js/manager-oauth-catalog.js" defer></script>
-<script>if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');</script>
+<script src="/js/sw-register.js" defer></script>
     <div class="settings-overlay" id="settings-overlay">
         <div class="settings-modal">
             <div class="settings-hdr">

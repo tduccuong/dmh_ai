@@ -99,11 +99,21 @@ defmodule DmhAi.Flows.F01LoginFirstChat do
       assert user["passwordChanged"] == true,
              "this seeded user has password_changed=1; flag should round-trip; got: #{inspect(user)}"
 
-      # Token is queryable via auth_tokens.
+      # Token round-trips: stored as sha256, NOT the raw bearer.
+      # Look it up by hash; verify the row exists with the right user.
+      token_hash = DmhAi.AuthPlug.hash_token(decoded["token"])
       %{rows: rows} =
-        query!(Repo, "SELECT user_id FROM auth_tokens WHERE token=?", [decoded["token"]])
+        query!(Repo, "SELECT user_id FROM auth_tokens WHERE token_hash=?", [token_hash])
       assert rows == [[user_id]],
-             "auth_tokens row should bind the new token to the seeded user; got: #{inspect(rows)}"
+             "auth_tokens row should bind the hashed token to the seeded user; got: #{inspect(rows)}"
+
+      # And the raw token must NOT appear in the table — that's the
+      # whole point of the hash-at-rest fix. SQL exfil of auth_tokens
+      # gets you nothing decryptable.
+      %{rows: leak_rows} =
+        query!(Repo, "SELECT user_id FROM auth_tokens WHERE token_hash=?", [decoded["token"]])
+      assert leak_rows == [],
+             "raw bearer token must NOT appear in auth_tokens.token_hash; got: #{inspect(leak_rows)}"
     end
 
     test "unknown email → 401" do
@@ -270,6 +280,126 @@ defmodule DmhAi.Flows.F01LoginFirstChat do
     end
   end
 
+  # SecurityHeaders plug emits CSP, HSTS (HTTPS only), Permissions-
+  # Policy, and the older XFO + nosniff + referrer headers. The
+  # legacy x-xss-protection header is intentionally GONE — modern
+  # browsers ignore it; older Safari had exploitable bugs.
+  describe "security headers" do
+    test "CSP is set with script-src locked to 'self' + the KaTeX CDN" do
+      conn = get_request("/auth/me")
+
+      [csp] = Plug.Conn.get_resp_header(conn, "content-security-policy")
+      assert csp =~ "default-src 'self'"
+      assert csp =~ "script-src 'self' https://cdn.jsdelivr.net"
+
+      # `script-src` MUST NOT carry `'unsafe-inline'` — that was the
+      # whole point of the inline-handler refactor. Style-src keeps
+      # `'unsafe-inline'` deliberately (lower-risk concession);
+      # asserted on the parsed `script-src` directive below.
+      assert csp =~ "frame-ancestors 'none'",
+             "CSP must block framing entirely — clickjacking defense"
+      assert csp =~ "connect-src 'self'",
+             "CSP must lock outbound XHR/fetch to same-origin — closes data-exfil if XSS slips through"
+      assert csp =~ "object-src 'none'",
+             "CSP must forbid <object>/<embed> — blocks legacy Flash/plugin injection"
+
+      # script-src specifically: parse the directive, assert no
+      # `'unsafe-inline'` AND no `'unsafe-eval'`.
+      script_src =
+        csp
+        |> String.split(";")
+        |> Enum.map(&String.trim/1)
+        |> Enum.find(&String.starts_with?(&1, "script-src"))
+
+      refute script_src =~ "'unsafe-inline'",
+             "script-src must NOT carry 'unsafe-inline' after the refactor; got: #{inspect(script_src)}"
+      refute script_src =~ "'unsafe-eval'",
+             "script-src must not carry 'unsafe-eval'; got: #{inspect(script_src)}"
+    end
+
+    test "Permissions-Policy disables sensitive APIs the chat doesn't need" do
+      conn = get_request("/auth/me")
+      [pp] = Plug.Conn.get_resp_header(conn, "permissions-policy")
+
+      for api <- ~w(geolocation camera microphone payment) do
+        assert pp =~ "#{api}=()",
+               "Permissions-Policy should disable #{api}; got: #{inspect(pp)}"
+      end
+    end
+
+    test "x-xss-protection is GONE (legacy, exploitable in old Safari)" do
+      conn = get_request("/auth/me")
+      assert Plug.Conn.get_resp_header(conn, "x-xss-protection") == [],
+             "x-xss-protection must be omitted per modern OWASP guidance"
+    end
+
+    test "Strict-Transport-Security is set on HTTPS responses only" do
+      conn_http = get_request("/auth/me")
+      assert Plug.Conn.get_resp_header(conn_http, "strict-transport-security") == [],
+             "HSTS must NOT appear on plain HTTP — spec-forbidden + harmful (max-age sticks)"
+
+      # `Plug.Test.conn` defaults to scheme http; force https for the
+      # second leg. The plug switches on `conn.scheme`.
+      conn_https =
+        Plug.Test.conn(:get, "/auth/me")
+        |> Map.put(:scheme, :https)
+        |> Map.put(:remote_ip, random_ip())
+        |> DmhAi.Router.call(DmhAi.Router.init([]))
+
+      [hsts] = Plug.Conn.get_resp_header(conn_https, "strict-transport-security")
+      assert hsts =~ "max-age="
+      assert hsts =~ "includeSubDomains"
+    end
+
+    test "x-frame-options + x-content-type-options + referrer-policy still emitted" do
+      conn = get_request("/auth/me")
+      assert ["SAMEORIGIN"] = Plug.Conn.get_resp_header(conn, "x-frame-options")
+      assert ["nosniff"]    = Plug.Conn.get_resp_header(conn, "x-content-type-options")
+      assert ["strict-origin-when-cross-origin"] =
+               Plug.Conn.get_resp_header(conn, "referrer-policy")
+    end
+  end
+
+  # The previously-no-auth proxy + helper routes — `/local-api/*`,
+  # `/api/*`, `/api/show`, `/search`, `/fetch-page` — were a public
+  # SSRF + open-relay surface (anyone could drive the operator's
+  # Ollama / SearXNG / page-fetcher). All four are now `check_auth`-
+  # gated; without a Bearer token they return 401.
+  describe "previously-no-auth proxy routes — now token-gated" do
+    test "GET /local-api/tags without token → 401" do
+      conn = get_request("/local-api/tags")
+      assert conn.status == 401
+    end
+
+    test "GET /api/tags without token → 401" do
+      conn = get_request("/api/tags")
+      assert conn.status == 401
+    end
+
+    test "POST /local-api/chat without token → 401" do
+      conn = post_json("/local-api/chat", %{"prompt" => "hi"})
+      assert conn.status == 401
+    end
+
+    test "POST /api/show without token → 401" do
+      conn = post_json("/api/show", %{})
+      assert conn.status == 401
+    end
+
+    test "GET /search without token → 401" do
+      conn = get_request("/search?q=anything&engine=brave")
+      assert conn.status == 401
+    end
+
+    test "GET /fetch-page without token → 401 (closes the SSRF surface)" do
+      # `/fetch-page` previously took an arbitrary `?url=` and proxied
+      # it. Without auth that's an open SSRF — internal LAN, cloud
+      # metadata, etc. After the gate, no token = no fetch.
+      conn = get_request("/fetch-page?url=http://169.254.169.254/")
+      assert conn.status == 401
+    end
+  end
+
   # ── helpers ──────────────────────────────────────────────────────
 
   # `RateLimit` plug keys `/auth/*` on remote_ip; Hammer's bucket
@@ -287,6 +417,20 @@ defmodule DmhAi.Flows.F01LoginFirstChat do
     conn =
       Plug.Test.conn(:post, path, json_body)
       |> Plug.Conn.put_req_header("content-type", "application/json")
+      |> Map.put(:remote_ip, random_ip())
+
+    conn =
+      case Keyword.get(opts, :token) do
+        nil -> conn
+        tok -> Plug.Conn.put_req_header(conn, "authorization", "Bearer " <> tok)
+      end
+
+    DmhAi.Router.call(conn, DmhAi.Router.init([]))
+  end
+
+  defp get_request(path, opts \\ []) do
+    conn =
+      Plug.Test.conn(:get, path)
       |> Map.put(:remote_ip, random_ip())
 
     conn =

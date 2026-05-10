@@ -1,0 +1,5 @@
+{
+  "flow_id": "F26",
+  "_note": "F26 drives the RateLimit plug directly; no LLM calls.",
+  "turns": []
+}

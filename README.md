@@ -232,11 +232,17 @@ In DMH-AI admin settings, point **Ollama Local — Endpoint URL** at your Ollama
 
 ## Accessing from other devices on your network
 
-Once DMH-AI is running, any phone, tablet, or computer on the same Wi-Fi can use it.
+By default DMH-AI binds to `127.0.0.1` only — privately reachable from the host that runs it. To expose it on every network interface so phones, tablets, and other computers on the same Wi-Fi can reach it, set `DMHAI_BIND_HOST=0.0.0.0` before starting:
 
-Find your machine's local IP address (e.g. `192.168.1.10`) and open `http://192.168.1.10:8080` on any device.
+```
+DMHAI_BIND_HOST=0.0.0.0 dmh_ai start
+```
+
+Then find your machine's local IP address (e.g. `192.168.1.10`) and open `http://192.168.1.10:8080` on any device.
 
 **Voice input** requires HTTPS. Use `https://<your-ip>:8443` instead. The browser will show a security warning about the self-signed certificate — this is expected, accept it once. On iOS, tap the link in the certificate warning to download and install the certificate via Settings (required once per device).
+
+To revert to private (`127.0.0.1`-only) access, restart without the env var: `dmh_ai restart`.
 
 ---
 

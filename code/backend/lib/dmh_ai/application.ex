@@ -47,7 +47,7 @@ defmodule DmhAi.Application do
       DmhAi.VectorDB.Relearn
     ] ++
       (if Application.get_env(:dmh_ai, :start_http, true) do
-        [{Bandit, plug: DmhAi.Router, scheme: :http, ip: {0, 0, 0, 0}, port: 8080}]
+        [{Bandit, plug: DmhAi.Router, scheme: :http, ip: bind_ip(), port: 8080}]
       else
         []
       end) ++
@@ -55,7 +55,7 @@ defmodule DmhAi.Application do
         [{Bandit,
           plug: DmhAi.Router,
           scheme: :https,
-          ip: {0, 0, 0, 0},
+          ip: bind_ip(),
           port: 8443,
           certfile: "/app/ssl/cert.pem",
           keyfile: "/app/ssl/key.pem"}]
@@ -80,6 +80,28 @@ defmodule DmhAi.Application do
 
       error ->
         error
+    end
+  end
+
+  # Resolve the configured `bind_host` (set in runtime.exs from
+  # `DMHAI_BIND_HOST`, default `127.0.0.1`) into the `:inet` IP-tuple
+  # Bandit expects. Fail-safe: any malformed override falls back to
+  # loopback rather than accidentally binding `0.0.0.0` on a typo.
+  # See architecture.md §Network exposure.
+  defp bind_ip do
+    host = Application.get_env(:dmh_ai, :bind_host, "127.0.0.1")
+
+    case host |> to_charlist() |> :inet.parse_address() do
+      {:ok, ip} ->
+        ip
+
+      {:error, _} ->
+        require Logger
+        Logger.warning(
+          "[Application] DMHAI_BIND_HOST=#{inspect(host)} is not a valid IP literal — falling back to 127.0.0.1"
+        )
+
+        {127, 0, 0, 1}
     end
   end
 

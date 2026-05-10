@@ -16,12 +16,15 @@ defmodule DmhAi.AuthPlug do
     case get_req_header(conn, "authorization") do
       ["Bearer " <> token | _] ->
         token = String.trim(token)
+        # Hash before the WHERE; auth_tokens stores sha256(token), not
+        # the raw bearer. See db/init.ex auth_tokens schema comment.
+        token_hash = hash_token(token)
         result = query!(Repo, """
         SELECT u.id, u.email, u.name, u.role, u.password_changed
         FROM auth_tokens t
         JOIN users u ON t.user_id = u.id
-        WHERE t.token = ? AND u.deleted = 0
-        """, [token])
+        WHERE t.token_hash = ? AND u.deleted = 0
+        """, [token_hash])
 
         case result.rows do
           [[id, email, name, role, pw_changed] | _] ->
@@ -66,5 +69,18 @@ defmodule DmhAi.AuthPlug do
     salt_hex = :crypto.strong_rand_bytes(16) |> Base.encode16(case: :lower)
     key = :crypto.pbkdf2_hmac(:sha256, password, salt_hex, 100_000, 32)
     salt_hex <> ":" <> Base.encode16(key, case: :lower)
+  end
+
+  @doc """
+  Hash a bearer token for `auth_tokens.token_hash` storage / lookup.
+  Plain sha256, no salt — the token itself is 256 bits of randomness
+  from `:crypto.strong_rand_bytes/1`, so a salt would only add bytes
+  without changing the security model. Using lowercase hex keeps the
+  same column shape as `users.password_hash` for operator-side `sqlite3`
+  inspection.
+  """
+  @spec hash_token(String.t()) :: String.t()
+  def hash_token(token) when is_binary(token) do
+    :crypto.hash(:sha256, token) |> Base.encode16(case: :lower)
   end
 end

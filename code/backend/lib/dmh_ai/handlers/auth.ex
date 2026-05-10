@@ -112,7 +112,11 @@ defmodule DmhAi.Handlers.Auth do
         if AuthPlug.verify_password(password, password_hash) do
           token = :crypto.strong_rand_bytes(32) |> Base.encode16(case: :lower)
           now = :os.system_time(:second)
-          query!(Repo, "INSERT INTO auth_tokens (token, user_id, created_at) VALUES (?,?,?)", [token, id, now])
+          # Store sha256(token), not the raw bearer. The raw value is
+          # only emitted to the client below — the server keeps the
+          # hash. See db/init.ex auth_tokens schema comment.
+          query!(Repo, "INSERT INTO auth_tokens (token_hash, user_id, created_at) VALUES (?,?,?)",
+            [AuthPlug.hash_token(token), id, now])
 
           # One-shot V1 → V2 migration. Only fires for users who still
           # have a legacy password-wrapped MMK (memo_kdf_salt non-NULL,
@@ -194,7 +198,7 @@ defmodule DmhAi.Handlers.Auth do
         # wrapped on disk and re-unwraps lazily on the next memo
         # activity (regardless of which session it happens in). The
         # logout act here is purely about token revocation.
-        query!(Repo, "DELETE FROM auth_tokens WHERE token=?", [token])
+        query!(Repo, "DELETE FROM auth_tokens WHERE token_hash=?", [AuthPlug.hash_token(token)])
 
       _ ->
         :ok

@@ -165,6 +165,12 @@ services:
         condition: service_started
     environment:
       - DEPLOY_ENV=__DEPLOY_ENV__
+      # HTTP/HTTPS bind interface. Default 127.0.0.1 keeps the BE
+      # private — fine for nginx-fronted production AND for personal
+      # localhost-only installs. Operators who want LAN access (the
+      # README's "phone on same Wi-Fi" feature) export
+      # `DMHAI_BIND_HOST=0.0.0.0` before `dmh_ai start`.
+      - DMHAI_BIND_HOST=${DMHAI_BIND_HOST:-127.0.0.1}
 
   sandbox:
     image: dmh-ai-sandbox:latest
@@ -296,6 +302,10 @@ services:
         condition: service_started
     environment:
       - DEPLOY_ENV=stage
+      # Stage default: bind to loopback. The host's localhost:8080
+      # reaches the BE; nothing is exposed on external NICs without
+      # the operator opting in via env (DMHAI_BIND_HOST=0.0.0.0).
+      - DMHAI_BIND_HOST=\${DMHAI_BIND_HOST:-127.0.0.1}
 
   sandbox:
     image: dmh-ai-sandbox:latest

@@ -74,9 +74,16 @@ defmodule DmhAi.DB.Init do
     query!(Repo,
       "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_unix_uid ON users (unix_uid) WHERE unix_uid IS NOT NULL")
 
+    # Bearer tokens are stored as sha256 hashes (lowercase hex), not
+    # the raw 256-bit token returned to the client. Token entropy is
+    # already 256 bits via :crypto.strong_rand_bytes(32) in
+    # post_login, so plain sha256 (no salt, no PBKDF2) is the right
+    # fit — there's nothing to brute-force at that entropy. The hash
+    # converts a SQL-exfil into "no live tokens leaked"; without it,
+    # `SELECT * FROM auth_tokens` is every active session.
     query!(Repo, """
     CREATE TABLE IF NOT EXISTS auth_tokens (
-      token TEXT PRIMARY KEY,
+      token_hash TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
       created_at INTEGER
     )

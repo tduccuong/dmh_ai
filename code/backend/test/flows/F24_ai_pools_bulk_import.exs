@@ -166,6 +166,50 @@ defmodule DmhAi.Flows.F24AiPoolsBulkImport do
       assert count == 0,
              "non-loopback PUT must not insert anything; got count=#{count}"
     end
+
+    test "loopback IP + X-Forwarded-For header → 403 (closes the behind-nginx bypass)",
+         %{prefix: prefix} do
+      # Behind a same-host reverse proxy (the recommended deploy:
+      # nginx → 127.0.0.1:8080), every public request reaches the BE
+      # with `remote_ip = 127.0.0.1`. The original `loopback?/1`
+      # check matched only on `remote_ip`, so any external client
+      # would have been able to write to the pools table. The fix:
+      # presence of `X-Forwarded-For` (which nginx ALWAYS appends on
+      # forwarded requests) disqualifies — even when remote_ip is
+      # loopback.
+      pools = build_pools(prefix, 1)
+      body  = Jason.encode!(%{"pools" => pools})
+
+      conn = call_put_ai_pools(body, loopback: true, forwarded_for: "1.2.3.4")
+
+      assert conn.status == 403,
+             "loopback IP + X-F-F header must be rejected — that's the nginx-bypass path; " <>
+               "got status=#{conn.status} body=#{conn.resp_body}"
+
+      decoded = Jason.decode!(conn.resp_body)
+      assert decoded["error"] =~ "loopback"
+
+      %{rows: [[count]]} =
+        query!(Repo, "SELECT COUNT(*) FROM pools WHERE name LIKE ?", [prefix <> "%"])
+      assert count == 0,
+             "bypass attempt must not insert anything; got count=#{count}"
+    end
+
+    test "loopback IP, value of X-F-F header doesn't matter — even an empty X-F-F is enough to reject",
+         %{prefix: prefix} do
+      pools = build_pools(prefix, 1)
+      body  = Jason.encode!(%{"pools" => pools})
+
+      # Some sloppy proxies forward an empty X-F-F. The contract is
+      # "presence disqualifies"; an empty string is still presence.
+      conn = call_put_ai_pools(body, loopback: true, forwarded_for: "")
+
+      # We accept either 200 or 403 here — `Plug.Conn.get_req_header`
+      # treats a header with empty value as still present, so 403 is
+      # the strict-correct answer; this assertion pins that behavior.
+      assert conn.status == 403,
+             "even an empty X-F-F should disqualify; got status=#{conn.status}"
+    end
   end
 
   describe "malformed body" do
@@ -205,8 +249,13 @@ defmodule DmhAi.Flows.F24AiPoolsBulkImport do
 
   # Build a Plug.Conn for `PUT /ai_pools`, drive it through the live
   # `DmhAi.Router`, and return the response conn so the test can
-  # inspect status/body. `loopback: true` sets remote_ip to
-  # 127.0.0.1 (passes the gate); `false` uses 10.0.0.5 (rejected).
+  # inspect status/body.
+  #
+  #   `loopback: true`         — remote_ip = 127.0.0.1 (passes IP check)
+  #   `loopback: false`        — remote_ip = 10.0.0.5  (fails IP check)
+  #   `forwarded_for: <value>` — adds an `X-Forwarded-For` header (even
+  #                              empty string is "present" — enough to
+  #                              disqualify per the gate's contract)
   defp call_put_ai_pools(body, opts) do
     loopback? = Keyword.get(opts, :loopback, true)
     remote_ip = if loopback?, do: {127, 0, 0, 1}, else: {10, 0, 0, 5}
@@ -215,6 +264,12 @@ defmodule DmhAi.Flows.F24AiPoolsBulkImport do
       Plug.Test.conn(:put, "/ai_pools", body)
       |> Plug.Conn.put_req_header("content-type", "application/json")
       |> Map.put(:remote_ip, remote_ip)
+
+    conn =
+      case Keyword.fetch(opts, :forwarded_for) do
+        :error      -> conn
+        {:ok, val}  -> Plug.Conn.put_req_header(conn, "x-forwarded-for", val)
+      end
 
     DmhAi.Router.call(conn, DmhAi.Router.init([]))
   end
