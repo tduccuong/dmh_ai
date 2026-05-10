@@ -43,6 +43,13 @@ defmodule DmhAi.LLM.Probe do
       {:ok, %{status: 403}} ->
         {:error, "403 Forbidden — API key not authorised for this endpoint"}
 
+      # Anthropic-compat hosts (MiniMax, OpenRouter's anthropic shim,
+      # etc.) often only implement /v1/messages — no /models listing
+      # route. A 404 here is expected and shouldn't block pool create;
+      # operator supplies model IDs manually via the static list.
+      {:ok, %{status: 404}} when protocol == "anthropic" ->
+        {:ok, 0}
+
       {:ok, %{status: 404}} ->
         {:error, "404 Not Found — endpoint doesn't expose /models (wrong base URL?)"}
 
@@ -74,10 +81,15 @@ defmodule DmhAi.LLM.Probe do
     headers = auth_headers(protocol, api_key)
 
     case Req.get(url, headers: headers, receive_timeout: @timeout_ms, retry: false, finch: DmhAi.Finch) do
-      {:ok, %{status: 200, body: body}} -> {:ok, body_model_names(body)}
-      {:ok, %{status: status}}          -> {:error, "HTTP #{status}"}
-      {:error, %{reason: reason}}       -> {:error, "Connection failed: #{reason}"}
-      {:error, reason}                  -> {:error, "Connection failed: #{inspect(reason, limit: 80)}"}
+      {:ok, %{status: 200, body: body}}              -> {:ok, body_model_names(body)}
+      # Same anthropic-compat caveat as `probe/3` — a 404 here means
+      # "this endpoint doesn't list models", not an error. Picker
+      # fan-out shows an empty list for such pools, which the static
+      # models column then fills in.
+      {:ok, %{status: 404}} when protocol == "anthropic" -> {:ok, []}
+      {:ok, %{status: status}}                       -> {:error, "HTTP #{status}"}
+      {:error, %{reason: reason}}                    -> {:error, "Connection failed: #{reason}"}
+      {:error, reason}                               -> {:error, "Connection failed: #{inspect(reason, limit: 80)}"}
     end
   end
 
