@@ -22,7 +22,6 @@ function applyLanguage() {
     document.getElementById('modal-cancel').textContent = t('cancel');
     document.getElementById('pw-warning-text').textContent = t('pwWarning');
     document.getElementById('pw-warning-btn').textContent = t('pwWarningBtn');
-    document.getElementById('sidebar-settings-label').textContent = t('sysSettings');
     document.getElementById('settings-modal-title').textContent = t('sysSettings');
     var userSettingsLabel = document.getElementById('user-settings-label');
     if (userSettingsLabel) userSettingsLabel.textContent = t('sysSettings');
@@ -248,7 +247,6 @@ const UIManager = {
             });
         }
         document.getElementById('new-session-btn').addEventListener('click', function() { self.createNewSession(); });
-        document.getElementById('sidebar-settings-btn').addEventListener('click', function() { SettingsModal.open(); });
         document.getElementById('send-btn').addEventListener('click', function() { self.sendMessage(); });
         document.getElementById('stop-btn').addEventListener('click', function() { self.stopCurrentTurn(); });
         document.getElementById('message-input').addEventListener('keydown', function(e) {

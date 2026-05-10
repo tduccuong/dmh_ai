@@ -143,10 +143,6 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
 .error-banner button { background: white; color: #c0392b; border: none; padding: 6px 14px; border-radius: 6px; cursor: pointer; margin-left: 15px; font-weight: 600; font-size: 13px; }
 .pw-warning-banner { width: 100%; background: #7a2000; color: #ffb090; padding: 9px 20px; text-align: center; display: none; font-size: 13px; flex-shrink: 0; }
 .pw-warning-banner button { background: #ffb090; color: #7a2000; border: none; padding: 4px 12px; border-radius: 5px; cursor: pointer; margin-left: 12px; font-weight: 600; font-size: 12px; }
-.endpoint-section { padding-top: 14px; margin-top: 14px; border-top: 1px solid #382850; }
-.sidebar-settings-btn { display: flex; align-items: center; gap: 8px; width: 100%; padding: 10px 14px; background: #2a1e40; border: 1px solid #6040a0; border-radius: 7px; color: #c0a0e8; font-size: 13px; cursor: pointer; font-weight: 600; box-shadow: 0 0 8px rgba(120,60,200,0.2); }
-.sidebar-settings-btn:hover { background: #3a2a58; border-color: #8060c0; color: #e0c8ff; box-shadow: 0 0 14px rgba(140,80,240,0.4); }
-.sidebar-settings-btn svg { flex-shrink: 0; }
 .user-menu-wrap { position: relative; flex-shrink: 0; height: 38px; }
 .user-menu-btn { padding: 0 12px; height: 38px; background: #0a0612; color: #f4ecf8; border: 1px solid #1c1430; border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
 .user-menu-btn:hover { background: #1c1430; color: #fff; }
