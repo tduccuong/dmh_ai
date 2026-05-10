@@ -125,13 +125,16 @@ defmodule DmhAi.Agent.AgentSettings do
   @task_resume_candidate_cap_default 8
 
   # ProfileExtractor batching. The extractor walks unprocessed user
-  # messages across all of a user's sessions and only fires its single
-  # LLM call once `profile_extract_batch_size` messages have accumulated
-  # past the per-user `last_profile_extracted_msg_ts` watermark. Once
-  # the merged profile reaches `profile_condense_threshold` bullet
-  # lines, a second LLM pass condenses it. See ProfileExtractor.
-  @profile_extract_batch_size_default 4
-  @profile_condense_threshold_default 50
+  # messages across all of a user's sessions and fires its single LLM
+  # call once `profile_extract_batch_size` messages have accumulated
+  # past the per-user `last_profile_extracted_msg_ts` watermark. The
+  # call returns the FULL UPDATED PROFILE (merge happens inside the
+  # LLM, not in code) — no separate condense pass.
+  # `profile_max_bullets` is a soft size cap injected into the prompt
+  # when the existing profile is large; the LLM is asked to merge
+  # near-dup keys and drop lowest-signal values to stay under it.
+  @profile_extract_batch_size_default 5
+  @profile_max_bullets_default 42
 
   # Auto session naming. The Data handler's `post_name_session` pulls
   # the last N user messages (slash commands skipped) and feeds them
@@ -395,10 +398,10 @@ defmodule DmhAi.Agent.AgentSettings do
   def profile_extract_batch_size,
     do: int_setting("profileExtractBatchSize", @profile_extract_batch_size_default)
 
-  @doc "Bullet-line count in users.profile that triggers the ProfileCondenser LLM pass."
-  @spec profile_condense_threshold() :: pos_integer()
-  def profile_condense_threshold,
-    do: int_setting("profileCondenseThreshold", @profile_condense_threshold_default)
+  @doc "Soft upper bound (bullet count) on the merged profile. Injected as a size hint into the extractor prompt."
+  @spec profile_max_bullets() :: pos_integer()
+  def profile_max_bullets,
+    do: int_setting("profileMaxBullets", @profile_max_bullets_default)
 
   @doc "Number of recent user messages fed to the auto session-namer LLM call."
   @spec session_namer_user_msg_count() :: pos_integer()

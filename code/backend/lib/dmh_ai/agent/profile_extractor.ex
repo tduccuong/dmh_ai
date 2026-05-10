@@ -12,7 +12,7 @@ defmodule DmhAi.Agent.ProfileExtractor do
   Batched, watermark-driven. On every fire it walks `sessions.messages`
   for ALL of this user's sessions and counts user-role entries with
   `ts > users.last_profile_extracted_msg_ts`. Below
-  `AgentSettings.profile_extract_batch_size/0` (default 4) → no-op.
+  `AgentSettings.profile_extract_batch_size/0` (default 5) → no-op.
   At or above → one LLM call against the OLDEST N unprocessed
   messages (chronological), then bump the watermark to the Nth
   message's ts. Forward-progress guarantee: any message above the
@@ -22,19 +22,23 @@ defmodule DmhAi.Agent.ProfileExtractor do
   contents but still count toward the watermark — otherwise a
   long-tail of slash-only activity would block the trigger forever.
 
-  Two LLM calls live here:
+  One LLM call per fire, returning two sections:
 
-    * `extract` — single user-role prompt, `temperature=0`,
-      `num_predict=200`. Asked to emit `[FACTS]` (explicit
-      self-statements) and `[CANDIDATES]` (broad topical interests)
-      against an "Already known" block of the existing profile.
-      FACTS merge directly via `merge_facts/2`; CANDIDATES feed the
-      promotion-by-vote mechanism in `Auth.track_facts_for_user/2`.
+    * `[PROFILE]` — the COMPLETE updated `users.profile`. The prompt
+      gives the LLM the existing profile + the batch of new user
+      messages and asks for the merged result: new explicit facts
+      added, contradicted old facts replaced, everything else
+      preserved word-for-word. Replaces `users.profile` verbatim.
+      No separate condense pass — the merge happens inside this same
+      call. A soft size cap (`profile_max_bullets`, default 42) is
+      injected into the prompt when the existing profile is at the
+      cap.
 
-    * `condense` — fired only when the merged profile crosses
-      `profile_condense_threshold` (default 50) bullet lines. Asks
-      the model to compress the profile to ~half that count, merge
-      near-dup keys, drop superseded facts.
+    * `[CANDIDATES]` — broad topical interests (1-2 word labels) the
+      user is curious about WITHOUT explicit "I like X" claims. Feeds
+      `Auth.track_facts_for_user/2`'s vote-counter; topics promote to
+      an "Interests" bullet on the profile once they cross
+      `@fact_threshold` mentions.
   """
 
   import Ecto.Adapters.SQL, only: [query!: 3]
@@ -140,66 +144,93 @@ defmodule DmhAi.Agent.ProfileExtractor do
     model = AgentSettings.oracle_model()
     existing = load_profile(user_id)
 
-    already_known =
-      if existing != "", do: "Already known:\n#{existing}\n\n", else: ""
-
     numbered =
       msgs
       |> Enum.with_index(1)
       |> Enum.map(fn {m, i} -> "#{i}. \"#{m}\"" end)
       |> Enum.join("\n")
 
+    existing_bullets = count_bullets(existing)
+    max_bullets = AgentSettings.profile_max_bullets()
+
+    size_hint =
+      if existing_bullets >= max_bullets do
+        "- The CURRENT PROFILE is at the soft cap (#{max_bullets} bullets). " <>
+          "When merging, ALSO collapse near-duplicate keys and drop the lowest-signal " <>
+          "values so the OUTPUT profile stays at or under #{max_bullets} bullets.\n"
+      else
+        ""
+      end
+
     prompt =
       "[USER MESSAGES — most recent across this user's conversations]\n" <>
         numbered <>
         "\n[END USER MESSAGES]\n\n" <>
-        already_known <>
-        "Task: Analyse the USER MESSAGES collectively and output TWO sections.\n\n" <>
-        "[FACTS]\n" <>
-        "Explicit personal facts the user stated about themselves (name, job, family, hobbies declared, preferences stated, health, location, events).\n" <>
-        "Only extract from explicit self-descriptions: \"I am...\", \"I have...\", \"I like...\", \"I live in...\", etc.\n" <>
-        "Cross-message inference is allowed: if message 2 says \"I have two kids\" and message 4 says \"my older one starts school\", that's one fact about a school-age child.\n" <>
-        "One bullet per category, comma-separated values. e.g. \"- Name: Carl\", \"- Hobbies: hiking, reading\"\n" <>
-        "Never repeat a category key. Keep values short (a few words each).\n" <>
-        "Do not duplicate anything already in \"Already known\".\n" <>
-        "Write NONE if nothing qualifies.\n\n" <>
-        "[CANDIDATES]\n" <>
-        "Topics or subjects the user is asking about or showing curiosity in across these messages — even without explicit \"I like X\" statements.\n" <>
+        "[CURRENT PROFILE]\n" <>
+        (if existing == "", do: "(empty)", else: existing) <>
+        "\n[END CURRENT PROFILE]\n\n" <>
+        "Task: Apply any new EXPLICIT personal facts the USER stated about themself to " <>
+        "the CURRENT PROFILE, emit the COMPLETE updated profile, plus a candidate-topics list.\n\n" <>
+        "[PROFILE]\n" <>
+        "Rules for editing the profile:\n" <>
+        "- Extract ONLY from EXPLICIT self-descriptions: \"I am…\", \"I have…\", \"I like…\", " <>
+        "\"I live in…\", \"I work as…\", \"my children are X, Y\", events the user reports about themself, etc.\n" <>
+        "- Do NOT extract topics the user merely asked or was curious about (those belong in CANDIDATES below).\n" <>
+        "- Do NOT extract third-party facts (\"my friend likes X\", \"the article says Y\"). " <>
+        "Only facts the user stated about THEMSELF or their immediate family.\n" <>
+        "- Cross-message inference is allowed: if message 2 says \"I have two kids\" and message 4 says " <>
+        "\"my older one starts school\", merge into one fact about a school-age child.\n" <>
+        "- If a new statement SUPERSEDES an existing fact (corrected family count, new job, " <>
+        "moved location, updated preference), REPLACE the old line. Do NOT keep both.\n" <>
+        "- Otherwise PRESERVE existing facts WORD-FOR-WORD. Do not rephrase, reorder, or " <>
+        "shorten values that aren't being superseded.\n" <>
+        "- One bullet per category key. Never repeat a category key.\n" <>
+        "- Keep values short (a few words each), comma-separated when multiple share a key.\n" <>
+        "- Output ONLY the bullet lines under this section, no headers, no commentary.\n" <>
+        "- If no facts apply and the CURRENT PROFILE is empty, write NONE.\n" <>
+        size_hint <>
+        "\n[CANDIDATES]\n" <>
+        "Topics or subjects the user is asking about or showing curiosity in across these messages — " <>
+        "even WITHOUT explicit \"I like X\" statements.\n" <>
         "Rules:\n" <>
-        "- Use the broadest, most general label possible: prefer \"gardening\" over \"indoor tomato cultivation\", \"blockchain\" over \"blockchain immutability\"\n" <>
+        "- Use the broadest, most general label possible: prefer \"gardening\" over " <>
+        "\"indoor tomato cultivation\", \"blockchain\" over \"blockchain immutability\".\n" <>
         "- 1–2 words maximum. No qualifiers, adjectives, or specifics.\n" <>
         "- If multiple messages cover aspects of the same broad topic, output only ONE label for it.\n" <>
-        "Write NONE if nothing qualifies.\n\n" <>
+        "- Write NONE if nothing qualifies.\n\n" <>
         "User messages may be in any language. Always write output in English. Plain text only, no markdown."
 
     trace = %{origin: "system", path: "ProfileExtractor.extract", role: "ProfileExtractor", phase: "extract"}
 
     case LLM.call(model, [%{role: "user", content: prompt}],
-           options: %{temperature: 0, num_predict: 200},
+           options: %{temperature: 0, num_predict: 600},
            trace: trace
          ) do
       {:ok, reply} when is_binary(reply) and reply != "" ->
         Logger.debug("[ProfileExtractor] extraction result=#{String.slice(reply, 0, 200)}")
-        new_lines = parse_facts(reply)
+        new_profile = parse_profile_block(reply)
         candidates = parse_candidates(reply)
 
-        if new_lines != [] do
-          merged = merge_facts(existing, new_lines)
-
-          if merged != existing do
-            all_lines = String.split(merged, "\n") |> Enum.filter(&String.starts_with?(&1, "-"))
-            threshold = AgentSettings.profile_condense_threshold()
-
-            final =
-              if length(all_lines) >= threshold,
-                do: condense(merged, model),
-                else: merged
-
-            save_profile(user_id, final)
-            Logger.info(
-              "[ProfileExtractor] merged #{length(new_lines)} fact(s) user=#{user_id} batch=#{length(msgs)}"
+        cond do
+          new_profile == "" ->
+            # LLM returned an empty / malformed [PROFILE] section. Keep
+            # the existing profile intact rather than wiping it; the
+            # watermark still advances so we don't loop on the same
+            # bad batch.
+            Logger.warning(
+              "[ProfileExtractor] empty PROFILE block in LLM output user=#{user_id} — keeping existing profile"
             )
-          end
+
+          new_profile != existing ->
+            save_profile(user_id, new_profile)
+
+            Logger.info(
+              "[ProfileExtractor] rewrote profile user=#{user_id} batch=#{length(msgs)} " <>
+                "bullets=#{count_bullets(new_profile)}"
+            )
+
+          true ->
+            :ok
         end
 
         if candidates != [] do
@@ -218,6 +249,14 @@ defmodule DmhAi.Agent.ProfileExtractor do
     :ok
   end
 
+  defp count_bullets(profile) when is_binary(profile) do
+    profile
+    |> String.split("\n")
+    |> Enum.count(&String.starts_with?(&1, "-"))
+  end
+
+  defp count_bullets(_), do: 0
+
   # ─── Parsing ───────────────────────────────────────────────────────────────
 
   defp parse_candidates(reply) do
@@ -235,14 +274,19 @@ defmodule DmhAi.Agent.ProfileExtractor do
     end
   end
 
-  defp parse_facts(reply) do
-    facts_text =
-      case Regex.run(~r/\[FACTS\]([\s\S]*?)(?=\[CANDIDATES\]|$)/i, reply) do
+  # Parse the bullet lines under `[PROFILE]` (up to `[CANDIDATES]` or
+  # end of reply). Returns the bullet block as a single newline-joined
+  # string, or `""` if the section is missing / empty / contains only
+  # NONE. Strips stray markdown bold/italic markers the LLM sometimes
+  # adds around values.
+  defp parse_profile_block(reply) do
+    section =
+      case Regex.run(~r/\[PROFILE\]([\s\S]*?)(?=\[CANDIDATES\]|$)/i, reply) do
         [_, text] -> text
-        _ -> reply
+        _ -> ""
       end
 
-    facts_text
+    section
     |> String.split("\n")
     |> Enum.map(fn line ->
       line
@@ -254,132 +298,7 @@ defmodule DmhAi.Agent.ProfileExtractor do
     |> Enum.reject(fn line ->
       String.downcase(String.trim_leading(line, "- ")) == "none"
     end)
-  end
-
-  # ─── Merge ─────────────────────────────────────────────────────────────────
-
-  defp merge_facts(existing, new_lines) do
-    existing_lines = if existing != "", do: String.split(existing, "\n"), else: []
-
-    key_map =
-      existing_lines
-      |> Enum.filter(&String.starts_with?(&1, "-"))
-      |> Enum.reduce(%{}, fn line, acc ->
-        case String.split(line, ":", parts: 2) do
-          [k_part, v_part] ->
-            key = k_part |> String.trim_leading("-") |> String.trim()
-            kl = String.downcase(key)
-            existing_vals = Map.get(acc, kl, %{key: key, vals: []}).vals
-
-            new_vals =
-              v_part
-              |> String.split(",")
-              |> Enum.map(&String.trim/1)
-              |> Enum.reject(&(&1 == ""))
-              |> Enum.reduce(existing_vals, fn v, vs ->
-                vl = String.downcase(v)
-                if Enum.any?(vs, &(String.downcase(&1) == vl)), do: vs, else: vs ++ [v]
-              end)
-
-            Map.put(acc, kl, %{key: key, vals: new_vals})
-
-          _ ->
-            acc
-        end
-      end)
-
-    key_order =
-      existing_lines
-      |> Enum.filter(&String.starts_with?(&1, "-"))
-      |> Enum.map(fn line ->
-        case String.split(line, ":", parts: 2) do
-          [k_part | _] -> k_part |> String.trim_leading("-") |> String.trim() |> String.downcase()
-          _ -> nil
-        end
-      end)
-      |> Enum.reject(&is_nil/1)
-      |> Enum.uniq()
-
-    {key_map, key_order} =
-      Enum.reduce(new_lines, {key_map, key_order}, fn line, {km, ko} ->
-        case String.split(line, ":", parts: 2) do
-          [k_part, v_part] ->
-            key = k_part |> String.trim_leading("-") |> String.trim()
-            kl = String.downcase(key)
-            existing_entry = Map.get(km, kl, %{key: key, vals: []})
-
-            new_vals =
-              v_part
-              |> String.split(",")
-              |> Enum.map(&String.trim/1)
-              |> Enum.reject(&(&1 == ""))
-              |> Enum.reduce(existing_entry.vals, fn v, vs ->
-                vl = String.downcase(v)
-                if Enum.any?(vs, &(String.downcase(&1) == vl)), do: vs, else: vs ++ [v]
-              end)
-
-            ko = if kl in ko, do: ko, else: ko ++ [kl]
-            {Map.put(km, kl, %{key: existing_entry.key, vals: new_vals}), ko}
-
-          _ ->
-            {km, ko}
-        end
-      end)
-
-    key_order
-    |> Enum.map(fn kl ->
-      case Map.get(key_map, kl) do
-        %{key: k, vals: vs} when vs != [] -> "- #{k}: #{Enum.join(vs, ", ")}"
-        _ -> nil
-      end
-    end)
-    |> Enum.reject(&is_nil/1)
     |> Enum.join("\n")
-  end
-
-  # ─── Condense ──────────────────────────────────────────────────────────────
-
-  defp condense(current_facts, model) do
-    all_lines = String.split(current_facts, "\n") |> Enum.filter(&String.starts_with?(&1, "-"))
-    target = div(AgentSettings.profile_condense_threshold(), 2)
-
-    prompt =
-      "Below is a list of personal facts about a user, accumulated over many conversations.\n\n" <>
-        Enum.join(all_lines, "\n") <>
-        "\n\nTask: Condense and regroup this list to at most #{target} lines.\n" <>
-        "Rules:\n" <>
-        "- One line per category key. If multiple values share a key, merge them onto one line comma-separated.\n" <>
-        "- Merge near-duplicate keys (e.g. \"Hobbies\" and \"Hobbies, interests\" → \"Hobbies\").\n" <>
-        "- If a fact has been superseded by a newer one (e.g. old job vs new job), keep only the newer one.\n" <>
-        "- Drop trivial or very low-signal values if over the limit.\n" <>
-        "- Keep all facts in English.\n" <>
-        "Output format: \"- Key: value1, value2\" — one bullet per category, no key repeated.\n" <>
-        "Plain text only, no extra commentary."
-
-    trace = %{origin: "system", path: "ProfileExtractor.condense", role: "ProfileCondenser", phase: "condense"}
-
-    case LLM.call(model, [%{role: "user", content: prompt}],
-           options: %{temperature: 0, num_predict: 600},
-           trace: trace
-         ) do
-      {:ok, reply} when is_binary(reply) and reply != "" ->
-        condensed =
-          reply
-          |> String.split("\n")
-          |> Enum.map(fn l ->
-            l
-            |> String.trim()
-            |> String.replace(~r/\*{1,3}([^*]*)\*{1,3}/, "\\1")
-            |> String.replace(~r/_{1,2}([^_]*)_{1,2}/, "\\1")
-          end)
-          |> Enum.filter(&String.starts_with?(&1, "-"))
-          |> Enum.join("\n")
-
-        if condensed != "", do: condensed, else: current_facts
-
-      _ ->
-        current_facts
-    end
   end
 
   # ─── DB ────────────────────────────────────────────────────────────────────
