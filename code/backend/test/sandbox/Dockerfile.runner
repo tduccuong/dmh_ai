@@ -1,0 +1,31 @@
+# Test runner for the sandbox-runtime tier (`mix test.sandbox`).
+#
+# Built once by `scripts/test.sandbox.sh` if missing; subsequent runs
+# reuse the cached image. The runner provides:
+#
+#   - elixir + mix (matched to mix.exs ~> 1.16; we pin 1.19.1)
+#   - docker-cli (for `docker exec` against the sister sandbox container)
+#   - build-base + linux-headers (for compiling sqlite_vec NIF)
+#   - pre-fetched deps under /deps_cache so test runs skip `mix deps.get`
+#   - source mounted at /work at runtime (live, no bake-in)
+#   - _build under an anonymous volume mounted at /work/_build
+#     (avoids glibc-vs-musl conflicts with the host's _build/)
+
+FROM elixir:1.19.1-otp-27-alpine
+
+RUN apk add --no-cache docker-cli git build-base linux-headers
+
+RUN mix local.hex --force && mix local.rebar --force
+
+# Pre-fetch + compile deps in a build-only workdir so subsequent test
+# runs (which mount source at /work) see deps already there. The
+# overlay-mount of host /work over this dir would normally hide
+# everything beneath, so we pin MIX_DEPS_PATH at an out-of-/work
+# location.
+WORKDIR /tmp/runner_setup
+COPY mix.exs mix.lock ./
+ENV MIX_ENV=test
+ENV MIX_DEPS_PATH=/deps_cache
+RUN mix deps.get && mix deps.compile
+
+WORKDIR /work

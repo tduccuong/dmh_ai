@@ -25,15 +25,23 @@ defmodule DmhAi.Constants do
   # Password hashing
   @password_hash_iterations 100_000
 
-  # Paths
-  @db_path "/data/db/chat.db"
-  @assets_dir "/data/user_assets"
+  # Paths. Resolved at call time via `Application.get_env(:dmh_ai,
+  # :paths, %{})` with the production defaults below as fallback. The
+  # sandbox-runtime test tier (`mix test.sandbox`) overrides these to
+  # point at a throwaway tmp dir so each integration test gets an
+  # isolated filesystem. Production runs never set the env var, so
+  # `path/2` returns the literal default.
+  @default_db_path        "/data/db/chat.db"
+  @default_assets_dir     "/data/user_assets"
   # Per-user workspaces tree (model scratch). Sibling of user_assets,
   # split out as part of the per-user permission redesign — see
   # specs/permissions.md. user_assets is RO from the sandbox;
   # user_workspaces is the only writable bind mount.
-  @workspaces_dir "/data/user_workspaces"
-  @log_file "/data/system_logs/system.log"
+  @default_workspaces_dir "/data/user_workspaces"
+  @default_log_file       "/data/system_logs/system.log"
+
+  defp path(key, default),
+    do: Application.get_env(:dmh_ai, :paths, %{}) |> Map.get(key, default)
 
   def search_page2_threshold, do: @search_page2_threshold
   def max_page_chars, do: @max_page_chars
@@ -48,10 +56,10 @@ defmodule DmhAi.Constants do
   def jina_timeout_ms, do: @jina_timeout_ms
   def domain_timeout_block_threshold, do: @domain_timeout_block_threshold
   def password_hash_iterations, do: @password_hash_iterations
-  def db_path, do: @db_path
-  def assets_dir, do: @assets_dir
-  def workspaces_dir, do: @workspaces_dir
-  def log_file, do: @log_file
+  def db_path,        do: path(:db_path,        @default_db_path)
+  def assets_dir,     do: path(:assets_dir,     @default_assets_dir)
+  def workspaces_dir, do: path(:workspaces_dir, @default_workspaces_dir)
+  def log_file,       do: path(:log_file,       @default_log_file)
 
   def image_exts, do: ~w(.png .jpg .jpeg .gif .webp .bmp)
 
@@ -83,7 +91,7 @@ defmodule DmhAi.Constants do
   @doc "Root directory for a user's session (all uploads + task workspaces live under this)."
   @spec session_root(String.t(), String.t()) :: String.t()
   def session_root(email, session_id) do
-    Path.join([@assets_dir, to_string(email), sanitize(session_id)])
+    Path.join([assets_dir(), to_string(email), sanitize(session_id)])
   end
 
   @doc "User-upload directory for a session."
@@ -100,7 +108,7 @@ defmodule DmhAi.Constants do
   """
   @spec session_workspace_dir(String.t(), String.t()) :: String.t()
   def session_workspace_dir(email, session_id) do
-    Path.join([@workspaces_dir, to_string(email), sanitize(session_id)])
+    Path.join([workspaces_dir(), to_string(email), sanitize(session_id)])
   end
 
   @doc """
@@ -111,6 +119,6 @@ defmodule DmhAi.Constants do
   """
   @spec user_keystore_dir(String.t()) :: String.t()
   def user_keystore_dir(email) do
-    Path.join([@assets_dir, to_string(email), "_keystore"])
+    Path.join([assets_dir(), to_string(email), "_keystore"])
   end
 end

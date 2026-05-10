@@ -246,52 +246,75 @@ defmodule DmhAi.Tools.RunScript do
   # Resolve `{:ok, %{username, sandbox_cwd}}` for the given ctx.
   # Username drives `docker exec -u`; sandbox_cwd drives `docker exec -w`.
   # `username` is the per-user OS account for non-admin users, or
-  # `dmh_ai-master-u` for admins. `sandbox_cwd` is the path the script
-  # runs in — `/data/user_workspaces/<email>/<session>/` for users,
-  # `/data/user_workspaces` for admin.
-  defp provision(ctx) do
-    user_id = Map.get(ctx, :user_id) || ""
-    email   = Map.get(ctx, :user_email) || ""
-    role    = Map.get(ctx, :user_role) || "user"
+  # `dmh_ai-master-u` for admins. `sandbox_cwd` is the per-session
+  # path `/data/user_workspaces/<email>/<session>/` regardless of
+  # role — admin shares the workspace tree like any user, only the
+  # consuming uid (`dmh_ai-master-u` instead of `dmh_ai-u<uid>`)
+  # differs.
+  #
+  # Public so the sandbox-runtime test tier (`test/sandbox/R01_*`)
+  # can assert on the resolved cwd+username without booting the rest
+  # of the launcher pipeline. Internal callers (`execute_async/2`)
+  # stay the same.
+  @doc false
+  def provision(ctx) do
+    user_id    = Map.get(ctx, :user_id) || ""
+    email      = Map.get(ctx, :user_email) || ""
+    role       = Map.get(ctx, :user_role) || "user"
     session_id = Map.get(ctx, :session_id) || ""
 
     cond do
-      role == "admin" ->
-        {:ok,
-         %{
-           username:    SandboxUser.master_username(),
-           sandbox_cwd: Constants.workspaces_dir()
-         }}
+      email == "" or session_id == "" ->
+        # Hard fail rather than silently widen sandbox_cwd to the
+        # workspaces ROOT — that would expose every other user's tree
+        # to the running process.
+        {:error, "missing user context (user_email or session_id empty)"}
 
-      user_id == "" or email == "" ->
-        # Defensive — should never happen in real chains. Surface a
-        # clear error so the model retries rather than hanging.
-        {:error, "missing user context (user_id or user_email empty)"}
+      role == "admin" ->
+        # Admins share the workspace tree like any user — only the
+        # consuming OS account differs (`dmh_ai-master-u` is preset
+        # in the sandbox image; non-admins get a per-uid account
+        # allocated lazily). `uid_for/1` runs the same chown sweep
+        # as the non-admin path so a session-subdir created earlier
+        # by master-as-root gets repaired before the launcher cd's
+        # into it.
+        with {:ok, uid} <- SandboxUser.uid_for(%{role: "admin", email: email}) do
+          {:ok,
+           %{
+             uid:         uid,
+             username:    SandboxUser.master_username(),
+             sandbox_cwd: sandbox_cwd_for(email, session_id)
+           }}
+        end
+
+      user_id == "" ->
+        {:error, "missing user_id for non-admin context"}
 
       true ->
-        case SandboxUser.ensure_provisioned(%{id: user_id, email: email}) do
-          {:ok, uid} ->
-            {:ok,
-             %{
-               username:    SandboxUser.username_for(uid),
-               sandbox_cwd: sandbox_cwd_for(email, session_id)
-             }}
-
-          {:error, reason} ->
-            {:error, reason}
+        with {:ok, uid} <- SandboxUser.ensure_provisioned(%{id: user_id, email: email}) do
+          {:ok,
+           %{
+             uid:         uid,
+             username:    SandboxUser.username_for(uid),
+             sandbox_cwd: sandbox_cwd_for(email, session_id)
+           }}
         end
     end
   end
 
-  # Path the script runs in. Falls back to the workspaces root when
-  # there's no session (rare — e.g. ad-hoc tool invocations outside a
-  # session loop). Master and sandbox both mount the workspaces tree
-  # at the SAME container path, so this single path works in both
-  # views.
-  defp sandbox_cwd_for(email, ""),
-    do: Path.join(Constants.workspaces_dir(), to_string(email))
+  # Per-uid scratch dir for the launcher's wrapper script + log +
+  # exit-code file. Sharing a single `/tmp/_dmh_runs/` across uids
+  # collapses with `Permission denied` once a second uid tries to
+  # write there — the first caller gets ownership at default mode
+  # 755. Per-uid paths sidestep the coordination problem entirely.
+  defp run_dir(%{uid: uid}) when is_integer(uid), do: "/tmp/_dmh_runs_#{uid}"
 
-  defp sandbox_cwd_for(email, session_id),
+  # Path the script runs in. `provision/1` short-circuits with an
+  # error when session_id is empty, so this only ever sees the
+  # populated case. Master and sandbox both mount the workspaces
+  # tree at the SAME container path, so this single resolution works
+  # in both views.
+  defp sandbox_cwd_for(email, session_id) when is_binary(session_id) and session_id != "",
     do: Constants.session_workspace_dir(email, session_id)
 
   # ─── private ──────────────────────────────────────────────────────────────
@@ -318,18 +341,19 @@ defmodule DmhAi.Tools.RunScript do
   defp launch(command, run_ctx) do
     b64 = Base.encode64(harden(command))
     run_id = :crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)
+    rd = run_dir(run_ctx)
 
     # mkdir -p the sandbox cwd just in case (idempotent). The
     # workspace dir was created by SandboxUser.ensure_provisioned/1
     # at the email level; per-session subdir is created lazily here.
     launcher = """
     set -e
-    mkdir -p /tmp/_dmh_runs
+    mkdir -p #{rd}
     mkdir -p '#{shell_escape(run_ctx.sandbox_cwd)}'
-    printf '%s' '#{b64}' | base64 -d > /tmp/_dmh_runs/#{run_id}.sh
-    chmod +x /tmp/_dmh_runs/#{run_id}.sh
+    printf '%s' '#{b64}' | base64 -d > #{rd}/#{run_id}.sh
+    chmod +x #{rd}/#{run_id}.sh
     cd '#{shell_escape(run_ctx.sandbox_cwd)}' || cd /tmp
-    nohup sh -c '/tmp/_dmh_runs/#{run_id}.sh; echo $? > /tmp/_dmh_runs/#{run_id}.exit' > /tmp/_dmh_runs/#{run_id}.log 2>&1 &
+    nohup sh -c '#{rd}/#{run_id}.sh; echo $? > #{rd}/#{run_id}.exit' > #{rd}/#{run_id}.log 2>&1 &
     echo $!
     """
 
@@ -509,8 +533,9 @@ defmodule DmhAi.Tools.RunScript do
   end
 
   defp exit_file_exists?(run_id, run_ctx) do
+    rd = run_dir(run_ctx)
     case docker_exec(
-           "test -f /tmp/_dmh_runs/#{run_id}.exit && echo yes || echo no",
+           "test -f #{rd}/#{run_id}.exit && echo yes || echo no",
            @docker_exec_timeout_short,
            run_ctx
          ) do
@@ -523,10 +548,11 @@ defmodule DmhAi.Tools.RunScript do
   # `{:ok, output} | {:error, reason}` shape the previous synchronous
   # `run_script` returned, then unlink the temp files.
   defp finalize(_pid, run_id, _started_at_ms, run_ctx) do
+    rd = run_dir(run_ctx)
     drain_cmd =
-      "tail -c #{@max_output} /tmp/_dmh_runs/#{run_id}.log; printf '\\n@@DMH_EXIT@@\\n'; " <>
-        "cat /tmp/_dmh_runs/#{run_id}.exit 2>/dev/null; " <>
-        "rm -f /tmp/_dmh_runs/#{run_id}.sh /tmp/_dmh_runs/#{run_id}.log /tmp/_dmh_runs/#{run_id}.exit"
+      "tail -c #{@max_output} #{rd}/#{run_id}.log; printf '\\n@@DMH_EXIT@@\\n'; " <>
+        "cat #{rd}/#{run_id}.exit 2>/dev/null; " <>
+        "rm -f #{rd}/#{run_id}.sh #{rd}/#{run_id}.log #{rd}/#{run_id}.exit"
 
     case docker_exec(drain_cmd, @docker_exec_timeout_long, run_ctx) do
       {:ok, output, 0} ->
@@ -587,8 +613,9 @@ defmodule DmhAi.Tools.RunScript do
   end
 
   defp drain_log_only(run_id, run_ctx) do
+    rd = run_dir(run_ctx)
     case docker_exec(
-           "tail -c #{@max_output} /tmp/_dmh_runs/#{run_id}.log 2>/dev/null",
+           "tail -c #{@max_output} #{rd}/#{run_id}.log 2>/dev/null",
            @docker_exec_timeout_long,
            run_ctx
          ) do
@@ -598,8 +625,9 @@ defmodule DmhAi.Tools.RunScript do
   end
 
   defp cleanup_run_files(run_id, run_ctx) do
+    rd = run_dir(run_ctx)
     _ = docker_exec(
-      "rm -f /tmp/_dmh_runs/#{run_id}.sh /tmp/_dmh_runs/#{run_id}.log /tmp/_dmh_runs/#{run_id}.exit",
+      "rm -f #{rd}/#{run_id}.sh #{rd}/#{run_id}.log #{rd}/#{run_id}.exit",
       @docker_exec_timeout_short,
       run_ctx
     )

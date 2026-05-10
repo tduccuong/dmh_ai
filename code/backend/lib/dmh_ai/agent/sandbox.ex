@@ -21,7 +21,7 @@ defmodule DmhAi.Agent.Sandbox do
   populate the cache properly.
   """
 
-  @container_name "dmh_ai-assistant-sandbox"
+  @default_container_name "dmh_ai-assistant-sandbox"
 
   @cache_key {__MODULE__, :installed_tools}
 
@@ -30,8 +30,15 @@ defmodule DmhAi.Agent.Sandbox do
   # sandbox image has historically shipped with.
   @fallback_tools ~w(curl wget python3 jq git nodejs npm)
 
-  @doc "Container name of the assistant sandbox."
-  def container_name, do: @container_name
+  @doc """
+  Container name of the assistant sandbox. Resolved at call time
+  (not compile time) so the sandbox-runtime test tier can swap it
+  for a throwaway sister container via `Application.put_env(:dmh_ai,
+  :sandbox_container_name, ...)`. Production never sets this and
+  gets the default.
+  """
+  def container_name,
+    do: Application.get_env(:dmh_ai, :sandbox_container_name, @default_container_name)
 
   @doc """
   List of top-level packages installed in the sandbox — sorted,
@@ -64,7 +71,7 @@ defmodule DmhAi.Agent.Sandbox do
 
   defp inspect_container do
     case System.cmd("docker",
-           ["exec", @container_name, "cat", "/etc/apk/world"],
+           ["exec", container_name(), "cat", "/etc/apk/world"],
            stderr_to_stdout: true
          ) do
       {out, 0} -> parse_world_file(out)
