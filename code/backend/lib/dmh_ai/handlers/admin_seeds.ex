@@ -5,16 +5,16 @@
 
 defmodule DmhAi.Handlers.AdminSeeds do
   @moduledoc """
-  Admin REST endpoints for Wiki Seeds — pre-loaded URLs that can
-  be batch-`/wiki`ed into the global `:knowledge` scope. See
+  Admin REST endpoints for Index Seeds — pre-loaded URLs that can
+  be batch-`/index`ed into the global `:knowledge` scope. See
   specs/vector_kb.md.
 
   Routes (admin-only, gated below):
-    GET    /admin/wiki-seeds          — list rows; lazily merges priv/kb_seeds/preloaded.json on first call
-    POST   /admin/wiki-seeds          — add a custom URL
-    DELETE /admin/wiki-seeds/:id      — remove
-    POST   /admin/wiki-seeds/:id/run  — kick off /wiki for a single seed (background)
-    POST   /admin/wiki-seeds/run-all  — kick off /wiki for every seed (background)
+    GET    /admin/index-seeds          — list rows; lazily merges priv/kb_seeds/preloaded.json on first call
+    POST   /admin/index-seeds          — add a custom URL
+    DELETE /admin/index-seeds/:id      — remove
+    POST   /admin/index-seeds/:id/run  — kick off /index for a single seed (background)
+    POST   /admin/index-seeds/run-all  — kick off /index for every seed (background)
 
   Run dispatch is currently a stub — it stamps `last_status='queued'`
   and logs a message. The actual URL-crawl pipeline lives in #162;
@@ -102,7 +102,7 @@ defmodule DmhAi.Handlers.AdminSeeds do
   end
 
   # Run a single seed — fetch + index via the same Web.Fetcher +
-  # VectorDB.ingest pipeline that `/wiki <url>` uses. Synchronous
+  # VectorDB.ingest pipeline that `/index <url>` uses. Synchronous
   # within this Task; the calling spawn returns immediately so the
   # admin's HTTP request resolves with 202 Accepted.
   defp dispatch_run(id) do

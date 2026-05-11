@@ -18,7 +18,7 @@ defmodule DmhAi.Agent.ProfileExtractor do
   message's ts. Forward-progress guarantee: any message above the
   watermark eventually gets processed; nothing is dropped.
 
-  `/memo` and `/wiki` slash commands are excluded from the batch
+  `/memo` and `/index` slash commands are excluded from the batch
   contents but still count toward the watermark — otherwise a
   long-tail of slash-only activity would block the trigger forever.
 

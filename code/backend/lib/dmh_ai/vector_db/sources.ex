@@ -65,7 +65,7 @@ defmodule DmhAi.VectorDB.Sources do
   same ref doesn't match itself). Returns `{:ok, source_map}` or
   `:no_match` when below `threshold` or empty.
 
-  Used by inline-text `/wiki` to merge near-duplicates into a single
+  Used by inline-text `/index` to merge near-duplicates into a single
   `source_ref` instead of fragmenting.
   """
   @spec nearest_centroid(:knowledge | :memo, String.t() | nil, [float()], float()) ::

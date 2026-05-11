@@ -410,7 +410,7 @@ defmodule DmhAi.DB.Init do
 
     # Vector knowledge base — see specs/vector_kb.md.
     #
-    #   kb_sources       — registry of every /wiki / /memo / save_memo
+    #   kb_sources       — registry of every /index / /memo / save_memo
     #                      ingest. Source-of-truth for relearn flows.
     #                      `centroid` (averaged chunk embedding) gates
     #                      semantic-merge for inline-text ingest.
@@ -418,7 +418,7 @@ defmodule DmhAi.DB.Init do
     #                      links 1:1 to the corresponding kb_vec_* row.
     #   kb_vec_knowledge — vec0 virtual table holding the global vectors.
     #   kb_vec_memo      — vec0 virtual table for per-user memos.
-    #   kb_seeds         — admin-curated URL list for one-click batch /wiki.
+    #   kb_seeds         — admin-curated URL list for one-click batch /index.
     #   kb_relearn_jobs  — dedup table for the background re-fetch supervisor.
     query!(Repo, """
     CREATE TABLE IF NOT EXISTS kb_sources (

@@ -3,19 +3,19 @@
 # See the LICENSE file in the repository root for full details.
 # For commercial inquiries, contact: tduccuong@gmail.com
 
-defmodule DmhAi.Commands.WikiAck do
+defmodule DmhAi.Commands.IndexAck do
   @moduledoc """
-  Helpers for composing `/wiki` runtime acks. Centralises the
+  Helpers for composing `/index` runtime acks. Centralises the
   18-word title-truncate so every pipeline (text/file/url/folder)
   produces the same shape.
   """
 
   @max_title_words 18
 
-  @doc "Final ack after a successful `/wiki` ingest."
+  @doc "Final ack after a successful `/index` ingest."
   @spec final_ack(String.t() | nil) :: String.t()
   def final_ack(title) do
-    "I indexed your input about '#{truncate_title(title)}' in the internal Wiki, ready to use from now."
+    "I indexed your input about '#{truncate_title(title)}' in the internal index, ready to use from now."
   end
 
   @doc "Sync acknowledgement when long-running ingest is starting in the background."

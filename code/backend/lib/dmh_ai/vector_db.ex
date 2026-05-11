@@ -12,7 +12,7 @@ defmodule DmhAi.VectorDB do
        the four behaviour methods.
     2. Expose `ingest/2` — the high-level pipeline that runs chunk →
        embed → tag → centroid-merge → upsert in one shot. The
-       runtime command path (`/wiki`) and the `save_memo` LLM tool
+       runtime command path (`/index`) and the `save_memo` LLM tool
        both call this.
 
   See `specs/vector_kb.md` for the full design.
@@ -153,7 +153,7 @@ defmodule DmhAi.VectorDB do
           # endpoint can be 5–15 s. Memo retrieval is vector + MMR
           # only; tags don't drive scoring for memo scope, so they're
           # decorative-only and not worth the latency on the
-          # synchronous /memo path. Wiki paths still tag via the
+          # synchronous /memo path. Index paths still tag via the
           # synchronous `ingest/2`.
           {:ok, source_id} = Sources.upsert(
             %{
@@ -216,7 +216,7 @@ defmodule DmhAi.VectorDB do
   @doc """
   Chunk → embed → tag → (semantic-merge for inline text) → upsert.
   Synchronous: returns only after the embedder pool has produced
-  vectors and the meta+vec rows are inserted. Used by `/wiki` paths
+  vectors and the meta+vec rows are inserted. Used by `/index` paths
   and the `save_memo` Assistant tool. The slash-command `/memo` path
   uses the async variant `ingest_memo_async/1` to avoid blocking the
   user-visible ack on the embedder HTTP call.
@@ -350,9 +350,9 @@ defmodule DmhAi.VectorDB do
   end
 
   # Per-scope chunker config: `/memo` uses much smaller chunks
-  # (short personal facts) than `/wiki` (long curated docs). See
+  # (short personal facts) than `/index` (long curated docs). See
   # the @kb_memo_chunk_* settings in AgentSettings for rationale.
-  # Falls back to the wiki defaults if scope is unset/unknown.
+  # Falls back to the index defaults if scope is unset/unknown.
   defp chunker_opts_for(:memo) do
     [
       max_tokens:     AgentSettings.kb_memo_chunk_tokens(),

@@ -333,7 +333,7 @@ const SettingsModal = {
         document.getElementById(targetPage).classList.add('active');
         var titleKey = targetPage === 'page-conversation'  ? 'convSettings'
                      : targetPage === 'page-ai-models'     ? 'aiModelSettings'
-                     : targetPage === 'page-wiki-seeds'    ? 'wikiSeedsAdmin'
+                     : targetPage === 'page-index-seeds'    ? 'indexSeedsAdmin'
                      : targetPage === 'page-mcp-catalog'   ? 'mcpCatalogAdmin'
                      : targetPage === 'page-oauth-catalog' ? 'oauthCatalogAdmin'
                      : 'sysSettings';
@@ -342,7 +342,7 @@ const SettingsModal = {
 
         // Lazy-load the seeds list when its page is the target.
         // Handler is bound on first init; subsequent opens just refresh.
-        if (targetPage === 'page-wiki-seeds' && typeof WikiSeedsAdmin !== 'undefined') {
+        if (targetPage === 'page-index-seeds' && typeof WikiSeedsAdmin !== 'undefined') {
             WikiSeedsAdmin.init();
             WikiSeedsAdmin.render();
         }

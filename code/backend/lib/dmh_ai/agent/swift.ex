@@ -31,7 +31,7 @@ defmodule DmhAi.Agent.Swift do
 
     * `localize/2` — translates a short English template message into
       the user's language using their recent text as the language
-      signal. Used by `/memo` (success / error acks) and `/wiki`
+      signal. Used by `/memo` (success / error acks) and `/index`
       pipelines (accepted / final acks).
 
   Other Swift-tier callers (Web.Search query planner, Handlers.Data

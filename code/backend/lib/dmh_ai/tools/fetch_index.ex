@@ -3,12 +3,13 @@
 # See the LICENSE file in the repository root for full details.
 # For commercial inquiries, contact: tduccuong@gmail.com
 
-defmodule DmhAi.Tools.FetchWiki do
+defmodule DmhAi.Tools.FetchIndex do
   @moduledoc """
-  Look up entries from the internal wiki — content the operator has
-  curated via `/wiki` (URLs, files, folders, inline text). Framed as
-  "wiki" rather than "knowledge" so the model doesn't conflate it with
-  its own training corpus.
+  Look up entries from the internal index — content the operator has
+  curated via `/index` (URLs, files, folders, inline text). Framed
+  to the model as a project-specific reference rather than as
+  "knowledge", so it doesn't conflate index hits with its own
+  training corpus.
 
   Side effect: every successful fetch enqueues a background relearn
   job for each hit's source (see `specs/vector_kb.md` §Auto-relearn).
@@ -23,11 +24,11 @@ defmodule DmhAi.Tools.FetchWiki do
   alias DmhAi.VectorDB.{Embedder, Relearn}
 
   @impl true
-  def name, do: "fetch_wiki"
+  def name, do: "fetch_index"
 
   @impl true
   def description,
-    do: "Look up entries from this user's internal wiki — content curated via /wiki (platform docs, internal procedures, snippets). Use for API specifics, domain facts, and learned techniques. NOT for chitchat or live data."
+    do: "Look up entries from this user's internal index — content curated via /index (platform docs, internal procedures, snippets). Use for API specifics, domain facts, and learned techniques. NOT for chitchat or live data."
 
   @impl true
   def definition do
@@ -51,7 +52,7 @@ defmodule DmhAi.Tools.FetchWiki do
       Relearn.enqueue_for_hits(hits)
       {:ok, format(hits)}
     else
-      {:error, reason} -> {:error, "fetch_wiki failed: #{inspect(reason)}"}
+      {:error, reason} -> {:error, "fetch_index failed: #{inspect(reason)}"}
     end
   end
 

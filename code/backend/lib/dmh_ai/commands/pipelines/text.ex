@@ -5,7 +5,7 @@
 
 defmodule DmhAi.Commands.Pipelines.Text do
   @moduledoc """
-  Inline-text `/wiki` pipeline. Synchronous — runs in the chat HTTP
+  Inline-text `/index` pipeline. Synchronous — runs in the chat HTTP
   request and returns an ack string. The vector_db pipeline applies
   the centroid-merge logic so similar bodies fold into one source
   rather than fragmenting.
@@ -15,7 +15,7 @@ defmodule DmhAi.Commands.Pipelines.Text do
 
   alias DmhAi.VectorDB
   alias DmhAi.Agent.Swift
-  alias DmhAi.Commands.WikiAck
+  alias DmhAi.Commands.IndexAck
 
   @spec run(String.t(), String.t(), String.t()) :: {:ok, String.t()} | {:error, String.t()}
   def run(body, _session_id, _user_id) when is_binary(body) do
@@ -35,7 +35,7 @@ defmodule DmhAi.Commands.Pipelines.Text do
       }
 
       case VectorDB.ingest(attrs, body) do
-        {:ok, _info}     -> {:ok, Swift.localize(WikiAck.final_ack(title), body)}
+        {:ok, _info}     -> {:ok, Swift.localize(IndexAck.final_ack(title), body)}
         {:error, reason} -> {:error, "ingest failed: #{inspect(reason, limit: 80)}"}
       end
     end
@@ -44,7 +44,7 @@ defmodule DmhAi.Commands.Pipelines.Text do
   defp sha256(s), do: :crypto.hash(:sha256, s) |> Base.encode16(case: :lower)
 
   # First non-empty line — used for kb_sources.title and ack truncation.
-  # No char cap here; WikiAck does the 18-word truncate on display.
+  # No char cap here; IndexAck does the 18-word truncate on display.
   defp title_from_body(body) do
     body
     |> String.split("\n", parts: 2)

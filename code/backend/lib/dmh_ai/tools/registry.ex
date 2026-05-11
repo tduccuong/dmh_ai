@@ -49,14 +49,14 @@ defmodule DmhAi.Tools.Registry do
     DmhAi.Tools.RequestInput,
     DmhAi.Tools.ConnectMcp,
     DmhAi.Tools.ProvisionSshIdentity,
-    DmhAi.Tools.FetchWiki,
+    DmhAi.Tools.FetchIndex,
     DmhAi.Tools.FetchMemo,
     DmhAi.Tools.BrowserNavigate,
     DmhAi.Tools.AuthorizeService,
     DmhAi.Tools.MkDownloadLink
   ]
 
-  # Save tools — runtime-only (invoked by `/wiki` and `/memo` commands
+  # Save tools — runtime-only (invoked by `/index` and `/memo` commands
   # via VectorDB.ingest, NOT by the LLM). They're known to the
   # dispatcher (see `all_local_tools/0`) so direct calls work, but
   # never advertised in any LLM catalog. This eliminates the risk of
@@ -77,10 +77,10 @@ defmodule DmhAi.Tools.Registry do
   (`DmhAi.Agent.Tasks.resolve_num/2`); `nil` means no anchor task,
   in which case only built-ins are returned.
 
-  `fetch_wiki` is dropped from the returned list when the global
-  wiki has no chunks yet — saves the model from being tempted to
+  `fetch_index` is dropped from the returned list when the global
+  index has no chunks yet — saves the model from being tempted to
   call it when there's nothing to look up, and saves the schema's
-  worth of tokens on every turn until the operator `/wiki`s
+  worth of tokens on every turn until the operator `/index`s
   something.
   """
   @spec all_definitions(String.t() | nil, String.t() | nil) :: [map()]
@@ -92,7 +92,7 @@ defmodule DmhAi.Tools.Registry do
 
   defp drop_empty_wiki(defs) do
     if wiki_empty?() do
-      Enum.reject(defs, fn d -> d.name == "fetch_wiki" end)
+      Enum.reject(defs, fn d -> d.name == "fetch_index" end)
     else
       defs
     end
@@ -126,7 +126,7 @@ defmodule DmhAi.Tools.Registry do
   def names, do: Enum.map(@tools, & &1.name())
 
   # Includes save-only tools — used by `known?` and `execute` so the
-  # runtime command path (`/wiki`, `/memo`) can dispatch SaveWiki /
+  # runtime command path (`/index`, `/memo`) can dispatch SaveWiki /
   # SaveMemo even though they're not in any LLM catalog.
   defp all_local_tools, do: @tools ++ @save_only_tools
 

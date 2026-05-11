@@ -6,7 +6,7 @@
 defmodule DmhAi.Agent.BackgroundPipelines do
   @moduledoc """
   Refcounted per-session registry of active background pipelines.
-  Currently used by the `/wiki <url>` crawl (see
+  Currently used by the `/index <url>` crawl (see
   `DmhAi.Commands.Pipelines.URL`); other long-running side
   channels (folder walk, bulk seed run-all, …) can register here
   too.

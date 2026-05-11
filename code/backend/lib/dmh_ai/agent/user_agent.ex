@@ -3540,7 +3540,7 @@ defmodule DmhAi.Agent.UserAgent do
   # clarifying question" as RELATED rather than misreading a terse
   # reply (a status name, a "yes", an account number) as DONE/UNRELATED.
   # Filtered to plain assistant text — we drop kind-tagged rows
-  # (`command_ack` from /wiki, /memo) since those aren't conversational.
+  # (`command_ack` from /index, /memo) since those aren't conversational.
   # Returns nil when no usable prior assistant text exists.
   defp last_assistant_msg_for(session_id) when is_binary(session_id) do
     try do

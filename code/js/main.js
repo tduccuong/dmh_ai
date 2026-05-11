@@ -556,9 +556,9 @@ const UIManager = {
             document.getElementById('user-dropdown').classList.remove('open');
             SettingsModal.open('page-conversation');
         });
-        document.getElementById('user-wiki-seeds-btn').addEventListener('click', function() {
+        document.getElementById('user-index-seeds-btn').addEventListener('click', function() {
             document.getElementById('user-dropdown').classList.remove('open');
-            SettingsModal.open('page-wiki-seeds');
+            SettingsModal.open('page-index-seeds');
         });
         document.getElementById('user-mcp-catalog-btn').addEventListener('click', function() {
             document.getElementById('user-dropdown').classList.remove('open');
@@ -604,7 +604,7 @@ const UIManager = {
             // admin-only sections inside the page self-gate via
             // `data-admin-only="true"` and the SettingsModal.open hook.
             document.getElementById('user-conv-settings-btn').style.display = '';
-            document.getElementById('user-wiki-seeds-btn').style.display = isAdmin ? '' : 'none';
+            document.getElementById('user-index-seeds-btn').style.display = isAdmin ? '' : 'none';
             document.getElementById('user-mcp-catalog-btn').style.display = isAdmin ? '' : 'none';
             document.getElementById('user-oauth-catalog-btn').style.display = isAdmin ? '' : 'none';
             // Conv Settings is visible to all, so the separator above

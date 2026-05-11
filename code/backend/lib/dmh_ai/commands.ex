@@ -10,7 +10,7 @@ defmodule DmhAi.Commands do
   Two commands, both intercepted by the chat HTTP entry BEFORE the
   agent loop runs:
 
-    * `/wiki <text|url|file|folder>` — save into the global wiki.
+    * `/index <text|url|file|folder>` — save into the global index.
       Runtime runs the ingest pipeline; ack as `kind="command_ack"`.
       No LLM round-trip on the assistant model.
 
@@ -39,20 +39,20 @@ defmodule DmhAi.Commands do
           {:handled, non_neg_integer()} | :not_a_command
   def dispatch(content, session_id, user_id, lang \\ "en") when is_binary(content) do
     case Parser.parse(content) do
-      {:wiki, arg} -> run_wiki(arg, content, session_id, user_id) |> finalize_command(session_id, user_id, content)
+      {:index, arg} -> run_index(arg, content, session_id, user_id) |> finalize_command(session_id, user_id, content)
       {:memo, arg} -> Memo.run(arg, content, session_id, user_id, lang)
       _            -> :not_a_command
     end
   end
 
-  # ─── /wiki ────────────────────────────────────────────────────────────────
+  # ─── /index ────────────────────────────────────────────────────────────────
 
-  defp run_wiki(arg, _original, session_id, user_id) do
+  defp run_index(arg, _original, session_id, user_id) do
     arg = String.trim(arg)
 
     cond do
       arg == "" ->
-        {:ok, "Usage: `/wiki <text | url | absolute file path | absolute folder path>`"}
+        {:ok, "Usage: `/index <text | url | absolute file path | absolute folder path>`"}
 
       Pipelines.URL.url?(arg) ->
         Pipelines.URL.run_async(arg, session_id, user_id)
@@ -68,7 +68,7 @@ defmodule DmhAi.Commands do
     end
   end
 
-  # `/wiki` and `/memo` (save path) ack persistence — both messages
+  # `/index` and `/memo` (save path) ack persistence — both messages
   # tagged `kind` so ContextEngine excludes them from LLM context
   # (audit log, not conversation). Returns `user_ts` so the chat
   # entry can patch the FE's optimistic user-message ts; without

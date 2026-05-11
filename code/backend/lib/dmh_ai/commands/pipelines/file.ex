@@ -5,7 +5,7 @@
 
 defmodule DmhAi.Commands.Pipelines.File do
   @moduledoc """
-  File `/wiki` pipeline — extract via the existing `extract_content`
+  File `/index` pipeline — extract via the existing `extract_content`
   tool, then index. Synchronous for files under `learn_sync_max_file_bytes`
   (default 5 MB); larger files route to the async path (handled by the
   caller — `DmhAi.Commands` checks file size + dispatches accordingly).
@@ -16,7 +16,7 @@ defmodule DmhAi.Commands.Pipelines.File do
   alias DmhAi.VectorDB
   alias DmhAi.Agent.Swift
   alias DmhAi.Tools.ExtractContent
-  alias DmhAi.Commands.WikiAck
+  alias DmhAi.Commands.IndexAck
 
   @doc "Heuristic — does the arg look like a file path that exists?"
   @spec file?(String.t()) :: boolean()
@@ -45,14 +45,14 @@ defmodule DmhAi.Commands.Pipelines.File do
             # Localize using the file body as the language signal —
             # it's the strongest signal we have (the path is usually
             # English-ish regardless of the user).
-            {:ok, Swift.localize(WikiAck.final_ack(Path.basename(path)), body)}
+            {:ok, Swift.localize(IndexAck.final_ack(Path.basename(path)), body)}
 
           {:error, reason} ->
             {:error, "ingest failed: #{inspect(reason, limit: 80)}"}
         end
 
       {:ok, _other} ->
-        {:error, "extract_content returned non-text result for `#{path}` — only text-extractable files can be /wiki'd"}
+        {:error, "extract_content returned non-text result for `#{path}` — only text-extractable files can be /index'd"}
 
       {:error, reason} ->
         {:error, "couldn't extract `#{Path.basename(path)}`: #{reason}"}

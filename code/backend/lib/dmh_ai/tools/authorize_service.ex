@@ -41,7 +41,7 @@ defmodule DmhAi.Tools.AuthorizeService do
   @impl true
   def description do
     """
-    Authorize the user against an OAuth-protected REST service that the operator has wired into the catalog. Use this when you've discovered (via training, fetch_wiki, web_search, or a probe response) that a URL needs OAuth before you can call it.
+    Authorize the user against an OAuth-protected REST service that the operator has wired into the catalog. Use this when you've discovered (via training, fetch_index, web_search, or a probe response) that a URL needs OAuth before you can call it.
 
     `target` may be a catalog slug (preferred), a host (`api.example.com`), or a full URL — the runtime matches by host suffix.
 

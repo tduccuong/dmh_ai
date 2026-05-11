@@ -798,7 +798,7 @@ function buildMessageEntryNode(msg, sessionId, renderSession, progressRows) {
     div.className = 'message ' + msg.role;
     // `kind="command"` / `kind="command_ack"` are BE-only markers
     // (see specs/commands.md) — the runtime uses them to filter
-    // /memo (save path) and /wiki out of the LLM context. From the
+    // /memo (save path) and /index out of the LLM context. From the
     // user's perspective those are ordinary chat messages, so we
     // render them identically.
     var hdr = buildMsgHeaderEl(msg, renderSession);
@@ -1123,7 +1123,7 @@ UIManager.renderChat = function() {
     // We only do this slice when a streaming placeholder will exist
     // for this session — i.e., a chain is in flight (the placeholder
     // is/will-be in the DOM) OR `_streamMap` has an entry queued for
-    // it. For background pipelines without a chain (the `/wiki` URL
+    // it. For background pipelines without a chain (the `/index` URL
     // crawl emits per-page progress rows but never spins up a chain
     // / streaming placeholder), leaving the slice on would orphan
     // every row — they'd disappear from the live FE until a final

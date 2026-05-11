@@ -5,7 +5,7 @@
 
 defmodule DmhAi.Commands.Pipelines.URL do
   @moduledoc """
-  URL `/wiki` pipeline. Sequential BFS crawl over same-prefix pages,
+  URL `/index` pipeline. Sequential BFS crawl over same-prefix pages,
   bounded by `learn_url_max_depth` and `learn_url_max_pages`
   (AgentSettings). Each page's fetch+ingest emits a
   `session_progress` 'tool' row labeled `IndexWiki -> <sliced url>`,
@@ -23,7 +23,7 @@ defmodule DmhAi.Commands.Pipelines.URL do
   alias DmhAi.VectorDB
   alias DmhAi.Web.Fetcher
   alias DmhAi.Agent.{AgentSettings, BackgroundPipelines, Swift, SessionProgress, UserAgentMessages}
-  alias DmhAi.Commands.WikiAck
+  alias DmhAi.Commands.IndexAck
   require Logger
 
   @max_chars_per_page 200_000
@@ -97,7 +97,7 @@ defmodule DmhAi.Commands.Pipelines.URL do
 
     # URL itself carries no language signal — Swift defaults to
     # English here, which is the right behaviour for path-shaped args.
-    {:ok, Swift.localize(WikiAck.accepted_ack(url), url)}
+    {:ok, Swift.localize(IndexAck.accepted_ack(url), url)}
   end
 
   # Top-level crawl: derive same-prefix scope, BFS until the queue
@@ -407,7 +407,7 @@ defmodule DmhAi.Commands.Pipelines.URL do
   #     → use the parent directory as prefix root.
   #   * no "." → looks like a directory shorthand (`/api/bizproc`)
   #     → treat the path itself as the directory; append `/`.
-  # Without this, `/wiki https://example.com/api/bizproc` (no
+  # Without this, `/index https://example.com/api/bizproc` (no
   # trailing slash, no extension) would derive prefix `/api/`
   # and over-broadly crawl unrelated sections.
   defp same_prefix(url) do

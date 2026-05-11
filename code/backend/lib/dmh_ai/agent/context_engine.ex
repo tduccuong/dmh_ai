@@ -891,7 +891,7 @@ defmodule DmhAi.Agent.ContextEngine do
        when pipeline in [:confidant, :assistant] do
     # Exclude archived messages (previous periodic-task cycles) — visible in FE
     # but not relevant to the LLM's context.
-    # Also exclude `kind: "command"` (user's `/wiki …` text) and
+    # Also exclude `kind: "command"` (user's `/index …` text) and
     # `kind: "command_ack"` (runtime's synthetic ack) — the runtime
     # handled them entirely; they're audit log, not conversation.
     # See specs/commands.md.

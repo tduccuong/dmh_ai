@@ -34,7 +34,7 @@ defmodule DmhAi.Tools.ConnectMcp do
     """
     Attach an MCP server (JSON-RPC `initialize`/`tools/list`/`tools/call`) to the current task.
 
-    Pass `url` for ad-hoc connections (resolve the URL via fetch_wiki → web_search → ask the user; never invent URLs from service names), or `slug` for an admin-curated catalog entry. Pass exactly one of url / slug.
+    Pass `url` for ad-hoc connections (resolve the URL via fetch_index → web_search → ask the user; never invent URLs from service names), or `slug` for an admin-curated catalog entry. Pass exactly one of url / slug.
 
     The runtime detects auth automatically by probing the server — you do NOT pick an auth method. The probe outcome routes the flow:
     - server is open → connected immediately.
@@ -58,7 +58,7 @@ defmodule DmhAi.Tools.ConnectMcp do
         properties: %{
           url: %{
             type: "string",
-            description: "MCP server URL. Use this for ad-hoc connections — pass `slug` instead to use a catalog entry. Resolve the URL via fetch_wiki → web_search → ask the user. Never invent URLs from service names."
+            description: "MCP server URL. Use this for ad-hoc connections — pass `slug` instead to use a catalog entry. Resolve the URL via fetch_index → web_search → ask the user. Never invent URLs from service names."
           },
           slug: %{
             type: "string",

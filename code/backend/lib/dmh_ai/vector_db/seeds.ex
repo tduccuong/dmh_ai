@@ -5,12 +5,12 @@
 
 defmodule DmhAi.VectorDB.Seeds do
   @moduledoc """
-  Wiki Seeds — admin-curated URLs that feed the global
-  `:knowledge` scope via the same `/wiki <url>` pipeline. Sugar over
-  `/wiki` with a pre-loaded list of well-known platform docs to save
+  Index Seeds — admin-curated URLs that feed the global
+  `:knowledge` scope via the same `/index <url>` pipeline. Sugar over
+  `/index` with a pre-loaded list of well-known platform docs to save
   the admin from having to discover URLs themselves.
 
-  See specs/vector_kb.md §"Wiki Seeds".
+  See specs/vector_kb.md §"Index Seeds".
   """
 
   alias DmhAi.Repo
@@ -23,7 +23,7 @@ defmodule DmhAi.VectorDB.Seeds do
   Idempotent merge of `priv/kb_seeds/preloaded.json` into `kb_seeds`.
   Inserts only URLs not already present — admin edits are never
   overwritten. Called automatically on first admin visit to
-  /admin/wiki-seeds.
+  /admin/index-seeds.
   """
   @spec ensure_preloaded() :: :ok
   def ensure_preloaded do

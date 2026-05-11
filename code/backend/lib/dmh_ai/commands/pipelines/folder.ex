@@ -5,7 +5,7 @@
 
 defmodule DmhAi.Commands.Pipelines.Folder do
   @moduledoc """
-  Folder `/wiki` pipeline. Recursively walks the path, applies
+  Folder `/index` pipeline. Recursively walks the path, applies
   skiplist (`.git`, `node_modules`, etc.) + extension whitelist + size
   cap, runs each file through the File pipeline. Always async — folder
   walks can be slow.
@@ -18,7 +18,7 @@ defmodule DmhAi.Commands.Pipelines.Folder do
 
   alias DmhAi.Commands.Pipelines.File, as: FilePipe
   alias DmhAi.Agent.{Swift, UserAgentMessages}
-  alias DmhAi.Commands.WikiAck
+  alias DmhAi.Commands.IndexAck
   require Logger
 
   @skip_dirs MapSet.new([
@@ -51,7 +51,7 @@ defmodule DmhAi.Commands.Pipelines.Folder do
 
     # Path arg is a weak language signal; Swift defaults to English
     # for path-shaped commands, which is fine.
-    {:ok, Swift.localize(WikiAck.accepted_ack(root), root)}
+    {:ok, Swift.localize(IndexAck.accepted_ack(root), root)}
   end
 
   # Public for tests — walks the tree and returns the eligible-files
@@ -88,7 +88,7 @@ defmodule DmhAi.Commands.Pipelines.Folder do
 
     final_text =
       Swift.localize(
-        WikiAck.final_ack(root) <> " (#{indexed} indexed, #{skipped} skipped#{err_summary})",
+        IndexAck.final_ack(root) <> " (#{indexed} indexed, #{skipped} skipped#{err_summary})",
         root
       )
 

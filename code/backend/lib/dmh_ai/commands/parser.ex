@@ -7,7 +7,7 @@ defmodule DmhAi.Commands.Parser do
   @moduledoc """
   Slash-command tokenizer. Recognises:
 
-    * `/wiki <input>`  — save into the global wiki (runtime, no LLM round-trip)
+    * `/index <input>`  — save into the global index (runtime, no LLM round-trip)
     * `/memo <input>`  — save OR query the user's memo store; runtime
       classifies via Oracle (see `DmhAi.Commands.Memo`).
 
@@ -18,7 +18,7 @@ defmodule DmhAi.Commands.Parser do
   """
 
   @type result ::
-          {:wiki, String.t()}
+          {:index, String.t()}
           | {:memo, String.t()}
           | :not_a_command
 
@@ -27,8 +27,8 @@ defmodule DmhAi.Commands.Parser do
     trimmed = String.trim_leading(content)
 
     cond do
-      String.starts_with?(trimmed, "/wiki ") -> {:wiki, after_prefix(trimmed, "/wiki ")}
-      trimmed == "/wiki"                     -> {:wiki, ""}
+      String.starts_with?(trimmed, "/index ") -> {:index, after_prefix(trimmed, "/index ")}
+      trimmed == "/index"                     -> {:index, ""}
       String.starts_with?(trimmed, "/memo ") -> {:memo, after_prefix(trimmed, "/memo ")}
       trimmed == "/memo"                     -> {:memo, ""}
       true                                    -> :not_a_command

@@ -6,7 +6,7 @@
 defmodule DmhAi.VectorDB.Relearn do
   @moduledoc """
   Background re-fetch supervisor for stale KB sources. Trigger:
-  `enqueue_for_hits/1` is called from `fetch_wiki` after every
+  `enqueue_for_hits/1` is called from `fetch_index` after every
   successful query, with the list of hits. For each unique
   `source_ref`, we `INSERT OR IGNORE` into `kb_relearn_jobs`
   (cross-user / cross-process dedup) and start a Task under the
@@ -102,11 +102,11 @@ defmodule DmhAi.VectorDB.Relearn do
   end
 
   # Default worker — re-fetches a stale source via the same pipeline
-  # `/wiki` uses for the matching kind. Inline-text sources (sha256
+  # `/index` uses for the matching kind. Inline-text sources (sha256
   # source_ref) are filtered out at enqueue time; we still defensively
   # skip them here. The KB ingest is global (`:knowledge` scope, no
   # user_id) — relearn doesn't post chat messages because there's no
-  # session/user context tied to the original /wiki.
+  # session/user context tied to the original /index.
   defp noop_worker(kind, ref) do
     Logger.info("[Relearn] worker re-fetching #{kind}:#{ref}")
 

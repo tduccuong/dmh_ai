@@ -300,7 +300,7 @@ defmodule DmhAi.Handlers.Data do
         bg_pipeline_active? = DmhAi.Agent.BackgroundPipelines.active?(session_id)
 
         # Skip cleanup while a chain is iterating OR a background
-        # pipeline (e.g. /wiki URL crawl) is registered. Each
+        # pipeline (e.g. /index URL crawl) is registered. Each
         # crawl-emitted row stays pending much longer than the
         # 30-s threshold while the cloud embedder works through
         # the page's chunks — without this guard, the sweeper
@@ -603,7 +603,7 @@ defmodule DmhAi.Handlers.Data do
               %{"role" => "user", "content" => content} when is_binary(content) ->
                 trimmed = String.trim(content)
 
-                # /memo and /wiki are user intent for the KB layer, not
+                # /memo and /index are user intent for the KB layer, not
                 # conversation about a topic. Skip them so they don't
                 # bias the title.
                 if trimmed == "" or CommandParser.parse(content) != :not_a_command do

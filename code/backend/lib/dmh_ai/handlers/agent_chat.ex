@@ -131,7 +131,7 @@ defmodule DmhAi.Handlers.AgentChat do
           if content == "", do: paths, else: content <> "\n\n" <> paths
         end
 
-      # Slash-command intercept (`/wiki`, `/memo`). Runs BEFORE the
+      # Slash-command intercept (`/index`, `/memo`). Runs BEFORE the
       # LLM dispatch, persists its own user + synthetic ack rows,
       # returns immediately. See specs/commands.md.
       #
@@ -189,7 +189,7 @@ defmodule DmhAi.Handlers.AgentChat do
     if not has_payload do
       json(conn, 400, %{error: "Missing content"})
     else
-      # Slash-command intercept (`/wiki`, `/memo`). Same dispatch as the
+      # Slash-command intercept (`/index`, `/memo`). Same dispatch as the
       # Assistant route — Memo runtime is mode-agnostic. Runs BEFORE the
       # LLM dispatch, persists its own user + synthetic ack rows, returns
       # immediately. See specs/commands.md §Command parser.

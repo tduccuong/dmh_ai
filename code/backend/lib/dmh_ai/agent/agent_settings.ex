@@ -276,11 +276,11 @@ defmodule DmhAi.Agent.AgentSettings do
   # retrieval). qwen3-embedding-0.6b emits 1024-dim vectors; changing
   # `kb_embedding_dim` requires a full reindex (the SQLite-blob backend
   # rejects mismatched rows on insert).
-  # Knowledge-scope (`/wiki`) chunking — long curated documents.
+  # Knowledge-scope (`/index`) chunking — long curated documents.
   @kb_chunk_tokens_default 400
   @kb_chunk_overlap_tokens_default 60
 
-  # `/wiki <url>` BFS crawl. v1 was single-page; v2 (#178) walks
+  # `/index <url>` BFS crawl. v1 was single-page; v2 (#178) walks
   # same-prefix pages up to a depth + page cap, indexing each. The
   # caps are conservative defaults for typical doc sites; raise
   # `learn_url_max_pages` for a deep API reference, lower
@@ -324,7 +324,7 @@ defmodule DmhAi.Agent.AgentSettings do
   # §Confidant memo auto-retrieve.
   @memo_context_top_k_default 5
 
-  # Inline-text /wiki semantic-merge gate — a new body whose centroid
+  # Inline-text /index semantic-merge gate — a new body whose centroid
   # is at-or-above this cosine score against an existing source merges
   # into that source instead of creating a new one. High enough that
   # distinct topics don't collapse, low enough that "same content with
@@ -677,11 +677,11 @@ defmodule DmhAi.Agent.AgentSettings do
   def web_results_max_chars,
     do: int_setting("webResultsMaxChars", @web_results_max_chars_default)
 
-  @doc "Target chunk size (tokens) for `/wiki` (knowledge-scope) ingestion."
+  @doc "Target chunk size (tokens) for `/index` (knowledge-scope) ingestion."
   @spec kb_chunk_tokens() :: pos_integer()
   def kb_chunk_tokens, do: int_setting("kbChunkTokens", @kb_chunk_tokens_default)
 
-  @doc "Overlap (tokens) between adjacent `/wiki` chunks."
+  @doc "Overlap (tokens) between adjacent `/index` chunks."
   @spec kb_chunk_overlap_tokens() :: pos_integer()
   def kb_chunk_overlap_tokens, do: int_setting("kbChunkOverlapTokens", @kb_chunk_overlap_tokens_default)
 
@@ -702,11 +702,11 @@ defmodule DmhAi.Agent.AgentSettings do
   @spec kb_top_n() :: pos_integer()
   def kb_top_n, do: int_setting("kbTopN", @kb_top_n_default)
 
-  @doc "Maximum BFS depth for `/wiki <url>` deep-crawl. Start URL is depth 0."
+  @doc "Maximum BFS depth for `/index <url>` deep-crawl. Start URL is depth 0."
   @spec learn_url_max_depth() :: pos_integer()
   def learn_url_max_depth, do: int_setting("learnUrlMaxDepth", @learn_url_max_depth_default)
 
-  @doc "Maximum total pages indexed per `/wiki <url>` invocation."
+  @doc "Maximum total pages indexed per `/index <url>` invocation."
   @spec learn_url_max_pages() :: pos_integer()
   def learn_url_max_pages, do: int_setting("learnUrlMaxPages", @learn_url_max_pages_default)
 

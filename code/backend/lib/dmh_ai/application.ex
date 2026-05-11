@@ -43,7 +43,7 @@ defmodule DmhAi.Application do
       {Task.Supervisor, name: DmhAi.Agent.TaskSupervisor},
       DmhAi.Agent.TaskRuntime,
       # Background re-fetch of stale KB sources triggered by every
-      # fetch_wiki call. See specs/vector_kb.md §Auto-relearn.
+      # fetch_index call. See specs/vector_kb.md §Auto-relearn.
       DmhAi.VectorDB.Relearn
     ] ++
       (if Application.get_env(:dmh_ai, :start_http, true) do

@@ -273,31 +273,31 @@ defmodule DmhAi.Router do
     end
   end
 
-  get "/admin/wiki-seeds" do
+  get "/admin/index-seeds" do
     with {:ok, conn, user} <- check_auth(conn) do
       AdminSeeds.list(conn, user)
     end
   end
 
-  post "/admin/wiki-seeds" do
+  post "/admin/index-seeds" do
     with {:ok, conn, user} <- check_auth(conn) do
       AdminSeeds.create(conn, user)
     end
   end
 
-  delete "/admin/wiki-seeds/:id" do
+  delete "/admin/index-seeds/:id" do
     with {:ok, conn, user} <- check_auth(conn) do
       AdminSeeds.delete(conn, user, id)
     end
   end
 
-  post "/admin/wiki-seeds/:id/run" do
+  post "/admin/index-seeds/:id/run" do
     with {:ok, conn, user} <- check_auth(conn) do
       AdminSeeds.run_one(conn, user, id)
     end
   end
 
-  post "/admin/wiki-seeds/run-all" do
+  post "/admin/index-seeds/run-all" do
     with {:ok, conn, user} <- check_auth(conn) do
       AdminSeeds.run_all(conn, user)
     end
