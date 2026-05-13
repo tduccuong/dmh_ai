@@ -140,53 +140,15 @@ var _subLabelOffsets = new Map();
 function writeProgressLabel(label, raw, _kind) {
     var safe = redactProgressLabel(raw || '');
 
-    // BrowserNavigate sub_labels carry the per-step screenshot path as a
-    // `— .browser/<file>.png` suffix appended by Browser.Loop. Strip
-    // it from the visible text and render a small thumbnail ABOVE the
-    // text (CSS column layout, see app.css `.progress-sub-label`).
-    // Putting the image first means a long step text (~200 chars of
-    // model `reason`) gets ellipsized horizontally without clipping
-    // the thumbnail off-screen — which was the symptom of "screenshots
-    // disappear after a few steps".
-    var shotMatch = safe.match(/\s*[—\-]\s*\.browser\/([\w.\-]+\.png)\s*$/);
-    var shotFile  = shotMatch ? shotMatch[1] : null;
-    var textPart  = shotFile ? safe.slice(0, shotMatch.index).replace(/\s+$/, '') : safe;
-
-    // Clear any previous content. Image (if any) goes first so the
-    // CSS column layout renders it at the top of the cell; text goes
-    // in a child span so the ellipsis-truncation rule applies only to
-    // the text run, not to the image.
+    // Wrap the text in a `.step-text` child so the `::before` arrow
+    // sits inline with it (rather than on the flex-column parent,
+    // where it would stack on its own line at narrow widths).
     label.textContent = '';
-    label.title = textPart;
-
-    if (shotFile && typeof UIManager !== 'undefined' && UIManager.currentSession && UIManager.currentSession.id) {
-        var img = document.createElement('img');
-        img.className = 'browser-step-thumb';
-        img.alt = 'step screenshot';
-        img.loading = 'lazy';
-        img.style.cursor = 'pointer';
-        label.appendChild(img);
-
-        // Auth is `Authorization: Bearer <token>` — `<img src=…>` only
-        // sends cookies, not Authorization headers, so a direct
-        // `img.src = url` would 401. Same blob-URL pattern as the
-        // lightbox in ui.js: apiFetch (which adds the Bearer header)
-        // → blob → object URL → img.src.
-        var url = '/sessions/' + encodeURIComponent(UIManager.currentSession.id) +
-                  '/browser-screenshot/' + encodeURIComponent(shotFile);
-        apiFetch(url)
-            .then(function(r) { if (!r.ok) throw new Error('shot fetch ' + r.status); return r.blob(); })
-            .then(function(blob) {
-                var objUrl = URL.createObjectURL(blob);
-                img.src = objUrl;
-                img.addEventListener('click', function() { window.open(objUrl, '_blank', 'noopener'); });
-            })
-            .catch(function() { /* leave the broken-image rectangle hidden via CSS or just empty */ });
-    }
+    label.title = safe;
 
     var textSpan = document.createElement('span');
     textSpan.className = 'step-text';
-    textSpan.textContent = textPart;
+    textSpan.textContent = safe;
     label.appendChild(textSpan);
 }
 

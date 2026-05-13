@@ -1,0 +1,109 @@
+{
+  "client_viewport": {
+    "h": 844,
+    "is_mobile": true,
+    "w": 390
+  },
+  "constraints": null,
+  "daemon_calls": [
+    {
+      "command": "navigate",
+      "result": {
+        "status": 200,
+        "title": "ExampleTest",
+        "url": "https://example.test/article"
+      }
+    },
+    {
+      "command": "observe",
+      "result": {
+        "elements": [
+          {
+            "h": 24,
+            "idx": 1,
+            "tag": "a",
+            "text": "Read more",
+            "w": 80,
+            "x": 20,
+            "y": 100
+          },
+          {
+            "h": 36,
+            "idx": 2,
+            "tag": "button",
+            "text": "Subscribe",
+            "w": 100,
+            "x": 20,
+            "y": 140
+          }
+        ],
+        "image_b64": "/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAABAAEDAREAAhEBAxEB/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/xAAUAQEAAAAAAAAAAAAAAAAAAAAA/8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAwDAQACEQMRAD8AVN//2Q==",
+        "mime": "image/jpeg",
+        "title": "ExampleTest",
+        "url": "https://example.test/article",
+        "viewport": {
+          "h": 844,
+          "w": 390
+        }
+      }
+    },
+    {
+      "command": "extract_text",
+      "result": {
+        "matches": 1,
+        "text": "Welcome to ExampleTest — a demo site. Featured today: widget engineering, a CEO interview, the weekly roundup. Sign up for the newsletter at the bottom.",
+        "url": "https://example.test/article"
+      }
+    },
+    {
+      "command": "observe",
+      "result": {
+        "elements": [
+          {
+            "h": 24,
+            "idx": 1,
+            "tag": "a",
+            "text": "Read more",
+            "w": 80,
+            "x": 20,
+            "y": 100
+          },
+          {
+            "h": 36,
+            "idx": 2,
+            "tag": "button",
+            "text": "Subscribe",
+            "w": 100,
+            "x": 20,
+            "y": 140
+          }
+        ],
+        "image_b64": "/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAABAAEDAREAAhEBAxEB/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/xAAUAQEAAAAAAAAAAAAAAAAAAAAA/8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAwDAQACEQMRAD8AVN//2Q==",
+        "mime": "image/jpeg",
+        "title": "ExampleTest",
+        "url": "https://example.test/article",
+        "viewport": {
+          "h": 844,
+          "w": 390
+        }
+      }
+    }
+  ],
+  "expected": {
+    "status": "completed",
+    "turns": 2
+  },
+  "goal": "Describe the front-page content.",
+  "llm_pairs": [
+    {
+      "observation": "URL:      https://example.test/article\nTITLE:    ExampleTest\nVIEWPORT: 390×844 (mobile)\n\nELEMENTS (visible interactives, target by `index`):\n  [1] a        \"Read more\"\n  [2] button   \"Subscribe\"\n\nRECENT ACTIONS (last 5):\n  (none)\n\nGoal:        Describe the front-page content.\nConstraints: (none)\n\nEmit your next action as JSON:\n{ \"action\": \"<verb>\", \"args\": {...}, \"reason\": \"<one line>\" }\n",
+      "response": "{\"action\":\"extract_text\",\"args\":{},\"reason\":\"Read the page to satisfy the describe goal.\"}"
+    },
+    {
+      "observation": "URL:      https://example.test/article\nTITLE:    ExampleTest\nVIEWPORT: 390×844 (mobile)\n\nELEMENTS (visible interactives, target by `index`):\n  [1] a        \"Read more\"\n  [2] button   \"Subscribe\"\n\nRECENT ACTIONS (last 5):\n  T-1  extract_text → ok\n\nEXTRACTED_TEXT (from last extract_text — use this content to satisfy the goal, or call `complete` with the relevant slice in `result`):\nWelcome to ExampleTest — a demo site. Featured today: widget engineering, a CEO interview, the weekly roundup. Sign up for the newsletter at the bottom.\n\nGoal:        Describe the front-page content.\nConstraints: (none)\n\nEmit your next action as JSON:\n{ \"action\": \"<verb>\", \"args\": {...}, \"reason\": \"<one line>\" }\n",
+      "response": "{\"action\":\"complete\",\"args\":{\"reason\":\"Content read; goal satisfied.\",\"result\":\"ExampleTest features widget engineering, a CEO interview, and the weekly roundup.\"}}"
+    }
+  ],
+  "scenario": "read_only_extract",
+  "url": "https://example.test/article"
+}

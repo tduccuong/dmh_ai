@@ -45,21 +45,32 @@ if ! docker image inspect dmh-ai-sandbox:latest >/dev/null 2>&1; then
 fi
 
 echo "[test.sandbox] starting $SANDBOX (data=$TMP)"
+# Use the image's default CMD (`/sandbox-start.sh`) so the browser
+# daemon spawns automatically — R09's enumerate_interactives test
+# needs it. Other R-tests don't, but daemon-up is harmless when no
+# one calls it. CAP_NET_ADMIN is granted so iptables rules apply;
+# without it start.sh's iptables lines no-op (warned via stderr)
+# and the sandbox runs without the per-uid LAN fence — acceptable
+# inside a throwaway test container.
 docker run -d --name "$SANDBOX" \
+  --cap-add=NET_ADMIN \
   -v "$TMP/user_workspaces:/data/user_workspaces" \
   -v "$TMP/user_assets:/data/user_assets" \
   -v "$TMP/run/dmh-browser:/var/run/dmh-browser" \
-  dmh-ai-sandbox:latest \
-  tail -f /dev/null >/dev/null
+  -v "$BACKEND/test/sandbox/browser_fixtures:/test_fixtures/browser_pages:ro" \
+  dmh-ai-sandbox:latest >/dev/null
 
-# Wait for the sandbox to be healthy enough that `docker exec` will
-# work — the `tail -f` PID 1 is up, but sometimes the container
-# state hasn't transitioned yet.
-for i in 1 2 3 4 5; do
-  if docker exec "$SANDBOX" true 2>/dev/null; then
+# Wait for the sandbox to be healthy and the browser daemon to bind
+# its socket. start.sh's supervisor takes a few hundred ms to spawn
+# the daemon; the daemon takes another ~1s to launch Chromium and
+# bind /var/run/dmh-browser/daemon.sock. Poll on the socket file's
+# presence rather than a fixed sleep so fast machines aren't slowed.
+for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  if docker exec "$SANDBOX" true 2>/dev/null \
+     && [ -S "$TMP/run/dmh-browser/daemon.sock" ]; then
     break
   fi
-  sleep 0.4
+  sleep 0.5
 done
 
 # Per-uid 0700 fence on user_assets is established by SandboxUser
@@ -77,6 +88,7 @@ docker run --rm \
   -v dmh_test_build:/work/_build \
   -e DMHAI_TEST_SANDBOX_CONTAINER="$SANDBOX" \
   -e DMHAI_TEST_TMP_DIR=/data \
+  -e REGENERATE_FIXTURES="${REGENERATE_FIXTURES:-}" \
   -e MIX_ENV=test \
   -e MIX_DEPS_PATH=/deps_cache \
   "$RUNNER_IMAGE" \

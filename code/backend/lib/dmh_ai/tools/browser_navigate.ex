@@ -6,10 +6,12 @@
 defmodule DmhAi.Tools.BrowserNavigate do
   @moduledoc """
   Drives a real Chromium browser inside the sandbox to carry out
-  authenticated, multi-step tasks on the user's behalf — *"go to
-  shop-apotheke.com, find ibuprofen 400mg, add it to the cart"* style.
+  authenticated, multi-step tasks on the user's behalf — both
+  read-style work (account lookups, fetching logged-in pages) and
+  interactive work (form fills, multi-step checkout flows up to but
+  not including the final payment / final-submit step).
 
-  ## Implementation (v0 — #215, #219, #220)
+  ## Implementation
 
   Three pieces:
 
@@ -23,9 +25,10 @@ defmodule DmhAi.Tools.BrowserNavigate do
       (`code/sandbox/browser_daemon.py`) — one Chromium per
       deployment, BrowserContext-per-user, Unix-socket IPC.
 
-    - **Action loop** (`DmhAi.Browser.Loop`) — observe→ask→act with
-      `browserAgentModel`, capped by `browserMaxTurnsPerTask` and
-      `browserMaxRuntimeMs`.
+    - **Action loop** (`DmhAi.Browser.Loop`) — pure-vision
+      screenshot→ask→dispatch against the Navigator tier
+      (`navigatorModel`), capped by `browserMaxTurnsPerTask`,
+      `browserMaxRuntimeMs`, and a `browserStuckActionLimit` detector.
 
   ## Consent gate
 
@@ -65,7 +68,7 @@ defmodule DmhAi.Tools.BrowserNavigate do
   @impl true
   def description do
     """
-    Drive a real Chromium browser to complete a multi-step task on a website using the user's own login. Use for things like \"check current price of X on shop-apotheke.com\" or \"find the latest order in my account on Y\". Authentication, captchas, and 2FA are handed back to the user via an embedded browser view; payment confirmation is always done by the user, not by you.
+    Drive a real Chromium browser to complete a task on a website on the user's behalf. Covers both READ-style work (look up account information, read a price, fetch the content of a logged-in-only page) and INTERACTIVE work (navigate menus, fill forms, advance through multi-step flows such as checkouts or sign-ups) up to — but not including — a final-submit / payment step, which the user always confirms separately. The in-browser agent uses the user's persistent storage (cookies, prior login state). If the page presents a blocking external prompt (login wall on an account the user is not yet signed into, captcha, 2FA) the task halts with that situation reported back; the user resolves it out-of-band and the task can be retried. Prefer this tool over passive web search whenever the user's request implies operating the site (clicking, typing, navigating, filling, advancing through a flow) rather than merely reading public information.
     """
   end
 
@@ -79,15 +82,15 @@ defmodule DmhAi.Tools.BrowserNavigate do
         properties: %{
           url: %{
             type: "string",
-            description: "Starting URL. Must be https://. Will be opened in the headless browser; from there the agent navigates as needed."
+            description: "Starting URL. Must be https://. The in-browser agent navigates from there as needed."
           },
           goal: %{
             type: "string",
-            description: "Plain-English description of what to accomplish on the site. Be specific — include product names, sizes, account-section names, the user's stated preferences. Stop short of any payment / final-submit step; a separate confirmation flow handles that."
+            description: "Plain-English description of what to accomplish on the site. Be specific: name the target section, the field values to enter, the product/option/preference identifiers, and any acceptance criteria for 'done'. For interactive flows, include enough context for the in-browser agent to fill forms correctly without guessing. Always stop short of the final-submit / payment step — a separate confirmation flow handles that."
           },
           constraints: %{
             type: "string",
-            description: "Optional: hard guardrails the agent must obey (\"do not switch to a different brand\", \"only use the saved address\", etc.). Plain English."
+            description: "Optional. Hard guardrails the in-browser agent must obey: limits on substitutions, required vs forbidden options, address / payment-method restrictions, anything the agent must NOT touch. Plain English. Use this to encode user-stated rules that override the in-browser agent's defaults."
           }
         },
         required: ["url", "goal"]

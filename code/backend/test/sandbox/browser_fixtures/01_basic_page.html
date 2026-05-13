@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Basic page</title>
+  <style>
+    body { font-family: sans-serif; margin: 0; padding: 0; }
+    /* Absolute positioning so coordinates in the tests are reliable
+       across browser-engine version bumps. */
+    h1     { position: absolute; left: 20px; top: 20px; margin: 0; font-size: 20px; }
+    #txt   { position: absolute; left: 20px; top: 80px;  width: 280px; height: 36px;
+             padding: 0 8px; font-size: 16px; box-sizing: border-box; }
+    #btn   { position: absolute; left: 20px; top: 140px; width: 120px; height: 40px;
+             padding: 0; font-size: 16px; box-sizing: border-box; }
+    #link  { position: absolute; left: 200px; top: 200px; font-size: 14px; }
+    #out   { position: absolute; left: 20px; top: 240px; font-size: 14px;
+             min-height: 1em; }
+    .filler { position: absolute; left: 0; top: 800px; width: 100%; height: 1800px;
+              background: linear-gradient(#fafafa, #d8d8d8); }
+    #bottom { position: absolute; left: 0; top: 2400px; }
+  </style>
+</head>
+<body>
+  <h1>R10 verb coverage</h1>
+  <form id="frm"
+        onsubmit="document.getElementById('out').textContent='SUBMITTED:'+document.getElementById('txt').value;return false;">
+    <input id="txt" type="text" placeholder="type here">
+    <button id="btn" type="button"
+            onclick="document.getElementById('out').textContent='CLICKED:'+document.getElementById('txt').value">
+      Submit
+    </button>
+  </form>
+  <a id="link" href="#bottom">Jump to bottom</a>
+  <div id="out"></div>
+
+  <div class="filler"></div>
+  <div id="bottom">Bottom marker</div>
+</body>
+</html>

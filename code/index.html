@@ -400,6 +400,22 @@
                     </div>
                     <div class="settings-section">
                         <div class="settings-section-title">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M16.24 7.76L14.12 14.12 7.76 16.24l2.12-6.36z"/></svg>
+                            Navigator — browser action loop
+                        </div>
+                        <div class="settings-subsection settings-subsection-help">
+                            Used for: <code>browser_navigate</code>. Sees a viewport screenshot each turn and emits coord-based actions. Must be vision-capable.
+                        </div>
+                        <div class="settings-subsection">
+                            <div class="role-picker-current" id="navigator-model-current"></div>
+                            <div class="settings-search-wrap">
+                                <input id="navigator-model-search" class="settings-input" placeholder="Search model name...">
+                                <div class="settings-suggestions" id="navigator-model-suggestions"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="settings-section">
+                        <div class="settings-section-title">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
                             Vector Embedding
                         </div>

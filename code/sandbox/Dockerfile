@@ -74,10 +74,10 @@ RUN pip3 install --no-cache-dir --break-system-packages \
 # (isolation.md §Per-user account provisioning).
 RUN useradd -m -u 10000 -s /bin/bash dmh_ai-master-u
 
-# Browser daemon (Phase 2 of #215). One Playwright process holding
-# one Chromium for the whole deployment, BrowserContext-per-user.
-# Bound to /var/run/dmh-browser/daemon.sock — start.sh creates the
-# directory at boot.
+# Browser daemon — pure-vision (Navigator). One Playwright process
+# holds ONE Chromium for the whole deployment, with one BrowserContext
+# per user_id and one Page per (user_id, session_id). Bound to
+# /var/run/dmh-browser/daemon.sock — start.sh creates the directory.
 COPY browser_daemon.py /sandbox-browser-daemon.py
 RUN chmod +x /sandbox-browser-daemon.py
 

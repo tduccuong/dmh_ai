@@ -49,7 +49,8 @@ defmodule DmhAi.Adapters.Http do
       files:            Keyword.get(opts, :files, []),
       metadata:         Keyword.get(opts, :metadata, %{}),
       timezone:         Keyword.get(opts, :timezone),
-      local_date:       Keyword.get(opts, :local_date)
+      local_date:       Keyword.get(opts, :local_date),
+      client_viewport:  Keyword.get(opts, :client_viewport)
     }
 
     UserAgent.dispatch_assistant(user_id, command)

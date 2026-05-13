@@ -63,42 +63,6 @@ defmodule DmhAi.Handlers.Data do
     end
   end
 
-  # GET /sessions/:session_id/browser-screenshot/:file_name
-  # Serves a per-step PNG that Browser.Loop captured into
-  # `<session_workspace>/.browser/<file_name>` via the sandbox daemon.
-  # Narrow, runtime-written path — distinct from the wider workspace
-  # tree (which is not served by /assets, see comment above
-  # get_asset). Validates session ownership AND that the resolved path
-  # stays inside the .browser/ subdir (path-traversal guard).
-  def get_browser_screenshot(conn, user, session_id, file_name) do
-    # Reject anything that isn't a bare filename (no slashes, no `..`,
-    # no leading dot beyond the file extension).
-    if String.contains?(file_name, "/") or String.contains?(file_name, "..") do
-      json(conn, 400, %{error: "Invalid filename"})
-    else
-      browser_dir = Path.join(DmhAi.Constants.session_workspace_dir(user.email, session_id), ".browser")
-      file_path   = Path.expand(Path.join(browser_dir, file_name))
-      browser_real = Path.expand(browser_dir)
-
-      cond do
-        not String.starts_with?(file_path, browser_real <> "/") ->
-          json(conn, 400, %{error: "Invalid path"})
-
-        not File.regular?(file_path) ->
-          json(conn, 404, %{error: "Not found"})
-
-        true ->
-          data = File.read!(file_path)
-
-          conn
-          |> put_resp_content_type("image/png")
-          |> put_resp_header("content-length", to_string(byte_size(data)))
-          |> put_resp_header("cache-control", "private, max-age=300")
-          |> send_resp(200, data)
-      end
-    end
-  end
-
   # GET /sessions
   def get_sessions(conn, user) do
     result =

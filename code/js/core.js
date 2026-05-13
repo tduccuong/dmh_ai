@@ -593,6 +593,20 @@ function apiFetch(url, options) {
     } catch (e) {
         // Older browsers / no Intl support → BE falls back to UTC date.
     }
+    // Send the chat-tab viewport on every request. The BE's chat
+    // handler reads X-Client-Viewport on assistant dispatch and
+    // forwards into the tool ctx so `browser_navigate` opens the
+    // sandbox-side Page at the same device class as the user's
+    // actual chat tab. Format: "<w>x<h>;mobile=<bool>".
+    try {
+        var w = window.innerWidth, h = window.innerHeight;
+        var isMobile = !!(window.matchMedia &&
+            window.matchMedia('(pointer: coarse)').matches);
+        options.headers['X-Client-Viewport'] = w + 'x' + h + ';mobile=' + isMobile;
+    } catch (e) {
+        // No window in test contexts / SSR → BE falls back to its
+        // safety viewport.
+    }
     return fetch(url, options);
 }
 

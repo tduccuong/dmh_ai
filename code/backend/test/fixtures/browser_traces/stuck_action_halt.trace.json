@@ -1,0 +1,159 @@
+{
+  "client_viewport": {
+    "h": 844,
+    "is_mobile": true,
+    "w": 390
+  },
+  "constraints": null,
+  "daemon_calls": [
+    {
+      "command": "navigate",
+      "result": {
+        "status": 200,
+        "title": "Stuck page",
+        "url": "https://example.test/stuck"
+      }
+    },
+    {
+      "command": "observe",
+      "result": {
+        "elements": [
+          {
+            "h": 36,
+            "idx": 1,
+            "tag": "button",
+            "text": "A",
+            "w": 60,
+            "x": 20,
+            "y": 200
+          },
+          {
+            "h": 36,
+            "idx": 2,
+            "tag": "button",
+            "text": "B",
+            "w": 60,
+            "x": 100,
+            "y": 200
+          }
+        ],
+        "image_b64": "/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAABAAEDAREAAhEBAxEB/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/xAAUAQEAAAAAAAAAAAAAAAAAAAAA/8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAwDAQACEQMRAD8AVN//2Q==",
+        "mime": "image/jpeg",
+        "title": "Stuck page",
+        "url": "https://example.test/stuck",
+        "viewport": {
+          "h": 844,
+          "w": 390
+        }
+      }
+    },
+    {
+      "command": "click",
+      "result": {
+        "error": "stale_index",
+        "reason": "no element 99 in current observation"
+      }
+    },
+    {
+      "command": "observe",
+      "result": {
+        "elements": [
+          {
+            "h": 36,
+            "idx": 1,
+            "tag": "button",
+            "text": "A",
+            "w": 60,
+            "x": 20,
+            "y": 200
+          },
+          {
+            "h": 36,
+            "idx": 2,
+            "tag": "button",
+            "text": "B",
+            "w": 60,
+            "x": 100,
+            "y": 200
+          }
+        ],
+        "image_b64": "/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAABAAEDAREAAhEBAxEB/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/xAAUAQEAAAAAAAAAAAAAAAAAAAAA/8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAwDAQACEQMRAD8AVN//2Q==",
+        "mime": "image/jpeg",
+        "title": "Stuck page",
+        "url": "https://example.test/stuck",
+        "viewport": {
+          "h": 844,
+          "w": 390
+        }
+      }
+    },
+    {
+      "command": "click",
+      "result": {
+        "error": "stale_index",
+        "reason": "no element 99 in current observation"
+      }
+    },
+    {
+      "command": "observe",
+      "result": {
+        "elements": [
+          {
+            "h": 36,
+            "idx": 1,
+            "tag": "button",
+            "text": "A",
+            "w": 60,
+            "x": 20,
+            "y": 200
+          },
+          {
+            "h": 36,
+            "idx": 2,
+            "tag": "button",
+            "text": "B",
+            "w": 60,
+            "x": 100,
+            "y": 200
+          }
+        ],
+        "image_b64": "/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAABAAEDAREAAhEBAxEB/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/xAAUAQEAAAAAAAAAAAAAAAAAAAAA/8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAwDAQACEQMRAD8AVN//2Q==",
+        "mime": "image/jpeg",
+        "title": "Stuck page",
+        "url": "https://example.test/stuck",
+        "viewport": {
+          "h": 844,
+          "w": 390
+        }
+      }
+    },
+    {
+      "command": "click",
+      "result": {
+        "error": "stale_index",
+        "reason": "no element 99 in current observation"
+      }
+    }
+  ],
+  "expected": {
+    "status": "stuck_action",
+    "turns": 3
+  },
+  "goal": "Click the right button to proceed.",
+  "llm_pairs": [
+    {
+      "observation": "URL:      https://example.test/stuck\nTITLE:    Stuck page\nVIEWPORT: 390×844 (mobile)\n\nELEMENTS (visible interactives, target by `index`):\n  [1] button   \"A\"\n  [2] button   \"B\"\n\nRECENT ACTIONS (last 5):\n  (none)\n\nGoal:        Click the right button to proceed.\nConstraints: (none)\n\nEmit your next action as JSON:\n{ \"action\": \"<verb>\", \"args\": {...}, \"reason\": \"<one line>\" }\n",
+      "response": "{\"action\":\"click\",\"args\":{\"index\":99},\"reason\":\"Try idx 99 (model out-of-range).\"}"
+    },
+    {
+      "observation": "URL:      https://example.test/stuck\nTITLE:    Stuck page\nVIEWPORT: 390×844 (mobile)\n\nELEMENTS (visible interactives, target by `index`):\n  [1] button   \"A\"\n  [2] button   \"B\"\n\nRECENT ACTIONS (last 5):\n  T-1  click(99) → fail (no element 99 in current observation)\n\nGoal:        Click the right button to proceed.\nConstraints: (none)\n\nEmit your next action as JSON:\n{ \"action\": \"<verb>\", \"args\": {...}, \"reason\": \"<one line>\" }\n",
+      "response": "{\"action\":\"click\",\"args\":{\"index\":99},\"reason\":\"Try idx 99 (model out-of-range).\"}"
+    },
+    {
+      "observation": "URL:      https://example.test/stuck\nTITLE:    Stuck page\nVIEWPORT: 390×844 (mobile)\n\nELEMENTS (visible interactives, target by `index`):\n  [1] button   \"A\"\n  [2] button   \"B\"\n\nRECENT ACTIONS (last 5):\n  T-1  click(99) → fail (no element 99 in current observation)\n  T-2  click(99) → fail (no element 99 in current observation)\n\nGoal:        Click the right button to proceed.\nConstraints: (none)\n\nEmit your next action as JSON:\n{ \"action\": \"<verb>\", \"args\": {...}, \"reason\": \"<one line>\" }\n",
+      "response": "{\"action\":\"click\",\"args\":{\"index\":99},\"reason\":\"Try idx 99 (model out-of-range).\"}"
+    }
+  ],
+  "scenario": "stuck_action_halt",
+  "url": "https://example.test/stuck"
+}

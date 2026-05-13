@@ -488,21 +488,6 @@ defmodule DmhAi.Router do
     end
   end
 
-  # Per-session browser_navigate per-step screenshot. Serves PNGs from
-  # `<session_workspace>/.browser/<file_name>`. Owned by the runtime
-  # (Browser.Loop writes via the daemon), not the model — so unlike
-  # the wider workspace tree (intentionally not served by /assets),
-  # this narrow path IS exposed for the FE thumbnail render. The
-  # `<img>` tag can't carry an Authorization header so this route
-  # hits the 401 branch any time the FE forgets to use the
-  # apiFetch+blob pattern — `check_auth/1` already sends 401 and
-  # the surrounding `with` returns the conn directly.
-  get "/sessions/:session_id/browser-screenshot/:file_name" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      Data.get_browser_screenshot(conn, user, session_id, file_name)
-    end
-  end
-
   # ─── Authenticated POST routes ────────────────────────────────────────────────
 
   post "/users" do

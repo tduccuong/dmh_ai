@@ -62,6 +62,15 @@ defmodule DmhAi.Agent.AssistantCommand do
     # zone, reported via `X-Local-Date`. The FE has full tz math
     # (browser); the BE doesn't ship a tzdata DB and stays out of
     # zone arithmetic. nil → fall back to UTC date.
-    local_date: nil
+    local_date: nil,
+
+    # User's chat-tab viewport dimensions reported via
+    # `X-Client-Viewport: <w>x<h>;mobile=<bool>`. Threaded into the
+    # tool ctx so `browser_navigate` can set the sandbox-side
+    # SessionContext Page to the same shape, giving the Navigator a
+    # viewport that matches the user's device class. nil for
+    # non-HTTP paths (scheduler, telegram, …) — the daemon falls
+    # back to its FALLBACK_VIEWPORT.
+    client_viewport: nil
   ]
 end

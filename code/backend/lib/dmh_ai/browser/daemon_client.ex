@@ -70,28 +70,51 @@ defmodule DmhAi.Browser.DaemonClient do
           | {:error, term()}
 
   @doc """
-  Send `command` with `args` to the daemon for `user_id`/`email`.
+  Send `command` with `args` to the daemon. `ctx` is a map carrying:
+
+    - `:user_id`    (required) — selects the user's BrowserContext.
+    - `:session_id` (required) — selects the SessionContext (Page).
+    - `:email`      (optional) — used for storage_state path on first
+      BrowserContext creation; ignored otherwise.
+    - `:viewport`   (optional) — `%{w, h, is_mobile}` to set on the
+      session's Page. Omitted → daemon's FALLBACK_VIEWPORT applies on
+      first creation; existing Pages keep their viewport.
 
   Returns:
 
     - `{:ok, result_map}` on a successful daemon response.
     - `{:error, {:daemon_error, %{type, message}}}` when the daemon
-      ran the command but it raised (Playwright timeout, missing
-      selector, navigation error, etc.). The caller — typically the
-      action loop — feeds this back to the model so it can correct.
-    - `{:error, :daemon_unreachable}` after a failed retry. The
-      sandbox is probably crashed; the action loop surfaces this
-      to the user.
+      ran the command but it raised (Playwright timeout, navigation
+      error, etc.).
+    - `{:error, :daemon_unreachable}` after a failed retry.
   """
-  @spec call(String.t(), map(), String.t(), String.t() | nil) :: call_result
-  def call(command, args, user_id, email)
-      when is_binary(command) and is_map(args) and is_binary(user_id) do
+  @type ctx :: %{
+          required(:user_id) => String.t(),
+          required(:session_id) => String.t(),
+          optional(:email) => String.t() | nil,
+          optional(:viewport) => map() | nil
+        }
+
+  @spec call(String.t(), map(), ctx()) :: call_result
+  def call(command, args, ctx)
+      when is_binary(command) and is_map(args) and is_map(ctx) do
+    # Test hook: `Application.put_env(:dmh_ai, :__daemon_client_stub__, fn cmd, args, ctx -> ... end)`.
+    if stub = Application.get_env(:dmh_ai, :__daemon_client_stub__) do
+      stub.(command, args, ctx)
+    else
+      real_call(command, args, ctx)
+    end
+  end
+
+  defp real_call(command, args, ctx) do
     payload = %{
       id: corr_id(),
       command: command,
       args: args,
-      user_id: user_id,
-      email: email || ""
+      user_id: ctx.user_id,
+      session_id: ctx.session_id,
+      email: Map.get(ctx, :email) || "",
+      viewport: Map.get(ctx, :viewport)
     }
 
     line = Jason.encode!(payload) <> "\n"
@@ -129,48 +152,35 @@ defmodule DmhAi.Browser.DaemonClient do
 
   # ── private ──────────────────────────────────────────────────────────────────
 
-  # Max single-response size accepted from the daemon. This is a
-  # TRANSPORT-layer cap and has nothing to do with what reaches the LLM
-  # context — the daemon's own `accessibility_snapshot` view is already
-  # capped to `browserMaxObservationChars` (12 K chars) and
-  # `extract_text` to `max_chars` (20 K chars). After JSON envelope
-  # quoting+escaping the realistic worst-case wire size is ~80 KB;
-  # 256 KiB is ~3× that — plenty of headroom for the largest legit
-  # response while still capping a runaway / hostile one. This bounds
-  # BOTH the `line_length` packet limit AND `recbuf` so the transport
-  # never silently truncates legitimate responses (the failure mode
-  # that produced `Jason.DecodeError{position: 9216, …}` on
-  # multi-KB views).
-  @max_response_bytes 256 * 1024
+  # Max single-response size accepted from the daemon. Transport-layer
+  # cap. The largest payload is a `screenshot` response: a viewport-
+  # sized JPEG (q=80), base64-encoded. At desktop viewport on
+  # graphics-heavy commerce pages a JPEG can reach ~300 KB; mobile
+  # viewports compress proportionally smaller. 4 MiB covers every
+  # realistic case with margin while still catching a runaway
+  # response.
+  @max_response_bytes 4 * 1024 * 1024
 
   defp do_call(line) do
-    # `packet: :line` mode TRUNCATES lines longer than `packet_size`
-    # (defaults to a small kernel-buffer-tied value, typically 8–16 KB
-    # on AF_UNIX) — the failure mode that produced
-    # `Jason.DecodeError{position: 9216}` on large daemon responses.
-    # Lift `packet_size` to @max_response_bytes so the line packet
-    # mode delivers full lines.
-    #
-    # Note: NOT `line_length` (raises `:badarg` from `gen_tcp.connect/4`
-    # in OTP 27 — appears to no longer be a valid connect option) and
-    # NOT `recbuf` (maps to `SO_RCVBUF`, bounded by the kernel's
-    # `net.core.rmem_max` ≈ 208 KB; over that raises `:einval`).
-    # `packet_size` is the documented Erlang-side accumulator cap for
-    # length-prefixed AND line-delimited packet modes; no kernel
-    # involvement.
+    # Raw read-until-EOF. The daemon does one-shot reply-then-close per
+    # connection (see browser_daemon.py `handle/2`), so reading until
+    # the socket closes is the bulletproof shape: no packet_size cap
+    # to tune, no MTU-boundary fragmentation, just "the daemon's full
+    # response, however long". Prior `packet: :line` mode silently
+    # truncated multi-KB responses at TCP-frame boundaries on
+    # AF_UNIX, producing partial JSON that broke Jason.decode.
     opts = [
       :binary,
       active: false,
-      packet: :line,
-      packet_size: @max_response_bytes
+      packet: :raw
     ]
 
     case :gen_tcp.connect({:local, @sock_path}, 0, opts, @connect_timeout_ms) do
       {:ok, sock} ->
         try do
           with :ok <- :gen_tcp.send(sock, line),
-               {:ok, response_line} <- :gen_tcp.recv(sock, 0, @recv_timeout_ms),
-               {:ok, decoded} <- Jason.decode(response_line) do
+               {:ok, response} <- recv_until_eof(sock, []),
+               {:ok, decoded} <- Jason.decode(String.trim(response)) do
             interpret(decoded)
           else
             {:error, _} = err -> err
@@ -182,6 +192,37 @@ defmodule DmhAi.Browser.DaemonClient do
       {:error, _} = err ->
         err
     end
+  end
+
+  defp recv_until_eof(sock, acc) do
+    case :gen_tcp.recv(sock, 0, @recv_timeout_ms) do
+      {:ok, chunk} ->
+        if IO.iodata_length(acc) + byte_size(chunk) > @max_response_bytes do
+          {:error, :response_too_large}
+        else
+          recv_until_eof(sock, [acc, chunk])
+        end
+
+      {:error, :closed} ->
+        {:ok, IO.iodata_to_binary(acc)}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  # In-band soft errors: the daemon's indexed and selector verbs return
+  # a successful result envelope whose body is `{"error": <type>, "reason": <msg>}`
+  # when the verb's preconditions couldn't be met (stale nonce, selector
+  # matched nothing) — see `browser_daemon.py` `_cmd_indexed` /
+  # `_cmd_selector`. Translate them up to a uniform `{:error,
+  # {:daemon_error, ...}}` so callers (`Browser.Loop`, R10 tests, future
+  # tools) can pattern-match on `%{type: "stale_index"}` etc. without
+  # caring whether the daemon raised or returned-with-error.
+  defp interpret(%{"ok" => true, "result" => %{"error" => err_type} = result})
+       when is_binary(err_type) do
+    msg = result["reason"] || result["message"] || err_type
+    {:error, {:daemon_error, %{type: err_type, message: to_string(msg)}}}
   end
 
   defp interpret(%{"ok" => true, "result" => result}) when is_map(result), do: {:ok, result}

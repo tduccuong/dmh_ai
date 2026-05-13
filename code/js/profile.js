@@ -45,12 +45,14 @@ const Settings = {
     _swiftModel: '',         // Swift  — short fast classifier work
     _oracleModel: '',        // Oracle — long-context summarisers
     _visionModel: '',        // image / video / OCR
+    _navigatorModel: '',     // browser_navigate action loop (vision)
     _kbEmbeddingModel: '',
     get confidantModel() { return this._confidantModel; },
     get assistantModel() { return this._assistantModel; },
     get swiftModel() { return this._swiftModel; },
     get oracleModel() { return this._oracleModel; },
     get visionModel() { return this._visionModel; },
+    get navigatorModel() { return this._navigatorModel; },
     get kbEmbeddingModel() { return this._kbEmbeddingModel; },
     // Worker agent tuning
     _maxToolResultChars: 8000,
@@ -73,6 +75,7 @@ const Settings = {
                 swiftModel: this._swiftModel,
                 oracleModel: this._oracleModel,
                 visionModel: this._visionModel,
+                navigatorModel: this._navigatorModel,
                 kbEmbeddingModel: this._kbEmbeddingModel,
                 maxToolResultChars: this._maxToolResultChars,
                 logTrace: this._logTrace
@@ -112,6 +115,7 @@ const Settings = {
                 if (d.swiftModel)       this._swiftModel       = d.swiftModel;
                 if (d.oracleModel)      this._oracleModel      = d.oracleModel;
                 if (d.visionModel)      this._visionModel      = d.visionModel;
+                if (d.navigatorModel)   this._navigatorModel   = d.navigatorModel;
                 if (d.kbEmbeddingModel) this._kbEmbeddingModel = d.kbEmbeddingModel;
                 if (d.maxToolResultChars !== undefined) this._maxToolResultChars = parseInt(d.maxToolResultChars) || 8000;
                 if (d.logTrace !== undefined) this._logTrace = d.logTrace === true;
@@ -260,6 +264,7 @@ const SettingsModal = {
     _ROLES: [
         'assistant', 'confidant',
         'swift', 'oracle', 'vision',
+        'navigator',
         'kbEmbedding'
     ],
     _roleField: function(role) {

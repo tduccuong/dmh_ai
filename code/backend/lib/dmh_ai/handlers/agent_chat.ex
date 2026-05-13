@@ -157,6 +157,7 @@ defmodule DmhAi.Handlers.AgentChat do
             end
 
           {tz, local_date} = client_tz(conn)
+          viewport = client_viewport(conn)
           case DmhAi.Agent.UserAgentMessages.append(session_id, user.id, message) do
             {:ok, user_ts} ->
               fire_and_forget(conn, user_ts, fn ->
@@ -164,7 +165,8 @@ defmodule DmhAi.Handlers.AgentChat do
                   attachment_names: attachment_names,
                   files:            files,
                   timezone:         tz,
-                  local_date:       local_date
+                  local_date:       local_date,
+                  client_viewport:  viewport
                 )
               end)
 
@@ -345,6 +347,32 @@ defmodule DmhAi.Handlers.AgentChat do
       end
 
     {tz, local_date}
+  end
+
+  # Parse `X-Client-Viewport: <w>x<h>;mobile=<bool>`. Returns
+  # `%{w, h, is_mobile}` on a well-formed header, nil otherwise.
+  # Threaded into AssistantCommand → tool ctx → Browser.Loop so
+  # `browser_navigate` runs the sandbox-side Page at the user's
+  # actual device-class shape.
+  defp client_viewport(conn) do
+    case get_req_header(conn, "x-client-viewport") do
+      [s | _] when is_binary(s) ->
+        case Regex.run(~r/^(\d{2,5})x(\d{2,5})(?:;mobile=(true|false))?$/i, s,
+               capture: :all_but_first) do
+          [w, h] ->
+            %{w: String.to_integer(w), h: String.to_integer(h), is_mobile: false}
+
+          [w, h, m] ->
+            %{w: String.to_integer(w), h: String.to_integer(h),
+              is_mobile: String.downcase(m) == "true"}
+
+          _ ->
+            nil
+        end
+
+      _ ->
+        nil
+    end
   end
 
   defp json(conn, status, data) do

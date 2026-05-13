@@ -38,6 +38,12 @@ defmodule DmhAi.Agent.AgentSettings do
     "swiftModel"       => "ollama-cloud::ministral-3:14b-cloud",
     "oracleModel"      => "ollama-cloud::gemma4:31b-cloud",
     "visionModel"      => "ollama-cloud::gemma4:31b-cloud",
+    # Navigator — Browser.Loop's action model. Sees an annotated
+    # viewport screenshot (magenta boxes + numeric indices around
+    # each visible interactive) and an ELEMENTS descriptor list each
+    # turn, emits index-based actions. Operator picks any vision-
+    # capable model from the cloud pool.
+    "navigatorModel"   => "ollama-cloud::ministral-3:14b-cloud",
     "kbEmbeddingModel" => "miner::qwen3-embedding:0.6b"
   }
 
@@ -144,38 +150,58 @@ defmodule DmhAi.Agent.AgentSettings do
   # naming.
   @session_namer_user_msg_count_default 4
 
-  # Browser tool — `Tools.BrowserNavigate` drives a sandboxed Chromium via
-  # a Python Playwright daemon. Each iteration of the action loop
-  # (observe page → ask LLM → click/type → observe) costs one
-  # `browser_agent_model` call. The tool runs subject to a per-task
-  # turn cap, a wall-clock max-runtime, and a per-user concurrency
-  # limit (one browser process at a time by default).
-  @browser_agent_model_role_default "swiftModel"
-  # Vision-distillation model — runs once per browser-loop turn on the
-  # screenshot to produce a goal-relevant JSON summary that the action
-  # LLM consumes in place of raw a11y / extract_text dumps. MUST be
-  # vision-capable. Same role plumbing as browserAgentModelRole.
-  @browser_distill_model_role_default "swiftModel"
+  # Browser tool — `Tools.BrowserNavigate` drives a sandboxed Chromium
+  # via a Python Playwright daemon. The action loop is pure vision:
+  # each turn the daemon captures a viewport screenshot, the Navigator
+  # model (a vision-capable LLM) sees the screenshot and emits one
+  # coord-based action. The tool runs subject to a per-task turn cap,
+  # a wall-clock max-runtime, and a per-user concurrency limit.
   @browser_max_runtime_ms_default 1_800_000
   @browser_max_turns_per_task_default 50
   @browser_concurrency_per_user_default 1
-  # Browser daemon idle-shutdown timer. The Playwright daemon
-  # self-terminates after this many ms of no traffic so Pi-class
-  # hosts reclaim Chromium memory; start.sh's supervisor relaunches
-  # it on next demand.
+  # Browser daemon idle-shutdown timer. Self-terminates after this
+  # many ms of no traffic so Pi-class hosts reclaim Chromium memory;
+  # start.sh's supervisor relaunches on next demand.
   @browser_daemon_idle_shutdown_ms_default 1_800_000
-  # Per-turn screenshot capture for the FE's per-step browser sub_labels.
-  # Operators on tighter Pi storage can flip this off — the loop
-  # then runs without screenshots and progress rows still render
-  # the action label, just no thumbnail.
-  @browser_screenshot_enabled_default true
-  # Hard ceiling on the rendered `view` returned by the daemon's
-  # accessibility_snapshot command. Last-line defence against context
-  # blow-up on multilingual mega-pages — without this a single
-  # browser_navigate observation can dump 50K+ tokens into the chain.
-  # See arch_wiki/dmh_ai/architecture.md §"Observation payload sizing".
-  # Keep in lockstep with browser_daemon.py DEFAULT_MAX_OBSERVATION_CHARS.
-  @browser_max_observation_chars_default 12_000
+  # Per-action timeout (ms) for indexed verbs (click, type, etc).
+  # Tighter than the navigation-level DEFAULT_CMD_TIMEOUT_MS — a
+  # stale or hidden indexed element means we've lost the page state
+  # the model was reasoning over, and we'd rather fail fast and
+  # re-observe than wait 15 s.
+  @browser_action_timeout_ms_default 3_000
+  # Cap (chars) on `extract_text` results piped back into the NEXT
+  # observation's EXTRACTED_TEXT block. Daemon already caps the wire
+  # transport at ~20K chars; this is the further cap on what the
+  # Navigator's prompt receives, kept tight so a single extraction
+  # doesn't crowd out the screenshot.
+  @browser_extracted_text_cap_default 3_000
+  # Consecutive identical action emissions (same verb + same args)
+  # before the loop halts with `status: "stuck_action"`. Catches the
+  # model thrashing on the same target. 3 strikes (not 2) so the
+  # model has one observation cycle to see the failure feedback in
+  # RECENT ACTIONS and pivot — a single retry can be a legitimate
+  # mid-animation slip, but three identical failed attempts in a row
+  # means the model isn't responding to the feedback and we should
+  # cut losses.
+  @browser_stuck_action_limit_default 3
+  # `Page.goto` timeout — separate from per-action so heavy commerce
+  # pages (ads, analytics, retargeting pixels delaying `load`) get
+  # headroom on initial fetch.
+  @browser_navigate_timeout_ms_default 30_000
+  # `Page.goto` wait strategy. `"domcontentloaded"` returns once the
+  # DOM has parsed; ad / tracking network calls no longer hold the
+  # navigation hostage. Valid values: "load", "domcontentloaded",
+  # "networkidle", "commit".
+  @browser_navigate_wait_until_default "domcontentloaded"
+  # Post-navigate settle wait (ms) before the Loop runs its first
+  # `observe`. `domcontentloaded` fires before JS-rendered widgets
+  # (e.g. React-hydrated booking forms, cookie consent libraries
+  # injecting their UI) exist; without this delay the first observe
+  # returns an empty ELEMENTS list and the model burns turn 0 on a
+  # blind scroll. 1500 ms is enough for typical SPA hydration without
+  # noticeably delaying read-only tasks where the page is already
+  # ready at domcontentloaded.
+  @browser_initial_settle_ms_default 1_500
 
   # LLM-account rotation throttle durations. Applied by
   # `DmhAi.Agent.LLM` when an account hits a rate-limit (HTTP 429 or
@@ -362,6 +388,7 @@ defmodule DmhAi.Agent.AgentSettings do
   def swift_model,        do: model_for("swiftModel")
   def oracle_model,       do: model_for("oracleModel")
   def vision_model,       do: model_for("visionModel")
+  def navigator_model,    do: model_for("navigatorModel")
   def kb_embedding_model, do: model_for("kbEmbeddingModel")
 
   @doc "Timeout in seconds applied to each bash command run inside spawn_task."
@@ -408,35 +435,12 @@ defmodule DmhAi.Agent.AgentSettings do
   def session_namer_user_msg_count,
     do: int_setting("sessionNamerUserMsgCount", @session_namer_user_msg_count_default)
 
-  @doc """
-  Model the browser-tool action loop calls each iteration. Stored as a
-  setting key (e.g. `\"swiftModel\"`) which is then resolved through
-  `model_for/1` so it shares the same tier-collapse logic as every
-  other model setting. Default: the value of `swiftModel`.
-  """
-  @spec browser_agent_model() :: String.t()
-  def browser_agent_model do
-    role = string_setting("browserAgentModelRole", @browser_agent_model_role_default)
-    model_for(role)
-  end
-
-  @doc """
-  Vision-distillation model resolved through `model_for/1`. Runs once
-  per browser-loop turn on the screenshot. Defaults to the same role as
-  `browserAgentModelRole` (typically `swiftModel`).
-  """
-  @spec browser_distill_model() :: String.t()
-  def browser_distill_model do
-    role = string_setting("browserDistillModelRole", @browser_distill_model_role_default)
-    model_for(role)
-  end
-
-  @doc "Hard wall-clock cap (ms) on a single browser_navigate invocation. Past this the daemon is killed."
+  @doc "Hard wall-clock cap (ms) on a single browser_navigate invocation. Past this the loop halts with `:runtime_cap`."
   @spec browser_max_runtime_ms() :: pos_integer()
   def browser_max_runtime_ms,
     do: int_setting("browserMaxRuntimeMs", @browser_max_runtime_ms_default)
 
-  @doc "Per-task cap on observe→act iterations. Past this the loop returns with a partial-progress note."
+  @doc "Per-task cap on screenshot→action iterations. Past this the loop halts with `:turn_cap`."
   @spec browser_max_turns_per_task() :: pos_integer()
   def browser_max_turns_per_task,
     do: int_setting("browserMaxTurnsPerTask", @browser_max_turns_per_task_default)
@@ -451,15 +455,35 @@ defmodule DmhAi.Agent.AgentSettings do
   def browser_daemon_idle_shutdown_ms,
     do: int_setting("browserDaemonIdleShutdownMs", @browser_daemon_idle_shutdown_ms_default)
 
-  @doc "Capture per-turn screenshots into `<workspace>/.browser/step_<N>.png`. Off → no PNGs, but progress rows still render."
-  @spec browser_screenshot_enabled() :: boolean()
-  def browser_screenshot_enabled,
-    do: bool_setting("browserScreenshotEnabled", @browser_screenshot_enabled_default)
+  @doc "Per-action timeout (ms) for indexed verbs (click, type, etc)."
+  @spec browser_action_timeout_ms() :: pos_integer()
+  def browser_action_timeout_ms,
+    do: int_setting("browserActionTimeoutMs", @browser_action_timeout_ms_default)
 
-  @doc "Hard ceiling on the rendered `view` returned by accessibility_snapshot. Truncates with a recovery hint above this size; last-line defence against context blow-up on mega-pages."
-  @spec browser_max_observation_chars() :: pos_integer()
-  def browser_max_observation_chars,
-    do: int_setting("browserMaxObservationChars", @browser_max_observation_chars_default)
+  @doc "Cap (chars) on `extract_text` result piped into the next observation's EXTRACTED_TEXT block."
+  @spec browser_extracted_text_cap() :: pos_integer()
+  def browser_extracted_text_cap,
+    do: int_setting("browserExtractedTextCap", @browser_extracted_text_cap_default)
+
+  @doc "Consecutive identical action emissions before `Browser.Loop` halts with `:stuck_action`."
+  @spec browser_stuck_action_limit() :: pos_integer()
+  def browser_stuck_action_limit,
+    do: int_setting("browserStuckActionLimit", @browser_stuck_action_limit_default)
+
+  @doc "Timeout (ms) for `Page.goto` — separate from per-action timeouts so initial fetches of heavy pages get headroom."
+  @spec browser_navigate_timeout_ms() :: pos_integer()
+  def browser_navigate_timeout_ms,
+    do: int_setting("browserNavigateTimeoutMs", @browser_navigate_timeout_ms_default)
+
+  @doc "Settle wait (ms) after initial navigate, before the first observe."
+  @spec browser_initial_settle_ms() :: pos_integer()
+  def browser_initial_settle_ms,
+    do: int_setting("browserInitialSettleMs", @browser_initial_settle_ms_default)
+
+  @doc "Playwright `wait_until` strategy for `Page.goto`. Default `domcontentloaded`."
+  @spec browser_navigate_wait_until() :: String.t()
+  def browser_navigate_wait_until,
+    do: string_setting("browserNavigateWaitUntil", @browser_navigate_wait_until_default)
 
   @doc "Runtime poll cadence (ms) for in-flight `run_script` processes."
   @spec tool_run_poll_interval_ms() :: pos_integer()

@@ -1744,6 +1744,12 @@ defmodule DmhAi.Agent.UserAgent do
       keystore_dir:  DmhAi.Constants.user_keystore_dir(email),
       log_trace:     AgentSettings.log_trace(),
       fresh_attachment_paths: fresh_attachment_paths,
+      # FE-reported chat-tab viewport (w/h/is_mobile). Plumbed
+      # through to `Tools.BrowserNavigate` so the sandbox-side
+      # SessionContext Page matches the user's device class. Nil
+      # for non-HTTP paths (scheduler) — Browser.Loop falls back
+      # to the daemon's safety viewport.
+      client_viewport: command.client_viewport,
       # Snapshot the initial message count so the duplicate-tool-call
       # police check can slice `messages[chain_start_idx..]` and see only
       # the in-chain accumulator — never cross-chain repeats.
