@@ -150,13 +150,6 @@ services:
       - ${DMHAI_HOME:-.}/user_assets:/data/user_assets
       - ${DMHAI_HOME:-.}/user_workspaces:/data/user_workspaces
       - ${DMHAI_HOME:-.}/system_logs:/data/system_logs
-      # Browser-daemon Unix socket. The sandbox container binds the
-      # socket here; bind-mounting on the master side too lets the
-      # host-side Elixir process connect directly via
-      # :gen_tcp.connect({:local, "/data/run/dmh-browser/daemon.sock"})
-      # without paying `docker exec` overhead per turn. See
-      # arch_wiki/dmh_ai/architecture.md §Browser tools.
-      - ${DMHAI_HOME:-.}/run/dmh-browser:/data/run/dmh-browser
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       searxng:
@@ -191,14 +184,9 @@ services:
       # without translation.
       - ${DMHAI_HOME:-.}/user_assets:/data/user_assets:ro
       - ${DMHAI_HOME:-.}/user_workspaces:/data/user_workspaces
-      # Browser-daemon socket directory. Daemon binds
-      # /var/run/dmh-browser/daemon.sock at boot; same dir is bind-
-      # mounted on the master side at /data/run/dmh-browser for
-      # host-side Elixir IPC (see master volumes above).
-      - ${DMHAI_HOME:-.}/run/dmh-browser:/var/run/dmh-browser
-    # /sandbox-start.sh sets sysctl + iptables, spawns browser_daemon
-    # under a supervisor loop, then `tail -f /dev/null`. Scripts
-    # arrive via `docker exec -u dmh_ai-u<uid> -w /data/user_workspaces/<email>/<session>/`.
+    # /sandbox-start.sh sets sysctl + iptables, then `tail -f /dev/null`.
+    # Scripts arrive via `docker exec -u dmh_ai-u<uid> -w
+    # /data/user_workspaces/<email>/<session>/`.
 
   searxng:
     image: searxng/searxng:latest
@@ -271,7 +259,7 @@ if [ "$MODE" = "stage" ]; then
     # sandbox container starts (the daemon binds the socket on boot).
     mkdir -p "$INSTALL_DIR"
     mkdir -p "$INSTALL_DIR/db" "$INSTALL_DIR/user_assets" "$INSTALL_DIR/user_workspaces" \
-             "$INSTALL_DIR/system_logs" "$INSTALL_DIR/run/dmh-browser"
+             "$INSTALL_DIR/system_logs"
     rm -rf "$INSTALL_DIR/searxng-settings.yml"
     cp "$DIST/searxng-settings.yml" "$INSTALL_DIR/searxng-settings.yml"
     # No chown -R: master runs as root post-#190 and doesn't need a
@@ -293,7 +281,6 @@ services:
       - ${INSTALL_DIR}/user_assets:/data/user_assets
       - ${INSTALL_DIR}/user_workspaces:/data/user_workspaces
       - ${INSTALL_DIR}/system_logs:/data/system_logs
-      - ${INSTALL_DIR}/run/dmh-browser:/data/run/dmh-browser
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       searxng:
@@ -316,7 +303,6 @@ services:
     volumes:
       - ${INSTALL_DIR}/user_assets:/data/user_assets:ro
       - ${INSTALL_DIR}/user_workspaces:/data/user_workspaces
-      - ${INSTALL_DIR}/run/dmh-browser:/var/run/dmh-browser
 
   searxng:
     image: searxng/searxng:latest
@@ -438,12 +424,10 @@ else
     fi
 
     #  Set up install directory
-    # Pre-create ALL bind-mount targets so docker compose doesn't
-    # auto-create them as root. Critical ones beyond the data dirs:
-    #   run/dmh-browser — daemon binds its Unix socket here on boot;
-    #     dir must exist before sandbox container starts.
+    # Pre-create all bind-mount targets so docker compose doesn't
+    # auto-create them as root.
     mkdir -p "$INSTALL_DIR/db" "$INSTALL_DIR/user_assets" "$INSTALL_DIR/user_workspaces" \
-             "$INSTALL_DIR/system_logs" "$INSTALL_DIR/run/dmh-browser"
+             "$INSTALL_DIR/system_logs"
     rm -rf "$INSTALL_DIR/searxng-settings.yml"
     cp "$DIST/searxng-settings.yml" "$INSTALL_DIR/searxng-settings.yml"
     # No chown -R: master runs as root post-#190 and doesn't need a

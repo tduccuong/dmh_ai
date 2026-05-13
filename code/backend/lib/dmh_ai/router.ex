@@ -488,21 +488,6 @@ defmodule DmhAi.Router do
     end
   end
 
-  # Per-session browser_navigate per-step screenshot. Serves PNGs from
-  # `<session_workspace>/.browser/<file_name>`. Owned by the runtime
-  # (Browser.Loop writes via the daemon), not the model — so unlike
-  # the wider workspace tree (intentionally not served by /assets),
-  # this narrow path IS exposed for the FE thumbnail render. The
-  # `<img>` tag can't carry an Authorization header so this route
-  # hits the 401 branch any time the FE forgets to use the
-  # apiFetch+blob pattern — `check_auth/1` already sends 401 and
-  # the surrounding `with` returns the conn directly.
-  get "/sessions/:session_id/browser-screenshot/:file_name" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      Data.get_browser_screenshot(conn, user, session_id, file_name)
-    end
-  end
-
   # ─── Authenticated POST routes ────────────────────────────────────────────────
 
   post "/users" do
@@ -612,31 +597,6 @@ defmodule DmhAi.Router do
   put "/user/fact-counts" do
     with {:ok, conn, user} <- check_auth(conn) do
       Auth.put_user_fact_counts(conn, user)
-    end
-  end
-
-  # GET /auth/me/browser-consent — return current consent state +
-  # canonical text/hash for FE display.
-  get "/auth/me/browser-consent" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      Auth.get_browser_consent(conn, user)
-    end
-  end
-
-  # POST /auth/me/browser-consent — record acceptance. Body:
-  # `{"text_hash": "<sha256 hex>"}`. The hash MUST equal the current
-  # canonical hash; mismatch is rejected (the FE was showing stale text).
-  post "/auth/me/browser-consent" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      Auth.post_browser_consent(conn, user)
-    end
-  end
-
-  # DELETE /auth/me/browser-consent — revoke. Nulls both columns; the
-  # next browser_navigate invocation will re-prompt.
-  delete "/auth/me/browser-consent" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      Auth.delete_browser_consent(conn, user)
     end
   end
 

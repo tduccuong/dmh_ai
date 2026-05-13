@@ -139,55 +139,8 @@ var _subLabelOffsets = new Map();
 // in core.js for the patterns.
 function writeProgressLabel(label, raw, _kind) {
     var safe = redactProgressLabel(raw || '');
-
-    // BrowserNavigate sub_labels carry the per-step screenshot path as a
-    // `— .browser/<file>.png` suffix appended by Browser.Loop. Strip
-    // it from the visible text and render a small thumbnail ABOVE the
-    // text (CSS column layout, see app.css `.progress-sub-label`).
-    // Putting the image first means a long step text (~200 chars of
-    // model `reason`) gets ellipsized horizontally without clipping
-    // the thumbnail off-screen — which was the symptom of "screenshots
-    // disappear after a few steps".
-    var shotMatch = safe.match(/\s*[—\-]\s*\.browser\/([\w.\-]+\.png)\s*$/);
-    var shotFile  = shotMatch ? shotMatch[1] : null;
-    var textPart  = shotFile ? safe.slice(0, shotMatch.index).replace(/\s+$/, '') : safe;
-
-    // Clear any previous content. Image (if any) goes first so the
-    // CSS column layout renders it at the top of the cell; text goes
-    // in a child span so the ellipsis-truncation rule applies only to
-    // the text run, not to the image.
-    label.textContent = '';
-    label.title = textPart;
-
-    if (shotFile && typeof UIManager !== 'undefined' && UIManager.currentSession && UIManager.currentSession.id) {
-        var img = document.createElement('img');
-        img.className = 'browser-step-thumb';
-        img.alt = 'step screenshot';
-        img.loading = 'lazy';
-        img.style.cursor = 'pointer';
-        label.appendChild(img);
-
-        // Auth is `Authorization: Bearer <token>` — `<img src=…>` only
-        // sends cookies, not Authorization headers, so a direct
-        // `img.src = url` would 401. Same blob-URL pattern as the
-        // lightbox in ui.js: apiFetch (which adds the Bearer header)
-        // → blob → object URL → img.src.
-        var url = '/sessions/' + encodeURIComponent(UIManager.currentSession.id) +
-                  '/browser-screenshot/' + encodeURIComponent(shotFile);
-        apiFetch(url)
-            .then(function(r) { if (!r.ok) throw new Error('shot fetch ' + r.status); return r.blob(); })
-            .then(function(blob) {
-                var objUrl = URL.createObjectURL(blob);
-                img.src = objUrl;
-                img.addEventListener('click', function() { window.open(objUrl, '_blank', 'noopener'); });
-            })
-            .catch(function() { /* leave the broken-image rectangle hidden via CSS or just empty */ });
-    }
-
-    var textSpan = document.createElement('span');
-    textSpan.className = 'step-text';
-    textSpan.textContent = textPart;
-    label.appendChild(textSpan);
+    label.textContent = safe;
+    label.title = safe;
 }
 
 // Walk every pending tool-like row whose sub_labels list overflows
@@ -311,12 +264,6 @@ function renderProgressRow(row) {
     } else if (row.kind === 'chain_aborted') {
         // ⏹ matches the sidebar Stop button the user just clicked.
         icon.textContent = '\u23F9';
-    } else if (row.kind === 'browser_consent_required') {
-        // \ud83d\udd12 \u2014 the full text + Accept/Cancel buttons live in a modal
-        // (auto-opened on first poll; re-openable via clicking the
-        // row). The chat-side row is a one-liner pointer, not the
-        // legal-text body.
-        icon.textContent = '\ud83d\udd12';
     } else {
         icon.textContent = '\u00b7';
     }
@@ -430,19 +377,6 @@ function renderProgressRow(row) {
                 _ensureSubLabelSlider();
             }
         }
-    }
-
-    // Browser-consent rows are clickable: re-opens the modal so the
-    // user can review and accept (or revoke) at any time after the
-    // first auto-pop has been dismissed.
-    if (row.kind === 'browser_consent_required') {
-        div.style.cursor = 'pointer';
-        div.title = 'Click to review and accept browser-tools terms';
-        div.addEventListener('click', function() {
-            if (typeof UIManager !== 'undefined' && typeof UIManager.openBrowserConsentModal === 'function') {
-                UIManager.openBrowserConsentModal();
-            }
-        });
     }
 
     return div;

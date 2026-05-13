@@ -58,7 +58,6 @@ defmodule DmhAi.Agent.Police do
     "request_input",
     "connect_mcp",
     "provision_ssh_identity",
-    "browser_navigate",
     "authorize_service"
   ]
 

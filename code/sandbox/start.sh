@@ -1,8 +1,7 @@
 #!/bin/bash
 # Assistant sandbox container entrypoint. See arch_wiki/dmh_ai/isolation.md.
 #
-# Sets up the network fence on container start, then spawns the
-# browser daemon under a supervisor loop, then blocks on `tail`.
+# Sets up the network fence on container start, then blocks on `tail`.
 #
 #   1. Disable IPv6 entirely (simpler than maintaining a parallel
 #      ip6tables ruleset).
@@ -13,10 +12,6 @@
 #      commands reach the LAN. Per-user UIDs (10001+) fall through.
 #   4. REJECT outbound to RFC1918 / loopback / link-local for the
 #      remaining UIDs.
-#   5. Spawn the Playwright daemon under a `while true; do; done`
-#      restart loop in the background. The loop respects an idle-
-#      shutdown exit (the daemon kills itself after no traffic for
-#      `BROWSER_IDLE_SHUTDOWN_S`); the next request relaunches it.
 #
 # Per-user OS accounts are added lazily by master via `docker exec
 # sandbox useradd -u <uid> dmh_ai-u<uid>` — see
@@ -59,29 +54,6 @@ if command -v iptables >/dev/null 2>&1; then
 else
     echo "[sandbox start.sh] WARN: iptables not present — LAN fence not applied"
 fi
-
-# --- Browser daemon (Phase 2 of #215) ----------------------------------------
-# One Playwright daemon per container, BrowserContext-per-user.
-# Listens on /var/run/dmh-browser/daemon.sock; the deployment's
-# docker-compose binds this directory out so the host-side Elixir
-# process can connect.
-#
-# Supervisor pattern: spawn-and-restart. The daemon self-terminates
-# after BROWSER_IDLE_SHUTDOWN_S of no traffic to free Chromium memory
-# on Pi-class hosts; the supervisor relaunches it on the next call.
-# A 2s pause between restarts prevents tight crash loops if the
-# daemon fails to start (missing socket directory, port bound, etc.).
-mkdir -p /var/run/dmh-browser
-chmod 0775 /var/run/dmh-browser
-
-(
-    while true; do
-        echo "[sandbox] spawning browser daemon"
-        /sandbox-browser-daemon.py 2>&1 | sed 's/^/[browser_daemon] /' || true
-        echo "[sandbox] browser daemon exited; restarting in 2s"
-        sleep 2
-    done
-) &
 
 # --- Stay alive --------------------------------------------------------------
 exec tail -f /dev/null

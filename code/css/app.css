@@ -556,48 +556,15 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
     margin-top: 1px;
 }
 .progress-row .progress-sub-label {
-    /* Column layout — for BrowserNavigate sub_labels we put a thumbnail
-     * on top and the (potentially long) reason text below, truncated to
-     * one line. Other tool-like rows have no thumbnail child; for those
-     * the column is just the text and the layout collapses to a single
-     * line — same visual as before.
-     */
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 4px;
     color: #dccaec;             /* a touch dimmer than the parent label */
     font-size: 12px;
     line-height: 1.45;
     min-width: 0;
-}
-
-/* The text portion of a sub-label. Wrapping the text in its own span
- * lets the ellipsis-truncation rule apply ONLY to the text run; the
- * thumbnail above it stays full-size and never gets clipped off-screen
- * by overflow:hidden — which was the symptom of "screenshots disappear
- * after a few steps".
- */
-.progress-row .progress-sub-label .step-text {
-    width: 100%;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
 }
 
-/* BrowserNavigate per-step screenshot thumbnail. Renders ABOVE the step
- * text (column layout above). Clickable to open full-size. */
-.progress-row .progress-sub-label .browser-step-thumb {
-    height: 60px;
-    width: auto;
-    max-width: 100%;
-    border: 1px solid #1c1430;
-    border-radius: 3px;
-    object-fit: cover;
-}
-.progress-row .progress-sub-label .browser-step-thumb:hover {
-    border-color: #6a4ea0;
-}
 /* Hierarchy-hint arrow rendered INSIDE the text span (not on the
  * flex-column parent), so it sits inline with the label text and
  * shares the same ellipsis truncation. Putting it on the parent
