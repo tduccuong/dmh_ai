@@ -4,7 +4,7 @@
 // MCP Catalog admin UI. Admin curates a list of MCP services; the
 // "Enable" button runs a server-side preflight (DmhAi.MCP.Probe) and
 // records the auth_kind so the chat tool `connect_mcp(slug:)` can
-// skip discovery later. Mirrors WikiSeedsAdmin's structural style.
+// skip discovery later.
 // See specs/mcp.md §Phase E.
 
 const McpCatalogAdmin = {

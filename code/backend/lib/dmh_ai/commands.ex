@@ -51,6 +51,10 @@ defmodule DmhAi.Commands do
     arg = String.trim(arg)
 
     cond do
+      not admin?(user_id) ->
+        DmhAi.Permissions.audit(user_id, :administer, :org_settings, :denied, "index_admin_only")
+        {:ok, "`/index` is restricted to org admins. Ask an admin to ingest this source."}
+
       arg == "" ->
         {:ok, "Usage: `/index <text | url | absolute file path | absolute folder path>`"}
 
@@ -67,6 +71,12 @@ defmodule DmhAi.Commands do
         Pipelines.Text.run(arg, session_id, user_id)
     end
   end
+
+  defp admin?(user_id) when is_binary(user_id) do
+    DmhAi.Permissions.can?(user_id, :administer, :org_settings)
+  end
+
+  defp admin?(_), do: false
 
   # `/index` and `/memo` (save path) ack persistence — both messages
   # tagged `kind` so ContextEngine excludes them from LLM context

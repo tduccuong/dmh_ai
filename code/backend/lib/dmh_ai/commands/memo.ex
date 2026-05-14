@@ -171,6 +171,7 @@ defmodule DmhAi.Commands.Memo do
       {:ok, mmk} ->
         attrs = %{
           scope:       :memo,
+          org_id:      DmhAi.Orgs.for_user(user_id),
           user_id:     user_id,
           source_kind: "text",
           source_ref:  sha256(text),

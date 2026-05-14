@@ -99,8 +99,9 @@ defmodule DmhAi.Sandbox.R03CrossUserFence do
     now = System.system_time(:millisecond)
 
     query!(Repo, """
-    INSERT INTO users (id, email, password_hash, role, created_at)
-    VALUES (?, ?, ?, ?, ?)
-    """, [id, email, "FAKE-HASH-FOR-TEST-ONLY", role, now])
+    INSERT INTO users (id, email, password_hash, role, org_id, org_role, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, [id, email, "FAKE-HASH-FOR-TEST-ONLY", role,
+          DmhAi.Constants.default_org_id(), "member", now])
   end
 end

@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="de"><head><meta charset="utf-8"><title>Rate-Limits — DMH SME Demo Cloud</title></head>
+<body>
+<nav><a href="index.html">← Zurück zur Übersicht</a></nav>
+<main>
+<h1>Rate-Limits und Quoten</h1>
+
+<p>DMH SME Demo Cloud setzt Rate-Limits durch, um die Stabilität der
+Plattform für alle Kunden zu sichern. Diese Seite beschreibt die
+Limits pro Tarif, das Verhalten beim Überschreiten und wie Sie
+eine Quoten-Erhöhung beantragen können.</p>
+
+<h2>Limits pro Tarif</h2>
+<p>Die folgenden Werte gelten pro Kunden-Account und beziehen sich
+auf die API-Schnittstelle <code>api.dmh-demo.example</code>. Das
+Burst-Limit erlaubt kurzfristig die doppelte Spitze, ohne dass
+sofort 429 zurückkommt.</p>
+<table border="1" cellpadding="4">
+  <tr><th>Tarif</th><th>Anfragen pro Minute</th><th>Burst</th></tr>
+  <tr><td>Starter</td><td>60</td><td>120</td></tr>
+  <tr><td>Business</td><td>300</td><td>600</td></tr>
+  <tr><td>Enterprise</td><td>2000</td><td>4000</td></tr>
+</table>
+
+<h2>Limits pro Endpunkt</h2>
+<p>Zusätzlich zu den Tarif-Limits gelten Limits pro Endpunkt. Diese
+schützen vor versehentlichen oder bösartigen Lastspitzen auf
+besonders teuren Endpunkten und greifen unabhängig vom
+Tarif-Limit.</p>
+<ul>
+  <li><code>POST /api/orders</code> — zusätzlich 30 Anfragen pro
+      Minute pro Kunden-Account (Anti-Abuse-Schutz vor
+      automatisierten Bestell-Bot-Wellen)</li>
+  <li><code>POST /api/auth/login</code> — 10 Anfragen pro Minute
+      pro IP, danach 5-minütiger Cool-Down. Schutz vor
+      Credential-Stuffing-Angriffen.</li>
+  <li><code>POST /api/refund</code> — 5 Anfragen pro Minute pro
+      Kunden-Account; ausnahmsweise Erhöhung nur via
+      Support-Workflow möglich.</li>
+</ul>
+
+<h2>Verhalten beim Überschreiten</h2>
+<p>Wird das Limit überschritten, antwortet der Server mit
+HTTP <code>429 Too Many Requests</code> und dem Header
+<code>Retry-After: &lt;Sekunden&gt;</code>. Wir empfehlen einen
+Client-Side Exponential-Backoff beginnend bei 1 Sekunde,
+Verdoppelung pro Fehlversuch, mit Jitter ±20 %. Geben Sie nach
+drei Fehlversuchen auf und melden den Vorfall an Ihr eigenes
+Monitoring — das deutet meist auf einen anhaltenden Engpass auf
+unserer Seite hin, der manuell untersucht werden muss.</p>
+
+<h2>Quoten-Erhöhung</h2>
+<p>Eine vorübergehende Quoten-Erhöhung (z. B. für eine
+Black-Friday-Kampagne) kann über den Support-Workflow
+<code>support@dmh-demo.example</code> mindestens 5 Werktage im
+Voraus beantragt werden. Permanente Erhöhungen erfordern einen
+Tarif-Wechsel und werden vom Account-Management bearbeitet.
+Vorübergehende Erhöhungen sind auf maximal 48 Stunden begrenzt
+und werden danach automatisch zurückgesetzt.</p>
+</main>
+</body></html>

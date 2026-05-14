@@ -1,0 +1,18 @@
+{
+  "flow_id": "F36",
+  "_note": "F36 — assistant calls hubspot.deal.find, then emits final text. Two LLM turns.",
+  "turns": [
+    {
+      "tool_calls": [
+        {
+          "id": "tc-find-1",
+          "name": "hubspot.deal.find",
+          "args": { "stage": "discovery" }
+        }
+      ]
+    },
+    {
+      "text": "Here's the deal I found: ACME Inc, €5000, Discovery stage."
+    }
+  ]
+}

@@ -15,6 +15,8 @@ defmodule DmhAi.DB.Init do
     File.mkdir_p(DmhAi.Constants.assets_dir())
 
     create_tables()
+    seed_default_org()
+    File.mkdir_p(DmhAi.Constants.org_assets_dir(DmhAi.Constants.default_org_id()))
     seed_admin()
     seed_pools()
     seed_oauth_catalog()
@@ -25,6 +27,19 @@ defmodule DmhAi.DB.Init do
   # run DB scripts; never as auto-running migrations on boot.
 
   defp create_tables do
+    # Organizations — Primitive 0.1. Every scoped artefact in the
+    # system points back here via `org_id`. NEVER NULL on any scoped
+    # row. Fresh installs auto-create one row via seed_default_org/0
+    # so the rest of the schema can rely on the foreign key existing.
+    query!(Repo, """
+    CREATE TABLE IF NOT EXISTS organizations (
+      id            TEXT PRIMARY KEY,
+      name          TEXT NOT NULL,
+      settings_json TEXT,
+      created_at    INTEGER NOT NULL
+    )
+    """)
+
     query!(Repo, """
     CREATE TABLE IF NOT EXISTS sessions (
       id TEXT PRIMARY KEY,
@@ -57,7 +72,9 @@ defmodule DmhAi.DB.Init do
       email TEXT UNIQUE NOT NULL,
       name TEXT,
       password_hash TEXT NOT NULL,
-      role TEXT NOT NULL DEFAULT 'user',
+      role TEXT NOT NULL DEFAULT 'user',       -- install-level superuser flag: 'admin' = admin of the deployment itself; 'user' = regular user. Distinct from org_role.
+      org_id TEXT NOT NULL,                    -- FK organizations.id; never NULL (Primitive 0.1)
+      org_role TEXT NOT NULL DEFAULT 'member', -- role within their org: 'member' | 'manager' | 'admin'
       profile TEXT DEFAULT '',
       preferences TEXT,                       -- per-user JSON blob: token-saving toggle, future personal prefs
       last_profile_extracted_msg_ts INTEGER,  -- ProfileExtractor watermark
@@ -69,6 +86,7 @@ defmodule DmhAi.DB.Init do
       created_at INTEGER
     )
     """)
+    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_users_org ON users (org_id)")
     query!(Repo,
       "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_unix_uid ON users (unix_uid) WHERE unix_uid IS NOT NULL")
 
@@ -348,10 +366,11 @@ defmodule DmhAi.DB.Init do
     query!(Repo, """
     CREATE TABLE IF NOT EXISTS mcp_catalog (
       id                INTEGER PRIMARY KEY AUTOINCREMENT,
-      slug              TEXT    NOT NULL UNIQUE,
-      name              TEXT    NOT NULL,
+      org_id            TEXT NOT NULL,                  -- FK organizations.id; per-org MCP catalog (Primitive 0.1)
+      slug              TEXT NOT NULL,
+      name              TEXT NOT NULL,
       description       TEXT,
-      mcp_url           TEXT    NOT NULL,
+      mcp_url           TEXT NOT NULL,
       icon_url          TEXT,
       categories        TEXT,                          -- JSON array of strings
       enabled           INTEGER NOT NULL DEFAULT 0,    -- 0/1
@@ -361,10 +380,11 @@ defmodule DmhAi.DB.Init do
       last_probe_error  TEXT,                          -- human-readable error from the probe attempt
       last_probe_at     INTEGER,                       -- ms epoch
       created_at        INTEGER NOT NULL,
-      updated_at        INTEGER NOT NULL
+      updated_at        INTEGER NOT NULL,
+      UNIQUE(org_id, slug)
     )
     """)
-    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_mcp_catalog_enabled ON mcp_catalog (enabled)")
+    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_mcp_catalog_enabled ON mcp_catalog (org_id, enabled)")
 
     query!(Repo, """
     CREATE TABLE IF NOT EXISTS model_behavior_stats (
@@ -408,38 +428,90 @@ defmodule DmhAi.DB.Init do
 
     # Vector knowledge base — see specs/vector_kb.md.
     #
-    #   kb_sources       — registry of every /index / /memo / save_memo
-    #                      ingest. Source-of-truth for relearn flows.
-    #                      `centroid` (averaged chunk embedding) gates
-    #                      semantic-merge for inline-text ingest.
-    #   kb_chunks_meta   — non-vector metadata for each chunk; rowid
-    #                      links 1:1 to the corresponding kb_vec_* row.
-    #   kb_vec_knowledge — vec0 virtual table holding the global vectors.
-    #   kb_vec_memo      — vec0 virtual table for per-user memos.
-    #   kb_seeds         — admin-curated URL list for one-click batch /index.
-    #   kb_relearn_jobs  — dedup table for the background re-fetch supervisor.
+    # Per Primitive 0.1 (Hard scoping rule), the corpus splits into
+    # two parallel halves:
+    #
+    #   KB side (org-shared, every employee in the org sees the same):
+    #     kb_sources         — KB ingest registry, org-scoped.
+    #     kb_chunks_meta     — chunk metadata for KB; rowid 1:1 to kb_vec_knowledge.
+    #     kb_vec_knowledge   — vec0 virtual table holding org vectors.
+    #     kb_fts             — FTS5 inverted index over KB chunk_text.
+    #     kb_relearn_jobs    — dedup table for the background KB re-fetch supervisor.
+    #
+    #   Memo side (per-user-readable, org_id is audit context only):
+    #     memo_sources       — memo ingest registry; carries org_id + user_id (both NOT NULL).
+    #     memo_chunks_meta   — chunk metadata for memos; rowid 1:1 to kb_vec_memo.
+    #     kb_vec_memo        — vec0 virtual table for memo vectors.
+    #     memo_fts           — FTS5 inverted index over memo chunk_text.
+    # `kb_sources` per Primitive 0.2:
+    #   source_id              — stable normalised identifier (URL: lower-host no fragment;
+    #                            file: sha256(org_id ‖ path); folder: connector-uri; text:
+    #                            sha256(org_id ‖ title)). Unit of replace + removal.
+    #   content_sha256         — sha256 over raw bytes; the idempotence gate.
+    #   extracted_text_sha256  — sha256 over post-extractor text (PDF/docx extraction
+    #                            normalised).
+    #   chunker_config_version — pinned per source so a global default change can't
+    #                            silently re-shape existing rows mid-corpus.
+    #   embedder_model         — pinned per source for the same reason.
+    #   parent_source_id       — set on folder member rows pointing at the containing
+    #                            folder's source_id.
+    #   last_seen_at           — bumped on every idempotent re-ingest (skip path).
+    #   last_indexed_at        — bumped only when a re-ingest actually replaces chunks.
+    #   last_check_at          — last BG refresh attempt timestamp (success or failure).
+    #   last_check_failed_at   — null on success; set on upstream error.
+    #   last_check_error       — short tag ('http_404' | 'connector_unauthorised' | 'timeout').
+    #   created_by_user_id     — who ran /index to create the source.
+    #   ingest_status          — 'queued'|'extracting'|'classified'|'structured'|'indexed'|'error'
     query!(Repo, """
     CREATE TABLE IF NOT EXISTS kb_sources (
-      id           INTEGER PRIMARY KEY AUTOINCREMENT,
-      scope        TEXT NOT NULL CHECK (scope IN ('knowledge', 'memo')),
-      user_id      TEXT,
-      source_kind  TEXT NOT NULL,
-      source_ref   TEXT NOT NULL,
-      title        TEXT,
-      raw_text     TEXT,
-      centroid     BLOB,
-      tags         TEXT,
-      indexed_at   INTEGER NOT NULL,
-      UNIQUE(scope, user_id, source_ref)
+      id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+      org_id                 TEXT NOT NULL,
+      source_id              TEXT NOT NULL,
+      source_kind            TEXT NOT NULL,
+      title                  TEXT,
+      raw_text               TEXT,
+      centroid               BLOB,
+      tags                   TEXT,
+      content_sha256         TEXT,
+      extracted_text_sha256  TEXT,
+      chunker_config_version TEXT,
+      embedder_model         TEXT,
+      parent_source_id       TEXT,
+      last_seen_at           INTEGER,
+      last_indexed_at        INTEGER,
+      last_check_at          INTEGER,
+      last_check_failed_at   INTEGER,
+      last_check_error       TEXT,
+      created_by_user_id     TEXT,
+      ingest_status          TEXT NOT NULL DEFAULT 'indexed',
+      indexed_at             INTEGER NOT NULL,
+      UNIQUE(org_id, source_id)
     )
     """)
-    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_kb_sources_scope ON kb_sources (scope, user_id)")
+    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_kb_sources_org ON kb_sources (org_id)")
+    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_kb_sources_parent ON kb_sources (parent_source_id)")
+
+    # Admin "remove source" trail. Removed payload (chunks, vectors, FTS,
+    # extracted_json, raw_text) is flushed by Ingest.remove_source!/2;
+    # this table preserves the audit fact that a removal happened —
+    # never the content itself.
+    query!(Repo, """
+    CREATE TABLE IF NOT EXISTS kb_source_history (
+      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+      org_id              TEXT NOT NULL,
+      source_id           TEXT NOT NULL,
+      source_kind         TEXT NOT NULL,
+      removed_by_user_id  TEXT,
+      reason              TEXT,
+      removed_at          INTEGER NOT NULL
+    )
+    """)
+    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_kb_source_history_org ON kb_source_history (org_id, removed_at)")
 
     query!(Repo, """
     CREATE TABLE IF NOT EXISTS kb_chunks_meta (
       id           INTEGER PRIMARY KEY AUTOINCREMENT,
-      scope        TEXT NOT NULL CHECK (scope IN ('knowledge', 'memo')),
-      user_id      TEXT,
+      org_id       TEXT NOT NULL,
       source_id    INTEGER NOT NULL REFERENCES kb_sources(id) ON DELETE CASCADE,
       chunk_idx    INTEGER NOT NULL,
       chunk_text   TEXT NOT NULL,
@@ -447,19 +519,53 @@ defmodule DmhAi.DB.Init do
     )
     """)
     query!(Repo, "CREATE INDEX IF NOT EXISTS idx_kb_chunks_meta_source ON kb_chunks_meta (source_id)")
-    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_kb_chunks_meta_scope ON kb_chunks_meta (scope, user_id)")
+    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_kb_chunks_meta_org ON kb_chunks_meta (org_id)")
+
+    query!(Repo, """
+    CREATE TABLE IF NOT EXISTS memo_sources (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      org_id       TEXT NOT NULL,                 -- audit context; the user's org at memo creation
+      user_id      TEXT NOT NULL,                 -- the only reader; memo is encrypted per-user
+      source_kind  TEXT NOT NULL,
+      source_id    TEXT NOT NULL,                 -- natural key (sha256 of text)
+      title        TEXT,
+      raw_text     TEXT,
+      centroid     BLOB,
+      tags         TEXT,
+      indexed_at   INTEGER NOT NULL,
+      UNIQUE(user_id, source_id)
+    )
+    """)
+    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_memo_sources_user ON memo_sources (user_id)")
+    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_memo_sources_org ON memo_sources (org_id)")
+
+    query!(Repo, """
+    CREATE TABLE IF NOT EXISTS memo_chunks_meta (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      org_id       TEXT NOT NULL,
+      user_id      TEXT NOT NULL,
+      source_id    INTEGER NOT NULL REFERENCES memo_sources(id) ON DELETE CASCADE,
+      chunk_idx    INTEGER NOT NULL,
+      chunk_text   TEXT NOT NULL,
+      indexed_at   INTEGER NOT NULL
+    )
+    """)
+    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_memo_chunks_meta_source ON memo_chunks_meta (source_id)")
+    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_memo_chunks_meta_user ON memo_chunks_meta (user_id)")
 
     # vec0 virtual tables. Dimension is hard-coded; distance metric
     # is cosine (semantic similarity, magnitude-invariant — see
     # specs/vector_kb.md). Distance metric is fixed at table creation.
+    # `kb_vec_knowledge.rowid` mirrors `kb_chunks_meta.id`; `kb_vec_memo.rowid`
+    # mirrors `memo_chunks_meta.id`.
     query!(Repo, "CREATE VIRTUAL TABLE IF NOT EXISTS kb_vec_knowledge USING vec0(embedding float[1024] distance_metric=cosine)")
     query!(Repo, "CREATE VIRTUAL TABLE IF NOT EXISTS kb_vec_memo      USING vec0(embedding float[1024] distance_metric=cosine)")
 
-    # FTS5 inverted index over chunk_text — feeds the BM25 leg of
-    # hybrid search. Contentless table (text not duplicated; we
-    # already have it in `kb_chunks_meta`); rowid mirrors
-    # `kb_chunks_meta.id`. `contentless_delete=1` lets us issue
-    # plain `DELETE FROM kb_fts WHERE rowid=?` on chunk delete.
+    # FTS5 inverted indexes over chunk_text — feed the BM25 leg of
+    # hybrid search. Contentless tables (text not duplicated; we
+    # already have it in *_chunks_meta); rowid mirrors the
+    # corresponding chunks_meta.id. `contentless_delete=1` lets us
+    # issue plain `DELETE FROM <fts> WHERE rowid=?` on chunk delete.
     # Tokenizer `unicode61` handles diacritics + case-folding for
     # multilingual content (Vietnamese / German / etc.) — the
     # default tokenizer is ASCII-only and would index "đỏ" as
@@ -472,17 +578,12 @@ defmodule DmhAi.DB.Init do
       tokenize='unicode61 remove_diacritics 2'
     )
     """)
-
     query!(Repo, """
-    CREATE TABLE IF NOT EXISTS kb_seeds (
-      id            INTEGER PRIMARY KEY AUTOINCREMENT,
-      url           TEXT NOT NULL UNIQUE,
-      label         TEXT,
-      tags          TEXT,
-      last_run_at   INTEGER,
-      last_status   TEXT,
-      last_error    TEXT,
-      created_at    INTEGER NOT NULL
+    CREATE VIRTUAL TABLE IF NOT EXISTS memo_fts USING fts5(
+      chunk_text,
+      content='',
+      contentless_delete=1,
+      tokenize='unicode61 remove_diacritics 2'
     )
     """)
 
@@ -494,6 +595,33 @@ defmodule DmhAi.DB.Init do
     )
     """)
 
+    # Audit log — every permission denial + cross-user / cross-org
+    # access lands here. Per Primitive 0.1 (audit history visible to
+    # managers) and Primitive 0.7 (per-org permission model).
+    #
+    #   action      — :read | :write | :invoke | :approve | :administer
+    #   resource    — JSON-encoded resource tag, e.g.
+    #                 {"kind":"verb","name":"hubspot.deal.create"}
+    #   outcome     — 'allowed' | 'denied' (denials are the primary
+    #                 use case; allowed-rows are written for
+    #                 high-sensitivity actions only)
+    #   reason      — short tag explaining a denial
+    #                 ('role_too_low', 'missing_credentials', …)
+    query!(Repo, """
+    CREATE TABLE IF NOT EXISTS audit_log (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      org_id        TEXT NOT NULL,
+      user_id       TEXT,
+      action        TEXT NOT NULL,
+      resource      TEXT NOT NULL,
+      outcome       TEXT NOT NULL,
+      reason        TEXT,
+      created_at    INTEGER NOT NULL
+    )
+    """)
+    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_audit_log_org_ts ON audit_log (org_id, created_at)")
+    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_audit_log_user_ts ON audit_log (user_id, created_at)")
+
     # Pools — model-routing registry. See arch_wiki/dmh_ai/integrations.md
     # §API Pools. A pool bundles endpoint config + account rotation,
     # addressed in canonical model strings as <pool>::<model>. The
@@ -502,7 +630,8 @@ defmodule DmhAi.DB.Init do
     query!(Repo, """
     CREATE TABLE IF NOT EXISTS pools (
       id               INTEGER PRIMARY KEY AUTOINCREMENT,
-      name             TEXT NOT NULL UNIQUE,
+      org_id           TEXT NOT NULL,           -- FK organizations.id; per-org pool catalog (Primitive 0.1)
+      name             TEXT NOT NULL,
       protocol         TEXT NOT NULL,           -- 'openai' | 'ollama' | 'anthropic'
       base_url         TEXT NOT NULL,
       strategy         TEXT NOT NULL DEFAULT 'least_used',
@@ -518,9 +647,11 @@ defmodule DmhAi.DB.Init do
       rr_cursor        INTEGER NOT NULL DEFAULT 0,
                                                 -- round-robin cursor (only used when strategy='round_robin')
       created_ts       INTEGER NOT NULL,
-      updated_ts       INTEGER NOT NULL
+      updated_ts       INTEGER NOT NULL,
+      UNIQUE(org_id, name)
     )
     """)
+    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_pools_org ON pools (org_id)")
   end
 
   # Seed default pools on first boot. Importable from an operator-managed
@@ -551,11 +682,12 @@ defmodule DmhAi.DB.Init do
 
         true ->
           query!(Repo, """
-          INSERT INTO pools (name, protocol, base_url, strategy,
+          INSERT INTO pools (org_id, name, protocol, base_url, strategy,
                              cooldown_seconds, num_ctx, accounts, models,
                              rr_cursor, created_ts, updated_ts)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
           """, [
+            DmhAi.Constants.default_org_id(),
             pool["name"],
             pool["protocol"],
             pool["base_url"],
@@ -751,6 +883,26 @@ defmodule DmhAi.DB.Init do
     end
   end
 
+  # Seed the single "default" organization. Every install gets exactly
+  # this one row on first boot so the rest of the schema can rely on a
+  # valid org_id foreign key existing. Multi-tenant installs grow more
+  # rows via the admin UI; on-prem deployments typically never see a
+  # second row. Idempotent — INSERT OR IGNORE on primary key.
+  defp seed_default_org do
+    %{rows: rows} = query!(Repo, "SELECT id FROM organizations WHERE id=?", [DmhAi.Constants.default_org_id()])
+
+    if rows == [] do
+      now = System.os_time(:millisecond)
+
+      query!(Repo, """
+      INSERT INTO organizations (id, name, settings_json, created_at)
+      VALUES (?, ?, NULL, ?)
+      """, [DmhAi.Constants.default_org_id(), DmhAi.Constants.default_org_name(), now])
+
+      Logger.info("[DB] Seeded default organization (#{DmhAi.Constants.default_org_id()})")
+    end
+  end
+
   defp seed_admin do
     result = query!(Repo, "SELECT id FROM users WHERE email=?", ["admin@dmhai.local"])
 
@@ -760,9 +912,10 @@ defmodule DmhAi.DB.Init do
       now = :os.system_time(:second)
 
       query!(Repo, """
-      INSERT INTO users (id, email, name, password_hash, role, created_at)
-      VALUES (?, ?, ?, ?, ?, ?)
-      """, [uid, "admin@dmhai.local", nil, password_hash, "admin", now])
+      INSERT INTO users (id, email, name, password_hash, role, org_id, org_role, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      """, [uid, "admin@dmhai.local", nil, password_hash, "admin",
+            DmhAi.Constants.default_org_id(), "admin", now])
 
       Logger.info("[DB] Seeded default admin user")
     end

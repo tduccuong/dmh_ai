@@ -844,25 +844,6 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
 .pool-btn-primary { background: #4a2c80; border-color: #6a3cb0; color: #fff; }
 .pool-btn-primary:hover { background: #5a36a0; }
 
-/* ─── Index Seeds admin ─────────────────────────────────────────────────── */
-.index-seeds-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
-.index-seed-row { display: flex; align-items: flex-start; gap: 12px; padding: 10px 12px; background: #1a1228; border: 1px solid #382850; border-radius: 8px; }
-.index-seed-info { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
-.index-seed-url { font-size: 12px; color: #c0a0e8; text-decoration: none; word-break: break-all; }
-.index-seed-url:hover { text-decoration: underline; }
-.index-seed-label { font-size: 11px; color: #d0c0e8; }
-.index-seed-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 2px; }
-.index-seed-pill { font-size: 10px; padding: 2px 8px; border-radius: 10px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
-.index-seed-pill-queued { background: #3a2e10; color: #f0c060; border: 1px solid #5a4818; }
-.index-seed-pill-ok     { background: #103a20; color: #60d090; border: 1px solid #185a30; }
-.index-seed-pill-error  { background: #3a1020; color: #e05080; border: 1px solid #5a1830; }
-.index-seed-ts { font-size: 10px; color: #ece0f0; }
-.index-seed-err { font-size: 11px; color: #e05080; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.index-seed-actions { display: flex; align-items: flex-start; gap: 6px; flex-shrink: 0; }
-.index-seeds-add-row { display: flex; gap: 8px; }
-.index-seeds-add-row #index-seeds-add-url   { flex: 2 1 auto; }
-.index-seeds-add-row #index-seeds-add-label { flex: 1 1 auto; }
-
 /* ─── MCP Catalog admin ────────────────────────────────────────────────── */
 .mcp-catalog-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
 .mcp-catalog-row { display: flex; align-items: flex-start; gap: 12px; padding: 10px 12px; background: #1a1228; border: 1px solid #382850; border-radius: 8px; opacity: 0.75; }

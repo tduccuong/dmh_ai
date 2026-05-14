@@ -874,6 +874,17 @@ defmodule DmhAi.Handlers.Data do
           "oauth_service" ->
             finalize_oauth_service(user_id, session_id, alias_, resource, server_url, asm, tokens)
 
+          "connector_oauth" ->
+            # Primitive 0.3 click-driven connector OAuth. The state
+            # was minted by `MeServices.connect/2` with alias=slug
+            # and canonical_resource = our in-process MCPServer URL
+            # for that slug. Writes the THREE credential rows the
+            # connector runtime needs: the OAuth pre-check at
+            # `oauth:<slug>`, the MCP bearer at `mcp:<canonical>`,
+            # plus the `authorized_services` row that ties slug →
+            # server_url for `MCP.Client.call_tool/4`.
+            finalize_connector_oauth(user_id, alias_, resource, server_url, asm, tokens)
+
           _ ->
             finalize_connection(user_id, session_id, anchor_task_id, alias_, resource, server_url, asm, tokens)
         end
@@ -1065,6 +1076,91 @@ defmodule DmhAi.Handlers.Data do
       _ ->
         :ok
     end
+  end
+
+  # Primitive 0.3 click-driven connector OAuth — writes the three
+  # rows the connector runtime needs to invoke a verb on behalf of
+  # the user. Called from the OAuth callback when the state row's
+  # flow_kind == "connector_oauth".
+  #
+  # `alias_` is the connector slug; `canonical_resource` and
+  # `server_url` both equal the in-process MCPServer URL for that
+  # slug (e.g. `http://127.0.0.1:8087/google_workspace`).
+  #
+  # NB: we store Google's actual access_token at `mcp:<canonical>`
+  # because the in-process MCPServer's RestBridge forwards
+  # whatever Bearer it receives onward to googleapis.com. The
+  # MCPServer doesn't generate its own per-request tokens; it's a
+  # passthrough.
+  defp finalize_connector_oauth(user_id, alias_, canonical_resource, server_url, asm, tokens) do
+    catalog_row = DmhAi.OAuth.Catalog.get_by_slug(alias_)
+
+    {client_id, client_secret, extra_token_params, host_match} =
+      case catalog_row do
+        %{client_id: cid, client_secret: csec, extra_token_params: etp, host_match: hm} ->
+          {cid, csec, (if is_map(etp), do: etp, else: %{}), hm}
+
+        _ ->
+          DmhAi.SysLog.log("[OAUTH] finalize_connector_oauth: catalog miss for slug=#{alias_}")
+          {nil, nil, %{}, ""}
+      end
+
+    account =
+      case catalog_row && DmhAi.OAuth.Userinfo.fetch(catalog_row, tokens.access_token) do
+        {:ok, acc} -> acc
+        _          -> ""
+      end
+
+    common_payload = %{
+      "access_token"       => tokens.access_token,
+      "refresh_token"      => tokens.refresh_token,
+      "scope"              => tokens.scope,
+      "token_type"         => tokens.token_type,
+      "server_url"         => server_url,
+      "alias"              => alias_,
+      "host_match"         => host_match,
+      "account"            => account,
+      "auth_target"        => alias_,
+      "asm_json"           => Jason.encode!(asm),
+      "extra_token_params" => extra_token_params,
+      "client_id"          => client_id,
+      "client_secret"      => client_secret
+    }
+
+    # 1) `oauth:<slug>` — Caller.lookup_credentials/3 pre-check.
+    #    kind=oauth2 (the connector framework's expected shape).
+    DmhAi.Auth.Credentials.save(
+      user_id,
+      "oauth:" <> alias_,
+      "oauth2",
+      common_payload,
+      account:    account,
+      notes:      "Connector OAuth: #{alias_}#{if account != "", do: " (#{account})", else: ""}",
+      expires_at: tokens.expires_at
+    )
+
+    # 2) `mcp:<canonical>` — bearer token MCP.Client.call_tool/4
+    #    sends to the in-process MCPServer (which forwards to the
+    #    vendor REST API).
+    DmhAi.Auth.Credentials.save(
+      user_id,
+      "mcp:" <> canonical_resource,
+      "oauth2_mcp",
+      common_payload,
+      account:    account,
+      notes:      "Connector MCP bearer: #{alias_}",
+      expires_at: tokens.expires_at
+    )
+
+    # 3) authorized_services row — ties (user_id, alias=slug) to
+    #    the MCPServer URL. MCP.Client.load_connection reads this.
+    DmhAi.MCP.Registry.authorize(user_id, alias_, canonical_resource, server_url, asm)
+
+    DmhAi.SysLog.log(
+      "[OAUTH] finalize_connector_oauth: wired slug=#{alias_} user=#{user_id} account=#{inspect(account)}"
+    )
+
+    :ok
   end
 
   defp append_oauth_service_connected_message(session_id, user_id, alias_, host_match) do

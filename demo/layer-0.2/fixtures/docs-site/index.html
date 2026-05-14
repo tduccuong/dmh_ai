@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="de"><head><meta charset="utf-8"><title>DMH SME Demo Cloud — Dokumentation</title></head>
+<body>
+<main>
+<h1>DMH SME Demo Cloud — Produktdokumentation</h1>
+
+<p>Diese Dokumentation gilt für die DMH SME Demo Cloud, Version
+4.7.0, Stand Q2/2026. Sie richtet sich an Administrator:innen und
+Entwickler:innen, die DMH SME Demo Cloud in einem mittelständischen
+Unternehmen einführen oder betreiben.</p>
+
+<h2>Was ist die DMH SME Demo Cloud?</h2>
+<p>DMH SME Demo Cloud ist eine fiktive Demo-Instanz, an der wir die
+Integrationsmuster zeigen: Single Sign-On, eingehende und
+ausgehende Webhooks, Quotas und Rate-Limits, sowie das Tarif-Modell.
+Alle in dieser Dokumentation genannten Namen, Endpunkte und
+Zahlenwerte sind synthetisch und dienen ausschließlich der
+Demonstration der Indexierungs-Pipeline.</p>
+
+<h2>Übersicht der Module</h2>
+<p>Die folgenden Module sind Teil der Standard-Installation. Jedes
+Modul hat eine eigene Konfigurationsseite und ist über die
+linke Navigationsleiste im Adminportal erreichbar.</p>
+
+<h2>Themen in dieser Dokumentation</h2>
+<p>Lesen Sie die folgenden Seiten in der angegebenen Reihenfolge,
+wenn Sie eine Erstinstallation durchführen. Wenn Sie bereits eine
+laufende Instanz haben, springen Sie direkt zu dem Thema, das Sie
+interessiert.</p>
+
+<ul>
+  <li><a href="sso.html">Single Sign-On mit Azure AD, Google Workspace und Okta</a> — Identity-Provider anbinden, JIT-Provisioning, SAML-Fehlerdiagnose</li>
+  <li><a href="webhooks.html">Webhooks — Outbound-Events konfigurieren</a> — Endpunkte registrieren, Signatur-Verifikation, Retry-Verhalten</li>
+  <li><a href="rate-limits.html">Rate-Limits und Quoten</a> — Anfragen pro Minute pro Tarif, 429-Verhalten, Quoten-Erhöhungen beantragen</li>
+</ul>
+
+<h2>Support und Eskalation</h2>
+<p>Bei Problemen mit der DMH SME Demo Cloud erstellen Sie ein Ticket
+im Kundenportal unter <code>support.dmh-demo.example</code>. Eine
+direkte Mail an <code>support@dmh-demo.example</code> wird automatisch
+in das Ticketsystem übernommen. Für kritische Produktionsstörungen
+außerhalb der Geschäftszeiten steht Premium-Kunden zusätzlich eine
+24/7-Notfall-Hotline zur Verfügung, deren Nummer im Premium-Vertrag
+hinterlegt ist. Antwortzeiten richten sich nach Ihrem Tarif: Starter
+24 Stunden, Business 4 Stunden, Enterprise 1 Stunde.</p>
+
+<h2>Versionshinweise</h2>
+<p>Mit Version 4.7.0 wurde das SCIM-Provisioning für Microsoft
+Entra ID stabilisiert und das Webhook-Retry-Backoff von linearer auf
+exponentielle Form umgestellt. Eine vollständige Liste finden Sie
+im Changelog unter <code>/admin/changelog</code> im Adminportal.</p>
+</main>
+</body></html>

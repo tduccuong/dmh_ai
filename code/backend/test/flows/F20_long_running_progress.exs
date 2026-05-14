@@ -43,8 +43,9 @@ defmodule DmhAi.Flows.F20LongRunningProgress do
     session_id = T.uid()
 
     query!(Repo,
-      "INSERT INTO users (id, email, name, role, password_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+      "INSERT INTO users (id, email, name, role, password_hash, org_id, org_role, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
       [user_id, "u-#{user_id}@test.local", "Test User", "user", "x",
+       DmhAi.Constants.default_org_id(), "admin",
        System.os_time(:millisecond)])
 
     query!(Repo,

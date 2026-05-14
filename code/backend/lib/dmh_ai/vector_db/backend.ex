@@ -21,11 +21,15 @@ defmodule DmhAi.VectorDB.Backend do
 
   @type scope :: :knowledge | :memo
   @type embedding :: [float()]
-  @type filter :: :none | {:user, String.t()} | {:source_id, integer()}
+  @type filter :: :none | {:org, String.t()} | {:user, String.t()} | {:source_id, integer()}
 
+  # Chunk row shape per scope:
+  #   :knowledge — org_id required; no user_id.
+  #   :memo      — both org_id (audit context) and user_id (owner) required.
   @type chunk_row :: %{
           required(:scope) => scope(),
-          required(:user_id) => String.t() | nil,
+          required(:org_id) => String.t(),
+          optional(:user_id) => String.t(),
           required(:source_id) => integer(),
           required(:chunk_idx) => non_neg_integer(),
           required(:chunk_text) => String.t(),
@@ -35,9 +39,9 @@ defmodule DmhAi.VectorDB.Backend do
 
   @type hit :: %{
           required(:chunk_text) => String.t(),
-          required(:source_id) => integer(),
+          required(:internal_id) => integer(),
           required(:source_kind) => String.t(),
-          required(:source_ref) => String.t(),
+          required(:source_id) => String.t(),
           required(:title) => String.t() | nil,
           required(:tags) => [String.t()],
           required(:score) => float()
@@ -61,6 +65,8 @@ defmodule DmhAi.VectorDB.Backend do
   @callback delete_by_source(scope :: scope(), source_id :: integer()) ::
               :ok | {:error, term()}
 
-  @callback count(scope :: scope(), user_id :: String.t() | nil) ::
+  # `scope_arg` is `org_id` (binary) for `:knowledge` and `user_id`
+  # (binary) for `:memo`. Both are required (NOT NULL per Primitive 0.1).
+  @callback count(scope :: scope(), scope_arg :: String.t()) ::
               {:ok, non_neg_integer()} | {:error, term()}
 end

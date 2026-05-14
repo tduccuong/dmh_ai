@@ -45,19 +45,31 @@ if ! docker image inspect dmh-ai-sandbox:latest >/dev/null 2>&1; then
 fi
 
 echo "[test.sandbox] starting $SANDBOX (data=$TMP)"
+# `--cap-add NET_ADMIN` lets `/sandbox-start.sh` install the iptables
+# LAN fence on container boot. Without this cap, the rules silently
+# fail to load and R11_lan_fence_uid_split passes for the wrong
+# reason (no fence at all). We do NOT override the Dockerfile CMD —
+# the entrypoint sets up iptables, then execs `tail -f /dev/null`.
 docker run -d --name "$SANDBOX" \
+  --cap-add NET_ADMIN \
   -v "$TMP/user_workspaces:/data/user_workspaces" \
   -v "$TMP/user_assets:/data/user_assets" \
   -v "$TMP/run/dmh-browser:/var/run/dmh-browser" \
-  dmh-ai-sandbox:latest \
-  tail -f /dev/null >/dev/null
+  dmh-ai-sandbox:latest >/dev/null
 
-# Wait for the sandbox to be healthy enough that `docker exec` will
-# work — the `tail -f` PID 1 is up, but sometimes the container
-# state hasn't transitioned yet.
-for i in 1 2 3 4 5; do
-  if docker exec "$SANDBOX" true 2>/dev/null; then
+# Wait for the sandbox to be healthy AND the fence to be installed —
+# start.sh runs synchronously before exec'ing into tail, so once
+# `docker exec true` works, the iptables rules should already be
+# loaded. Probe both conditions to surface fence-install failures
+# loudly rather than letting tests run against a half-set-up sandbox.
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  if docker exec "$SANDBOX" sh -c "iptables -L OUTPUT -n 2>/dev/null | grep -q REJECT"; then
     break
+  fi
+  if [ "$i" -eq 10 ]; then
+    echo "ERROR: sandbox iptables fence never loaded — NET_ADMIN cap or start.sh issue?" >&2
+    docker logs "$SANDBOX" >&2 || true
+    exit 1
   fi
   sleep 0.4
 done

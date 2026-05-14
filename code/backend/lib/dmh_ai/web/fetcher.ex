@@ -75,9 +75,18 @@ defmodule DmhAi.Web.Fetcher do
   """
   @spec fetch(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def fetch(url, opts \\ []) when is_binary(url) do
-    case Url.parse(url) do
-      nil -> {:error, {:invalid_url, url}}
-      _   -> do_fetch(url, opts)
+    case Application.get_env(:dmh_ai, :__fetcher_stub__) do
+      stub when is_function(stub, 1) ->
+        # Test hook: callers in tests (mostly Primitive 0.2 ingest
+        # flows) replace upstream HTTP with a deterministic response.
+        # See specs/web_fetcher.md.
+        stub.(url)
+
+      _ ->
+        case Url.parse(url) do
+          nil -> {:error, {:invalid_url, url}}
+          _   -> do_fetch(url, opts)
+        end
     end
   end
 

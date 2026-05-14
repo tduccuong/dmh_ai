@@ -160,7 +160,7 @@ defmodule DmhAi.Tools.RunScript do
     """
     Run a shell script (bash / python / node / …).
 
-    Sandbox: Debian 22.04 (Ubuntu jammy underneath), root. Output cap 50 KB. Pre-installed: #{pre_installed}, plus standard GNU userland. Package manager is `apt` (NOT apk / yum / dnf): install missing with `apt-get install -y <pkg>`; Python extras via `pip install --break-system-packages <pkg>`. On `<cmd>: command not found`, install via `apt` and retry — don't pivot.
+    Sandbox: Alpine Linux (musl libc, BusyBox userland), Python 3, Node.js. Output cap 50 KB. Pre-installed: #{pre_installed}. Package manager is `apk` (NOT apt / yum / dnf). Non-admin scripts run under a LAN fence — outbound to RFC1918 / loopback / link-local (127.x, 10.x, 172.16-31.x, 192.168.x, 169.254.x) is REJECTed; public internet works, so `apk add` / `pip install` from public mirrors WILL succeed but cost a turn — prefer the preinstalled deliverable libs (`fpdf2`, `openpyxl`, `python-docx`, `Pillow`, `matplotlib`, `markdown`, `pyyaml`, `requests`, `httpx`) when one fits.
 
     Remote SSH: commands BEFORE `ssh` run in the Alpine sandbox (use `apk`); commands INSIDE `ssh "<cmd>"` run on the remote (use that distro's manager).
 

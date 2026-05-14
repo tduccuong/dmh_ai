@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="de"><head><meta charset="utf-8"><title>SSO konfigurieren — DMH SME Demo Cloud</title></head>
+<body>
+<nav><a href="index.html">← Zurück zur Übersicht</a></nav>
+<main>
+<h1>Single Sign-On mit Azure AD und Google Workspace</h1>
+
+<p>Diese Seite beschreibt, wie Sie Single Sign-On für DMH SME Demo
+Cloud aktivieren. Die Konfiguration besteht aus drei Phasen:
+Vorbereitung im Identity-Provider, Eintragen der Metadaten im
+DMH-Adminportal, und ein Testlauf mit einem dedizierten
+Test-Benutzer.</p>
+
+<h2>Unterstützte Identity Provider</h2>
+<ul>
+  <li>Microsoft Entra ID (vormals Azure AD) — Tarif <b>Business</b> oder höher erforderlich</li>
+  <li>Google Workspace — alle Tarife</li>
+  <li>Okta — Tarif <b>Enterprise</b> erforderlich</li>
+</ul>
+
+<h2>Schritte für Microsoft Entra ID (Azure AD)</h2>
+<ol>
+  <li>Im DMH-Adminportal unter <code>/admin/sso</code> die Option
+      <b>SAML 2.0</b> auswählen und auf <i>Neue Verbindung anlegen</i>
+      klicken. Notieren Sie die generierte ACS-URL und den
+      Audience-Identifier <code>urn:dmh-sme-demo:saml</code>. Sie
+      brauchen beide im nächsten Schritt.</li>
+  <li>Im Entra-Admin-Center unter <i>Unternehmensanwendungen →
+      Neue Anwendung → Eigene Anwendung erstellen</i> eine
+      Anwendung mit dem Namen "DMH SME Demo Cloud" anlegen und
+      SAML 2.0 als Single-Sign-On-Methode auswählen.</li>
+  <li>ACS-URL und Audience-Identifier aus Schritt 1 in die
+      Entra-Anwendung einfügen. Anschließend das
+      <b>Verbund-Metadaten-XML</b> herunterladen — dieses XML
+      enthält das Signaturzertifikat, das DMH zum Validieren der
+      SAML-Assertions benötigt.</li>
+  <li>Im DMH-Adminportal das Metadaten-XML hochladen und die
+      Verbindung aktivieren. Standardmäßig werden die Attribute
+      <code>email</code>, <code>name</code> und
+      <code>group_id</code> erwartet. Andere Attribut-Namen lassen
+      sich im Reiter <i>Attribute-Mapping</i> umbiegen.</li>
+  <li>Mit einem Testbenutzer aus Entra einloggen und prüfen, dass
+      die Rolle korrekt zugeordnet wird. Verwenden Sie hierfür
+      idealerweise einen extra für SSO-Tests angelegten Benutzer
+      mit eindeutiger Gruppenzugehörigkeit.</li>
+</ol>
+
+<h2>Schritte für Google Workspace</h2>
+<p>Google Workspace verwendet ebenfalls SAML 2.0. Im
+Google-Admin-Konsolen-Bereich <i>Apps → Web- und mobile Apps →
+Benutzerdefinierte SAML-App</i> eine neue App anlegen, die
+ACS-URL und Audience-Identifier aus DMH einfügen, die
+SAML-Metadaten herunterladen und in DMH hochladen.</p>
+
+<h2>Just-In-Time-Provisioning</h2>
+<p>Per Default wird ein Benutzer beim ersten Login automatisch in
+DMH SME Demo Cloud angelegt (JIT-Provisioning), wenn das Attribut
+<code>group_id</code> einer in DMH konfigurierten Rolle entspricht.
+Diese Funktion lässt sich unter <code>/admin/sso → Provisioning</code>
+abschalten, falls Sie stattdessen SCIM bevorzugen.</p>
+
+<h2>Fehlerdiagnose</h2>
+<p>Schlägt der SAML-Login fehl, finden Sie das Trace-Log unter
+<code>/admin/sso/diagnostics</code>. Häufigste Ursache: Clock-Skew
+zwischen IdP und DMH-Server größer als 300 Sekunden — die
+SAML-Assertion gilt dann als ungültig. Synchronisieren Sie die
+Uhren beider Systeme via NTP. Zweithäufigste Ursache: ein
+veraltetes Signaturzertifikat, das nach einer IdP-Rotation nicht
+mehr im DMH-Adminportal aktualisiert wurde.</p>
+</main>
+</body></html>

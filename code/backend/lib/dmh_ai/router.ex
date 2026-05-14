@@ -7,11 +7,14 @@ defmodule DmhAi.Router do
   use Plug.Router
   import Plug.Conn
   alias DmhAi.AuthPlug
+  alias DmhAi.Handlers.AdminKbSources
   alias DmhAi.Handlers.AdminMcpCatalog
+  alias DmhAi.Handlers.AdminConnectors
+  alias DmhAi.Handlers.MeServices
   alias DmhAi.Handlers.AdminPools
-  alias DmhAi.Handlers.AdminSeeds
   alias DmhAi.Handlers.Auth
   alias DmhAi.Handlers.Data
+  alias DmhAi.Handlers.KbQuery
   alias DmhAi.Handlers.Media
   alias DmhAi.Handlers.Proxy
   alias DmhAi.Handlers.Tools
@@ -273,33 +276,20 @@ defmodule DmhAi.Router do
     end
   end
 
-  get "/admin/index-seeds" do
+  # ── KB sources (Primitive 0.2) ───────────────────────────────────────
+  # Admin-only: list & remove org-scoped KB sources. Underpins the
+  # future admin UI's "manage KB" panel. See
+  # `DmhAi.Handlers.AdminKbSources` for status.
+
+  get "/admin/kb-sources" do
     with {:ok, conn, user} <- check_auth(conn) do
-      AdminSeeds.list(conn, user)
+      AdminKbSources.list(conn, user)
     end
   end
 
-  post "/admin/index-seeds" do
+  post "/admin/kb-sources/remove" do
     with {:ok, conn, user} <- check_auth(conn) do
-      AdminSeeds.create(conn, user)
-    end
-  end
-
-  delete "/admin/index-seeds/:id" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      AdminSeeds.delete(conn, user, id)
-    end
-  end
-
-  post "/admin/index-seeds/:id/run" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      AdminSeeds.run_one(conn, user, id)
-    end
-  end
-
-  post "/admin/index-seeds/run-all" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      AdminSeeds.run_all(conn, user)
+      AdminKbSources.remove(conn, user)
     end
   end
 
@@ -350,6 +340,46 @@ defmodule DmhAi.Router do
   post "/admin/pools/import" do
     with {:ok, conn, user} <- check_auth(conn) do
       AdminPools.import_many(conn, user)
+    end
+  end
+
+  # ── Connectors (Primitive 0.3) — consolidated admin view + probe ──────
+
+  get "/admin/connectors" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      AdminConnectors.list(conn, user)
+    end
+  end
+
+  post "/admin/connectors/:slug/test" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      AdminConnectors.test(conn, user, slug)
+    end
+  end
+
+  post "/admin/connectors/:slug/save" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      AdminConnectors.save(conn, user, slug)
+    end
+  end
+
+  # ── Per-user services view (Primitive 0.3) ────────────────────────────
+
+  get "/me/services" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      MeServices.list(conn, user)
+    end
+  end
+
+  post "/me/services/disconnect" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      MeServices.disconnect(conn, user)
+    end
+  end
+
+  post "/me/services/connect/:slug" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      MeServices.connect(conn, user, slug)
     end
   end
 
@@ -547,6 +577,14 @@ defmodule DmhAi.Router do
   post "/agent/chat" do
     with {:ok, conn, user} <- check_auth(conn) do
       AgentChat.post_chat(conn, user)
+    end
+  end
+
+  # KB query (partial Primitive 0.6 — REST API). Org-scoped per the
+  # calling user's org_id. See `DmhAi.Handlers.KbQuery` for status.
+  post "/kb/query" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      KbQuery.query(conn, user)
     end
   end
 

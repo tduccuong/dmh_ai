@@ -18,7 +18,7 @@ defmodule DmhAi.Commands.Pipelines.Text do
   alias DmhAi.Commands.IndexAck
 
   @spec run(String.t(), String.t(), String.t()) :: {:ok, String.t()} | {:error, String.t()}
-  def run(body, _session_id, _user_id) when is_binary(body) do
+  def run(body, _session_id, user_id) when is_binary(body) do
     body = String.trim(body)
 
     if body == "" do
@@ -28,7 +28,7 @@ defmodule DmhAi.Commands.Pipelines.Text do
 
       attrs = %{
         scope:       :knowledge,
-        user_id:     nil,
+        org_id:      DmhAi.Orgs.for_user(user_id),
         source_kind: "text",
         source_ref:  sha256(body),
         title:       title

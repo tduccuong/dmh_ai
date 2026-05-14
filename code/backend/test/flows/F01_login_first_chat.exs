@@ -55,9 +55,10 @@ defmodule DmhAi.Flows.F01LoginFirstChat do
     password_hash = DmhAi.AuthPlug.hash_password(password)
 
     query!(Repo,
-      "INSERT INTO users (id, email, name, role, password_hash, password_changed, created_at) " <>
-      "VALUES (?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO users (id, email, name, role, password_hash, password_changed, org_id, org_role, created_at) " <>
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [user_id, email, "Test User", "user", password_hash, 1,
+       DmhAi.Constants.default_org_id(), "admin",
        System.os_time(:millisecond)])
 
     on_exit(fn ->
@@ -181,10 +182,11 @@ defmodule DmhAi.Flows.F01LoginFirstChat do
       foreign_uid = T.uid()
       foreign_sid = T.uid()
       query!(Repo,
-        "INSERT INTO users (id, email, name, role, password_hash, created_at) " <>
-        "VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO users (id, email, name, role, password_hash, org_id, org_role, created_at) " <>
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         [foreign_uid, "foreign-#{foreign_uid}@test.local", "Foreign", "user",
-         "deadbeef:cafe", System.os_time(:millisecond)])
+         "deadbeef:cafe", DmhAi.Constants.default_org_id(), "member",
+         System.os_time(:millisecond)])
 
       query!(Repo,
         "INSERT INTO sessions (id, user_id, mode, messages, tool_history, created_at, updated_at) " <>

@@ -1,0 +1,1 @@
+{"flow_id": "F46", "_note": "F46 — Stripe payment_intent.create refused outside task. Placeholder.", "turns": [{"text": "Refused write — needs an active task."}]}

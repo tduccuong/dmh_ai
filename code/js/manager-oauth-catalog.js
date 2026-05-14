@@ -10,7 +10,7 @@
 // fields for the user to fill.
 //
 // Backed by /admin/oauth_catalog (see lib/dmh_ai/handlers/admin_oauth_catalog.ex).
-// Mirrors WikiSeedsAdmin / McpCatalogAdmin's structural style.
+// Mirrors McpCatalogAdmin's structural style.
 
 const OAuthCatalogAdmin = {
     _entries: [],

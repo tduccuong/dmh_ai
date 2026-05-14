@@ -1,0 +1,9 @@
+{
+  "flow_id": "F40",
+  "_note": "F40 — M365 mail.send refused outside task. Placeholder tape for FlowHelper.setup_stub; test uses POST /tools/execute.",
+  "turns": [
+    {
+      "text": "Refused write — needs an active task."
+    }
+  ]
+}

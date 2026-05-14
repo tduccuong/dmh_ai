@@ -91,8 +91,9 @@ defmodule DmhAi.Agent.ContextEngine do
                      local_date:         local_date
                    )}
 
+    # Confidant has no indexed auto-fetch (memo + web only).
     {prefix, history_llm, relevant_msgs, last_msgs} =
-      build_core(session_data, images, files, web_context, memo_context, :confidant)
+      build_core(session_data, images, files, web_context, memo_context, nil, :confidant)
 
     [system_msg] ++ prefix ++ history_llm ++ relevant_msgs ++ last_msgs
   end
@@ -121,6 +122,8 @@ defmodule DmhAi.Agent.ContextEngine do
     timezone        = Keyword.get(opts, :timezone)
     local_date      = Keyword.get(opts, :local_date)
     anchor_task_num = Keyword.get(opts, :anchor_task_num)
+    memo_context    = Keyword.get(opts, :memo_context)
+    indexed_context = Keyword.get(opts, :indexed_context)
 
     system_msg = %{role: "system",
                    content: SystemPrompt.generate_assistant(
@@ -139,8 +142,13 @@ defmodule DmhAi.Agent.ContextEngine do
     # spec §Conservative token saving.
     session_data = maybe_filter_other_tasks(session_data, user_id, anchor_task_num)
 
+    # Auto-fetched memo + indexed blocks land in the current user
+    # message via `build_current_msg(:assistant)`. Caller (run_assistant)
+    # supplies the strings; we just thread them through. Per-turn
+    # freshness is automatic — `build_current_msg` rebuilds each
+    # turn, so any previous turn's blocks never persist.
     {prefix, history_llm, relevant_msgs, last_msgs} =
-      build_core(session_data, [], files, nil, nil, :assistant)
+      build_core(session_data, [], files, nil, memo_context, indexed_context, :assistant)
 
     # Re-inject the last N turns' tool_call / tool_result messages right
     # before their matching final-assistant text in history. Lets the
@@ -344,13 +352,15 @@ defmodule DmhAi.Agent.ContextEngine do
                 _            -> ""
               end
 
-            "- alias=`#{s.alias}`#{tag}   url=`#{s.canonical_resource}`"
+            "- slug=`#{s.alias}`#{tag}"
           end)
           |> Enum.sort()
           |> Enum.join("\n")
 
-        "**MCP** — already-authorized servers re-attach per-task via " <>
-          "`connect_mcp(url: \"<url>\")`:\n\n" <>
+        "**MCP** — already-authorized servers re-attach to the current " <>
+          "task via `connect_mcp(slug: \"<slug>\")` using the slug below " <>
+          "(NOT a URL — these services are already authorised, you're " <>
+          "binding the existing authorisation to this task):\n\n" <>
           rows
     end
   end
@@ -887,7 +897,7 @@ defmodule DmhAi.Agent.ContextEngine do
     end
   end
 
-  defp build_core(session_data, images, files, web_context, memo_context, pipeline)
+  defp build_core(session_data, images, files, web_context, memo_context, indexed_context, pipeline)
        when pipeline in [:confidant, :assistant] do
     # Exclude archived messages (previous periodic-task cycles) — visible in FE
     # but not relevant to the LLM's context.
@@ -932,7 +942,7 @@ defmodule DmhAi.Agent.ContextEngine do
     # INTO the last user message (replacing it).
     {history, last_msgs} =
       case Enum.split(recent, -1) do
-        {h, [last]} -> {h, [build_current_msg(last, images, files, web_context, memo_context, pipeline)]}
+        {h, [last]} -> {h, [build_current_msg(last, images, files, web_context, memo_context, indexed_context, pipeline)]}
         {h, []}     -> {h, []}
       end
 
@@ -967,7 +977,7 @@ defmodule DmhAi.Agent.ContextEngine do
   # image_descriptions / video_descriptions separately.
   #
   # Build-time only — never persisted.
-  defp build_current_msg(msg, images, files, web_context, memo_context, :confidant) do
+  defp build_current_msg(msg, images, files, web_context, memo_context, _indexed_context, :confidant) do
     base = msg["content"] || msg[:content] || ""
 
     attachments_block =
@@ -1010,8 +1020,26 @@ defmodule DmhAi.Agent.ContextEngine do
     finalize_current_msg(msg, images, content)
   end
 
-  defp build_current_msg(msg, images, files, _web_context, _memo_context, :assistant) do
+  defp build_current_msg(msg, images, files, _web_context, memo_context, indexed_context, :assistant) do
     base = msg["content"] || msg[:content] || ""
+
+    # Order: indexed BEFORE memo BEFORE files. Reflects the
+    # precedence rule the system prompt encodes (indexed > memo >
+    # web > training) — surfacing the highest-authority block
+    # first nudges the model to read it first.
+    indexed_block =
+      if is_binary(indexed_context) and indexed_context != "" do
+        ~s|<augmented_facts type="indexed">\n| <> indexed_context <> "\n</augmented_facts>"
+      else
+        ""
+      end
+
+    memo_block =
+      if is_binary(memo_context) and memo_context != "" do
+        ~s|<augmented_facts type="memo">\n| <> memo_context <> "\n</augmented_facts>"
+      else
+        ""
+      end
 
     file_block =
       Enum.map_join(files, "\n\n", fn f ->
@@ -1019,7 +1047,7 @@ defmodule DmhAi.Agent.ContextEngine do
       end)
 
     content =
-      [base, file_block]
+      [indexed_block, memo_block, base, file_block]
       |> Enum.reject(&(&1 == ""))
       |> Enum.join("\n\n")
 

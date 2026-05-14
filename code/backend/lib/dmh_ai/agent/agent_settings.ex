@@ -301,6 +301,12 @@ defmodule DmhAi.Agent.AgentSettings do
   # Background relearn supervisor — caps simultaneous re-fetches.
   @kb_relearn_concurrency_default 4
 
+  # Primitive 0.2 — minimum seconds between BG refreshes for the same
+  # source_id. A query storm on a hot topic collapses to one upstream
+  # HEAD-check per source per window. Per-org tunable; the default
+  # balances freshness vs upstream load.
+  @bg_refresh_min_interval_s_default 600
+
   @doc """
   Get the model string for a given agent role. Returns the default if
   unset. Always in `<pool>::<model>` form (see specs/api_pools.md).
@@ -664,6 +670,11 @@ defmodule DmhAi.Agent.AgentSettings do
   @spec kb_relearn_concurrency() :: pos_integer()
   def kb_relearn_concurrency, do: int_setting("kbRelearnConcurrency", @kb_relearn_concurrency_default)
 
+  @doc "Minimum seconds between BG refreshes for the same kb_sources row (Primitive 0.2 debounce)."
+  @spec bg_refresh_min_interval_s() :: pos_integer()
+  def bg_refresh_min_interval_s,
+    do: int_setting("bgRefreshMinIntervalSecs", @bg_refresh_min_interval_s_default)
+
   @doc "User's chosen video detail level from admin settings. Returns 'low', 'medium', or 'high'."
   @spec video_detail() :: String.t()
   def video_detail do
@@ -749,5 +760,53 @@ defmodule DmhAi.Agent.AgentSettings do
     rescue
       _ -> %{}
     end
+  end
+
+  @doc """
+  Per-org settings (Primitive 0.1). Reads `organizations.settings_json`
+  layered over install-wide `admin_cloud_settings`. Per-key
+  precedence: org override → install-wide → baked-in `@defaults`
+  constant. Returns the merged map; pass it to the same
+  `int_setting / bool_setting / float_setting / string_setting`
+  shape via `get_in/2` if you need a single key.
+
+  Falls back to the install-wide map if `org_id` is nil, empty, or
+  not found.
+  """
+  @spec load_for_org(String.t() | nil) :: map()
+  def load_for_org(nil), do: load()
+  def load_for_org(""), do: load()
+
+  def load_for_org(org_id) when is_binary(org_id) do
+    install_wide = load()
+
+    case org_overrides(org_id) do
+      m when is_map(m) and map_size(m) > 0 -> Map.merge(install_wide, m)
+      _ -> install_wide
+    end
+  end
+
+  @doc """
+  Pick a single setting with org-aware precedence: org override →
+  install-wide → bound `default`. Mirrors the private `*_setting`
+  helpers used by every accessor; exposed so per-org call sites can
+  read a single key without re-implementing the merge.
+  """
+  @spec for_org(String.t() | nil, String.t(), any()) :: any()
+  def for_org(org_id, key, default) when is_binary(key) do
+    case load_for_org(org_id) |> Map.get(key) do
+      nil -> default
+      ""  -> default
+      v   -> v
+    end
+  end
+
+  defp org_overrides(org_id) do
+    case query!(Repo, "SELECT settings_json FROM organizations WHERE id=?", [org_id]).rows do
+      [[json]] when is_binary(json) and json != "" -> Jason.decode!(json)
+      _ -> %{}
+    end
+  rescue
+    _ -> %{}
   end
 end

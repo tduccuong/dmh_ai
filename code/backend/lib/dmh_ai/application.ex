@@ -44,7 +44,11 @@ defmodule DmhAi.Application do
       DmhAi.Agent.TaskRuntime,
       # Background re-fetch of stale KB sources triggered by every
       # fetch_index call. See specs/vector_kb.md §Auto-relearn.
-      DmhAi.VectorDB.Relearn
+      DmhAi.VectorDB.Relearn,
+      # Primitive 0.2 — per-source BG refresh workers spawned by
+      # `Tools.FetchIndex`. One Task per (org_id, source_id);
+      # debounced via `AgentSettings.bg_refresh_min_interval_s/0`.
+      {Task.Supervisor, name: DmhAi.Ingest.BgRefreshSupervisor}
     ] ++
       (if Application.get_env(:dmh_ai, :start_http, true) do
         [{Bandit, plug: DmhAi.Router, scheme: :http, ip: bind_ip(), port: 8080}]
@@ -74,6 +78,28 @@ defmodule DmhAi.Application do
         DmhAi.Agent.BackgroundPipelines.init()
         DmhAi.Agent.RunningTools.init()
         DmhAi.GeoIP.init()
+        # Primitive 0.3 — register Universal Region connectors with
+        # the Dispatcher. Manifest validation runs here; a connector
+        # whose manifest fails the 4-rule contract is logged + left
+        # unreachable.
+        DmhAi.Connectors.Registry.register_universal()
+        # Seed oauth_catalog + mcp_catalog rows for every connector
+        # that exposes descriptors. Idempotent: re-seeds on every boot
+        # so a code-side descriptor change ripples to the DB without
+        # operator action. Closes I2 + #373 generically.
+        DmhAi.Connectors.Bootstrap.seed_all()
+        # Stage / demo / UAT opt-in: when DMH_AI_ENABLE_VENDOR_MOCKS=true,
+        # start mock vendor MCP servers for every connector that exposes
+        # `mock_descriptor/0`. Lets operators walk the real Caller path
+        # end-to-end without setting up a real Google Cloud / HubSpot /
+        # … OAuth app. No-op when the flag is off (production default).
+        DmhAi.Connectors.Bootstrap.start_vendor_mocks_if_enabled()
+        # Real-vendor mode: when DMH_AI_ENABLE_REAL_MCP=true, start the
+        # in-process MCPServer that translates MCP `tools/call` into
+        # real vendor REST API calls. Used for production deployments
+        # where DMH-AI hosts its own MCP layer on top of vendor APIs.
+        # Off by default; mock + real can coexist (different ports).
+        DmhAi.Connectors.Bootstrap.start_real_mcp_server_if_enabled()
         attach_finch_telemetry()
         Logger.info("Sessions API on :3000")
         {:ok, pid}

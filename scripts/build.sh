@@ -164,6 +164,20 @@ services:
       # README's "phone on same Wi-Fi" feature) export
       # `DMHAI_BIND_HOST=0.0.0.0` before `dmh_ai start`.
       - DMHAI_BIND_HOST=${DMHAI_BIND_HOST:-127.0.0.1}
+      # Primitive 0.3 stage demos / UAT. Both default OFF — production
+      # installs see no vendor mocks. When the operator exports
+      # DMH_AI_ENABLE_VENDOR_MOCKS=true (and DMH_AI_GW_MCP_URL=...) before
+      # `./dist/install.sh --stage`, the master container boots with the
+      # GW mock vendor MCP server at 127.0.0.1:8086 and seeds the
+      # mcp_catalog row pointing at it. See
+      # arch_wiki/dmh_ai/sme/layer-0.md §0.3.2 + demo/layer-0.3/01_gw_assistant.md.
+      - DMH_AI_ENABLE_VENDOR_MOCKS=${DMH_AI_ENABLE_VENDOR_MOCKS:-false}
+      - DMH_AI_GW_MCP_URL=${DMH_AI_GW_MCP_URL:-}
+      - DMH_AI_GW_MOCK_PORT=${DMH_AI_GW_MOCK_PORT:-8086}
+      - DMH_AI_GW_CLIENT_ID=${DMH_AI_GW_CLIENT_ID:-}
+      - DMH_AI_GW_CLIENT_SECRET=${DMH_AI_GW_CLIENT_SECRET:-}
+      - DMH_AI_ENABLE_REAL_MCP=${DMH_AI_ENABLE_REAL_MCP:-false}
+      - DMH_AI_REAL_MCP_PORT=${DMH_AI_REAL_MCP_PORT:-8087}
 
   sandbox:
     image: dmh-ai-sandbox:latest
@@ -293,6 +307,17 @@ services:
       # reaches the BE; nothing is exposed on external NICs without
       # the operator opting in via env (DMHAI_BIND_HOST=0.0.0.0).
       - DMHAI_BIND_HOST=\${DMHAI_BIND_HOST:-127.0.0.1}
+      # Primitive 0.3 stage demos / UAT. Default OFF — turn on by
+      # exporting DMH_AI_ENABLE_VENDOR_MOCKS=true and DMH_AI_GW_MCP_URL
+      # before ./dist/install.sh --stage. See
+      # demo/layer-0.3/01_gw_assistant.md.
+      - DMH_AI_ENABLE_VENDOR_MOCKS=\${DMH_AI_ENABLE_VENDOR_MOCKS:-false}
+      - DMH_AI_GW_MCP_URL=\${DMH_AI_GW_MCP_URL:-}
+      - DMH_AI_GW_MOCK_PORT=\${DMH_AI_GW_MOCK_PORT:-8086}
+      - DMH_AI_GW_CLIENT_ID=\${DMH_AI_GW_CLIENT_ID:-}
+      - DMH_AI_GW_CLIENT_SECRET=\${DMH_AI_GW_CLIENT_SECRET:-}
+      - DMH_AI_ENABLE_REAL_MCP=\${DMH_AI_ENABLE_REAL_MCP:-false}
+      - DMH_AI_REAL_MCP_PORT=\${DMH_AI_REAL_MCP_PORT:-8087}
 
   sandbox:
     image: dmh-ai-sandbox:latest

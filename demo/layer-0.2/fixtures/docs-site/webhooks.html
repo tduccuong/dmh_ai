@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="de"><head><meta charset="utf-8"><title>Webhooks — DMH SME Demo Cloud</title></head>
+<body>
+<nav><a href="index.html">← Zurück zur Übersicht</a></nav>
+<main>
+<h1>Webhooks — Outbound-Events konfigurieren</h1>
+
+<p>Webhooks sind der primäre Mechanismus, mit dem DMH SME Demo
+Cloud Ihrem System Ereignisse signalisiert. Diese Seite beschreibt
+die unterstützten Events, das Registrieren eines Endpunkts,
+Signatur-Verifikation und das Retry-Verhalten bei Fehlern.</p>
+
+<h2>Unterstützte Events</h2>
+<p>Die folgenden Event-Typen werden zum aktuellen Zeitpunkt von
+DMH SME Demo Cloud ausgeliefert. Jedes Event hat ein stabiles
+JSON-Schema, das im Reiter <i>Schema-Vorschau</i> im Adminportal
+einsehbar ist.</p>
+<ul>
+  <li><code>order.created</code> — neue Bestellung wurde angelegt</li>
+  <li><code>order.cancelled</code> — Bestellung wurde storniert</li>
+  <li><code>invoice.paid</code> — Rechnung wurde bezahlt</li>
+  <li><code>user.signup</code> — neuer Benutzer hat sich registriert</li>
+  <li><code>user.role_changed</code> — Rolle wurde geändert</li>
+</ul>
+
+<h2>Endpunkt registrieren</h2>
+<ol>
+  <li>Im DMH-Adminportal unter <code>/admin/webhooks → Neuer Endpunkt</code>
+      die Ziel-URL eingeben. Erforderlich ist HTTPS — HTTP-URLs
+      werden mit einer 400-Antwort abgelehnt. Selbst-signierte
+      Zertifikate akzeptieren wir nicht; bitte verwenden Sie ein
+      gültiges öffentliches Zertifikat (z. B. von Let's Encrypt).</li>
+  <li>Ein Webhook-Secret wird automatisch generiert und einmalig
+      angezeigt. Mit diesem Secret werden alle ausgehenden
+      Requests signiert (HTTP-Header <code>X-DMH-Signature</code>,
+      HMAC-SHA256 über den unveränderten Request-Body).</li>
+  <li>Mindestens ein Event in der Auswahlliste anhaken.
+      Mehrfachauswahl ist möglich; pro Endpunkt empfehlen wir
+      maximal 5 Events, um die Endpunkt-Verantwortung
+      übersichtlich zu halten.</li>
+</ol>
+
+<h2>Retry-Verhalten</h2>
+<p>Schlägt ein Webhook-Zustellversuch fehl (HTTP-Status &gt;= 500
+oder Timeout &gt; 10 Sekunden), wird die Zustellung bis zu sechs
+mal mit exponentiellem Backoff wiederholt. Die genauen Intervalle
+sind: <b>30 Sekunden, 2 Minuten, 10 Minuten, 1 Stunde, 6 Stunden,
+24 Stunden</b>. Nach dem letzten Fehlversuch wird der Endpunkt
+automatisch deaktiviert und eine Benachrichtigung an die im
+Admin-Profil hinterlegte E-Mail verschickt.</p>
+
+<h2>Signatur prüfen</h2>
+<p>Beispiel-Code in Python zur Verifikation:</p>
+<pre><code>import hmac, hashlib
+def verify(body: bytes, sig_header: str, secret: str) -> bool:
+    expected = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, sig_header)
+</code></pre>
+<p>Verwenden Sie ausdrücklich <code>hmac.compare_digest</code> und
+nicht <code>==</code>, um Timing-Angriffe zu vermeiden. Wenn die
+Verifikation in einem anderen Programmiersprachen-Stack erfolgt,
+finden Sie im Adminportal unter <code>/admin/webhooks/snippets</code>
+äquivalente Beispiele für Node.js, Go, Ruby und PHP.</p>
+</main>
+</body></html>

@@ -1,0 +1,5 @@
+{
+  "flow_id": "F34",
+  "_note": "no LLM calls — direct /index + /kb/query HTTP roundtrips",
+  "turns": []
+}

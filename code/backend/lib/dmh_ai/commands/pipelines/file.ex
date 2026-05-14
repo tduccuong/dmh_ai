@@ -34,7 +34,7 @@ defmodule DmhAi.Commands.Pipelines.File do
       {:ok, body} when is_binary(body) and body != "" ->
         attrs = %{
           scope:       :knowledge,
-          user_id:     nil,
+          org_id:      DmhAi.Orgs.for_user(user_id),
           source_kind: "file",
           source_ref:  path,
           title:       Path.basename(path)

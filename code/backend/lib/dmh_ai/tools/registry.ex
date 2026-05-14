@@ -83,28 +83,42 @@ defmodule DmhAi.Tools.Registry do
   something.
   """
   @spec all_definitions(String.t() | nil, String.t() | nil) :: [map()]
-  def all_definitions(nil, _task_id), do: all_definitions() |> drop_empty_wiki()
+  def all_definitions(nil, _task_id), do: all_definitions() |> drop_empty_wiki(default_org_id())
 
   def all_definitions(user_id, task_id) when is_binary(user_id) do
-    (all_definitions() |> drop_empty_wiki()) ++ mcp_definitions(user_id, task_id)
+    org_id = org_for_user(user_id)
+    (all_definitions() |> drop_empty_wiki(org_id)) ++ mcp_definitions(user_id, task_id)
   end
 
-  defp drop_empty_wiki(defs) do
-    if wiki_empty?() do
+  defp drop_empty_wiki(defs, org_id) do
+    if wiki_empty?(org_id) do
       Enum.reject(defs, fn d -> d.name == "fetch_index" end)
     else
       defs
     end
   end
 
-  defp wiki_empty? do
-    case DmhAi.VectorDB.count(:knowledge) do
+  defp wiki_empty?(org_id) do
+    case DmhAi.VectorDB.count(:knowledge, org_id) do
       {:ok, 0} -> true
       _        -> false
     end
   rescue
     _ -> false
   end
+
+  defp org_for_user(user_id) do
+    import Ecto.Adapters.SQL, only: [query!: 3]
+
+    case query!(DmhAi.Repo, "SELECT org_id FROM users WHERE id=?", [user_id]).rows do
+      [[org_id]] when is_binary(org_id) -> org_id
+      _ -> default_org_id()
+    end
+  rescue
+    _ -> default_org_id()
+  end
+
+  defp default_org_id, do: DmhAi.Constants.default_org_id()
 
   defp mcp_definitions(user_id, task_id) do
     user_id
@@ -134,7 +148,39 @@ defmodule DmhAi.Tools.Registry do
   def names(nil, _task_id), do: names()
 
   def names(user_id, task_id) when is_binary(user_id) do
-    names() ++ Enum.map(DmhAi.MCP.Registry.tools_for_task(user_id, task_id), & &1.name)
+    names() ++
+      Enum.map(DmhAi.MCP.Registry.tools_for_task(user_id, task_id), & &1.name) ++
+      connector_verb_names()
+  end
+
+  # Primitive 0.3 — Universal-Region connector verbs registered with
+  # the Dispatcher are valid tool names regardless of task scope (no
+  # tools_for_task gating; the connector catalog is org-wide). Joins
+  # the connector slug + verb path with a dot:
+  # `hubspot.contact.find`, `hubspot.deal.create`, etc.
+  defp connector_verb_names do
+    Enum.flat_map(DmhAi.Tools.Dispatcher.connectors(), fn slug ->
+      case DmhAi.Tools.Dispatcher.lookup(slug) do
+        {:ok, %{manifest: %{verbs: verbs}}} ->
+          Enum.map(verbs, fn {path, _} -> slug <> "." <> path end)
+
+        _ ->
+          []
+      end
+    end)
+  end
+
+  defp connector_verb?(name) do
+    case String.split(name, ".", parts: 2) do
+      [slug, path] when slug != "" and path != "" ->
+        case DmhAi.Tools.Dispatcher.lookup(slug) do
+          {:ok, %{manifest: %{verbs: verbs}}} -> Map.has_key?(verbs, path)
+          _ -> false
+        end
+
+      _ ->
+        false
+    end
   end
 
   # ── known? ────────────────────────────────────────────────────────────
@@ -151,11 +197,20 @@ defmodule DmhAi.Tools.Registry do
 
   def known?(name, user_id, task_id) when is_binary(name) and is_binary(user_id) do
     # `known?/1` already checks built-ins + memo tools; this branch
-    # adds MCP tools attached to the current anchor task.
-    if known?(name) do
-      true
-    else
-      Enum.any?(DmhAi.MCP.Registry.tools_for_task(user_id, task_id), &(&1.name == name))
+    # adds MCP tools attached to the current anchor task PLUS
+    # Universal-Region connector verbs registered with the Dispatcher.
+    cond do
+      known?(name) ->
+        true
+
+      Enum.any?(DmhAi.MCP.Registry.tools_for_task(user_id, task_id), &(&1.name == name)) ->
+        true
+
+      connector_verb?(name) ->
+        true
+
+      true ->
+        false
     end
   end
 
@@ -249,11 +304,23 @@ defmodule DmhAi.Tools.Registry do
         # name — none currently do, but defensively check first.
         case Enum.find(all_local_tools(), &(&1.name() == name)) do
           nil ->
-            user_id = Map.get(ctx, :user_id) || Map.get(ctx, "user_id")
-            if is_binary(user_id) do
-              DmhAi.MCP.Client.call_tool(user_id, alias_, tool_name, args || %{})
-            else
-              {:error, "MCP tool dispatch requires user_id in context"}
+            # Primitive 0.3 — if the namespace prefix is a registered
+            # connector, route through the Dispatcher (which enforces
+            # the 4 rules: permission · write-requires-task ·
+            # idempotency_key · per-user credentials). Otherwise fall
+            # back to the legacy MCP client path used by the
+            # pre-Phase-C tools/list flow.
+            case DmhAi.Tools.Dispatcher.lookup(alias_) do
+              {:ok, _entry} ->
+                DmhAi.Tools.Dispatcher.call(name, args || %{}, ctx)
+
+              :not_found ->
+                user_id = Map.get(ctx, :user_id) || Map.get(ctx, "user_id")
+                if is_binary(user_id) do
+                  DmhAi.MCP.Client.call_tool(user_id, alias_, tool_name, args || %{})
+                else
+                  {:error, "MCP tool dispatch requires user_id in context"}
+                end
             end
 
           tool ->

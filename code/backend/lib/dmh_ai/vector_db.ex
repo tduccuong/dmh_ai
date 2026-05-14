@@ -101,14 +101,15 @@ defmodule DmhAi.VectorDB do
   end
 
   defp dedup_key(hit) do
-    {hit[:source_kind] || "", hit[:source_ref] || "", hit[:chunk_text] || ""}
+    {hit[:source_kind] || "", hit[:source_id] || "", hit[:chunk_text] || ""}
   end
 
   @spec delete_by_source(Backend.scope(), integer()) :: :ok | {:error, term()}
   def delete_by_source(scope, source_id), do: backend().delete_by_source(scope, source_id)
 
-  @spec count(Backend.scope(), String.t() | nil) :: {:ok, non_neg_integer()} | {:error, term()}
-  def count(scope, user_id \\ nil), do: backend().count(scope, user_id)
+  # `scope_arg` is `org_id` for `:knowledge`, `user_id` for `:memo`.
+  @spec count(Backend.scope(), String.t()) :: {:ok, non_neg_integer()} | {:error, term()}
+  def count(scope, scope_arg), do: backend().count(scope, scope_arg)
 
   # ─── High-level ingest pipeline ────────────────────────────────────────────
 
@@ -129,7 +130,8 @@ defmodule DmhAi.VectorDB do
   """
   @spec ingest_memo_async(map()) :: {:ok, map()} | {:error, term()}
   def ingest_memo_async(%{scope: :memo} = attrs) do
-    %{user_id: user_id, source_kind: kind, source_ref: ref, memo_key: mmk, body: body} = attrs
+    %{org_id: org_id, user_id: user_id, source_kind: kind, source_ref: ref,
+      memo_key: mmk, body: body} = attrs
 
     cond do
       not is_binary(body) or body == "" ->
@@ -137,6 +139,9 @@ defmodule DmhAi.VectorDB do
 
       not is_binary(mmk) ->
         {:error, :memo_key_unavailable}
+
+      not is_binary(org_id) or org_id == "" ->
+        {:error, :org_id_required}
 
       true ->
         chunks = Chunker.split(body, chunker_opts_for(:memo))
@@ -155,12 +160,12 @@ defmodule DmhAi.VectorDB do
           # decorative-only and not worth the latency on the
           # synchronous /memo path. Index paths still tag via the
           # synchronous `ingest/2`.
-          {:ok, source_id} = Sources.upsert(
+          {:ok, source_id} = Sources.upsert_memo(
             %{
-              scope: :memo,
+              org_id: org_id,
               user_id: user_id,
               source_kind: kind,
-              source_ref: ref,
+              source_id: ref,
               title: attrs[:title],
               centroid: nil,
               tags: []
@@ -181,10 +186,10 @@ defmodule DmhAi.VectorDB do
 
               %{rows: [[meta_id]]} =
                 query!(Repo, """
-                INSERT INTO kb_chunks_meta (scope, user_id, source_id, chunk_idx, chunk_text, indexed_at)
-                VALUES ('memo', ?, ?, ?, ?, ?)
+                INSERT INTO memo_chunks_meta (org_id, user_id, source_id, chunk_idx, chunk_text, indexed_at)
+                VALUES (?, ?, ?, ?, ?, ?)
                 RETURNING id
-                """, [user_id, source_id, idx, ciphertext, now])
+                """, [org_id, user_id, source_id, idx, ciphertext, now])
 
               %{meta_id: meta_id, plaintext: plaintext, chunk_idx: idx}
             end)
@@ -224,7 +229,8 @@ defmodule DmhAi.VectorDB do
   `attrs` shape:
     %{
       scope:       :knowledge | :memo,
-      user_id:     String.t() | nil,    # required for :memo, must be nil for :knowledge
+      org_id:      String.t(),         # required (both scopes); FK organizations.id
+      user_id:     String.t() | nil,   # required for :memo, ignored for :knowledge
       source_kind: "text" | "file" | "url" | "folder",
       source_ref:  String.t(),
       title:       String.t() | nil
@@ -235,44 +241,64 @@ defmodule DmhAi.VectorDB do
   """
   @spec ingest(map(), String.t()) :: {:ok, map()} | {:error, term()}
   def ingest(attrs, body) when is_binary(body) do
-    chunks = Chunker.split(body, chunker_opts_for(attrs[:scope] || attrs["scope"]))
+    scope = attrs[:scope] || attrs["scope"]
 
-    # Memo scope is encrypted at rest. The caller (Commands.Memo,
-    # Tools.SaveMemo) is responsible for looking up the user's MMK
-    # via UserAgent.get_memo_key/1 and putting it in `attrs[:memo_key]`
-    # — VectorDB stays independent of the agent runtime. Without a
-    # key we refuse to save: better than persisting plaintext that
-    # contradicts the encryption guarantee.
+    case scope do
+      :knowledge ->
+        # Knowledge ingest owns Primitive 0.2's three guarantees
+        # (idempotent / fresh / removable). The full pipeline —
+        # content-hash gate, chunk + embed + tag, atomic replace —
+        # lives in DmhAi.Ingest. VectorDB just forwards.
+        DmhAi.Ingest.upsert_kb_source(attrs, body)
+
+      :memo ->
+        ingest_memo(attrs, body)
+
+      _ ->
+        {:error, :unknown_scope}
+    end
+  end
+
+  defp ingest_memo(attrs, body) do
+    chunks = Chunker.split(body, chunker_opts_for(:memo))
+
     cond do
       chunks == [] ->
         {:error, :empty_body}
 
-      (attrs[:scope] || attrs["scope"]) == :memo and not is_binary(attrs[:memo_key]) ->
+      not is_binary(attrs[:memo_key]) ->
         {:error, :memo_key_unavailable}
+
+      not is_binary(attrs[:org_id]) or attrs[:org_id] == "" ->
+        {:error, :org_id_required}
+
+      not is_binary(attrs[:user_id]) or attrs[:user_id] == "" ->
+        {:error, :user_id_required_for_memo}
 
       true ->
         with {:ok, embeddings} <- Embedder.embed_batch(chunks) do
           centroid = average_embedding(embeddings)
           tags     = Tagger.tag(body)
 
-          {effective_attrs, merged_into} = maybe_merge(attrs, centroid, tags)
+          # Memo doesn't centroid-merge against KB — different corpus.
+          effective_attrs = Map.put(attrs, :tags, tags)
+          source_id = memo_source_id(effective_attrs)
 
-          {:ok, source_id} = Sources.upsert(
-            Map.merge(effective_attrs, %{centroid: centroid, tags: effective_attrs[:tags] || tags}),
-            body
-          )
+          {:ok, internal_id} =
+            Sources.upsert_memo(
+              Map.merge(effective_attrs, %{
+                centroid: centroid,
+                source_id: source_id
+              }),
+              body
+            )
 
-          # Replace any existing chunks for this source_id (the upsert
-          # deleted+reinserted the kb_sources row, so source_id is
-          # fresh — but the backend may still hold stale rows under a
-          # PRIOR id with the same source_ref. We sweep by source_ref
-          # via Sources, then insert fresh chunks.)
-          delete_by_source(effective_attrs.scope, source_id)
-          rows = build_rows(effective_attrs, source_id, chunks, embeddings)
+          delete_by_source(:memo, internal_id)
+          rows = build_rows(effective_attrs, internal_id, source_id, chunks, embeddings)
 
           case add(rows) do
             :ok ->
-              {:ok, %{indexed: length(chunks), source_id: source_id, merged_into: merged_into}}
+              {:ok, %{indexed: length(chunks), source_id: source_id, internal_id: internal_id}}
 
             err ->
               err
@@ -281,40 +307,20 @@ defmodule DmhAi.VectorDB do
     end
   end
 
+  defp memo_source_id(%{source_id: sid}) when is_binary(sid) and sid != "", do: sid
+
+  defp memo_source_id(%{source_ref: ref}) when is_binary(ref) and ref != "", do: ref
+
   # ─── Private ──────────────────────────────────────────────────────────────
 
   defp backend do
     Application.get_env(:dmh_ai, :vector_db_backend, @default_backend)
   end
 
-  # Inline-text only: try to merge into an existing source with similar
-  # centroid. URL/file/folder source_refs are deterministic — re-ingest
-  # naturally overwrites without a similarity check.
-  defp maybe_merge(%{source_kind: "text"} = attrs, centroid, tags) do
-    threshold = AgentSettings.kb_text_merge_threshold()
-
-    case Sources.nearest_centroid(attrs.scope, attrs[:user_id], centroid, threshold) do
-      {:ok, existing} ->
-        merged_tags = (existing.tags ++ tags) |> Enum.uniq() |> Enum.take(10)
-        merged_attrs =
-          attrs
-          |> Map.put(:source_ref, existing.source_ref)
-          |> Map.put(:tags, merged_tags)
-          # Preserve existing title unless we're providing a fresh one
-          |> Map.put_new_lazy(:title, fn -> existing.title end)
-
-        {merged_attrs, existing.source_ref}
-
-      :no_match ->
-        {Map.put(attrs, :tags, tags), nil}
-    end
-  end
-
-  defp maybe_merge(attrs, _centroid, tags), do: {Map.put(attrs, :tags, tags), nil}
-
-  defp build_rows(attrs, source_id, chunks, embeddings) do
+  defp build_rows(attrs, internal_id, source_id, chunks, embeddings) do
     now = System.os_time(:millisecond)
-    memo_key = if attrs.scope == :memo, do: attrs[:memo_key], else: nil
+    scope = attrs[:scope] || attrs["scope"]
+    memo_key = if scope == :memo, do: attrs[:memo_key], else: nil
 
     chunks
     |> Enum.zip(embeddings)
@@ -323,29 +329,32 @@ defmodule DmhAi.VectorDB do
       stored_text =
         if memo_key do
           # AES-GCM encrypt under the user's MMK. AAD binds the row
-          # to (source_id, chunk_idx) so a row physically copied to
-          # another position fails the auth-tag check on read.
-          MemoCrypto.encrypt_chunk(text, memo_key, source_id, idx)
+          # to (internal_id, chunk_idx) so a row physically copied
+          # to another position fails the auth-tag check on read.
+          MemoCrypto.encrypt_chunk(text, memo_key, internal_id, idx)
         else
           text
         end
 
-      %{
-        scope:       attrs.scope,
-        user_id:     attrs[:user_id],
-        source_id:   source_id,
+      base = %{
+        scope:       scope,
+        org_id:      attrs.org_id,
+        source_id:   internal_id,
         chunk_idx:   idx,
         chunk_text:  stored_text,
         embedding:   embedding,
         indexed_at:  now,
         # Decoration consumed by the Memory backend (which doesn't
-        # have a real kb_sources table to join against). SqliteVec
-        # ignores these — it joins kb_sources at query time.
+        # have a real sources table to join against). SqliteVec
+        # ignores these — it joins kb_sources / memo_sources at
+        # query time.
         _source_kind: attrs.source_kind,
-        _source_ref:  attrs.source_ref,
+        _source_ref:  source_id,
         _title:       attrs[:title],
         _tags:        attrs[:tags] || []
       }
+
+      if scope == :memo, do: Map.put(base, :user_id, attrs.user_id), else: base
     end)
   end
 

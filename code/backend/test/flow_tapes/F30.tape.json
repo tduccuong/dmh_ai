@@ -1,0 +1,5 @@
+{
+  "flow_id": "F30",
+  "_note": "no LLM calls — /index admin-only refusal short-circuits before any LLM",
+  "turns": []
+}

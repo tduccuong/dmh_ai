@@ -25,6 +25,14 @@ defmodule DmhAi.Constants do
   # Password hashing
   @password_hash_iterations 100_000
 
+  # Org / tenant scoping (Primitive 0.1). Every scoped row in the
+  # system carries `org_id`, never NULL. Fresh installs seed a single
+  # `organizations` row with this id; on-prem deployments typically
+  # have exactly one row in the table. Admin UI grows more rows for
+  # multi-tenant installs.
+  @default_org_id "default"
+  @default_org_name "Default Organization"
+
   # Paths. Resolved at call time via `Application.get_env(:dmh_ai,
   # :paths, %{})` with the production defaults below as fallback. The
   # sandbox-runtime test tier (`mix test.sandbox`) overrides these to
@@ -56,6 +64,8 @@ defmodule DmhAi.Constants do
   def jina_timeout_ms, do: @jina_timeout_ms
   def domain_timeout_block_threshold, do: @domain_timeout_block_threshold
   def password_hash_iterations, do: @password_hash_iterations
+  def default_org_id, do: @default_org_id
+  def default_org_name, do: @default_org_name
   def db_path,        do: path(:db_path,        @default_db_path)
   def assets_dir,     do: path(:assets_dir,     @default_assets_dir)
   def workspaces_dir, do: path(:workspaces_dir, @default_workspaces_dir)
@@ -142,5 +152,19 @@ defmodule DmhAi.Constants do
   @spec user_keystore_dir(String.t()) :: String.t()
   def user_keystore_dir(email) do
     Path.join([assets_dir(), to_string(email), "_keystore"])
+  end
+
+  @doc """
+  Per-org shared-assets directory (Primitive 0.1). Lives under the
+  same assets tree as `user_assets/<email>/`, with `_org/` prefix to
+  signal "not a user". Org admins drop SOPs, contract templates,
+  brand assets, etc. here; every user in the org reads from it.
+
+  Mount-path identical inside master and sandbox containers per
+  CLAUDE.md rule 17 (`/data/user_assets/_org/<org_id>/` in both).
+  """
+  @spec org_assets_dir(String.t()) :: String.t()
+  def org_assets_dir(org_id) when is_binary(org_id) do
+    Path.join([assets_dir(), "_org", sanitize(org_id)])
   end
 end

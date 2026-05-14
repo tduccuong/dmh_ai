@@ -1703,6 +1703,17 @@ defmodule DmhAi.Agent.UserAgent do
         end
       end
 
+    # Auto-fetch indexed (org KB) + memo (user-personal) before the
+    # LLM round-trip. Always-on for Assistant mode so the model
+    # sees `<augmented_facts type="indexed">` + `<augmented_facts
+    # type="memo">` blocks populated with top-N relevants per turn.
+    # Costs ~one embedder call + two vector searches; cheap and
+    # eliminates the model's "should I call fetch_index?" coin-flip.
+    # See specs/layer-0.md §0.2 retrieval cascade.
+    user_msgs = extract_user_messages(session_data)
+    {memo_context, _memo_hits} = build_memo_context(command.content, user_msgs, user_id)
+    {indexed_context, _indexed_hits} = build_indexed_context(command.content, user_msgs, user_id)
+
     llm_messages =
       ContextEngine.build_assistant_messages(session_data,
         user_id:         user_id,
@@ -1718,7 +1729,11 @@ defmodule DmhAi.Agent.UserAgent do
         anchor_task_num: anchor_task_num,
         # Optional runtime guidance prepended to the latest user message
         # in the LLM-call only (NOT persisted). nil = no hint.
-        runtime_resume_hint: runtime_resume_hint
+        runtime_resume_hint: runtime_resume_hint,
+        # Auto-fetched retrieval blocks for this turn. Per-turn flush
+        # is automatic — build_current_msg rebuilds on every call.
+        memo_context:    memo_context,
+        indexed_context: indexed_context
       )
 
     data_dir      = DmhAi.Constants.session_data_dir(email, session_id)
@@ -3001,6 +3016,13 @@ defmodule DmhAi.Agent.UserAgent do
               ctx
               |> Map.put(:progress_row_id, row.id)
               |> Map.put(:tool_call_id, tool_call_id)
+              # Primitive 0.3 dispatcher fields. `task_id` comes from
+              # the current anchor task (nil for free-chat calls);
+              # `step_seq` uses the LLM-generated tool_call_id so the
+              # idempotency_key is stable per call and replays
+              # produce the same upstream hash on retry.
+              |> Map.put(:task_id, anchor_task_id_from_ctx(ctx))
+              |> Map.put(:step_seq, tool_call_id)
 
             exec_started_ms = System.system_time(:millisecond)
             exec_result = DmhAi.Tools.Registry.execute(name, args, tool_ctx)
@@ -3827,6 +3849,86 @@ defmodule DmhAi.Agent.UserAgent do
   # (bullets list with usage rules). The wrapping XML tag is added by
   # `ContextEngine.build_current_msg/4`; this helper returns just the
   # inside-the-tag text.
+  # Indexed (KB) auto-retrieve for Assistant turns. Mirrors
+  # `build_memo_context/3` shape but searches the org-wide
+  # `:knowledge` scope. Always-on; runs before the Assistant LLM
+  # round-trip so the model sees `<augmented_facts type="indexed">`
+  # populated with the top-N relevants per org. Cheaper than
+  # leaving fetch_index as elective — the model often skips it
+  # otherwise. See specs/layer-0.md §0.2 retrieval cascade.
+  #
+  # Returns `{indexed_block, indexed_hits}` mirroring the memo
+  # helper. `nil` on infrastructure error (embed/search failure);
+  # `[]` on no-org-content (handled by the empty-format branch).
+  defp build_indexed_context(current_content, recent_user_msgs, user_id) do
+    org_id = DmhAi.Orgs.for_user(user_id)
+
+    prior =
+      recent_user_msgs
+      |> Enum.drop(-1)
+      |> Enum.take(-2)
+
+    embed_text = (prior ++ [current_content]) |> Enum.join("\n") |> String.trim()
+
+    case Embedder.embed(embed_text) do
+      {:ok, vec} ->
+        top_n = AgentSettings.kb_top_n()
+
+        case VectorDB.search(:knowledge, embed_text, vec, top_n, {:org, org_id}) do
+          {:ok, hits} ->
+            log_indexed_retrieval(embed_text, hits)
+            {format_indexed_context_block(hits), hits}
+
+          {:error, reason} ->
+            line = "[Indexed auto] search failed: #{inspect(reason, limit: 80)}"
+            Logger.warning(line)
+            DmhAi.SysLog.log(line)
+            {nil, []}
+        end
+
+      {:error, reason} ->
+        line = "[Indexed auto] embed failed: #{inspect(reason, limit: 80)}"
+        Logger.warning(line)
+        DmhAi.SysLog.log(line)
+        {nil, []}
+    end
+  end
+
+  defp log_indexed_retrieval(embed_text, hits) do
+    score_summary =
+      hits
+      |> Enum.map(fn h ->
+        s = if is_number(h.score), do: Float.round(h.score, 3), else: h.score
+        "#{s}|#{String.slice(h.chunk_text || "", 0, 40) |> String.replace("\n", " ")}"
+      end)
+      |> Enum.join("; ")
+
+    line =
+      "[Indexed auto] embed=#{inspect(String.slice(embed_text, 0, 80))} " <>
+        "hits=#{length(hits)} scores=[#{score_summary}]"
+
+    Logger.info(line)
+    DmhAi.SysLog.log(line)
+  end
+
+  defp format_indexed_context_block([]) do
+    "We checked the organisation's curated knowledge index for this question. Nothing relevant found.\n\n" <>
+      "How to use this signal:\n" <>
+      "- If the question is plausibly about company-specific knowledge (HR policy, internal procedures, product specifics, SOPs, anything an admin would `/index`-curate), try `fetch_index` once with refined keywords before falling back to your training.\n" <>
+      "- Otherwise ignore this block and answer per your usual instructions."
+  end
+
+  defp format_indexed_context_block(hits) do
+    bullets =
+      hits
+      |> Enum.map_join("\n", fn h ->
+        "- " <> String.replace(h.chunk_text || "", "\n", " ")
+      end)
+
+    "Relevant chunks from the organisation's curated knowledge index. **These are authoritative for org-specific facts (handbook policy, internal procedures, product specs, etc.) — use them in preference to your training when answering company-related questions.** Notes may be in a different language than the user's question; translate facts as needed.\n\n" <>
+      bullets
+  end
+
   defp format_memo_context_block([]) do
     "We checked the user's saved memos for this question. Nothing relevant found.\n\n" <>
       "How to use this signal:\n" <>

@@ -39,6 +39,10 @@ function applyLanguage() {
     if (convSettingsLabel) convSettingsLabel.textContent = t('convSettings');
     var aiSettingsLabel = document.getElementById('user-ai-settings-label');
     if (aiSettingsLabel) aiSettingsLabel.textContent = t('aiModelSettings');
+    var connectorsLabel = document.getElementById('user-connectors-label');
+    if (connectorsLabel) connectorsLabel.textContent = t('connectorsAdmin');
+    var servicesLabel = document.getElementById('user-services-label');
+    if (servicesLabel) servicesLabel.textContent = t('myServices');
     document.getElementById('user-about-btn').lastChild.textContent = t('aboutBtn');
     document.getElementById('about-desc').textContent = t('aboutDesc');
     document.getElementById('about-legal-title').textContent = t('aboutLegalTitle');
@@ -556,10 +560,6 @@ const UIManager = {
             document.getElementById('user-dropdown').classList.remove('open');
             SettingsModal.open('page-conversation');
         });
-        document.getElementById('user-index-seeds-btn').addEventListener('click', function() {
-            document.getElementById('user-dropdown').classList.remove('open');
-            SettingsModal.open('page-index-seeds');
-        });
         document.getElementById('user-mcp-catalog-btn').addEventListener('click', function() {
             document.getElementById('user-dropdown').classList.remove('open');
             SettingsModal.open('page-mcp-catalog');
@@ -567,6 +567,14 @@ const UIManager = {
         document.getElementById('user-oauth-catalog-btn').addEventListener('click', function() {
             document.getElementById('user-dropdown').classList.remove('open');
             SettingsModal.open('page-oauth-catalog');
+        });
+        document.getElementById('user-connectors-btn').addEventListener('click', function() {
+            document.getElementById('user-dropdown').classList.remove('open');
+            SettingsModal.open('page-connectors');
+        });
+        document.getElementById('user-services-btn').addEventListener('click', function() {
+            document.getElementById('user-dropdown').classList.remove('open');
+            SettingsModal.open('page-services');
         });
 
         // Manage users close
@@ -604,9 +612,11 @@ const UIManager = {
             // admin-only sections inside the page self-gate via
             // `data-admin-only="true"` and the SettingsModal.open hook.
             document.getElementById('user-conv-settings-btn').style.display = '';
-            document.getElementById('user-index-seeds-btn').style.display = isAdmin ? '' : 'none';
             document.getElementById('user-mcp-catalog-btn').style.display = isAdmin ? '' : 'none';
             document.getElementById('user-oauth-catalog-btn').style.display = isAdmin ? '' : 'none';
+            document.getElementById('user-connectors-btn').style.display = isAdmin ? '' : 'none';
+            // My Services is visible to all authenticated users (sales staff
+            // self-connect Google etc. without needing admin assistance).
             // Conv Settings is visible to all, so the separator above
             // it (between About and the settings block) must show too.
             document.getElementById('user-settings-sep').style.display = '';

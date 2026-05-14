@@ -21,3 +21,9 @@ config :dmh_ai, :start_https, false
 config :dmh_ai, :start_http,  false
 config :dmh_ai, :enable_task_rehydrate, false
 config :dmh_ai, :run_startup_check,   false
+
+# Vendor MCP mocks: integration tests for Primitive 0.3's real
+# Caller path start `Connectors.Mock.VendorMCPServer` instances
+# via `T.start_mock_vendor/2`. The mock refuses to start unless
+# this flag is on; tests opt in by default.
+config :dmh_ai, :enable_vendor_mocks, true

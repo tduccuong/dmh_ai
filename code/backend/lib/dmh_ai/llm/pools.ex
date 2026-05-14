@@ -157,13 +157,15 @@ defmodule DmhAi.LLM.Pools do
     with {:ok, normalised} <- validate(attrs),
          :ok               <- check_name_free(normalised["name"]) do
       now = System.os_time(:millisecond)
+      org_id = Map.get(attrs, "org_id") || Map.get(attrs, :org_id) || DmhAi.Orgs.default_id()
 
       query!(Repo, """
-      INSERT INTO pools (name, protocol, base_url, strategy,
+      INSERT INTO pools (org_id, name, protocol, base_url, strategy,
                          cooldown_seconds, num_ctx, accounts, models,
                          rr_cursor, created_ts, updated_ts)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
       """, [
+        org_id,
         normalised["name"],
         normalised["protocol"],
         normalised["base_url"],

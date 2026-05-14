@@ -48,11 +48,12 @@ defmodule DmhAi.Flows.F21LlmRateLimitRecovery do
       ])
 
     query!(Repo, """
-    INSERT INTO pools (name, protocol, base_url, strategy,
+    INSERT INTO pools (org_id, name, protocol, base_url, strategy,
                        cooldown_seconds, num_ctx, accounts, models,
                        rr_cursor, created_ts, updated_ts)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
     """, [
+      DmhAi.Constants.default_org_id(),
       pool_name, "openai", "https://api.example.test", "least_used",
       300, 32_768, accounts, Jason.encode!([]),
       now, now

@@ -5,13 +5,23 @@
 
 defmodule DmhAi.VectorDB.SqliteVec do
   @moduledoc """
-  Production backend — sqlite-vec virtual tables (`kb_vec_knowledge`,
-  `kb_vec_memo`) joined to `kb_chunks_meta` for non-vector metadata.
+  Production backend — sqlite-vec virtual tables joined to per-scope
+  metadata tables, per Primitive 0.1:
 
-  The vec0 row's `rowid` mirrors `kb_chunks_meta.id`; we insert into
-  meta first to mint the id, then insert into vec0 with the same
-  rowid. Search uses vec0's `MATCH` syntax for native top-K cosine,
-  joining on rowid to fetch metadata + source attributes.
+    * Knowledge: `kb_vec_knowledge` ↔ `kb_chunks_meta` ↔ `kb_sources`
+      (org-scoped; rows carry `org_id`).
+    * Memo: `kb_vec_memo` ↔ `memo_chunks_meta` ↔ `memo_sources`
+      (per-user-readable; rows carry `org_id` for audit + `user_id`
+      for ownership).
+
+  The vec0 row's `rowid` mirrors the corresponding chunks_meta `id`;
+  we insert into meta first to mint the id, then insert into vec0
+  with the same rowid. Search uses vec0's `MATCH` syntax for native
+  top-K cosine, joining on rowid to fetch metadata + source attrs.
+
+  Memo `chunk_text` is AES-GCM ciphertext (per
+  specs/memo_encryption.md), so memo BM25 is a no-op — memo retrieval
+  is vector-only.
 
   Implements `DmhAi.VectorDB.Backend`.
   """
@@ -24,69 +34,74 @@ defmodule DmhAi.VectorDB.SqliteVec do
 
   @impl true
   def add(rows) when is_list(rows) do
-    Enum.each(rows, fn row ->
-      vec_table = vec_table_name(row.scope)
-
-      %{rows: [[id]]} =
-        query!(Repo, """
-        INSERT INTO kb_chunks_meta (scope, user_id, source_id, chunk_idx, chunk_text, indexed_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-        RETURNING id
-        """, [
-          scope_to_string(row.scope),
-          row.user_id,
-          row.source_id,
-          row.chunk_idx,
-          row.chunk_text,
-          row.indexed_at
-        ])
-
-      # CAST(? AS BLOB) — without it, SQLite's bind layer can promote
-      # our packed float32 binary to TEXT when the byte pattern happens
-      # to be valid UTF-8, and sqlite-vec then tries to parse it as a
-      # JSON array. CAST forces BLOB regardless.
-      query!(Repo, "INSERT INTO #{vec_table}(rowid, embedding) VALUES (?, CAST(? AS BLOB))",
-             [id, encode_vector(row.embedding)])
-
-      # Mirror into the FTS5 index so the BM25 leg of hybrid search
-      # (#182) sees this chunk. `kb_fts` is contentless; the rowid
-      # is the kb_chunks_meta id we just minted above.
-      #
-      # Memo scope is excluded — `chunk_text` for memo rows is
-      # AES-GCM ciphertext (per specs/memo_encryption.md). FTS over
-      # ciphertext yields nothing matchable; FTS over plaintext
-      # would defeat the encryption. Memo retrieval uses vector ANN
-      # only, no BM25 — hybrid search is :knowledge-only.
-      if row.scope != :memo do
-        query!(Repo, "INSERT INTO kb_fts(rowid, chunk_text) VALUES (?, ?)",
-               [id, row.chunk_text])
-      end
-    end)
-
+    Enum.each(rows, &add_row/1)
     :ok
   rescue
     e -> {:error, Exception.message(e)}
   end
 
-  @impl true
-  def search(scope, query_vec, k, filter) when is_list(query_vec) and is_integer(k) and k > 0 do
-    vec_table = vec_table_name(scope)
-    encoded   = encode_vector(query_vec)
+  defp add_row(%{scope: :knowledge} = row) do
+    %{rows: [[id]]} =
+      query!(Repo, """
+      INSERT INTO kb_chunks_meta (org_id, source_id, chunk_idx, chunk_text, indexed_at)
+      VALUES (?, ?, ?, ?, ?)
+      RETURNING id
+      """, [
+        row.org_id,
+        row.source_id,
+        row.chunk_idx,
+        row.chunk_text,
+        row.indexed_at
+      ])
 
+    query!(Repo, "INSERT INTO kb_vec_knowledge(rowid, embedding) VALUES (?, CAST(? AS BLOB))",
+           [id, encode_vector(row.embedding)])
+
+    query!(Repo, "INSERT INTO kb_fts(rowid, chunk_text) VALUES (?, ?)",
+           [id, row.chunk_text])
+  end
+
+  defp add_row(%{scope: :memo} = row) do
+    %{rows: [[id]]} =
+      query!(Repo, """
+      INSERT INTO memo_chunks_meta (org_id, user_id, source_id, chunk_idx, chunk_text, indexed_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      RETURNING id
+      """, [
+        row.org_id,
+        row.user_id,
+        row.source_id,
+        row.chunk_idx,
+        row.chunk_text,
+        row.indexed_at
+      ])
+
+    query!(Repo, "INSERT INTO kb_vec_memo(rowid, embedding) VALUES (?, CAST(? AS BLOB))",
+           [id, encode_vector(row.embedding)])
+
+    # No memo_fts insert — memo chunk_text is AES-GCM ciphertext;
+    # FTS over ciphertext is matchless. Memo retrieval is vector-only.
+  end
+
+  @impl true
+  def search(scope, query_vec, k, filter)
+      when is_list(query_vec) and is_integer(k) and k > 0 do
+    encoded = encode_vector(query_vec)
+    {vec_table, meta_table, src_table} = tables_for(scope)
     {filter_sql, filter_args} = build_filter(scope, filter)
 
     sql = """
     SELECT meta.chunk_text,
            meta.chunk_idx,
-           src.id AS source_id,
+           src.id AS internal_id,
            src.source_kind,
-           src.source_ref,
+           src.source_id,
            src.title,
            src.tags,
            vec.distance
     FROM   #{vec_table} vec
-    JOIN   kb_chunks_meta meta ON meta.id = vec.rowid
-    JOIN   kb_sources src      ON src.id  = meta.source_id
+    JOIN   #{meta_table} meta ON meta.id = vec.rowid
+    JOIN   #{src_table}  src  ON src.id  = meta.source_id
     WHERE  vec.embedding MATCH CAST(? AS BLOB)
       AND  k = ?
       #{filter_sql}
@@ -97,20 +112,18 @@ defmodule DmhAi.VectorDB.SqliteVec do
     %{rows: rows} = query!(Repo, sql, args)
 
     hits =
-      Enum.map(rows, fn [chunk_text, chunk_idx, source_id, kind, ref, title, tags_json, distance] ->
+      Enum.map(rows, fn [chunk_text, chunk_idx, internal_id, kind, source_id, title, tags_json, distance] ->
         %{
-          chunk_text: chunk_text,
-          chunk_idx: chunk_idx,
-          source_id: source_id,
+          chunk_text:  chunk_text,
+          chunk_idx:   chunk_idx,
+          internal_id: internal_id,
           source_kind: kind,
-          source_ref: ref,
-          title: title,
-          tags: decode_tags(tags_json),
+          source_id:   source_id,
+          title:       title,
+          tags:        decode_tags(tags_json),
           # vec0 with `distance_metric=cosine` returns cosine distance
           # (1 - cos_sim), range [0, 2]. Convert directly to cosine
           # similarity in [0, 1]; clamp negatives (rare for text).
-          # This matches the Memory backend's score, so threshold
-          # tuning is consistent across backends.
           score: max(0.0, 1.0 - (distance || 0.0))
         }
       end)
@@ -123,11 +136,14 @@ defmodule DmhAi.VectorDB.SqliteVec do
   @impl true
   def bm25_search(_scope, "", _k, _filter), do: {:ok, []}
 
-  def bm25_search(scope, query_text, k, filter) when is_binary(query_text) and is_integer(k) and k > 0 do
+  # Memo chunks are ciphertext; no usable FTS. Memo retrieval is
+  # vector-only, so BM25 always returns empty for the memo scope.
+  def bm25_search(:memo, _query_text, _k, _filter), do: {:ok, []}
+
+  def bm25_search(:knowledge = scope, query_text, k, filter)
+      when is_binary(query_text) and is_integer(k) and k > 0 do
     case build_fts_query(query_text) do
       "" ->
-        # All tokens stripped (pure punctuation / unicode the
-        # cleaner couldn't keep). Skip BM25 — vector-only fallback.
         {:ok, []}
 
       fts_q ->
@@ -136,9 +152,9 @@ defmodule DmhAi.VectorDB.SqliteVec do
         sql = """
         SELECT meta.chunk_text,
                meta.chunk_idx,
-               src.id AS source_id,
+               src.id AS internal_id,
                src.source_kind,
-               src.source_ref,
+               src.source_id,
                src.title,
                src.tags,
                bm25(kb_fts) AS rank
@@ -146,33 +162,27 @@ defmodule DmhAi.VectorDB.SqliteVec do
         JOIN   kb_chunks_meta meta ON meta.id = kb_fts.rowid
         JOIN   kb_sources     src  ON src.id  = meta.source_id
         WHERE  kb_fts MATCH ?
-          AND  meta.scope = ?
           #{filter_sql}
         ORDER BY bm25(kb_fts) ASC
         LIMIT ?
         """
 
-        args = [fts_q, scope_to_string(scope)] ++ filter_args ++ [k]
+        args = [fts_q] ++ filter_args ++ [k]
 
         %{rows: rows} = query!(Repo, sql, args)
 
         hits =
           rows
           |> Enum.with_index(1)
-          |> Enum.map(fn {[chunk_text, chunk_idx, source_id, kind, ref, title, tags_json, _rank], position} ->
+          |> Enum.map(fn {[chunk_text, chunk_idx, internal_id, kind, source_id, title, tags_json, _rank], position} ->
             %{
               chunk_text:  chunk_text,
               chunk_idx:   chunk_idx,
-              source_id:   source_id,
+              internal_id: internal_id,
               source_kind: kind,
-              source_ref:  ref,
+              source_id:   source_id,
               title:       title,
               tags:        decode_tags(tags_json),
-              # Positional score mirroring cosine's [0, 1] feel —
-              # caller's RRF merge ranks by position (not value), so
-              # the absolute number here is informational. We expose
-              # 1/position so per-list ordering is preserved if a
-              # caller naïvely sorts by `score`.
               score:       1.0 / position
             }
           end)
@@ -185,9 +195,7 @@ defmodule DmhAi.VectorDB.SqliteVec do
 
   # Tokenise the user's free-text query and rewrite it into an FTS5
   # boolean — OR each cleaned token, double-quoted to escape any
-  # FTS5 syntax characters. We OR (not AND) so a missing word
-  # doesn't drop a chunk that matches the rest; BM25's TF/IDF
-  # naturally prefers chunks that match more tokens.
+  # FTS5 syntax characters.
   defp build_fts_query(text) do
     text
     |> String.split(~r/\s+/u, trim: true)
@@ -201,41 +209,40 @@ defmodule DmhAi.VectorDB.SqliteVec do
 
   @impl true
   def delete_by_source(scope, source_id) when is_integer(source_id) do
-    vec_table = vec_table_name(scope)
+    {vec_table, meta_table, _src_table} = tables_for(scope)
+    fts_table = fts_table_for(scope)
 
-    # Find rowids first, then delete from both vec0 and meta. ON DELETE
-    # CASCADE on kb_chunks_meta.source_id removes meta rows; we need to
-    # remove vec0 rows manually because vec0 isn't a normal FK target.
     %{rows: rows} =
-      query!(Repo, "SELECT id FROM kb_chunks_meta WHERE source_id=?", [source_id])
+      query!(Repo, "SELECT id FROM #{meta_table} WHERE source_id=?", [source_id])
 
     ids = Enum.map(rows, fn [id] -> id end)
 
     Enum.each(ids, fn id ->
       query!(Repo, "DELETE FROM #{vec_table} WHERE rowid=?", [id])
-      query!(Repo, "DELETE FROM kb_fts       WHERE rowid=?", [id])
+
+      if fts_table do
+        query!(Repo, "DELETE FROM #{fts_table} WHERE rowid=?", [id])
+      end
     end)
 
-    query!(Repo, "DELETE FROM kb_chunks_meta WHERE source_id=?", [source_id])
+    query!(Repo, "DELETE FROM #{meta_table} WHERE source_id=?", [source_id])
     :ok
   rescue
     e -> {:error, Exception.message(e)}
   end
 
   @impl true
-  def count(scope, user_id) do
-    {sql, args} =
-      case user_id do
-        nil ->
-          {"SELECT COUNT(*) FROM kb_chunks_meta WHERE scope=? AND user_id IS NULL",
-           [scope_to_string(scope)]}
+  # `scope_arg` is `org_id` for `:knowledge` and `user_id` for `:memo`.
+  # Both are required (NOT NULL per Primitive 0.1).
+  def count(:knowledge, org_id) when is_binary(org_id) do
+    [[n]] = query!(Repo, "SELECT COUNT(*) FROM kb_chunks_meta WHERE org_id=?", [org_id]).rows
+    {:ok, n}
+  rescue
+    e -> {:error, Exception.message(e)}
+  end
 
-        uid ->
-          {"SELECT COUNT(*) FROM kb_chunks_meta WHERE scope=? AND user_id=?",
-           [scope_to_string(scope), uid]}
-      end
-
-    [[n]] = query!(Repo, sql, args).rows
+  def count(:memo, user_id) when is_binary(user_id) do
+    [[n]] = query!(Repo, "SELECT COUNT(*) FROM memo_chunks_meta WHERE user_id=?", [user_id]).rows
     {:ok, n}
   rescue
     e -> {:error, Exception.message(e)}
@@ -243,15 +250,22 @@ defmodule DmhAi.VectorDB.SqliteVec do
 
   # ─── Private ──────────────────────────────────────────────────────────────
 
-  defp vec_table_name(:knowledge), do: "kb_vec_knowledge"
-  defp vec_table_name(:memo),      do: "kb_vec_memo"
+  defp tables_for(:knowledge), do: {"kb_vec_knowledge", "kb_chunks_meta", "kb_sources"}
+  defp tables_for(:memo),      do: {"kb_vec_memo",      "memo_chunks_meta", "memo_sources"}
 
-  defp scope_to_string(:knowledge), do: "knowledge"
-  defp scope_to_string(:memo),      do: "memo"
+  defp fts_table_for(:knowledge), do: "kb_fts"
+  defp fts_table_for(:memo),      do: nil
 
-  # The user filter joins on kb_chunks_meta. Memo searches always
-  # filter by user_id; knowledge has no per-user partitioning.
+  # Filters narrow a search within the scope:
+  #   :knowledge — by `org_id` (required for any cross-org isolation)
+  #                or by `:source_id`.
+  #   :memo      — by `user_id` (every memo search must filter)
+  #                or by `:source_id`.
   defp build_filter(_scope, :none), do: {"", []}
+
+  defp build_filter(:knowledge, {:org, org_id}) when is_binary(org_id) do
+    {"AND meta.org_id = ?", [org_id]}
+  end
 
   defp build_filter(:memo, {:user, user_id}) when is_binary(user_id) do
     {"AND meta.user_id = ?", [user_id]}

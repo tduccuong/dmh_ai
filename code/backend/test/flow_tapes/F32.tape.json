@@ -1,0 +1,5 @@
+{
+  "flow_id": "F32",
+  "_note": "no LLM calls — Swift.localize is stubbed via __llm_call_stub__",
+  "turns": []
+}

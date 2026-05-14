@@ -396,6 +396,92 @@ defmodule T do
     end
   end
 
+  # ─── Mock vendor MCP server helpers ───────────────────────────────────
+  #
+  # Shared by every per-connector integration test that exercises the
+  # real Caller path against `DmhAi.Connectors.Mock.VendorMCPServer`.
+  # Each helper is idempotent + handles its own on_exit cleanup so
+  # tests stay readable.
+
+  @doc """
+  Start a Mock VendorMCPServer instance on a free port with the
+  given fixtures map. Returns `%{pid, url, port}`. The mock is
+  shut down on test exit.
+  """
+  def start_mock_vendor(instance, fixtures)
+      when is_binary(instance) and is_map(fixtures) do
+    {:ok, sock} = :gen_tcp.listen(0, [:binary])
+    {:ok, {_addr, port}} = :inet.sockname(sock)
+    :gen_tcp.close(sock)
+
+    {:ok, pid} = DmhAi.Connectors.Mock.VendorMCPServer.start_link(
+      instance: instance,
+      port:     port,
+      fixtures: fixtures
+    )
+
+    ExUnit.Callbacks.on_exit(fn ->
+      if Process.alive?(pid), do: Process.exit(pid, :shutdown)
+    end)
+
+    %{pid: pid, url: "http://127.0.0.1:#{port}/", port: port}
+  end
+
+  @doc """
+  Seed the three DB rows that let `MCP.Client.call_tool/4` reach a
+  mock vendor MCP server for `user_id`:
+
+    * `authorized_services` row (alias=slug, server_url=mock_url)
+    * `user_credentials` at `oauth:<slug>` (the Caller's pre-check)
+    * `user_credentials` at `mcp:<canonical>` (the bearer token MCP.Client uses)
+
+  Returns `:ok`. Cleanup is the test's responsibility — usually
+  via the broader `on_exit` that DELETEs the user.
+  """
+  def seed_mcp_authorization(user_id, slug, canonical, mock_url)
+      when is_binary(user_id) and is_binary(slug) and is_binary(canonical) and is_binary(mock_url) do
+    :ok = DmhAi.MCP.Registry.authorize(user_id, slug, canonical, mock_url, nil)
+
+    :ok = DmhAi.Auth.Credentials.save(user_id, "oauth:" <> slug, "oauth2",
+                                      %{"access_token" => "test-precheck-token"},
+                                      account: "")
+
+    :ok = DmhAi.Auth.Credentials.save(user_id, "mcp:" <> canonical, "oauth2_mcp",
+                                      %{"access_token" => "test-mcp-bearer-token"},
+                                      account: "",
+                                      expires_at: :os.system_time(:millisecond) + 3_600_000)
+
+    :ok
+  end
+
+  @doc """
+  Create a transient user for an integration test. Returns the
+  generated user_id; the row is DELETEd on_exit along with its
+  credentials, authorized_services, and audit_log entries.
+  """
+  def transient_user(opts \\ []) do
+    import Ecto.Adapters.SQL, only: [query!: 3]
+
+    user_id = uid()
+    org_id  = Keyword.get(opts, :org_id, DmhAi.Constants.default_org_id())
+    role    = Keyword.get(opts, :org_role, "member")
+
+    query!(DmhAi.Repo,
+      "INSERT INTO users (id, email, name, password_hash, role, org_id, org_role, created_at) " <>
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      [user_id, "txuser-#{user_id}@test.local", "TxUser", "x:y", "user",
+       org_id, role, :os.system_time(:second)])
+
+    ExUnit.Callbacks.on_exit(fn ->
+      query!(DmhAi.Repo, "DELETE FROM user_credentials WHERE user_id=?", [user_id])
+      query!(DmhAi.Repo, "DELETE FROM authorized_services WHERE user_id=?", [user_id])
+      query!(DmhAi.Repo, "DELETE FROM audit_log WHERE user_id=?", [user_id])
+      query!(DmhAi.Repo, "DELETE FROM users WHERE id=?", [user_id])
+    end)
+
+    user_id
+  end
+
   # ─── Memo encryption helpers ──────────────────────────────────────────────
   #
   # Memo writes/reads use a master-key-wrapped MMK persisted in
@@ -433,9 +519,10 @@ defmodule T do
           # Use a unique fake email to avoid the UNIQUE(email) collision.
           email = "test-#{user_id}@test.invalid"
           query!(DmhAi.Repo, """
-          INSERT INTO users (id, email, name, password_hash, role, created_at)
-          VALUES (?,?,?,?,?,?)
-          """, [user_id, email, "test", "x:y", "user", :os.system_time(:second)])
+          INSERT INTO users (id, email, name, password_hash, role, org_id, org_role, created_at)
+          VALUES (?,?,?,?,?,?,?,?)
+          """, [user_id, email, "test", "x:y", "user",
+                DmhAi.Constants.default_org_id(), "member", :os.system_time(:second)])
           true
       end
 

@@ -1,0 +1,9 @@
+{
+  "flow_id": "F39",
+  "_note": "F39 — M365 mail.search free-chat read. Test uses POST /tools/execute; tape is a no-op placeholder satisfying FlowHelper.setup_stub.",
+  "turns": [
+    {
+      "text": "Found one matching message."
+    }
+  ]
+}

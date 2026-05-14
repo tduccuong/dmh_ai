@@ -85,7 +85,7 @@ defmodule DmhAi.Tools.FetchMemo do
     |> Enum.map(fn h ->
       %{
         text:   h.chunk_text,
-        source: "#{h.source_kind}:#{h.source_ref}",
+        source: "#{h.source_kind}:#{h.source_id}",
         score:  Float.round(h.score, 4)
       }
     end)

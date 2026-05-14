@@ -113,16 +113,27 @@ defmodule DmhAi.Commands.Pipelines.URL do
       max_depth = AgentSettings.learn_url_max_depth()
       max_pages = AgentSettings.learn_url_max_pages()
 
+      # Pre-derive the seed URL's source_id so every crawled child
+      # page below can record `parent_source_id` pointing back at it.
+      # Lets the BG-refresh layer skip child re-fetches when the
+      # parent is mid-refresh — one-fan-out-per-window. See
+      # `Ingest.BgRefreshWorker.recent?/3`.
+      org_id         = DmhAi.Orgs.for_user(user_id)
+      seed_source_id = DmhAi.Ingest.SourceId.derive("url", start_url, org_id)
+
       state = %{
-        session_id: session_id,
-        user_id:    user_id,
-        prefix:     prefix,
-        max_depth:  max_depth,
-        max_pages:  max_pages,
-        seen:       MapSet.new([start_url]),  # both visited AND queued — single dedupe set
-        queue:      :queue.from_list([{start_url, 0}]),
-        indexed:    0,
-        errors:     0,
+        session_id:     session_id,
+        user_id:        user_id,
+        org_id:         org_id,
+        seed_url:       start_url,
+        seed_source_id: seed_source_id,
+        prefix:         prefix,
+        max_depth:      max_depth,
+        max_pages:      max_pages,
+        seen:           MapSet.new([start_url]),  # both visited AND queued — single dedupe set
+        queue:          :queue.from_list([{start_url, 0}]),
+        indexed:        0,
+        errors:         0,
         first_lang_signal: nil   # first non-empty page text drives the summary's localisation
       }
 
@@ -219,12 +230,18 @@ defmodule DmhAi.Commands.Pipelines.URL do
 
     effective_title = title || url
 
+    # Seed URL is its own parent (no `parent_source_id`); every
+    # subsequent crawled page records the seed as its parent so the
+    # BG-refresh debounce can collapse fan-out re-checks.
+    parent_source_id = if url == state.seed_url, do: nil, else: state.seed_source_id
+
     attrs = %{
-      scope:       :knowledge,
-      user_id:     nil,
-      source_kind: "url",
-      source_ref:  url,
-      title:       effective_title
+      scope:            :knowledge,
+      org_id:           state.org_id,
+      source_kind:      "url",
+      source_ref:       url,
+      title:            effective_title,
+      parent_source_id: parent_source_id
     }
 
     ingest_status =

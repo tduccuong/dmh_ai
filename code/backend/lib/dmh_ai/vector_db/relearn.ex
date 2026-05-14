@@ -137,7 +137,7 @@ defmodule DmhAi.VectorDB.Relearn do
       {:ok, %{title: title, content: text}} when is_binary(text) and text != "" ->
         DmhAi.VectorDB.ingest(%{
           scope:       :knowledge,
-          user_id:     nil,
+          org_id:      org_for_source("url", url),
           source_kind: "url",
           source_ref:  url,
           title:       title || url
@@ -158,7 +158,7 @@ defmodule DmhAi.VectorDB.Relearn do
       {:ok, body} when is_binary(body) and body != "" ->
         DmhAi.VectorDB.ingest(%{
           scope:       :knowledge,
-          user_id:     nil,
+          org_id:      org_for_source("file", path),
           source_kind: "file",
           source_ref:  path,
           title:       Path.basename(path)
@@ -172,5 +172,22 @@ defmodule DmhAi.VectorDB.Relearn do
     e ->
       Logger.info("[Relearn] file=#{path} crash: #{Exception.message(e)}")
       :ok
+  end
+
+  # Re-index needs the source's existing org_id so the refresh lands
+  # in the same org's corpus. Looks it up from the row we're about to
+  # refresh; falls back to the default org if no existing row matches
+  # (rare — relearn is enqueued by hits, so the row exists).
+  defp org_for_source(source_kind, source_ref) do
+    import Ecto.Adapters.SQL, only: [query!: 3]
+
+    case query!(DmhAi.Repo,
+                "SELECT org_id FROM kb_sources WHERE source_kind=? AND source_ref=? LIMIT 1",
+                [source_kind, source_ref]).rows do
+      [[org_id]] when is_binary(org_id) and org_id != "" -> org_id
+      _ -> DmhAi.Orgs.default_id()
+    end
+  rescue
+    _ -> DmhAi.Orgs.default_id()
   end
 end

@@ -333,19 +333,14 @@ const SettingsModal = {
         document.getElementById(targetPage).classList.add('active');
         var titleKey = targetPage === 'page-conversation'  ? 'convSettings'
                      : targetPage === 'page-ai-models'     ? 'aiModelSettings'
-                     : targetPage === 'page-index-seeds'    ? 'indexSeedsAdmin'
                      : targetPage === 'page-mcp-catalog'   ? 'mcpCatalogAdmin'
                      : targetPage === 'page-oauth-catalog' ? 'oauthCatalogAdmin'
+                     : targetPage === 'page-connectors'    ? 'connectorsAdmin'
+                     : targetPage === 'page-services'      ? 'myServices'
                      : 'sysSettings';
         document.getElementById('settings-modal-title').textContent = t(titleKey);
         document.getElementById('settings-overlay').classList.add('open');
 
-        // Lazy-load the seeds list when its page is the target.
-        // Handler is bound on first init; subsequent opens just refresh.
-        if (targetPage === 'page-index-seeds' && typeof WikiSeedsAdmin !== 'undefined') {
-            WikiSeedsAdmin.init();
-            WikiSeedsAdmin.render();
-        }
         if (targetPage === 'page-mcp-catalog' && typeof McpCatalogAdmin !== 'undefined') {
             McpCatalogAdmin.init();
             McpCatalogAdmin.render();
@@ -353,6 +348,14 @@ const SettingsModal = {
         if (targetPage === 'page-oauth-catalog' && typeof OAuthCatalogAdmin !== 'undefined') {
             OAuthCatalogAdmin.init();
             OAuthCatalogAdmin.render();
+        }
+        if (targetPage === 'page-connectors' && typeof ConnectorsAdmin !== 'undefined') {
+            ConnectorsAdmin.init();
+            ConnectorsAdmin.render();
+        }
+        if (targetPage === 'page-services' && typeof MyServices !== 'undefined') {
+            MyServices.init();
+            MyServices.render();
         }
     },
     close: function() {

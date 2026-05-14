@@ -1,0 +1,9 @@
+{
+  "flow_id": "F41",
+  "_note": "F41 — M365 mail.send in-task. Placeholder tape for FlowHelper.setup_stub; test uses POST /tools/execute.",
+  "turns": [
+    {
+      "text": "Sent."
+    }
+  ]
+}
