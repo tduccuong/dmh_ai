@@ -67,27 +67,8 @@ const ExternalConnectors = {
         if (!list) return;
         list.innerHTML = '';
 
-        var registered = this._connectors.filter(function(c) { return c.status === 'registered'; });
-        var planned    = this._connectors.filter(function(c) { return c.status === 'planned'; });
-
-        if (registered.length) {
-            list.appendChild(this._sectionLabel('Available'));
-            var self = this;
-            registered.forEach(function(c) { list.appendChild(self._listItem(c)); });
-        }
-
-        if (planned.length) {
-            list.appendChild(this._sectionLabel('Coming soon'));
-            var self2 = this;
-            planned.forEach(function(c) { list.appendChild(self2._listItem(c)); });
-        }
-    },
-
-    _sectionLabel: function(text) {
-        var li = document.createElement('li');
-        li.className = 'ec-list-section-label';
-        li.textContent = text;
-        return li;
+        var self = this;
+        this._connectors.forEach(function(c) { list.appendChild(self._listItem(c)); });
     },
 
     _listItem: function(c) {
@@ -178,8 +159,8 @@ const ExternalConnectors = {
         if (entry.manifest_verbs && entry.manifest_verbs.length) {
             verbsHtml =
                 '<div class="ec-section">' +
-                '<h3 class="ec-section-title">Verbs (' + entry.manifest_verbs.length + ')</h3>' +
-                '<ul class="ec-verb-list">' +
+                '<h3 class="ec-section-title">Exposed functions (' + entry.manifest_verbs.length + ')</h3>' +
+                '<ul class="ec-verb-tags">' +
                 entry.manifest_verbs.map(function(v) { return '<li>' + escapeHtml(v) + '</li>'; }).join('') +
                 '</ul></div>';
         }

@@ -281,15 +281,14 @@
      /connectors/:slug. Hidden by default; body.view-external-connectors
      toggles visibility. See code/js/external-connectors.js. -->
 <div id="external-connectors-view" class="external-connectors-view" style="display:none;">
-    <aside class="ec-sidebar">
-        <div class="ec-sidebar-header">
-            <h2 class="ec-sidebar-title">External Connectors</h2>
-            <p class="ec-sidebar-subtitle">Configure each connector your organisation needs.</p>
+    <aside class="sidebar ec-sidebar">
+        <div class="sidebar-header" style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
+            <img src="/logo.png" style="height:32px;width:32px;border-radius:6px;object-fit:contain;flex-shrink:0;">
+            <h2 style="color:#e09040;letter-spacing:0.04em;white-space:nowrap;flex:1;">DMH-AI</h2>
         </div>
+        <div class="ec-section-label">External Connectors</div>
         <ul class="ec-list" id="ec-list"></ul>
-        <div class="ec-sidebar-footer">
-            <button class="ec-back-btn" id="ec-back-btn">← Back to chat</button>
-        </div>
+        <button class="ec-back-btn" id="ec-back-btn">← Back to chat</button>
     </aside>
     <main class="ec-detail" id="ec-detail">
         <div class="ec-empty" id="ec-empty">

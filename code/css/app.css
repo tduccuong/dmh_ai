@@ -883,88 +883,98 @@ body.view-external-connectors #external-connectors-view {
     display: flex !important;
 }
 
+/* The EC sidebar reuses `.sidebar` (same width, padding, bg) and
+ * adds layout glue so the connector list scrolls between the
+ * top section label and the bottom "Back to chat" button. */
 .ec-sidebar {
-    width: 280px;
-    min-width: 280px;
-    border-right: 1px solid #2a1f3e;
-    background: #0e0a18;
     display: flex;
     flex-direction: column;
     overflow: hidden;
 }
 
-.ec-sidebar-header {
-    padding: 20px 18px 14px 18px;
-    border-bottom: 1px solid #2a1f3e;
+/* "External Connectors" label below the logo header — matches the
+ * compact section labels used elsewhere in the sidebar (tasks /
+ * sessions headers). */
+.ec-section-label {
+    padding: 12px 4px 8px 4px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #c0a0e8;
+    font-weight: 600;
 }
 
-.ec-sidebar-title { font-size: 16px; margin: 0 0 4px 0; color: #e09040; }
-.ec-sidebar-subtitle { font-size: 11px; margin: 0; opacity: 0.6; line-height: 1.4; }
-
-.ec-list { list-style: none; margin: 0; padding: 8px 0; flex: 1; overflow-y: auto; }
+/* Connector list — same item shape as `.session-item` so the
+ * sidebar reads as one consistent navigation surface. */
+.ec-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    flex: 1 1 0;
+    min-height: 0;
+    overflow-y: auto;
+}
 
 .ec-list-item {
-    padding: 10px 18px;
+    padding: 8px 10px;
+    margin-bottom: 2px;
+    border-radius: 6px;
     cursor: pointer;
-    border-left: 3px solid transparent;
+    background: transparent;
+    transition: background 0.15s;
     display: flex;
     align-items: center;
-    justify-content: space-between;
     gap: 8px;
+    border-left: 3px solid transparent;
     font-size: 13px;
-    transition: background 0.1s;
 }
 
-.ec-list-item:hover { background: rgba(255, 255, 255, 0.03); }
+.ec-list-item:hover { background: rgba(255, 255, 255, 0.05); }
 
 .ec-list-item.active {
-    background: rgba(120, 80, 180, 0.15);
-    border-left-color: #e09040;
+    background: rgba(200, 120, 48, 0.18);
+    border-left-color: #c87830;
 }
+.ec-list-item.active .ec-list-item-name { color: #fff; font-weight: 500; }
 
 .ec-list-item.planned {
     opacity: 0.45;
     cursor: not-allowed;
 }
+.ec-list-item.planned:hover { background: transparent; }
 
-.ec-list-item-name { flex: 1; }
+.ec-list-item-name { flex: 1; min-width: 0; }
 .ec-list-item-badge {
     font-size: 10px;
     padding: 1px 6px;
     border-radius: 3px;
     text-transform: uppercase;
     letter-spacing: 0.04em;
+    flex-shrink: 0;
 }
 .ec-list-item-badge.ok   { background: rgba(122, 217, 156, 0.15); color: #7ad99c; }
 .ec-list-item-badge.warn { background: rgba(230, 196, 106, 0.15); color: #e6c46a; }
 .ec-list-item-badge.muted { background: rgba(255, 255, 255, 0.04); color: #888; }
 
-.ec-list-section-label {
-    padding: 14px 18px 6px 18px;
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    opacity: 0.5;
-}
-
-.ec-sidebar-footer {
-    padding: 12px 18px;
-    border-top: 1px solid #2a1f3e;
-}
-
+/* "Back to chat" — filled, no outline. Sits below the scrolling
+ * connector list, anchored to the bottom of the sidebar. Same
+ * visual weight as `.new-session-btn` so the sidebar's bottom-
+ * anchored action reads consistent across views. */
 .ec-back-btn {
-    width: 100%;
-    background: transparent;
-    color: #c0a0e8;
-    border: 1px solid #382850;
+    flex-shrink: 0;
+    margin-top: 10px;
     padding: 10px 12px;
-    border-radius: 6px;
-    font-size: 13px;
+    background: #382850;
+    color: #f0e5ff;
+    border: none;
+    border-radius: 8px;
     cursor: pointer;
-    transition: background 0.1s;
+    font-size: 13px;
+    font-weight: 500;
+    text-align: center;
 }
 
-.ec-back-btn:hover { background: rgba(120, 80, 180, 0.1); }
+.ec-back-btn:hover { background: #4a3868; }
 
 .ec-detail {
     flex: 1;
@@ -990,9 +1000,9 @@ body.view-external-connectors #external-connectors-view {
 .ec-form-group { margin-bottom: 18px; }
 .ec-form-label {
     display: block;
-    font-size: 12px;
-    opacity: 0.7;
-    margin-bottom: 5px;
+    font-size: 13px;
+    color: #e8d6f0;
+    margin-bottom: 6px;
 }
 .ec-form-input {
     width: 100%;
@@ -1006,9 +1016,9 @@ body.view-external-connectors #external-connectors-view {
     box-sizing: border-box;
 }
 .ec-form-input:focus { outline: none; border-color: #5a4099; }
-.ec-form-help { font-size: 11px; opacity: 0.55; margin-top: 4px; }
+.ec-form-help { font-size: 12px; color: #c0a0e8; opacity: 0.75; margin-top: 4px; }
 
-.ec-form-checkbox-row { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
+.ec-form-checkbox-row { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #e8d6f0; cursor: pointer; }
 
 .ec-actions { display: flex; gap: 10px; margin-top: 28px; }
 .ec-btn {
@@ -1030,17 +1040,28 @@ body.view-external-connectors #external-connectors-view {
     padding-top: 18px;
     border-top: 1px solid #2a1f3e;
 }
-.ec-section-title { font-size: 13px; opacity: 0.7; margin: 0 0 12px 0; }
+.ec-section-title { font-size: 13px; color: #e8d6f0; margin: 0 0 12px 0; }
 
-.ec-verb-list { list-style: none; padding: 0; margin: 0; }
-.ec-verb-list li {
-    padding: 6px 10px;
-    background: rgba(255, 255, 255, 0.02);
+/* Verbs are read-only labels — render them inline as wrapping
+ * tags rather than a vertical list, since the user doesn't
+ * interact with them. */
+.ec-verb-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+.ec-verb-tags li {
+    padding: 3px 9px;
+    background: rgba(120, 80, 180, 0.12);
+    border: 1px solid rgba(120, 80, 180, 0.30);
     border-radius: 4px;
-    margin-bottom: 4px;
-    font-size: 12px;
-    font-family: monospace;
-    color: #c0a0e8;
+    font-size: 11px;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    color: #d8c0f0;
+    white-space: nowrap;
 }
 
 .ec-result {
