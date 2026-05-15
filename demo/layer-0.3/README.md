@@ -56,14 +56,18 @@ section). The mock is for deterministic demos; for production
 UAT the operator sets:
 
 - `DMH_AI_ENABLE_VENDOR_MOCKS=false` (or unset)
-- `DMH_AI_GW_MCP_URL=https://<google-mcp-endpoint>/`
-- `DMH_AI_GW_CLIENT_ID` / `DMH_AI_GW_CLIENT_SECRET` from a real
-  Google Cloud OAuth client
+- `DMH_AI_ENABLE_REAL_MCP=true` (keep the in-process REST
+  translator on so MCP calls forward to Google's APIs)
+- Admin opens **External Connectors** (`/connectors`) → Google
+  Workspace card → pastes `client_id` + `client_secret` from
+  Google Cloud Console (see `GOOGLE_CLOUD_SETUP.md`) → **Save**
+  → **Test connection**.
 
-Then the existing `connect_mcp` / `authorize_service` chat flow
-handles the real OAuth dance against Google's consent screen.
-Demo 01's Step 2 RPC is *skipped* in that path — the OAuth flow
-writes the credential rows.
+Sales staff then click-connects via **My Services** →
+**Connect Google Workspace** → real OAuth dance → returns
+authorized. Demo 01's Step 2 RPC is *skipped* — the OAuth
+callback writes the credential rows via the `connector_oauth`
+flow.
 
 ## Where to look when something breaks
 

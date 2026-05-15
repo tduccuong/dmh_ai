@@ -1,10 +1,10 @@
 // Copyright (c) 2026 Cuong Truong
 // This project is licensed under the AGPL v3.
 
-// Generic JSON-array import dialog. Both McpCatalogAdmin and the
-// Pools admin call ImportDialog.show({title, example, onSubmit}) to
-// let an admin paste a JSON array (or upload a file) and ship it to
-// a bulk-import endpoint. Renders a transient overlay; cleans up
+// Generic JSON-array import dialog. PoolsAdmin calls
+// `ImportDialog.show({title, example, onSubmit})` to let an admin
+// paste a JSON array (or upload a file) and ship it to a
+// bulk-import endpoint. Renders a transient overlay; cleans up
 // after submit / cancel.
 //
 // onSubmit receives the parsed array and must return a promise that

@@ -115,17 +115,9 @@
                         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8" y1="21" x2="16" y2="21"/></svg>
                         Built user profiles
                     </button>
-                    <button class="user-dropdown-item" id="user-mcp-catalog-btn" style="display:none">
-                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
-                        <span id="user-mcp-catalog-label">MCP Catalog</span>
-                    </button>
-                    <button class="user-dropdown-item" id="user-oauth-catalog-btn" style="display:none">
-                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-                        <span id="user-oauth-catalog-label">Curated Services</span>
-                    </button>
-                    <button class="user-dropdown-item" id="user-connectors-btn" style="display:none">
+                    <button class="user-dropdown-item" id="user-external-connectors-btn" style="display:none">
                         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
-                        <span id="user-connectors-label">Connectors</span>
+                        <span id="user-external-connectors-label">External Connectors</span>
                     </button>
                     <button class="user-dropdown-item" id="user-services-btn">
                         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
@@ -285,6 +277,26 @@
         </div>
     </div>
 </div>
+<!-- External Connectors — routed full-page view at /connectors and
+     /connectors/:slug. Hidden by default; body.view-external-connectors
+     toggles visibility. See code/js/external-connectors.js. -->
+<div id="external-connectors-view" class="external-connectors-view" style="display:none;">
+    <aside class="ec-sidebar">
+        <div class="ec-sidebar-header">
+            <h2 class="ec-sidebar-title">External Connectors</h2>
+            <p class="ec-sidebar-subtitle">Configure each connector your organisation needs.</p>
+        </div>
+        <ul class="ec-list" id="ec-list"></ul>
+        <div class="ec-sidebar-footer">
+            <button class="ec-back-btn" id="ec-back-btn">← Back to chat</button>
+        </div>
+    </aside>
+    <main class="ec-detail" id="ec-detail">
+        <div class="ec-empty" id="ec-empty">
+            <p>Select a connector on the left to configure it.</p>
+        </div>
+    </main>
+</div>
 <script src="/js/stopwords.js" defer></script>
 <script src="/js/constants.js" defer></script>
 <script src="/js/blocked_domains.js" defer></script>
@@ -298,9 +310,8 @@
 <script src="/js/manager-search.js" defer></script>
 <script src="/js/manager-tasks.js" defer></script>
 <script src="/js/import-dialog.js" defer></script>
-<script src="/js/manager-catalog.js" defer></script>
-<script src="/js/manager-oauth-catalog.js" defer></script>
-<script src="/js/manager-connectors.js" defer></script>
+<script src="/js/router.js" defer></script>
+<script src="/js/external-connectors.js" defer></script>
 <script src="/js/manager-services.js" defer></script>
 <script src="/js/sw-register.js" defer></script>
     <div class="settings-overlay" id="settings-overlay">
@@ -417,45 +428,6 @@
                         </div>
                     </div>
                 </div>
-                <!-- Page: MCP Catalog -->
-                <div class="settings-page" id="page-mcp-catalog">
-                    <div class="settings-section">
-                        <div class="settings-section-title">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
-                            MCP Catalog
-                        </div>
-                        <div class="settings-subsection">
-                            <div id="mcp-catalog-list" class="mcp-catalog-list"></div>
-                            <div class="settings-add-row mcp-catalog-add-row">
-                                <input id="mcp-catalog-add-slug" class="settings-input" placeholder="slug (e.g. github)">
-                                <input id="mcp-catalog-add-name" class="settings-input" placeholder="Name (e.g. GitHub)">
-                            </div>
-                            <div class="settings-add-row mcp-catalog-add-row">
-                                <input id="mcp-catalog-add-url"  class="settings-input" placeholder="https://example.com/mcp">
-                                <input id="mcp-catalog-add-desc" class="settings-input" placeholder="Description (optional)">
-                            </div>
-                            <div class="settings-add-row">
-                                <button class="settings-add-btn" id="mcp-catalog-add-btn">+ Add</button>
-                                <button class="settings-add-btn" id="mcp-catalog-import-btn">Import…</button>
-                            </div>
-                            <div id="mcp-catalog-error" class="settings-msg" style="display:none;color:#e05060;"></div>
-                        </div>
-                    </div>
-                </div>
-                <!-- Page: Connectors (Universal Region admin overview) -->
-                <div class="settings-page" id="page-connectors">
-                    <div class="settings-section">
-                        <div class="settings-section-title">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
-                            <span id="connectors-page-title">Connectors</span>
-                        </div>
-                        <div class="settings-subsection">
-                            <div id="connectors-intro" class="settings-msg" style="opacity:0.85;line-height:1.5;margin-bottom:12px;"></div>
-                            <div id="connectors-list" class="connectors-list"></div>
-                            <div id="connectors-error" class="settings-msg" style="display:none;color:#e05060;"></div>
-                        </div>
-                    </div>
-                </div>
                 <!-- Page: My Services (per-user available + connected) -->
                 <div class="settings-page" id="page-services">
                     <div class="settings-section">
@@ -470,23 +442,6 @@
                             <h4 style="margin:20px 0 8px 0;font-size:13px;opacity:0.7;">Available</h4>
                             <div id="services-available-list" class="services-list"></div>
                             <div id="services-error" class="settings-msg" style="display:none;color:#e05060;"></div>
-                        </div>
-                    </div>
-                </div>
-                <!-- Page: Curated Services (OAuth) -->
-                <div class="settings-page" id="page-oauth-catalog">
-                    <div class="settings-section">
-                        <div class="settings-section-title">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-                            Curated Services
-                        </div>
-                        <div class="settings-subsection">
-                            <div id="oauth-catalog-intro" class="settings-msg" style="opacity:0.85;line-height:1.5;margin-bottom:12px;"></div>
-                            <div id="oauth-catalog-list" class="oauth-catalog-list"></div>
-                            <div class="settings-add-row">
-                                <button class="settings-add-btn" id="oauth-catalog-add-btn">+ Add new service</button>
-                            </div>
-                            <div id="oauth-catalog-error" class="settings-msg" style="display:none;color:#e05060;"></div>
                         </div>
                     </div>
                 </div>

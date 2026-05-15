@@ -27,6 +27,27 @@ defmodule DmhAi.Handlers.AdminConnectors do
   import Ecto.Adapters.SQL, only: [query!: 3]
   require Logger
 
+  # Universal Region slice-3 connectors — manifest modules haven't
+  # landed yet but the FE External Connectors page lists them as
+  # "Coming soon" so admins know the full target surface. Keep
+  # this list in lock-step with the slice-3 ticket numbers in the
+  # 0.3 audit. When a connector module is added to
+  # `Connectors.Registry.universal_modules/0`, drop its slug from
+  # this list — the registered path takes over automatically.
+  @planned_connectors [
+    %{slug: "shopify",     display_name: "Shopify",       auth_kind: "oauth"},
+    %{slug: "salesforce",  display_name: "Salesforce",    auth_kind: "oauth"},
+    %{slug: "slack",       display_name: "Slack",         auth_kind: "oauth"},
+    %{slug: "zoom",        display_name: "Zoom",          auth_kind: "oauth"},
+    %{slug: "docusign",    display_name: "DocuSign",      auth_kind: "oauth"},
+    %{slug: "calendly",    display_name: "Calendly",      auth_kind: "oauth"},
+    %{slug: "klaviyo",     display_name: "Klaviyo",       auth_kind: "api_key"},
+    %{slug: "atlassian",   display_name: "Atlassian",     auth_kind: "oauth"},
+    %{slug: "asana",       display_name: "Asana",         auth_kind: "oauth"},
+    %{slug: "notion",      display_name: "Notion",        auth_kind: "oauth"},
+    %{slug: "brevo",       display_name: "Brevo",         auth_kind: "api_key"}
+  ]
+
   def list(conn, user) do
     if user.role != "admin" do
       Proxy.json(conn, 403, %{error: "Forbidden"})
@@ -123,26 +144,49 @@ defmodule DmhAi.Handlers.AdminConnectors do
     oauth = oauth_rows_by_slug()
     mcp   = mcp_rows_by_slug(user)
 
-    Connectors.Registry.universal_modules()
-    |> Enum.map(fn mod ->
-      slug = mod.mcp_slug()
-      o    = Map.get(oauth, slug, %{})
-      m    = Map.get(mcp,   slug, %{})
+    registered =
+      Connectors.Registry.universal_modules()
+      |> Enum.map(fn mod ->
+        slug = mod.mcp_slug()
+        o    = Map.get(oauth, slug, %{})
+        m    = Map.get(mcp,   slug, %{})
 
-      %{
-        slug:              slug,
-        display_name:      Map.get(o, :display_name) || derive_display_name(slug),
-        auth_kind:         apply_or(mod, :credential_kind, :oauth2),
-        mcp_url:           Map.get(m, :mcp_url),
-        mcp_url_set:       (Map.get(m, :mcp_url) not in [nil, ""]),
-        client_id_present: (Map.get(o, :client_id) not in [nil, ""]),
-        scopes:            Map.get(o, :scopes, []),
-        enabled:           Map.get(m, :enabled, false),
-        last_probe_status: Map.get(m, :last_probe_status),
-        last_probe_at:     Map.get(m, :last_probe_at),
-        manifest_verbs:    manifest_verb_names(mod)
-      }
-    end)
+        %{
+          slug:              slug,
+          display_name:      Map.get(o, :display_name) || derive_display_name(slug),
+          auth_kind:         apply_or(mod, :credential_kind, :oauth2),
+          status:            "registered",
+          mcp_url:           Map.get(m, :mcp_url),
+          mcp_url_set:       (Map.get(m, :mcp_url) not in [nil, ""]),
+          client_id_present: (Map.get(o, :client_id) not in [nil, ""]),
+          scopes:            Map.get(o, :scopes, []),
+          enabled:           Map.get(m, :enabled, false),
+          last_probe_status: Map.get(m, :last_probe_status),
+          last_probe_at:     Map.get(m, :last_probe_at),
+          manifest_verbs:    manifest_verb_names(mod)
+        }
+      end)
+
+    planned =
+      @planned_connectors
+      |> Enum.map(fn p ->
+        %{
+          slug:              p.slug,
+          display_name:      p.display_name,
+          auth_kind:         p.auth_kind,
+          status:            "planned",
+          mcp_url:           nil,
+          mcp_url_set:       false,
+          client_id_present: false,
+          scopes:            [],
+          enabled:           false,
+          last_probe_status: nil,
+          last_probe_at:     nil,
+          manifest_verbs:    []
+        }
+      end)
+
+    registered ++ planned
   end
 
   defp oauth_rows_by_slug do

@@ -39,8 +39,8 @@ function applyLanguage() {
     if (convSettingsLabel) convSettingsLabel.textContent = t('convSettings');
     var aiSettingsLabel = document.getElementById('user-ai-settings-label');
     if (aiSettingsLabel) aiSettingsLabel.textContent = t('aiModelSettings');
-    var connectorsLabel = document.getElementById('user-connectors-label');
-    if (connectorsLabel) connectorsLabel.textContent = t('connectorsAdmin');
+    var extConnectorsLabel = document.getElementById('user-external-connectors-label');
+    if (extConnectorsLabel) extConnectorsLabel.textContent = t('externalConnectors');
     var servicesLabel = document.getElementById('user-services-label');
     if (servicesLabel) servicesLabel.textContent = t('myServices');
     document.getElementById('user-about-btn').lastChild.textContent = t('aboutBtn');
@@ -560,17 +560,9 @@ const UIManager = {
             document.getElementById('user-dropdown').classList.remove('open');
             SettingsModal.open('page-conversation');
         });
-        document.getElementById('user-mcp-catalog-btn').addEventListener('click', function() {
+        document.getElementById('user-external-connectors-btn').addEventListener('click', function() {
             document.getElementById('user-dropdown').classList.remove('open');
-            SettingsModal.open('page-mcp-catalog');
-        });
-        document.getElementById('user-oauth-catalog-btn').addEventListener('click', function() {
-            document.getElementById('user-dropdown').classList.remove('open');
-            SettingsModal.open('page-oauth-catalog');
-        });
-        document.getElementById('user-connectors-btn').addEventListener('click', function() {
-            document.getElementById('user-dropdown').classList.remove('open');
-            SettingsModal.open('page-connectors');
+            Router.navigate('/connectors');
         });
         document.getElementById('user-services-btn').addEventListener('click', function() {
             document.getElementById('user-dropdown').classList.remove('open');
@@ -585,7 +577,34 @@ const UIManager = {
             if (e.target === e.currentTarget) document.getElementById('mgr-overlay').classList.remove('visible');
         });
 
+        this._initRouter();
         this.checkAuthAndInit();
+    },
+
+    // Register client-side routes and run the initial dispatch.
+    // Called once at boot, AFTER all event wiring is in place.
+    // The matching handler runs against the URL the page loaded on
+    // — so a refresh of /connectors/google_workspace lands on the
+    // right view without a flicker through chat.
+    _initRouter: function() {
+        if (typeof Router === 'undefined' || typeof ExternalConnectors === 'undefined') return;
+
+        Router.on('/connectors', function() {
+            ExternalConnectors.show(null);
+        });
+        Router.on('/connectors/:slug', function(p) {
+            ExternalConnectors.show(p.slug);
+        });
+        Router.fallback(function() {
+            // Anything else → chat. Hide the external-connectors view
+            // if it was showing; the existing chat DOM stays intact
+            // since we only toggle a body class.
+            if (typeof ExternalConnectors !== 'undefined') {
+                ExternalConnectors.hide();
+            }
+        });
+
+        Router.init();
     },
 
     showLoginScreen: function() {
@@ -612,9 +631,7 @@ const UIManager = {
             // admin-only sections inside the page self-gate via
             // `data-admin-only="true"` and the SettingsModal.open hook.
             document.getElementById('user-conv-settings-btn').style.display = '';
-            document.getElementById('user-mcp-catalog-btn').style.display = isAdmin ? '' : 'none';
-            document.getElementById('user-oauth-catalog-btn').style.display = isAdmin ? '' : 'none';
-            document.getElementById('user-connectors-btn').style.display = isAdmin ? '' : 'none';
+            document.getElementById('user-external-connectors-btn').style.display = isAdmin ? '' : 'none';
             // My Services is visible to all authenticated users (sales staff
             // self-connect Google etc. without needing admin assistance).
             // Conv Settings is visible to all, so the separator above

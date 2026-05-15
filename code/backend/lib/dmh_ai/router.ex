@@ -8,7 +8,6 @@ defmodule DmhAi.Router do
   import Plug.Conn
   alias DmhAi.AuthPlug
   alias DmhAi.Handlers.AdminKbSources
-  alias DmhAi.Handlers.AdminMcpCatalog
   alias DmhAi.Handlers.AdminConnectors
   alias DmhAi.Handlers.MeServices
   alias DmhAi.Handlers.AdminPools
@@ -250,32 +249,6 @@ defmodule DmhAi.Router do
     end
   end
 
-  # ── Admin: curated OAuth services ────────────────────────────────────────
-
-  get "/admin/oauth_catalog" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      DmhAi.Handlers.AdminOAuthCatalog.list(conn, user)
-    end
-  end
-
-  post "/admin/oauth_catalog" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      DmhAi.Handlers.AdminOAuthCatalog.create(conn, user)
-    end
-  end
-
-  put "/admin/oauth_catalog/:id" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      DmhAi.Handlers.AdminOAuthCatalog.update(conn, user, id)
-    end
-  end
-
-  delete "/admin/oauth_catalog/:id" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      DmhAi.Handlers.AdminOAuthCatalog.delete(conn, user, id)
-    end
-  end
-
   # ── KB sources (Primitive 0.2) ───────────────────────────────────────
   # Admin-only: list & remove org-scoped KB sources. Underpins the
   # future admin UI's "manage KB" panel. See
@@ -290,50 +263,6 @@ defmodule DmhAi.Router do
   post "/admin/kb-sources/remove" do
     with {:ok, conn, user} <- check_auth(conn) do
       AdminKbSources.remove(conn, user)
-    end
-  end
-
-  # ── MCP Catalog (specs/mcp.md §Phase E) ───────────────────────────────
-
-  get "/admin/mcp-catalog" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      AdminMcpCatalog.list(conn, user)
-    end
-  end
-
-  post "/admin/mcp-catalog" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      AdminMcpCatalog.create(conn, user)
-    end
-  end
-
-  put "/admin/mcp-catalog/:id" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      AdminMcpCatalog.update(conn, user, id)
-    end
-  end
-
-  delete "/admin/mcp-catalog/:id" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      AdminMcpCatalog.delete(conn, user, id)
-    end
-  end
-
-  post "/admin/mcp-catalog/:id/enable" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      AdminMcpCatalog.enable(conn, user, id)
-    end
-  end
-
-  post "/admin/mcp-catalog/:id/disable" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      AdminMcpCatalog.disable(conn, user, id)
-    end
-  end
-
-  post "/admin/mcp-catalog/import" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      AdminMcpCatalog.import_many(conn, user)
     end
   end
 
@@ -752,6 +681,30 @@ defmodule DmhAi.Router do
     with {:ok, conn, user} <- check_auth(conn) do
       Data.delete_video_descriptions(conn, user, session_id)
     end
+  end
+
+  # ─── SPA-fallback routes (FE owns the URL space) ─────────────────────────────
+  #
+  # The FE has a small client-side router (`code/js/router.js`).
+  # Paths the FE handles need a BE route that serves the SPA shell
+  # so a refresh / direct-link / browser-back doesn't 404. Each FE
+  # route gets ONE explicit entry below — a catch-all would mask
+  # typos in API URLs (`/admin/connectorss` would silently return
+  # HTML), so the trade is more typing for better debugability.
+
+  get "/connectors" do
+    serve_spa(conn)
+  end
+
+  get "/connectors/:_slug" do
+    serve_spa(conn)
+  end
+
+  defp serve_spa(conn) do
+    conn
+    |> put_resp_header("cache-control", "no-store")
+    |> put_resp_content_type("text/html")
+    |> send_file(200, "/app/static/index.html")
   end
 
   # ─── Catch-all ────────────────────────────────────────────────────────────────

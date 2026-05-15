@@ -246,9 +246,11 @@ chat.
    `mcp_catalog` has the right URL and the RPC prints
    `authorized`.
 2. Open two browser tabs at `http://127.0.0.1:8080`:
-   - **Tab A** — `admin@dmhai.local`. (Optional — for showing
-     `/admin/connectors` if such an admin view exists; today
-     this is mostly about the RPC verification you already ran.)
+   - **Tab A** — `admin@dmhai.local`, navigated to
+     `/connectors` (the **External Connectors** admin page).
+     Useful for the "this is where I configured it" beat of the
+     customer pitch — they see the Google Workspace card with
+     green badges (Client ID ✓, MCP URL ✓, Enabled).
    - **Tab B** — `test@dmhai.local`, session pre-created with
      `mode: "assistant"`.
 3. Run the verification query yourself once (Step 3's chat
@@ -289,22 +291,38 @@ re-run a fresh demo cycle:
 
 ## Switching to real Google (production UAT)
 
-For real-Google testing, swap the mock URL for Google's official
-Workspace MCP endpoint and provide your own OAuth client:
+For real-Google testing, swap the in-process MCPServer (which
+forwards to Google's REST APIs) into the loop with your own
+OAuth client. Two env-var paths, depending on how you supply
+credentials:
+
+**Path A — env vars at install time** (re-seeds the catalog rows
+on every boot):
 
 ```bash
-export DMH_AI_ENABLE_VENDOR_MOCKS=false
-export DMH_AI_GW_MCP_URL=https://<google-workspace-mcp-endpoint>/
+export DMH_AI_ENABLE_VENDOR_MOCKS=false   # mock off
+export DMH_AI_ENABLE_REAL_MCP=true        # in-process REST translator
+export DMH_AI_GW_MCP_URL=http://127.0.0.1:8087/google_workspace
 export DMH_AI_GW_CLIENT_ID=<your_client_id>
 export DMH_AI_GW_CLIENT_SECRET=<your_client_secret>
 ./scripts/build.sh --stage && ./dist/install.sh --stage
 ```
 
-Then the employee walks through the **real OAuth flow** in the
-FE (admin first runs `connect_mcp(slug: "google_workspace")` in
-chat; FE handles the browser redirect). Step 2's RPC is
-*skipped* in this path — real OAuth writes the credentials.
-Same agent chat path otherwise.
+**Path B — paste via FE** (preferred — no shell re-deploy, just
+edit credentials on the running stage):
+
+1. Stage already running with `DMH_AI_ENABLE_REAL_MCP=true`.
+2. Admin opens `/connectors` → Google Workspace → pastes
+   client_id + secret → **Save** → **Test connection**.
+3. See `GOOGLE_CLOUD_SETUP.md` for the exact Google Cloud
+   Console steps + redirect URI to register.
+
+Then the employee walks through the **real OAuth flow** click-
+driven from the FE: **My Services** → **Connect Google Workspace**
+→ browser redirects to Google's consent screen → approve →
+returns to DMH-AI with "Connected as <email>". Step 2's RPC is
+skipped — the OAuth callback writes the credentials via the
+`connector_oauth` flow path.
 
 ## Cleanup
 
@@ -335,7 +353,7 @@ unset DMH_AI_ENABLE_VENDOR_MOCKS DMH_AI_GW_MCP_URL
   write-requires-task, idempotency-key, credentials).
 - `0.3 Connectors.MCPAdapter` — base behaviour, manifest +
   remap_error + mcp_slug callbacks.
-- `0.3 Connectors.MCPAdapter.Caller.do_real_invoke/4` — real
+- `0.3 Connectors.MCPAdapter.Caller.do_real_invoke/5` — real
   bridge into `MCP.Client.call_tool/4` (closes I1).
 - `0.3 Connectors.OAuthCatalogSeed` — boot-time oauth_catalog
   upsert (closes I2 generically).

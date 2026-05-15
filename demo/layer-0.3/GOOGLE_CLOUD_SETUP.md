@@ -88,30 +88,34 @@ Click **Enable** on each. Wait ~30 seconds per API for activation.
 
 ### 5. Paste the credentials into DMH-AI
 
-1. Open the DMH-AI admin UI (login as `admin@…`).
-2. Go to **Connectors** (or "Curated Services" / "MCP Catalog"
-   depending on FE label — they're the same page).
-3. Find the **Google Workspace** card → click **Configure** /
-   **Edit credentials**.
+1. Open DMH-AI in the browser, log in as the admin
+   (`admin@…`).
+2. Click the user-menu icon → **External Connectors** (or
+   navigate directly to `/connectors`). The page is a full-page
+   master-detail view — left sidebar lists every connector, right
+   pane shows the selected one's config form.
+3. Click **Google Workspace** in the sidebar.
 4. Paste **Client ID** + **Client Secret** into the matching
-   fields.
+   fields. (Note: existing values aren't echoed back for
+   security; the placeholder reads "(saved — paste new to
+   replace)" when a credential is already on file.)
 5. **MCP URL** — leave as the default if running the in-process
    MCPServer (it's pre-seeded to
    `http://127.0.0.1:8087/google_workspace`). Override only if
    you're pointing at an external Google MCP endpoint.
-6. **Save**.
-7. Click **Test connection**. Expected: ✅ "Reachable — 6 verbs
-   exposed". If you see a network error, double-check that
-   `DMH_AI_ENABLE_REAL_MCP=true` was set when the stage was
-   installed (otherwise the in-process MCPServer isn't running).
+6. Tick **Enabled** if not already.
+7. Click **Save**.
+8. Click **Test connection**. Expected: ✅ "Reachable — 6 verbs
+   from server dmh-ai-mcp-google_workspace". If you see a
+   network error, double-check that `DMH_AI_ENABLE_REAL_MCP=true`
+   was set when the stage was installed (otherwise the
+   in-process MCPServer isn't running).
 
 ### 6. Sales staff connects their own Google account
 
 1. Sales staff logs in to DMH-AI as their employee account.
-2. Goes to **My Services** (or wherever the FE puts it — same
-   page lists "Connect Google Workspace" alongside other
-   available connectors).
-3. Clicks **Connect Google Workspace**.
+2. Clicks the user-menu icon → **My Services**.
+3. In the **Available** list, clicks **Connect Google Workspace**.
 4. Browser redirects to Google's consent screen — they see the
    six scope descriptions ("Read your Gmail messages", "Send
    email on your behalf", "Manage your calendar events", "Read
@@ -139,8 +143,10 @@ To rotate the OAuth client secret (e.g. quarterly):
 1. In Cloud Console → Credentials → click your OAuth client
    → **Reset secret**.
 2. Copy the new secret.
-3. In DMH-AI admin **Connectors** → **Edit credentials** →
-   paste new secret → **Save**.
+3. In DMH-AI's **External Connectors** page → click the
+   **Google Workspace** card → paste the new secret in **Client
+   Secret** (leave **Client ID** blank to keep the existing one)
+   → **Save**.
 4. Click **Test connection** to confirm.
 
 All connected users keep working — only the client-secret-based
