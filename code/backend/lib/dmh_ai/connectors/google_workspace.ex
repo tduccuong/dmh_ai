@@ -475,6 +475,79 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
           enable_url: "https://console.cloud.google.com/apis/library/sheets.googleapis.com"
         }
       },
+      # ── Planned (vendor surface visible to admins, not yet built) ──
+      %{
+        id:           "docs",
+        display_name: "Docs",
+        description:  "Read + write Google Docs content (read paragraphs, append text).",
+        status:       :planned,
+        scopes:       ["https://www.googleapis.com/auth/documents"],
+        functions:    [],
+        vendor_prereq: %{label: "Google Docs API", enable_url: "https://console.cloud.google.com/apis/library/docs.googleapis.com"}
+      },
+      %{
+        id:           "slides",
+        display_name: "Slides",
+        description:  "Generate + edit Google Slides decks.",
+        status:       :planned,
+        scopes:       ["https://www.googleapis.com/auth/presentations"],
+        functions:    [],
+        vendor_prereq: %{label: "Google Slides API", enable_url: "https://console.cloud.google.com/apis/library/slides.googleapis.com"}
+      },
+      %{
+        id:           "forms",
+        display_name: "Forms",
+        description:  "Read Google Forms responses.",
+        status:       :planned,
+        scopes:       ["https://www.googleapis.com/auth/forms.responses.readonly"],
+        functions:    [],
+        vendor_prereq: %{label: "Google Forms API", enable_url: "https://console.cloud.google.com/apis/library/forms.googleapis.com"}
+      },
+      %{
+        id:           "chat",
+        display_name: "Chat",
+        description:  "Send Google Chat messages to spaces / DMs.",
+        status:       :planned,
+        scopes:       ["https://www.googleapis.com/auth/chat.messages.create"],
+        functions:    [],
+        vendor_prereq: %{label: "Google Chat API", enable_url: "https://console.cloud.google.com/apis/library/chat.googleapis.com"}
+      },
+      %{
+        id:           "youtube",
+        display_name: "YouTube",
+        description:  "Read the user's YouTube channel + video metadata.",
+        status:       :planned,
+        scopes:       ["https://www.googleapis.com/auth/youtube.readonly"],
+        functions:    [],
+        vendor_prereq: %{label: "YouTube Data API", enable_url: "https://console.cloud.google.com/apis/library/youtube.googleapis.com"}
+      },
+      %{
+        id:           "photos",
+        display_name: "Photos",
+        description:  "Search + read the user's Google Photos library.",
+        status:       :planned,
+        scopes:       ["https://www.googleapis.com/auth/photoslibrary.readonly"],
+        functions:    [],
+        vendor_prereq: %{label: "Photos Library API", enable_url: "https://console.cloud.google.com/apis/library/photoslibrary.googleapis.com"}
+      },
+      %{
+        id:           "keep",
+        display_name: "Keep",
+        description:  "Read + create Google Keep notes.",
+        status:       :planned,
+        scopes:       ["https://www.googleapis.com/auth/keep"],
+        functions:    [],
+        vendor_prereq: %{label: "Google Keep API", enable_url: "https://developers.google.com/keep/api"}
+      },
+      %{
+        id:           "classroom",
+        display_name: "Classroom",
+        description:  "Read Google Classroom courses + assignments (education tenants).",
+        status:       :planned,
+        scopes:       ["https://www.googleapis.com/auth/classroom.courses.readonly"],
+        functions:    [],
+        vendor_prereq: %{label: "Google Classroom API", enable_url: "https://console.cloud.google.com/apis/library/classroom.googleapis.com"}
+      },
       %{
         id:           "drive",
         display_name: "Drive",

@@ -427,6 +427,77 @@ defmodule DmhAi.Connectors.M365 do
           label:      "Microsoft Graph (Files.Read covers workbook reads)",
           enable_url: "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade"
         }
+      },
+      # ── Planned (vendor surface visible to admins, not yet built) ──
+      %{
+        id:           "teams_chat",
+        display_name: "Teams Chat",
+        description:  "Send Teams channel messages and read chat history.",
+        status:       :planned,
+        scopes:       ["ChannelMessage.Send", "Chat.ReadWrite"],
+        functions:    [],
+        vendor_prereq: %{label: "Microsoft Graph (Teams chat permissions)",
+                         enable_url: "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade"}
+      },
+      %{
+        id:           "onenote",
+        display_name: "OneNote",
+        description:  "Read + create OneNote pages in the user's notebooks.",
+        status:       :planned,
+        scopes:       ["Notes.ReadWrite"],
+        functions:    [],
+        vendor_prereq: %{label: "Microsoft Graph (Notes.ReadWrite)",
+                         enable_url: "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade"}
+      },
+      %{
+        id:           "planner",
+        display_name: "Planner",
+        description:  "Read + create tasks in Microsoft Planner boards.",
+        status:       :planned,
+        scopes:       ["Tasks.ReadWrite", "Group.Read.All"],
+        functions:    [],
+        vendor_prereq: %{label: "Microsoft Graph (Planner via Tasks + Groups)",
+                         enable_url: "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade"}
+      },
+      %{
+        id:           "sharepoint",
+        display_name: "SharePoint",
+        description:  "Read SharePoint sites, lists, and document libraries.",
+        status:       :planned,
+        scopes:       ["Sites.Read.All"],
+        functions:    [],
+        vendor_prereq: %{label: "Microsoft Graph (Sites.Read.All)",
+                         enable_url: "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade"}
+      },
+      %{
+        id:           "bookings",
+        display_name: "Bookings",
+        description:  "Read + create appointments in Microsoft Bookings.",
+        status:       :planned,
+        scopes:       ["Bookings.ReadWrite.All"],
+        functions:    [],
+        vendor_prereq: %{label: "Microsoft Graph (Bookings)",
+                         enable_url: "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade"}
+      },
+      %{
+        id:           "ms_forms",
+        display_name: "Forms",
+        description:  "Read Microsoft Forms responses.",
+        status:       :planned,
+        scopes:       ["Forms.Read"],
+        functions:    [],
+        vendor_prereq: %{label: "Microsoft Graph (Forms)",
+                         enable_url: "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade"}
+      },
+      %{
+        id:           "powerbi",
+        display_name: "Power BI",
+        description:  "Read Power BI dashboards + report metadata.",
+        status:       :planned,
+        scopes:       ["https://analysis.windows.net/powerbi/api/Dataset.Read.All"],
+        functions:    [],
+        vendor_prereq: %{label: "Power BI API",
+                         enable_url: "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade"}
       }
     ]
   end

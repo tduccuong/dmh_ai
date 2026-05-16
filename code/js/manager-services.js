@@ -148,7 +148,7 @@ const MyServices = {
         var connectBtn = document.createElement('button');
         connectBtn.className = 'settings-add-btn';
         connectBtn.style.background = '#5a4099';
-        connectBtn.textContent = 'Connect ' + svc.display_name;
+        connectBtn.textContent = 'Connect';
         connectBtn.addEventListener('click', function() { self._connect(svc); });
         row.appendChild(connectBtn);
 

@@ -39,6 +39,14 @@ Vendor setup: [`google_workspace/CLOUD_SETUP.md`](google_workspace/CLOUD_SETUP.m
 
 Vendor setup: [`m365/AZURE_SETUP.md`](m365/AZURE_SETUP.md).
 
+### HubSpot — [`hubspot/`](hubspot/)
+
+| # | Runbook | Functions exercised |
+|---|---|---|
+| 01 | [`hubspot/01_sales_assistant.md`](hubspot/01_sales_assistant.md) | `deal.find` (read, free chat) → `activity.log` (write) |
+
+Vendor setup: [`hubspot/HUBSPOT_APP_SETUP.md`](hubspot/HUBSPOT_APP_SETUP.md).
+
 ## Common pre-requisites (apply to every scenario in this folder)
 
 - Running DMH-AI stage instance, rebuilt with the mock vendor MCP

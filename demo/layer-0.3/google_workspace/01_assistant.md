@@ -344,6 +344,9 @@ returns to DMH-AI with "Connected as <email>". Step 3's RPC is
 skipped — the OAuth callback writes the credentials via the
 `connector_oauth` flow path.
 
+Run the live-portal UAT script — six chat prompts (four reads,
+two writes) — in `02_uat_real_portal.md`.
+
 ## Cleanup
 
 To remove the demo credentials (e.g. between customer demos):

@@ -7,16 +7,28 @@ defmodule DmhAi.Connectors.HubSpot do
   @moduledoc """
   HubSpot connector (Universal Region, Case B — vendor MCP).
 
-  Six functions at the SME-relevant slice of HubSpot's CRM API. The
-  vendor hosts an official MCP server at
-  `developers.hubspot.com/mcp` (per the 2025 announcement) — we
-  point `mcp_catalog` at that URL and let `MCPAdapter.Caller`
-  bridge the call through the existing MCP plumbing.
+  Six functions at the SME-relevant slice of HubSpot's CRM API
+  (developers.hubspot.com/docs/api/crm/*) — contacts, deals,
+  activities:
 
-  Vendor-specific error quirks live in `remap_error/1` — notably
-  HubSpot's `409 + body.category="OBJECT_ALREADY_EXISTS"` for
-  duplicate contacts/deals, which we surface as the canonical
-  `:duplicate`.
+    contact.find    [read]   search by query string
+    contact.create  [write]  upsert a contact
+    deal.find       [read]   list deals (filter by stage / owner)
+    deal.create     [write]  open a deal tied to a contact
+    deal.update     [write]  patch a deal (stage transition, amount …)
+    activity.log    [write]  log a Note engagement on a deal
+
+  Three capability groups (contacts / deals / activities) so admins
+  can scope per-org — a CSM org might tick contacts + activities
+  but not deals; a sales-team org might tick all three.
+
+  ## Vendor quirks (`remap_error/1`)
+
+  HubSpot returns a JSON error body with `category` on conflicts;
+  `OBJECT_ALREADY_EXISTS` is the duplicate signal across both the
+  CRM v3 API and the hosted MCP. Map it to canonical `:duplicate`
+  so recipes / tasks branch deterministically rather than parsing
+  the upstream string.
   """
 
   use DmhAi.Connectors.MCPAdapter
@@ -32,37 +44,52 @@ defmodule DmhAi.Connectors.HubSpot do
       connector: "hubspot",
       region:    "universal",
       functions: %{
+        # vendor: POST /crm/v3/objects/contacts/search
+        # docs:   https://developers.hubspot.com/docs/api/crm/contacts
         "contact.find" => %Function{
           permission:    :read,
           callable_from: [:chat, :task],
           args: %{
-            "query" => %{type: :string, required: true}
+            "query" => %{type: :string,  required: true},
+            "limit" => %{type: :integer, required: false}
           },
           returns: %{contacts: :list},
           scopes:  ["crm.objects.contacts.read"]
         },
+
+        # vendor: POST /crm/v3/objects/contacts
         "contact.create" => %Function{
           permission:      :write,
           callable_from:   [:task],
           idempotency_key: :required,
           args: %{
-            "email" => %{type: :string, required: true, format: :email},
-            "name"  => %{type: :string, required: false}
+            "email"      => %{type: :string, required: true, format: :email},
+            "first_name" => %{type: :string, required: false},
+            "last_name"  => %{type: :string, required: false},
+            "company"    => %{type: :string, required: false}
           },
           returns: %{contact_id: :string},
           errors:  [:unauthorised, :duplicate, :rate_limited],
           scopes:  ["crm.objects.contacts.write"]
         },
+
+        # vendor: POST /crm/v3/objects/deals/search
+        # docs:   https://developers.hubspot.com/docs/api/crm/deals
         "deal.find" => %Function{
           permission:    :read,
           callable_from: [:chat, :task],
           args: %{
-            "stage" => %{type: :string, required: false},
-            "owner" => %{type: :string, required: false}
+            "stage" => %{type: :string,  required: false},
+            "owner" => %{type: :string,  required: false},
+            "limit" => %{type: :integer, required: false}
           },
           returns: %{deals: :list},
           scopes:  ["crm.objects.deals.read"]
         },
+
+        # vendor: POST /crm/v3/objects/deals
+        # shim translation: `contact_id` → association on creation;
+        # `amount`, `stage`, `name` → properties payload.
         "deal.create" => %Function{
           permission:      :write,
           callable_from:   [:task],
@@ -77,6 +104,8 @@ defmodule DmhAi.Connectors.HubSpot do
           errors:  [:unauthorised, :duplicate, :rate_limited],
           scopes:  ["crm.objects.deals.write"]
         },
+
+        # vendor: PATCH /crm/v3/objects/deals/{id}
         "deal.update" => %Function{
           permission:      :write,
           callable_from:   [:task],
@@ -89,6 +118,11 @@ defmodule DmhAi.Connectors.HubSpot do
           errors:  [:unauthorised, :not_found, :rate_limited],
           scopes:  ["crm.objects.deals.write"]
         },
+
+        # vendor: POST /crm/v3/objects/notes  (engagement of type Note)
+        # docs:   https://developers.hubspot.com/docs/api/crm/notes
+        # shim translation: `body` → Notes' `hs_note_body`;
+        # `deal_id` → associations[].toObjectId.
         "activity.log" => %Function{
           permission:      :write,
           callable_from:   [:task],
@@ -107,14 +141,217 @@ defmodule DmhAi.Connectors.HubSpot do
   end
 
   @impl true
-  # HubSpot returns a JSON error body with `category` on conflicts;
-  # `OBJECT_ALREADY_EXISTS` is the duplicate signal across both the
-  # CRM v3 API and the hosted MCP. Map it to canonical `:duplicate`
-  # so recipes / tasks branch deterministically rather than parsing
-  # the upstream string.
   def remap_error(%{"category" => "OBJECT_ALREADY_EXISTS"}), do: :duplicate
+
   def remap_error({:http, 409, body}) when is_binary(body) do
     if body =~ "OBJECT_ALREADY_EXISTS", do: :duplicate, else: :passthrough
   end
-  def remap_error(_), do: :passthrough
+
+  def remap_error({:http, 401, _}), do: :unauthorised
+  def remap_error({:http, 403, _}), do: :unauthorised
+  def remap_error({:http, 404, _}), do: :not_found
+  def remap_error({:http, 429, _}), do: :rate_limited
+  def remap_error(_),                do: :passthrough
+
+  # ─── Boot-time seeders + FE/admin descriptors ─────────────────────────
+
+  @doc """
+  OAuth catalog descriptor — vendor facts only. HubSpot OAuth lives
+  at `app.hubspot.com/oauth/authorize` (consent) +
+  `api.hubapi.com/oauth/v1/token` (exchange). Per HubSpot docs the
+  authorization grant returns refresh_token by default — no extra
+  param needed.
+  """
+  def oauth_catalog_descriptor do
+    %{
+      slug:                   "hubspot",
+      display_name:           "HubSpot",
+      host_match:             "app.hubspot.com",
+      authorization_endpoint: "https://app.hubspot.com/oauth/authorize",
+      token_endpoint:         "https://api.hubapi.com/oauth/v1/token",
+      scopes: [
+        "crm.objects.contacts.read",
+        "crm.objects.contacts.write",
+        "crm.objects.deals.read",
+        "crm.objects.deals.write"
+      ],
+      # HubSpot doesn't ship an OIDC userinfo endpoint; the
+      # `/oauth/v1/access-tokens/{token}` introspection returns
+      # `user` + `hub_id`. We don't fetch it at finalize time —
+      # the user's `account` label stays blank and the model
+      # treats the connection as default-account. Multi-portal
+      # support can fan out later.
+      userinfo_endpoint:      nil,
+      userinfo_field_path:    nil,
+      extra_auth_params:      %{}
+    }
+  end
+
+  @doc """
+  MCP catalog descriptor — vendor facts only. Admin sets `mcp_url`
+  via External Connectors (pre-filled to the in-process default).
+  """
+  def mcp_catalog_descriptor do
+    %{
+      slug:        "hubspot",
+      name:        "HubSpot",
+      description: "HubSpot CRM — contacts, deals, and activity logging.",
+      auth_kind:   :oauth,
+      categories:  ["crm", "sales"]
+    }
+  end
+
+  @doc """
+  Mock vendor MCP fixture descriptor. Boots a deterministic mock
+  vendor server when `DMH_AI_ENABLE_VENDOR_MOCKS=true`. Demo
+  scenarios assert on sentinel identifiers (German fake company
+  names + deal IDs) so chain results are mechanically provable.
+  """
+  def mock_descriptor do
+    %{
+      instance:     "demo_hubspot",
+      port_env:     "DMH_AI_HUBSPOT_MOCK_PORT",
+      default_port: 8089,
+      fixtures:     DmhAi.Connectors.Mock.Fixtures.HubSpot.fixtures()
+    }
+  end
+
+  @doc """
+  Where this connector's MCP server lives in *this* deployment.
+  DMH-AI hosts the HubSpot MCP as an in-process REST translator
+  on the shared real-MCP port. FE pre-fills this in the External
+  Connectors form.
+  """
+  @spec default_mcp_url() :: String.t()
+  def default_mcp_url do
+    port = System.get_env("DMH_AI_REAL_MCP_PORT") || "8087"
+    "http://127.0.0.1:#{port}/hubspot"
+  end
+
+  @doc """
+  Handler module that owns the slug → FunctionSpec map consumed by
+  `Connectors.MCPServer`. Exporting this callback signals to
+  `Bootstrap.start_real_mcp_server/0` to mount HubSpot on the
+  shared in-process MCPServer at the slug path.
+  """
+  def mcp_handler_module, do: DmhAi.Connectors.HubSpot.MCPHandler
+
+  @doc """
+  Capability groups admin curates via External Connectors. Three
+  domain groups — contacts vs deals vs activities — so a CSM-only
+  org can expose contacts + activities and skip deals, while a
+  sales-team org enables all three. The three enforcement layers
+  (OAuth scope filter, tool catalog filter, dispatcher gate) all
+  read from `enabled_capabilities`.
+  """
+  @spec capabilities() :: [map()]
+  def capabilities do
+    [
+      %{
+        id:           "contacts",
+        display_name: "Contacts",
+        description:  "Search and create CRM contacts.",
+        scopes:       ["crm.objects.contacts.read", "crm.objects.contacts.write"],
+        functions:    ["contact.find", "contact.create"],
+        vendor_prereq: %{
+          label:      "HubSpot Public App scopes (Contacts)",
+          enable_url: "https://developers.hubspot.com/docs/api/working-with-oauth"
+        }
+      },
+      %{
+        id:           "deals",
+        display_name: "Deals",
+        description:  "Find existing deals and create / update them.",
+        scopes:       ["crm.objects.deals.read", "crm.objects.deals.write"],
+        functions:    ["deal.find", "deal.create", "deal.update"],
+        vendor_prereq: %{
+          label:      "HubSpot Public App scopes (Deals)",
+          enable_url: "https://developers.hubspot.com/docs/api/working-with-oauth"
+        }
+      },
+      %{
+        id:           "activities",
+        display_name: "Activities",
+        description:  "Log notes / activities against deals.",
+        scopes:       ["crm.objects.deals.write"],
+        functions:    ["activity.log"],
+        vendor_prereq: %{
+          label:      "HubSpot Public App scopes (Engagements)",
+          enable_url: "https://developers.hubspot.com/docs/api/working-with-oauth"
+        }
+      },
+      # ── Planned (CRM surface visible to admins, not yet built) ──
+      %{
+        id:           "companies",
+        display_name: "Companies",
+        description:  "Read + manage HubSpot Companies (org records).",
+        status:       :planned,
+        scopes:       ["crm.objects.companies.read", "crm.objects.companies.write"],
+        functions:    [],
+        vendor_prereq: %{label: "HubSpot Public App scopes (Companies)",
+                         enable_url: "https://developers.hubspot.com/docs/api/working-with-oauth"}
+      },
+      %{
+        id:           "tickets",
+        display_name: "Tickets",
+        description:  "Read + manage Service Hub support tickets.",
+        status:       :planned,
+        scopes:       ["tickets"],
+        functions:    [],
+        vendor_prereq: %{label: "HubSpot Public App scopes (Tickets)",
+                         enable_url: "https://developers.hubspot.com/docs/api/working-with-oauth"}
+      },
+      %{
+        id:           "tasks",
+        display_name: "Tasks",
+        description:  "Read + create Task engagements (separate from notes).",
+        status:       :planned,
+        scopes:       ["crm.objects.deals.read", "crm.objects.deals.write"],
+        functions:    [],
+        vendor_prereq: %{label: "HubSpot Public App scopes (Engagements)",
+                         enable_url: "https://developers.hubspot.com/docs/api/working-with-oauth"}
+      },
+      %{
+        id:           "meetings",
+        display_name: "Meetings",
+        description:  "Read meeting engagements and link them to deals.",
+        status:       :planned,
+        scopes:       ["crm.objects.deals.read", "crm.objects.deals.write"],
+        functions:    [],
+        vendor_prereq: %{label: "HubSpot Public App scopes (Meetings)",
+                         enable_url: "https://developers.hubspot.com/docs/api/working-with-oauth"}
+      },
+      %{
+        id:           "quotes",
+        display_name: "Quotes",
+        description:  "Create + send Sales Hub quotes from deals.",
+        status:       :planned,
+        scopes:       ["crm.objects.quotes.read", "crm.objects.quotes.write"],
+        functions:    [],
+        vendor_prereq: %{label: "HubSpot Public App scopes (Quotes)",
+                         enable_url: "https://developers.hubspot.com/docs/api/working-with-oauth"}
+      },
+      %{
+        id:           "marketing_email",
+        display_name: "Marketing Email",
+        description:  "Send campaign / transactional emails via Marketing Hub.",
+        status:       :planned,
+        scopes:       ["content"],
+        functions:    [],
+        vendor_prereq: %{label: "HubSpot Public App scopes (Content / Marketing Email)",
+                         enable_url: "https://developers.hubspot.com/docs/api/working-with-oauth"}
+      },
+      %{
+        id:           "forms",
+        display_name: "Forms",
+        description:  "Read HubSpot form submissions.",
+        status:       :planned,
+        scopes:       ["forms"],
+        functions:    [],
+        vendor_prereq: %{label: "HubSpot Public App scopes (Forms)",
+                         enable_url: "https://developers.hubspot.com/docs/api/working-with-oauth"}
+      }
+    ]
+  end
+
 end

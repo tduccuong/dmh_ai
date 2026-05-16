@@ -39,6 +39,11 @@ defmodule DmhAi.Connectors.Capabilities do
   Capability ids enabled for `(slug, org_id)`. Returns the list of
   ids the admin has ticked, or `:all` when the connector hasn't
   migrated to the capability model (no `capabilities/0` callback).
+
+  Capabilities whose `:status` is `:planned` are silently dropped
+  — they represent vendor surface the admin can see (for roadmap
+  discovery) but can't actually enable. Defence-in-depth against a
+  buggy FE that allows ticking a planned row.
   """
   @spec enabled_capability_ids(String.t(), String.t()) :: [String.t()] | :all
   def enabled_capability_ids(slug, org_id) when is_binary(slug) and is_binary(org_id) do
@@ -46,11 +51,16 @@ defmodule DmhAi.Connectors.Capabilities do
       nil -> :all
       mod ->
         if function_exported?(mod, :capabilities, 0) do
-          all_caps = mod.capabilities() |> Enum.map(& &1.id)
-          row_ids  = read_enabled_capabilities(slug, org_id)
+          available_caps =
+            mod.capabilities()
+            |> Enum.filter(&available?/1)
+            |> Enum.map(& &1.id)
+
+          row_ids = read_enabled_capabilities(slug, org_id)
+
           case row_ids do
-            nil    -> all_caps
-            list   -> Enum.filter(list, &(&1 in all_caps))
+            nil  -> available_caps
+            list -> Enum.filter(list, &(&1 in available_caps))
           end
         else
           :all
@@ -58,20 +68,44 @@ defmodule DmhAi.Connectors.Capabilities do
     end
   end
 
+  # A capability is "available" when its `:status` is `:available`
+  # OR absent (default). `:planned` capabilities exist for the FE
+  # to render in the External Connectors list with a "Coming soon"
+  # badge so admins see the full vendor surface — but they don't
+  # participate in any of the three enforcement layers.
+  defp available?(%{status: :planned}),       do: false
+  defp available?(%{"status" => "planned"}),  do: false
+  defp available?(_),                          do: true
+
   @doc """
-  Union of all OAuth scopes for the enabled capabilities. Used by
-  `MeServices.connect/2` to build the consent URL — a user clicking
-  Connect grants ONLY these scopes regardless of what the connector
-  could in principle request.
+  Union of OAuth scopes for the consent URL: enabled-capability
+  scopes ∪ connector base_scopes. Base scopes are always-on
+  vendor-mandated scopes that aren't tied to any capability — e.g.
+  HubSpot's literal `oauth` scope marking the install as an
+  OAuth flow rather than API-key. Connectors export `base_scopes/0`
+  to add to every consent URL regardless of which capabilities the
+  admin ticked; absent callback means no extras.
   """
   @spec enabled_scopes(String.t(), String.t()) :: [String.t()]
   def enabled_scopes(slug, org_id) do
-    with_capabilities(slug, org_id, fn caps, enabled ->
-      caps
-      |> filter_by_enabled(enabled)
-      |> Enum.flat_map(&(&1.scopes || []))
-      |> Enum.uniq()
-    end)
+    base = base_scopes_for(slug)
+
+    capability_scopes =
+      with_capabilities(slug, org_id, fn caps, enabled ->
+        caps
+        |> filter_by_enabled(enabled)
+        |> Enum.flat_map(&(&1.scopes || []))
+      end)
+
+    (base ++ capability_scopes) |> Enum.uniq()
+  end
+
+  defp base_scopes_for(slug) do
+    case ConnectorRegistry.module_for_slug(slug) do
+      nil -> []
+      mod ->
+        if function_exported?(mod, :base_scopes, 0), do: mod.base_scopes(), else: []
+    end
   end
 
   @doc """
@@ -86,7 +120,7 @@ defmodule DmhAi.Connectors.Capabilities do
       nil -> :all
       mod ->
         if function_exported?(mod, :capabilities, 0) do
-          caps    = mod.capabilities()
+          caps    = mod.capabilities() |> Enum.filter(&available?/1)
           enabled = enabled_capability_ids(slug, org_id)
           caps
           |> filter_by_enabled(enabled)
@@ -118,7 +152,8 @@ defmodule DmhAi.Connectors.Capabilities do
       nil -> []
       mod ->
         if function_exported?(mod, :capabilities, 0) do
-          fun.(mod.capabilities(), enabled_capability_ids(slug, org_id))
+          fun.(mod.capabilities() |> Enum.filter(&available?/1),
+               enabled_capability_ids(slug, org_id))
         else
           []
         end

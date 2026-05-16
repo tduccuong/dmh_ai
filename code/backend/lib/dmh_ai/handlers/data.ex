@@ -1114,10 +1114,18 @@ defmodule DmhAi.Handlers.Data do
         _          -> ""
       end
 
+    # Per RFC 6749 §5.1 the `scope` response parameter is optional —
+    # when the IdP grants exactly what was requested it MAY omit it.
+    # HubSpot does. Without a fallback, every Layer-1 enforcement
+    # call sees `payload.scope=null`, treats granted as the empty set,
+    # and forces an infinite reauth loop. Fall back to the install
+    # URL's scope list (== granted when omitted from the response).
+    granted_scope = tokens.scope || Enum.join(asm[:scopes_supported] || [], " ")
+
     common_payload = %{
       "access_token"       => tokens.access_token,
       "refresh_token"      => tokens.refresh_token,
-      "scope"              => tokens.scope,
+      "scope"              => granted_scope,
       "token_type"         => tokens.token_type,
       "server_url"         => server_url,
       "alias"              => alias_,

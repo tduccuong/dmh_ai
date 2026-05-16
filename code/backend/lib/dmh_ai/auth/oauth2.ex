@@ -539,11 +539,19 @@ defmodule DmhAi.Auth.OAuth2 do
       {:ok, %{status: 200, body: resp_body}} ->
         case normalize_token_response(decode_body(resp_body)) do
           {:ok, tokens} ->
+            # Same RFC 6749 §5.1 fallback as finalize_connector_oauth:
+            # IdPs that grant exactly-requested scopes MAY omit the
+            # response param (HubSpot does). Fall through to the
+            # install URL's scope list so a refresh on a previously-
+            # nil-scope payload still produces a valid granted set.
+            asm_scopes  = Enum.join(asm[:scopes_supported] || [], " ")
+            scope_value = tokens.scope || payload["scope"] || asm_scopes
+
             new_payload = Map.merge(payload, %{
               "access_token"  => tokens.access_token,
               "refresh_token" => tokens.refresh_token || refresh_token,
               "token_type"    => tokens.token_type,
-              "scope"         => tokens.scope || payload["scope"]
+              "scope"         => scope_value
             })
 
             Credentials.save(user_id, target, kind, new_payload,

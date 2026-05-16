@@ -1111,16 +1111,38 @@ body.view-external-connectors #external-connectors-view {
     line-height: 1.5;
     margin-bottom: 14px;
 }
+.ec-cap-filter {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 8px 10px;
+    margin-bottom: 10px;
+    background: #1a0f2a;
+    color: #f4ecf8;
+    border: 1px solid #3a2a55;
+    border-radius: 4px;
+    font-size: 12.5px;
+    font-family: inherit;
+}
+.ec-cap-filter:focus {
+    outline: none;
+    border-color: #7a4fb8;
+}
 .ec-caps-list {
     list-style: none;
     margin: 0;
-    padding: 0;
+    padding: 0 8px 0 0;
+    max-height: 360px;
+    overflow-y: auto;
 }
 .ec-cap {
     border-top: 1px solid #2a1f3e;
     padding: 12px 0;
 }
 .ec-cap:first-child { border-top: none; padding-top: 0; }
+.ec-cap.hidden { display: none; }
+.ec-cap.planned { opacity: 0.55; }
+.ec-cap.planned .ec-cap-row { cursor: not-allowed; }
+.ec-cap.planned .ec-cap-checkbox { cursor: not-allowed; }
 .ec-cap-row {
     display: flex;
     align-items: flex-start;
@@ -1139,6 +1161,20 @@ body.view-external-connectors #external-connectors-view {
     font-size: 13px;
     margin-bottom: 2px;
 }
+.ec-cap-badge {
+    display: inline-block;
+    margin-left: 8px;
+    padding: 1px 7px;
+    border-radius: 3px;
+    font-size: 10.5px;
+    font-weight: 500;
+    vertical-align: middle;
+}
+.ec-cap-badge.planned {
+    color: #b8a8c8;
+    background: rgba(120, 80, 180, 0.15);
+    border: 1px solid rgba(120, 80, 180, 0.32);
+}
 .ec-cap-desc {
     color: #c8b8d0;
     font-size: 12px;
@@ -1154,6 +1190,24 @@ body.view-external-connectors #external-connectors-view {
     text-decoration: underline;
 }
 .ec-cap-prereq a:hover { color: #c8d6ff; }
+.ec-cap-scopes {
+    margin-top: 4px;
+    color: #9988a8;
+    font-size: 11px;
+    line-height: 1.5;
+    word-break: break-all;
+}
+.ec-cap-scopes code {
+    display: inline-block;
+    margin: 1px 4px 1px 0;
+    padding: 1px 6px;
+    background: rgba(120, 80, 180, 0.10);
+    border: 1px solid rgba(120, 80, 180, 0.25);
+    border-radius: 3px;
+    color: #b8a8c8;
+    font-size: 10.5px;
+    font-family: 'SF Mono', Menlo, monospace;
+}
 
 /* Verbs are read-only labels — render them inline as wrapping
  * tags rather than a vertical list, since the user doesn't

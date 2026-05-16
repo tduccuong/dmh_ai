@@ -157,6 +157,7 @@ const ExternalConnectors = {
     },
 
     _capIsEnabled: function(cap, enabledSet) {
+        if (cap.status === 'planned') return false;   // planned never participates in enforcement
         if (enabledSet === null) return true;   // not-yet-curated → all enabled
         return enabledSet.has(cap.id);
     },
@@ -195,6 +196,14 @@ const ExternalConnectors = {
         // policy enforcement layers (Connect scope filter, tool
         // catalog filter, dispatcher gate) read from the saved
         // checkbox state.
+        //
+        // Planned capabilities are rendered greyed-out with a
+        // "Coming soon" badge and a disabled checkbox — they exist
+        // so the admin can see the full vendor surface (for roadmap
+        // discovery) but can't be enabled until the function
+        // implementations land. The filter input above the list lets
+        // the admin narrow to "contacts" or any substring of the
+        // capability id / display name / description.
         var self = this;
         var enabledSet = this._enabledCapSet(entry);
         var capabilitiesHtml = '';
@@ -205,9 +214,12 @@ const ExternalConnectors = {
                 '<div class="ec-caps-help">Tick what your org wants this connector to do for users. ' +
                 'Untick to remove the capability from the model\'s catalog and from new users\' OAuth consent screens. ' +
                 'Existing users keep working with what they already have; admin can force re-auth separately when needed.</div>' +
+                '<input id="ec-cap-filter" class="ec-cap-filter" type="text" placeholder="Filter capabilities — e.g. contacts">' +
                 '<ul class="ec-caps-list">' +
                 entry.capabilities.map(function(cap) {
+                    var planned = cap.status === 'planned';
                     var checked = self._capIsEnabled(cap, enabledSet) ? ' checked' : '';
+                    var disabled = planned ? ' disabled' : '';
                     var prereq  = cap.vendor_prereq;
                     var prereqHtml = '';
                     if (prereq && prereq.enable_url) {
@@ -216,15 +228,28 @@ const ExternalConnectors = {
                             '<a href="' + prereq.enable_url + '" target="_blank" rel="noopener noreferrer">' +
                             escapeHtml(prereq.label || 'API') + ' enabled in vendor console</a></div>';
                     }
+                    var scopesHtml = '';
+                    if (cap.scopes && cap.scopes.length) {
+                        scopesHtml =
+                            '<div class="ec-cap-scopes">Scopes: <code>' +
+                            cap.scopes.map(escapeHtml).join('</code> <code>') +
+                            '</code></div>';
+                    }
+                    var plannedBadge = planned
+                        ? '<span class="ec-cap-badge planned">Coming soon</span>'
+                        : '';
+                    var search = (cap.id + ' ' + (cap.display_name || '') + ' ' + (cap.description || '')).toLowerCase();
                     return (
-                        '<li class="ec-cap">' +
+                        '<li class="ec-cap' + (planned ? ' planned' : '') +
+                        '" data-cap-search="' + escapeHtml(search) + '">' +
                             '<label class="ec-cap-row">' +
                                 '<input type="checkbox" class="ec-cap-checkbox" ' +
-                                'data-cap-id="' + escapeHtml(cap.id) + '"' + checked + '>' +
+                                'data-cap-id="' + escapeHtml(cap.id) + '"' + checked + disabled + '>' +
                                 '<div class="ec-cap-text">' +
-                                    '<div class="ec-cap-name">' + escapeHtml(cap.display_name || cap.id) + '</div>' +
+                                    '<div class="ec-cap-name">' + escapeHtml(cap.display_name || cap.id) + plannedBadge + '</div>' +
                                     '<div class="ec-cap-desc">' + escapeHtml(cap.description || '') + '</div>' +
                                     prereqHtml +
+                                    scopesHtml +
                                 '</div>' +
                             '</label>' +
                         '</li>'
@@ -333,6 +358,21 @@ const ExternalConnectors = {
                 self._copyToClipboard(input.value, btn);
             });
         });
+
+        // Capability filter — typed substring narrows the list to
+        // rows whose pre-joined id+display_name+description contains
+        // the query (lowercased). Empty query restores everything.
+        var filter = document.getElementById('ec-cap-filter');
+        if (filter) {
+            filter.addEventListener('input', function() {
+                var q = filter.value.trim().toLowerCase();
+                var rows = document.querySelectorAll('.ec-caps-list .ec-cap');
+                rows.forEach(function(row) {
+                    var hay = row.getAttribute('data-cap-search') || '';
+                    row.classList.toggle('hidden', q !== '' && hay.indexOf(q) === -1);
+                });
+            });
+        }
     },
 
     _copyToClipboard: function(text, btn) {
