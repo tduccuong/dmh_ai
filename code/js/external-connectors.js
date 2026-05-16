@@ -51,10 +51,12 @@ const ExternalConnectors = {
             var res = await apiFetch('/admin/connectors');
             if (res && res.ok) {
                 var d = await res.json();
-                this._connectors = Array.isArray(d.connectors) ? d.connectors : [];
+                this._connectors        = Array.isArray(d.connectors) ? d.connectors : [];
+                this._oauthRedirectUri  = d.oauth_redirect_uri || '';
             }
         } catch (e) {
-            this._connectors = [];
+            this._connectors       = [];
+            this._oauthRedirectUri = '';
         }
     },
 
@@ -266,6 +268,16 @@ const ExternalConnectors = {
                 '</div>' +
 
                 '<div class="ec-form-group">' +
+                    '<label class="ec-form-label">OAuth Redirect URI</label>' +
+                    '<div class="ec-copyfield">' +
+                        '<input id="ec-redirect-uri" class="ec-form-input ec-form-input-readonly" type="text" readonly value="' +
+                        escapeHtml(this._oauthRedirectUri || '') + '">' +
+                        '<button type="button" class="ec-copy-btn" data-target="ec-redirect-uri" title="Copy to clipboard">Copy</button>' +
+                    '</div>' +
+                    '<div class="ec-form-help">Paste this into your OAuth provider\'s authorized redirect URIs list (Google Cloud Console, Microsoft Entra app registration, etc.). The same URI handles every connector — its scheme + host comes from the <code>oauth_redirect_base_url</code> setting (default <code>http://localhost:8080</code>).</div>' +
+                '</div>' +
+
+                '<div class="ec-form-group">' +
                     '<label class="ec-form-label" for="ec-input-mcp-url">MCP URL</label>' +
                     '<input id="ec-input-mcp-url" class="ec-form-input" type="text" value="' +
                     escapeHtml(entry.mcp_url || entry.default_mcp_url || '') + '" placeholder="' +
@@ -309,6 +321,49 @@ const ExternalConnectors = {
 
         if (saveBtn) saveBtn.addEventListener('click', function() { self._save(entry); });
         if (testBtn) testBtn.addEventListener('click', function() { self._test(entry); });
+
+        // Copy-to-clipboard for the OAuth redirect URI. One generic
+        // binder so future read-only copy fields can reuse the same
+        // `.ec-copy-btn` + `data-target=<input-id>` shape.
+        var copyBtns = document.querySelectorAll('.ec-copy-btn');
+        copyBtns.forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                var input = document.getElementById(btn.getAttribute('data-target'));
+                if (!input) return;
+                self._copyToClipboard(input.value, btn);
+            });
+        });
+    },
+
+    _copyToClipboard: function(text, btn) {
+        var original = btn.textContent;
+        var done = function(ok) {
+            btn.textContent = ok ? '✓ Copied' : '✗ Failed';
+            setTimeout(function() { btn.textContent = original; }, 1500);
+        };
+
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(
+                function() { done(true); },
+                function() { done(false); }
+            );
+        } else {
+            // Pre-Permissions-API fallback. Select + execCommand
+            // covers older Safari + locked-down browsers.
+            try {
+                var ta = document.createElement('textarea');
+                ta.value = text;
+                ta.style.position = 'fixed';
+                ta.style.opacity  = '0';
+                document.body.appendChild(ta);
+                ta.select();
+                var ok = document.execCommand('copy');
+                document.body.removeChild(ta);
+                done(ok);
+            } catch (e) {
+                done(false);
+            }
+        }
     },
 
     _save: async function(entry) {

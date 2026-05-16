@@ -52,8 +52,22 @@ defmodule DmhAi.Handlers.AdminConnectors do
     if user.role != "admin" do
       Proxy.json(conn, 403, %{error: "Forbidden"})
     else
-      Proxy.json(conn, 200, %{connectors: build_list(user)})
+      Proxy.json(conn, 200, %{
+        connectors:        build_list(user),
+        oauth_redirect_uri: oauth_redirect_uri()
+      })
     end
+  end
+
+  # Computed at request time so the admin sees the URI matching the
+  # current deployment — defaults to `http://localhost:8080/oauth/callback`,
+  # operator overrides via the `oauth_redirect_base_url` setting when
+  # behind a real DNS / TLS frontend. Same string for every connector
+  # (one OAuth callback handles all of them).
+  defp oauth_redirect_uri do
+    DmhAi.Agent.AgentSettings.oauth_redirect_base_url()
+    |> String.trim_trailing("/")
+    |> Kernel.<>("/oauth/callback")
   end
 
   def test(conn, user, slug) do

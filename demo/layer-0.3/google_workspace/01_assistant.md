@@ -47,7 +47,7 @@ write-requires-task, idempotency, credentials).
   - **Real-Google path (production UAT)** — your own Google
     Cloud OAuth client_id / secret + the official Google
     Workspace MCP endpoint URL, all pasted into the External
-    Connectors admin page. See `GOOGLE_CLOUD_SETUP.md` for the
+    Connectors admin page. See `CLOUD_SETUP.md` for the
     Cloud Console walk-through.
 
 ## Steps
@@ -334,7 +334,7 @@ Then on the running stage:
    URL is already pre-filled with the in-process default
    (`http://127.0.0.1:8087/google_workspace`) — leave it as-is
    for production. → **Save** → **Test connection**.
-2. See `GOOGLE_CLOUD_SETUP.md` for the exact Google Cloud
+2. See `CLOUD_SETUP.md` for the exact Google Cloud
    Console steps + redirect URI to register.
 
 Then the employee walks through the **real OAuth flow** click-

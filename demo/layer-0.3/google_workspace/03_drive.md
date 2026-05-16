@@ -24,7 +24,7 @@ the same outcome is one chat message.
 
 ## Pre-requisites
 
-- All of `01_gw_assistant.md`'s pre-requisites already
+- All of `01_assistant.md`'s pre-requisites already
   satisfied. This runbook re-uses that seed; **complete demo 01
   first** if you haven't.
 - The same test user (`test@dmhai.local`).

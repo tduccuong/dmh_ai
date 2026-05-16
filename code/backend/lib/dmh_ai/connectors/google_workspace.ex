@@ -177,6 +177,88 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
           returns: %{file_id: :string},
           errors:  [:unauthorised, :rate_limited],
           scopes:  ["https://www.googleapis.com/auth/drive.file"]
+        },
+
+        # vendor: POST https://meet.googleapis.com/v2/spaces
+        # docs:   https://developers.google.com/meet/api/reference/rest/v2/spaces/create
+        # shim translation: empty body POST creates a fresh Meet
+        # space; response carries `name` (space resource id) +
+        # `meetingUri` (the join link a user shares with attendees)
+        # + `meetingCode` (the dial-in code). No request args
+        # today — the Meet "space" is just a reusable room. For
+        # SME use cases ("give me a Meet link for now") this is
+        # enough; deferred: setting `accessType` / co-host config
+        # via Spaces.patch.
+        "meet.create_meeting" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args:    %{},
+          returns: %{join_url: :string, meeting_code: :string},
+          errors:  [:unauthorised, :rate_limited],
+          scopes:  ["https://www.googleapis.com/auth/meetings.space.created"]
+        },
+
+        # vendor: GET  https://tasks.googleapis.com/tasks/v1/lists/@default/tasks
+        # docs:   https://developers.google.com/tasks/reference/rest/v1/tasks/list
+        "tasks.list" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "limit" => %{type: :integer, required: false}
+          },
+          returns: %{tasks: :list},
+          scopes:  ["https://www.googleapis.com/auth/tasks.readonly"]
+        },
+
+        # vendor: POST https://tasks.googleapis.com/tasks/v1/lists/@default/tasks
+        # docs:   https://developers.google.com/tasks/reference/rest/v1/tasks/insert
+        # shim translation: `title` + optional `notes` + optional
+        # `due` (RFC-3339 timestamp) → body `{title, notes, due}`.
+        "tasks.create" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "title" => %{type: :string, required: true},
+            "notes" => %{type: :string, required: false},
+            "due"   => %{type: :string, required: false}
+          },
+          returns: %{task_id: :string},
+          errors:  [:unauthorised, :rate_limited],
+          scopes:  ["https://www.googleapis.com/auth/tasks"]
+        },
+
+        # vendor: GET https://people.googleapis.com/v1/people:searchContacts
+        # docs:   https://developers.google.com/people/api/rest/v1/people/searchContacts
+        # shim translation: `query` → API arg `query`; readMask
+        # locked to `names,emailAddresses` since that's what the
+        # model needs to resolve a name → email.
+        "contacts.search" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "query" => %{type: :string, required: true},
+            "limit" => %{type: :integer, required: false}
+          },
+          returns: %{contacts: :list},
+          scopes:  ["https://www.googleapis.com/auth/contacts.readonly"]
+        },
+
+        # vendor: GET https://sheets.googleapis.com/v4/spreadsheets/{id}/values/{range}
+        # docs:   https://developers.google.com/sheets/api/reference/rest/v4/spreadsheets.values/get
+        # shim translation: `spreadsheet_id` + `range` (A1
+        # notation, e.g. "Sheet1!A1:C50") → response carries
+        # `values: [[...row...], ...]` which the model can quote.
+        "sheets.read_range" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "spreadsheet_id" => %{type: :string, required: true},
+            "range"          => %{type: :string, required: true}
+          },
+          returns: %{values: :list},
+          scopes:  ["https://www.googleapis.com/auth/spreadsheets.readonly"]
         }
       }
     }
@@ -338,6 +420,59 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
         vendor_prereq: %{
           label:      "Calendar API",
           enable_url: "https://console.cloud.google.com/apis/library/calendar-json.googleapis.com"
+        }
+      },
+      %{
+        id:           "meet",
+        display_name: "Meet",
+        description:  "Create a Google Meet meeting on demand; the agent shares the join link.",
+        scopes: [
+          "https://www.googleapis.com/auth/meetings.space.created"
+        ],
+        functions: ["meet.create_meeting"],
+        vendor_prereq: %{
+          label:      "Google Meet REST API",
+          enable_url: "https://console.cloud.google.com/apis/library/meet.googleapis.com"
+        }
+      },
+      %{
+        id:           "tasks",
+        display_name: "Tasks",
+        description:  "List the user's Google Tasks and add new ones.",
+        scopes: [
+          "https://www.googleapis.com/auth/tasks.readonly",
+          "https://www.googleapis.com/auth/tasks"
+        ],
+        functions: ["tasks.list", "tasks.create"],
+        vendor_prereq: %{
+          label:      "Google Tasks API",
+          enable_url: "https://console.cloud.google.com/apis/library/tasks.googleapis.com"
+        }
+      },
+      %{
+        id:           "contacts",
+        display_name: "Contacts",
+        description:  "Search the user's Google Contacts to resolve names to email addresses.",
+        scopes: [
+          "https://www.googleapis.com/auth/contacts.readonly"
+        ],
+        functions: ["contacts.search"],
+        vendor_prereq: %{
+          label:      "People API",
+          enable_url: "https://console.cloud.google.com/apis/library/people.googleapis.com"
+        }
+      },
+      %{
+        id:           "sheets",
+        display_name: "Sheets",
+        description:  "Read cell ranges from the user's Google Sheets (read-only).",
+        scopes: [
+          "https://www.googleapis.com/auth/spreadsheets.readonly"
+        ],
+        functions: ["sheets.read_range"],
+        vendor_prereq: %{
+          label:      "Google Sheets API",
+          enable_url: "https://console.cloud.google.com/apis/library/sheets.googleapis.com"
         }
       },
       %{

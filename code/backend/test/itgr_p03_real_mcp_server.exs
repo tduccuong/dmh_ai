@@ -85,21 +85,26 @@ defmodule DmhAi.P03RealMCPServerTest do
       assert %{"jsonrpc" => "2.0", "id" => 1, "result" => result} = resp.body
       assert result["protocolVersion"] == "2024-11-05"
       assert result["serverInfo"]["name"] == "dmh-ai-mcp-google_workspace"
-      assert result["serverInfo"]["function_count"] == 6
+      assert result["serverInfo"]["function_count"] == 11
     end
 
-    test "tools/list returns 6 GW functions by name", %{port: port} do
+    test "tools/list returns every GW function by name", %{port: port} do
       resp = post_jsonrpc(port, %{"jsonrpc" => "2.0", "id" => 2, "method" => "tools/list"})
       tools = resp.body["result"]["tools"]
       names = Enum.map(tools, & &1["name"]) |> Enum.sort()
 
       assert names == [
+               "contacts.search",
                "drive.list",
                "drive.upload",
                "gcal.create_event",
                "gcal.find_free_slots",
                "gmail.search",
-               "gmail.send"
+               "gmail.send",
+               "meet.create_meeting",
+               "sheets.read_range",
+               "tasks.create",
+               "tasks.list"
              ]
     end
 

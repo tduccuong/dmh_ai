@@ -14,16 +14,30 @@ connector — slice-3's 11 vendors (Shopify / Salesforce / Slack /
 etc., tracked as `#359`-`#369`) inherit the proven path with
 only per-vendor manifest + fixture work.
 
-## Scenarios
+## Connectors
 
-Listed in coverage order — smallest function surface first, each
-subsequent scenario adds a new function shape or composition.
+One subfolder per connector vertical. Each folder carries that
+connector's runbooks (numbered per-connector) + the vendor-side
+setup walkthrough (`CLOUD_SETUP.md` / `AZURE_SETUP.md` / …) the
+admin needs once before any user can connect.
 
-| # | File | Functions exercised | What it adds over the previous |
-|---|---|---|---|
-| 01 | [`01_gw_assistant.md`](01_gw_assistant.md) | `gmail.search` (read, free chat) | Real Caller → mock vendor MCP → response back. First proof I1/I2/I3 closed on stage. |
-| 02 | [`02_gw_scheduling.md`](02_gw_scheduling.md) | `gcal.find_free_slots` (read) + `gcal.create_event` (write) | Composite read→task→write in one chain. Exercises the write-requires-task gate and idempotency-key injection. |
-| 03 | [`03_gw_drive.md`](03_gw_drive.md) | `drive.upload` (write) | Write-only path against a different vendor surface. Confirms the connector framework is function-class-agnostic (Gmail vs Calendar vs Drive). |
+### Google Workspace — [`google_workspace/`](google_workspace/)
+
+| # | Runbook | Functions exercised |
+|---|---|---|
+| 01 | [`google_workspace/01_assistant.md`](google_workspace/01_assistant.md) | `gmail.search` (read, free chat) |
+| 02 | [`google_workspace/02_scheduling.md`](google_workspace/02_scheduling.md) | `gcal.find_free_slots` (read) + `gcal.create_event` (write) |
+| 03 | [`google_workspace/03_drive.md`](google_workspace/03_drive.md) | `drive.upload` (write) |
+
+Vendor setup: [`google_workspace/CLOUD_SETUP.md`](google_workspace/CLOUD_SETUP.md).
+
+### Microsoft 365 — [`m365/`](m365/)
+
+| # | Runbook | Functions exercised |
+|---|---|---|
+| 01 | [`m365/01_assistant.md`](m365/01_assistant.md) | `mail.search` (read, free chat) |
+
+Vendor setup: [`m365/AZURE_SETUP.md`](m365/AZURE_SETUP.md).
 
 ## Common pre-requisites (apply to every scenario in this folder)
 
@@ -55,7 +69,7 @@ subsequent scenario adds a new function shape or composition.
 ## Production / real-Google path
 
 Each scenario has a "Switching to real Google" appendix (today
-only in `01_gw_assistant.md`'s "Switching to real Google"
+only in `google_workspace/01_assistant.md`'s "Switching to real Google"
 section). The mock is for deterministic demos; for production
 UAT the operator sets:
 
@@ -64,7 +78,7 @@ UAT the operator sets:
   no flag needed.
 - Admin opens **External Connectors** (`/connectors`) → Google
   Workspace card → pastes `client_id` + `client_secret` from
-  Google Cloud Console (see `GOOGLE_CLOUD_SETUP.md`) → **Save**
+  Google Cloud Console (see `google_workspace/CLOUD_SETUP.md`) → **Save**
   → **Test connection**. MCP URL stays at the pre-filled
   in-process default.
 

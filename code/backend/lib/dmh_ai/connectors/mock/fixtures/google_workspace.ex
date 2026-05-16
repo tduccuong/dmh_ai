@@ -33,7 +33,12 @@ defmodule DmhAi.Connectors.Mock.Fixtures.GoogleWorkspace do
       "gcal.find_free_slots" => &gcal_find_free_slots/1,
       "gcal.create_event"    => &gcal_create_event/1,
       "drive.list"   => &drive_list/1,
-      "drive.upload" => &drive_upload/1
+      "drive.upload" => &drive_upload/1,
+      "meet.create_meeting" => &meet_create_meeting/1,
+      "tasks.list"   => &tasks_list/1,
+      "tasks.create" => &tasks_create/1,
+      "contacts.search" => &contacts_search/1,
+      "sheets.read_range" => &sheets_read_range/1
     }
   end
 
@@ -52,7 +57,14 @@ defmodule DmhAi.Connectors.Mock.Fixtures.GoogleWorkspace do
       free_slot:       "2026-05-21T14:30:00+02:00",
       event_id:        "evt_mock_dmh_demo_001",
       drive_file:      "spec_dmh_demo_handover_2026q2.md",
-      drive_folder_id: "drv_folder_mock_handovers"
+      drive_folder_id: "drv_folder_mock_handovers",
+      meet_join_url:   "https://meet.google.com/dmh-demo-mock",
+      meet_code:       "dmh-demo-mock",
+      task_title:      "Q2 Tax filing — collect receipts",
+      task_id:         "task_gw_mock_demo_q2_001",
+      contact_name:    "Petra Kontaktbeispiel",
+      contact_email:   "petra.kontaktbeispiel@dmh-demo.example",
+      sheet_value:     "DMH-DEMO-CELL-SENTINEL"
     }
   end
 
@@ -142,6 +154,62 @@ defmodule DmhAi.Connectors.Mock.Fixtures.GoogleWorkspace do
       "file_id" => "drv_mock_uploaded_" <> Integer.to_string(:erlang.unique_integer([:positive])),
       "name"    => Map.get(args, "name"),
       "mime_type" => Map.get(args, "mime_type") || "application/octet-stream"
+    }
+  end
+
+  defp meet_create_meeting(_args) do
+    %{meet_join_url: url, meet_code: code} = sentinels()
+
+    %{
+      "join_url"     => url,
+      "meeting_code" => code,
+      "space_name"   => "spaces/" <> code
+    }
+  end
+
+  defp tasks_list(_args) do
+    %{task_title: title, task_id: id} = sentinels()
+
+    %{
+      "tasks" => [
+        %{
+          "id"     => id,
+          "title"  => title,
+          "notes"  => "Liste mit allen offenen Belegen für die Q2-Steuererklärung.",
+          "due"    => "2026-06-30T00:00:00Z",
+          "status" => "needsAction"
+        }
+      ]
+    }
+  end
+
+  defp tasks_create(args) do
+    %{
+      "task_id" => "task_gw_mock_created_" <> Integer.to_string(:erlang.unique_integer([:positive])),
+      "title"   => Map.get(args, "title")
+    }
+  end
+
+  defp contacts_search(_args) do
+    %{contact_name: name, contact_email: email} = sentinels()
+
+    %{
+      "contacts" => [
+        %{"name" => name, "email" => email}
+      ]
+    }
+  end
+
+  defp sheets_read_range(args) do
+    %{sheet_value: sentinel} = sentinels()
+
+    %{
+      "spreadsheet_id" => Map.get(args, "spreadsheet_id"),
+      "range"          => Map.get(args, "range"),
+      "values"         => [
+        ["Header A", "Header B"],
+        ["Row 1 A", sentinel]
+      ]
     }
   end
 

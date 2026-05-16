@@ -29,7 +29,7 @@ context-switching.
 
 ## Pre-requisites
 
-- All of demo `01_gw_assistant.md`'s pre-requisites already
+- All of demo `01_assistant.md`'s pre-requisites already
   satisfied (vendor mocks running, oauth_catalog + mcp_catalog
   seeded, the test user's `authorized_services` + credentials
   in place). This runbook re-uses that seed; **complete demo 01

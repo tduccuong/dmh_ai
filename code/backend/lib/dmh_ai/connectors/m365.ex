@@ -6,21 +6,41 @@
 defmodule DmhAi.Connectors.M365 do
   @moduledoc """
   Microsoft 365 connector (Universal Region, Case B — Microsoft
-  Graph API).
+  Graph API via the in-process MCPServer REST translator).
 
   Six functions at the SME-relevant Graph slice:
 
-    mail.search           [read]   list / search messages
-    mail.send             [write]  send a message
-    cal.find_free_slots   [read]   availability lookup
-    cal.create_event      [write]  create a calendar event
-    files.list            [read]   list OneDrive items
-    files.upload          [write]  upload an item
+    mail.search           [read]   list / search Outlook messages
+    mail.send             [write]  send an Outlook message
+    cal.find_free_slots   [read]   availability lookup (getSchedule)
+    cal.create_event      [write]  create an Outlook event
+    files.list            [read]   list OneDrive items (root or path)
+    files.upload          [write]  upload a OneDrive file (raw PUT)
 
-  Vendor quirks captured in `remap_error/1`:
-    * 429 `RateLimited` with `Retry-After` header → `:rate_limited`.
-    * 404 `ItemNotFound` / `Request_ResourceNotFound` → `:not_found`.
-    * 401 `InvalidAuthenticationToken` → `:unauthorised`.
+  All endpoints hit `https://graph.microsoft.com/v1.0/me/...` with
+  the user's Microsoft Identity Platform bearer. Three capability
+  groups (mail, calendar, files) so admins can scope per-org via
+  External Connectors; user OAuth consent screen only requests the
+  scopes for ticked capabilities (Layer 1), the tool catalog hides
+  unticked-capability functions (Layer 2), the dispatcher refuses
+  them at call time (Layer 3).
+
+  ## Vendor quirks (`remap_error/1`)
+
+  Microsoft Graph wraps errors as
+  `{"error": {"code": "<CamelCase>", "message": "..."}}`. The
+  high-frequency cases an SME hits:
+
+    * `RateLimited` (often with `Retry-After`) → `:rate_limited`.
+    * `ItemNotFound` / `Request_ResourceNotFound` → `:not_found`.
+    * `InvalidAuthenticationToken` → `:unauthorised`.
+    * `AuthorizationFailed` → `:unauthorised`.
+    * `NameAlreadyExists` (folder/file conflict) → `:duplicate`.
+
+  Anything not in the table falls through to `:passthrough` so the
+  generic `ErrorMap.classify/2` handles the long tail (incl. 403
+  "API not enabled" / consent issues which become `:api_disabled`
+  with actionable hint URLs).
   """
 
   use DmhAi.Connectors.MCPAdapter
@@ -28,7 +48,7 @@ defmodule DmhAi.Connectors.M365 do
   alias DmhAi.Tools.Manifest.Function
 
   @impl true
-  def mcp_slug, do: "microsoft"
+  def mcp_slug, do: "m365"
 
   @impl true
   def manifest do
@@ -36,6 +56,7 @@ defmodule DmhAi.Connectors.M365 do
       connector: "m365",
       region:    "universal",
       functions: %{
+        # vendor: GET /v1.0/me/messages  (KQL $search, $top, $select)
         "mail.search" => %Function{
           permission:    :read,
           callable_from: [:chat, :task],
@@ -46,6 +67,8 @@ defmodule DmhAi.Connectors.M365 do
           returns: %{messages: :list},
           scopes:  ["Mail.Read"]
         },
+
+        # vendor: POST /v1.0/me/sendMail   (immediate send, no draft)
         "mail.send" => %Function{
           permission:      :write,
           callable_from:   [:task],
@@ -55,10 +78,14 @@ defmodule DmhAi.Connectors.M365 do
             "subject" => %{type: :string, required: true},
             "body"    => %{type: :string, required: true}
           },
-          returns: %{message_id: :string},
+          returns: %{accepted: :boolean},
           errors:  [:unauthorised, :rate_limited, :upstream_5xx],
           scopes:  ["Mail.Send"]
         },
+
+        # vendor: POST /v1.0/me/calendar/getSchedule  (BUSY intervals)
+        # shim computes free slots client-side (same shape as Google
+        # Calendar freebusy + slot computation).
         "cal.find_free_slots" => %Function{
           permission:    :read,
           callable_from: [:chat, :task],
@@ -71,6 +98,8 @@ defmodule DmhAi.Connectors.M365 do
           returns: %{slots: :list},
           scopes:  ["Calendars.Read"]
         },
+
+        # vendor: POST /v1.0/me/events     (immediate create)
         "cal.create_event" => %Function{
           permission:      :write,
           callable_from:   [:task],
@@ -81,39 +110,129 @@ defmodule DmhAi.Connectors.M365 do
             "end"       => %{type: :string, required: true},
             "attendees" => %{type: :list,   required: false}
           },
-          returns: %{event_id: :string},
+          returns: %{event_id: :string, web_link: :string},
           errors:  [:unauthorised, :rate_limited],
           scopes:  ["Calendars.ReadWrite"]
         },
+
+        # vendor: GET /v1.0/me/drive/root/children
+        # vendor: GET /v1.0/me/drive/root:/<path>:/children
         "files.list" => %Function{
           permission:    :read,
           callable_from: [:chat, :task],
           args: %{
-            "path" => %{type: :string, required: false}
+            "path"  => %{type: :string,  required: false},
+            "limit" => %{type: :integer, required: false}
           },
           returns: %{items: :list},
-          scopes:  ["Files.Read.All"]
+          scopes:  ["Files.Read"]
         },
+
+        # vendor: PUT /v1.0/me/drive/root:/<filename>:/content
+        # (raw upload, <4 MB; resumable session needed for larger files,
+        # deferred — same content-size constraint as GW's drive.upload.)
         "files.upload" => %Function{
           permission:      :write,
           callable_from:   [:task],
           idempotency_key: :required,
           args: %{
-            "path"    => %{type: :string, required: true},
+            "name"    => %{type: :string, required: true},
             "content" => %{type: :string, required: true}
           },
-          returns: %{file_id: :string},
+          returns: %{file_id: :string, web_url: :string},
           errors:  [:unauthorised, :rate_limited, :duplicate],
-          scopes:  ["Files.ReadWrite.All"]
+          scopes:  ["Files.ReadWrite"]
+        },
+
+        # vendor: POST /v1.0/me/onlineMeetings
+        # docs:   https://learn.microsoft.com/graph/api/application-post-onlinemeetings
+        # shim translation: minimal body — `startDateTime` /
+        # `endDateTime` (we default to now + 1h if absent) and
+        # `subject`. Response carries `joinWebUrl` which is what
+        # the model relays to the user.
+        "teams.create_meeting" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "subject" => %{type: :string, required: false},
+            "start"   => %{type: :string, required: false},
+            "end"     => %{type: :string, required: false}
+          },
+          returns: %{join_url: :string, meeting_id: :string},
+          errors:  [:unauthorised, :rate_limited],
+          scopes:  ["OnlineMeetings.ReadWrite"]
+        },
+
+        # vendor: GET  /v1.0/me/todo/lists/{list-id}/tasks
+        # docs:   https://learn.microsoft.com/graph/api/todotasklist-list-tasks
+        # shim translation: defaults to the user's "Tasks" list
+        # (the default list). For now we ignore non-default lists;
+        # multi-list support is a future polish.
+        "todo.list" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "limit" => %{type: :integer, required: false}
+          },
+          returns: %{tasks: :list},
+          scopes:  ["Tasks.Read"]
+        },
+
+        # vendor: POST /v1.0/me/todo/lists/{list-id}/tasks
+        # docs:   https://learn.microsoft.com/graph/api/todotasklist-post-tasks
+        "todo.create" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "title"     => %{type: :string, required: true},
+            "body"      => %{type: :string, required: false},
+            "due"       => %{type: :string, required: false}
+          },
+          returns: %{task_id: :string},
+          errors:  [:unauthorised, :rate_limited],
+          scopes:  ["Tasks.ReadWrite"]
+        },
+
+        # vendor: GET /v1.0/me/contacts?$search="..."
+        # docs:   https://learn.microsoft.com/graph/api/user-list-contacts
+        # shim translation: $search (KQL) → response normalised to
+        # `{name, email}` shape so the model gets the same record
+        # type as GW's contacts.search.
+        "contacts.search" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "query" => %{type: :string, required: true},
+            "limit" => %{type: :integer, required: false}
+          },
+          returns: %{contacts: :list},
+          scopes:  ["Contacts.Read"]
+        },
+
+        # vendor: GET /v1.0/me/drive/items/{item-id}/workbook/worksheets/{sheet-name}/range(address='A1:C50')
+        # docs:   https://learn.microsoft.com/graph/api/range-get
+        # shim translation: `workbook_id` (Drive item id of the
+        # xlsx file) + `worksheet` (sheet name or id) + `range`
+        # (A1 notation) → response `values: [[...]]`. Read-only;
+        # uses Files.Read scope.
+        "excel.read_range" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "workbook_id" => %{type: :string, required: true},
+            "worksheet"   => %{type: :string, required: true},
+            "range"       => %{type: :string, required: true}
+          },
+          returns: %{values: :list},
+          scopes:  ["Files.Read"]
         }
       }
     }
   end
 
   @impl true
-  # Microsoft Graph wraps errors as
-  #   {"error": {"code": "<CamelCase>", "message": "..."}}
-  # The set below covers the high-frequency cases an SME hits.
   def remap_error(%{"error" => %{"code" => code}}) do
     case code do
       "RateLimited"                  -> :rate_limited
@@ -130,4 +249,185 @@ defmodule DmhAi.Connectors.M365 do
   def remap_error({:http, 404, _}), do: :not_found
   def remap_error({:http, 401, _}), do: :unauthorised
   def remap_error(_), do: :passthrough
+
+  # ─── Boot-time seeders + FE/admin descriptors ─────────────────────────
+
+  @doc """
+  OAuth catalog descriptor — vendor facts only. Microsoft Identity
+  Platform's v2 endpoints under `login.microsoftonline.com/common`
+  (multi-tenant default — admin can override to a single-tenant
+  ID via the FE if they want).
+
+  `offline_access` in the scope set is what makes Microsoft issue
+  a refresh_token; without it the access_token expires in an hour
+  and the user has to re-Connect. `prompt=consent` forces the
+  consent screen on every grant so refresh_token issuance stays
+  reliable (mirrors Google's quirk).
+  """
+  def oauth_catalog_descriptor do
+    %{
+      slug:                   "m365",
+      display_name:           "Microsoft 365",
+      host_match:             "login.microsoftonline.com",
+      authorization_endpoint: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+      token_endpoint:         "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+      scopes: [
+        "Mail.Read",
+        "Mail.Send",
+        "Calendars.Read",
+        "Calendars.ReadWrite",
+        "Files.Read",
+        "Files.ReadWrite",
+        "OnlineMeetings.ReadWrite",
+        "Tasks.Read",
+        "Tasks.ReadWrite",
+        "Contacts.Read",
+        "offline_access",
+        "User.Read"
+      ],
+      userinfo_endpoint:      "https://graph.microsoft.com/oidc/userinfo",
+      userinfo_field_path:    "email",
+      extra_auth_params:      %{"prompt" => "consent"}
+    }
+  end
+
+  @doc """
+  MCP catalog descriptor — vendor facts only. The `mcp_url` is
+  operator-set via External Connectors; defaults are pre-filled
+  via `default_mcp_url/0` (the in-process MCPServer URL).
+  """
+  def mcp_catalog_descriptor do
+    %{
+      slug:        "m365",
+      name:        "Microsoft 365",
+      description: "Outlook mail, calendar, and OneDrive files via the Microsoft Graph API",
+      auth_kind:   :oauth,
+      categories:  ["productivity", "email", "calendar", "storage"]
+    }
+  end
+
+  @doc """
+  Mock vendor MCP fixture descriptor. Boots a deterministic mock
+  vendor server when `DMH_AI_ENABLE_VENDOR_MOCKS=true`. Demo
+  scenarios assert on sentinel identifiers in the fixture (German
+  fake personas, fake message IDs) so the chain's contribution is
+  mechanically provable.
+  """
+  def mock_descriptor do
+    %{
+      instance:     "demo_m365",
+      port_env:     "DMH_AI_M365_MOCK_PORT",
+      default_port: 8088,
+      fixtures:     DmhAi.Connectors.Mock.Fixtures.M365.fixtures()
+    }
+  end
+
+  @doc """
+  Where this connector's MCP server lives in *this* deployment.
+  DMH-AI hosts the M365 MCP as an in-process REST translator at
+  `http://127.0.0.1:<DMH_AI_REAL_MCP_PORT>/m365`. The FE pre-fills
+  the External Connectors form's MCP URL field with this value so
+  the admin doesn't have to know the deployment-internal URL.
+  """
+  @spec default_mcp_url() :: String.t()
+  def default_mcp_url do
+    port = System.get_env("DMH_AI_REAL_MCP_PORT") || "8087"
+    "http://127.0.0.1:#{port}/m365"
+  end
+
+  @doc """
+  Handler module that owns the slug → FunctionSpec map consumed by
+  `Connectors.MCPServer`. Exporting this callback signals to
+  `Bootstrap.start_real_mcp_server/0` to mount M365 on the shared
+  in-process MCPServer at the slug path.
+  """
+  def mcp_handler_module, do: DmhAi.Connectors.M365.MCPHandler
+
+  @doc """
+  Capability groups admin curates via External Connectors. The
+  three enforcement layers (OAuth scope filter, tool catalog
+  filter, dispatcher gate) all read from `enabled_capabilities`.
+  """
+  @spec capabilities() :: [map()]
+  def capabilities do
+    [
+      %{
+        id:           "mail",
+        display_name: "Outlook Mail",
+        description:  "Read inbox messages and send mail on the user's behalf.",
+        scopes:       ["Mail.Read", "Mail.Send"],
+        functions:    ["mail.search", "mail.send"],
+        vendor_prereq: %{
+          label:      "Microsoft Graph (Mail permissions)",
+          enable_url: "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade"
+        }
+      },
+      %{
+        id:           "calendar",
+        display_name: "Outlook Calendar",
+        description:  "Read availability and create calendar events.",
+        scopes:       ["Calendars.Read", "Calendars.ReadWrite"],
+        functions:    ["cal.find_free_slots", "cal.create_event"],
+        vendor_prereq: %{
+          label:      "Microsoft Graph (Calendar permissions)",
+          enable_url: "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade"
+        }
+      },
+      %{
+        id:           "files",
+        display_name: "OneDrive Files",
+        description:  "List OneDrive files and upload new ones.",
+        scopes:       ["Files.Read", "Files.ReadWrite"],
+        functions:    ["files.list", "files.upload"],
+        vendor_prereq: %{
+          label:      "Microsoft Graph (Files permissions)",
+          enable_url: "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade"
+        }
+      },
+      %{
+        id:           "teams",
+        display_name: "Teams Meetings",
+        description:  "Create Microsoft Teams online meetings; the agent shares the join link.",
+        scopes:       ["OnlineMeetings.ReadWrite"],
+        functions:    ["teams.create_meeting"],
+        vendor_prereq: %{
+          label:      "Microsoft Graph (OnlineMeetings.ReadWrite delegated permission)",
+          enable_url: "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade"
+        }
+      },
+      %{
+        id:           "todo",
+        display_name: "Microsoft To Do",
+        description:  "List the user's To Do tasks on their default list and add new ones.",
+        scopes:       ["Tasks.Read", "Tasks.ReadWrite"],
+        functions:    ["todo.list", "todo.create"],
+        vendor_prereq: %{
+          label:      "Microsoft Graph (Tasks delegated permissions)",
+          enable_url: "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade"
+        }
+      },
+      %{
+        id:           "contacts",
+        display_name: "Contacts",
+        description:  "Search the user's Outlook contacts to resolve names to email addresses.",
+        scopes:       ["Contacts.Read"],
+        functions:    ["contacts.search"],
+        vendor_prereq: %{
+          label:      "Microsoft Graph (Contacts.Read delegated permission)",
+          enable_url: "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade"
+        }
+      },
+      %{
+        id:           "excel",
+        display_name: "Excel (read-only)",
+        description:  "Read cell ranges from Excel workbooks stored in OneDrive (read-only).",
+        scopes:       ["Files.Read"],
+        functions:    ["excel.read_range"],
+        vendor_prereq: %{
+          label:      "Microsoft Graph (Files.Read covers workbook reads)",
+          enable_url: "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade"
+        }
+      }
+    ]
+  end
 end

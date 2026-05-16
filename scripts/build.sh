@@ -314,7 +314,7 @@ services:
       # DMH_AI_ENABLE_VENDOR_MOCKS=true (binds to DMH_AI_GW_MOCK_PORT
       # for the GW mock). Connector details (client_id / secret /
       # mcp_url) are admin-set via External Connectors, never here.
-      # See demo/layer-0.3/01_gw_assistant.md.
+      # See demo/layer-0.3/google_workspace/01_assistant.md.
       - DMH_AI_ENABLE_VENDOR_MOCKS=\${DMH_AI_ENABLE_VENDOR_MOCKS:-false}
       - DMH_AI_GW_MOCK_PORT=\${DMH_AI_GW_MOCK_PORT:-8086}
       - DMH_AI_REAL_MCP_PORT=\${DMH_AI_REAL_MCP_PORT:-8087}

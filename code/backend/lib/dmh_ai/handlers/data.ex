@@ -891,7 +891,7 @@ defmodule DmhAi.Handlers.Data do
 
         case flow_kind do
           "connector_oauth" -> connector_oauth_success_response(conn, alias_)
-          _ -> oauth_html_response(conn, 200, "✓ Authorized — return to your chat.")
+          _ -> oauth_html_response(conn, 200, "✓ Authorized — return to your chat.", alias_)
         end
 
       {:error, :not_found} ->
@@ -1234,25 +1234,83 @@ defmodule DmhAi.Handlers.Data do
     end
   end
 
-  defp oauth_html_response(conn, status, body_text) do
+  # Used for non-success outcomes (errors, expired state, etc.) AND
+  # the legacy `oauth_service` success message. Always carries a
+  # "Return to DMH-AI" button AND a BroadcastChannel `oauth_result`
+  # post so the chat tab (parent of the new-tab OAuth flow) can
+  # react. The page tries `window.close()` for the common case
+  # where the OAuth opened in a `window.open`-spawned tab; the
+  # button is the manual fallback if `window.close()` is denied
+  # (older browsers, user navigated here directly).
+  #
+  # Optional `slug` parameter — present when the callback already
+  # decoded the OAuth state (so we know which connector this is
+  # for); nil for pre-decode failures (state row missing/expired).
+  defp oauth_html_response(conn, status, body_text, slug \\ nil) do
+    success? = status in 200..299
+    head_colour = if success?, do: "#60c080", else: "#e6a060"
+    payload_status = if success?, do: "connected", else: "error"
+
     html = """
     <!doctype html>
     <html><head><meta charset="utf-8"><title>OAuth</title>
     <style>
       body{font-family:system-ui,sans-serif;background:#0a0810;color:#e8d8f0;margin:0;display:flex;align-items:center;justify-content:center;min-height:100vh;text-align:center;padding:24px;}
       .box{padding:32px 40px;background:#1a1428;border:1px solid #2c2238;border-radius:8px;max-width:480px;}
-      h1{margin:0 0 12px;font-size:18px;color:#60c080;}
-      p{margin:0;font-size:13px;color:#b098b8;line-height:1.5;}
+      h1{margin:0 0 14px;font-size:18px;color:#{head_colour};}
+      p{margin:0 0 24px;font-size:13px;color:#b098b8;line-height:1.5;}
+      a.btn{display:inline-block;padding:11px 26px;background:#5a4099;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:600;}
+      a.btn:hover{background:#6a4fb0;}
     </style></head>
     <body><div class="box">
       <h1>#{Plug.HTML.html_escape_to_iodata(body_text)}</h1>
-      <p>You can close this tab and return to your chat session.</p>
-    </div></body></html>
+      <p>#{if success?, do: "You can return to DMH-AI now.", else: "Click below to return to DMH-AI and try again."}</p>
+      <a class="btn" href="/">Return to DMH-AI</a>
+    </div>
+    #{oauth_postback_script(payload_status, slug, body_text)}
+    </body></html>
     """
 
     conn
     |> put_resp_content_type("text/html")
     |> send_resp(status, html)
+  end
+
+  # Embedded JS that runs on every OAuth-callback HTML page. Posts
+  # the outcome on a same-origin BroadcastChannel ("dmh-ai-oauth")
+  # so the original chat tab (which opened this OAuth tab via
+  # `window.open`) can show a toast + refresh My Services. Then
+  # attempts `window.close()` so the new tab dismisses itself
+  # — `try/catch` because some browsers refuse to close
+  # non-script-opened windows, and the visible button is the
+  # fallback for those cases.
+  defp oauth_postback_script(status, slug, message) do
+    payload =
+      %{
+        "type"   => "oauth_result",
+        "status" => status,
+        "slug"   => slug,
+        "message" => message
+      }
+      |> Jason.encode!()
+
+    """
+    <script>
+    (function() {
+      try {
+        if ('BroadcastChannel' in window) {
+          var bc = new BroadcastChannel('dmh-ai-oauth');
+          bc.postMessage(#{payload});
+          // Tiny delay so the message has a chance to flush before
+          // the tab closes (BroadcastChannel is async-ish).
+          setTimeout(function() { try { window.close(); } catch (e) {} }, 250);
+        } else {
+          try { window.close(); } catch (e) {}
+        }
+      } catch (e) {}
+    })();
+    </script>
+    """
   end
 
   # Success page for the click-driven `connector_oauth` flow that
@@ -1287,7 +1345,9 @@ defmodule DmhAi.Handlers.Data do
       <p>You can now use #{safe_slug} from DMH-AI chat.</p>
       <a class="btn" href="#{return_url}">Continue to DMH-AI</a>
       <div class="note">On iOS, if you started in the DMH-AI home-screen app, tap your home-screen icon instead — Safari can't switch you back automatically.</div>
-    </div></body></html>
+    </div>
+    #{oauth_postback_script("connected", slug, "Connected to " <> slug)}
+    </body></html>
     """
 
     conn

@@ -23,6 +23,10 @@ defmodule DmhAi.Connectors.GoogleWorkspace.MCPHandler do
   @calendar_base "https://www.googleapis.com/calendar/v3"
   @drive_base    "https://www.googleapis.com/drive/v3"
   @drive_upload  "https://www.googleapis.com/upload/drive/v3"
+  @meet_base     "https://meet.googleapis.com/v2"
+  @tasks_base    "https://tasks.googleapis.com/tasks/v1"
+  @people_base   "https://people.googleapis.com/v1"
+  @sheets_base   "https://sheets.googleapis.com/v4"
 
   @doc """
   Connector handler entry consumed by
@@ -69,9 +73,133 @@ defmodule DmhAi.Connectors.GoogleWorkspace.MCPHandler do
       "drive.upload" => %FunctionSpec{
         handler: &drive_upload/2,
         doc:     "Upload a file to Drive (multipart)."
+      },
+      "meet.create_meeting" => %FunctionSpec{
+        method:  :post,
+        url:     "#{@meet_base}/spaces",
+        # Empty body — Meet's spaces.create takes no request args
+        # for the basic case. The shim returns the join URL +
+        # meeting code as a flat shape the model can paste into
+        # its reply verbatim.
+        request: fn _args, _ctx -> [json: %{}] end,
+        response: fn s, body when s in 200..299 ->
+                    {:ok, %{
+                      "join_url"     => body["meetingUri"],
+                      "meeting_code" => body["meetingCode"],
+                      "space_name"   => body["name"]
+                    }}
+                  end,
+        doc: "Create a Google Meet space and return the join URL."
+      },
+      "tasks.list" => %FunctionSpec{
+        method:  :get,
+        url:     "#{@tasks_base}/lists/@default/tasks",
+        request: fn args, _ctx ->
+          [params: [{"maxResults", Map.get(args, "limit", 25)}, {"showCompleted", "false"}]]
+        end,
+        response: fn s, body when s in 200..299 ->
+                    {:ok, %{
+                      "tasks" => Map.get(body, "items", []) |> Enum.map(&normalise_task/1)
+                    }}
+                  end,
+        doc: "List the user's tasks on the default list."
+      },
+      "tasks.create" => %FunctionSpec{
+        method:  :post,
+        url:     "#{@tasks_base}/lists/@default/tasks",
+        request: fn args, _ctx ->
+          body =
+            %{"title" => args["title"]}
+            |> maybe_put_kv("notes", Map.get(args, "notes"))
+            |> maybe_put_kv("due",   Map.get(args, "due"))
+
+          [json: body]
+        end,
+        response: fn s, body when s in 200..299 ->
+                    {:ok, %{"task_id" => body["id"], "title" => body["title"]}}
+                  end,
+        doc: "Create a task on the default Google Tasks list."
+      },
+      "contacts.search" => %FunctionSpec{
+        method:  :get,
+        url:     "#{@people_base}/people:searchContacts",
+        request: fn args, _ctx ->
+          [params: [
+            {"query",    Map.get(args, "query", "")},
+            {"readMask", "names,emailAddresses"},
+            {"pageSize", Map.get(args, "limit", 10)}
+          ]]
+        end,
+        response: fn s, body when s in 200..299 ->
+                    contacts =
+                      Map.get(body, "results", [])
+                      |> Enum.map(fn %{"person" => p} -> normalise_contact(p) end)
+
+                    {:ok, %{"contacts" => contacts}}
+                  end,
+        doc: "Search the user's contacts by query string; returns name + email."
+      },
+      "sheets.read_range" => %FunctionSpec{
+        handler: &sheets_read_range/2,
+        doc:     "Read a cell range from a Google Sheet (A1 notation, e.g. 'Sheet1!A1:C50')."
       }
     }
   end
+
+  # ─── sheets.read_range — values.get with URL-encoded range ────────────
+
+  # vendor: GET /v4/spreadsheets/{spreadsheetId}/values/{range}
+  defp sheets_read_range(args, ctx) do
+    spreadsheet_id = args["spreadsheet_id"]
+    range          = args["range"]
+    url = "#{@sheets_base}/spreadsheets/#{URI.encode(spreadsheet_id)}/values/#{URI.encode(range)}"
+
+    case RestBridge.raw_request(:get, with_bearer([url: url], ctx)) do
+      {:ok, 200, body} ->
+        {:ok, %{
+          "spreadsheet_id" => spreadsheet_id,
+          "range"          => body["range"] || range,
+          "values"         => Map.get(body, "values", [])
+        }}
+
+      {:ok, _status, _body} ->
+        {:error, :upstream_other}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  defp with_bearer(opts, ctx) do
+    case Map.get(ctx, :bearer_token) do
+      t when is_binary(t) and t != "" ->
+        headers = Keyword.get(opts, :headers, [])
+        Keyword.put(opts, :headers, [{"authorization", "Bearer " <> t} | headers])
+      _ ->
+        opts
+    end
+  end
+
+  defp normalise_contact(person) do
+    %{
+      "name"  => get_in(person, ["names", Access.at(0), "displayName"]),
+      "email" => get_in(person, ["emailAddresses", Access.at(0), "value"])
+    }
+  end
+
+  defp normalise_task(%{} = item) do
+    %{
+      "id"     => item["id"],
+      "title"  => item["title"],
+      "notes"  => item["notes"],
+      "due"    => item["due"],
+      "status" => item["status"]
+    }
+  end
+
+  defp maybe_put_kv(map, _k, nil), do: map
+  defp maybe_put_kv(map, _k, ""),  do: map
+  defp maybe_put_kv(map, k, v),    do: Map.put(map, k, v)
 
   # ─── gmail.search — list then fan-out for headers ─────────────────────
 

@@ -863,22 +863,68 @@ function handleConnectorOauthReturn() {
         var url = window.location.pathname + window.location.hash;
         window.history.replaceState({}, '', url);
 
+        showOauthResultToast('connected', slug, null);
+    } catch (e) { /* benign */ }
+}
+
+// Surface an OAuth-flow outcome to the user. Handles both the
+// new-tab BroadcastChannel path (called by the listener below)
+// AND the same-tab `?services=connected` fallback path (called
+// by handleConnectorOauthReturn above). Slug may be null for
+// errors where the OAuth state row had already expired and the
+// callback couldn't resolve which connector failed.
+function showOauthResultToast(status, slug, message) {
+    if (typeof UIManager === 'undefined' || !UIManager.showToast) return;
+
+    if (status === 'connected' && slug) {
         var label = slug.split('_').map(function(w) {
             return w.charAt(0).toUpperCase() + w.slice(1);
         }).join(' ');
-        if (typeof UIManager !== 'undefined' && UIManager.showToast) {
-            UIManager.showToast('✓ <strong>' + label + '</strong> connected', 'success');
-        }
-        // MyServices.render() re-fetches /me/services on every open, so
-        // the next overlay open will see the new connected row. Nothing
-        // to invalidate here.
-    } catch (e) { /* benign */ }
+        UIManager.showToast('✓ <strong>' + label + '</strong> connected', 'success');
+    } else if (status === 'connected') {
+        UIManager.showToast('✓ Service connected', 'success');
+    } else if (slug) {
+        var labelE = slug.split('_').map(function(w) {
+            return w.charAt(0).toUpperCase() + w.slice(1);
+        }).join(' ');
+        UIManager.showToast(
+            '✗ <strong>' + labelE + '</strong> OAuth failed — try again from My Services',
+            'info'
+        );
+    } else {
+        UIManager.showToast(
+            '✗ OAuth failed' + (message ? ': ' + escapeHtml(message) : '') +
+            ' — try again from My Services',
+            'info'
+        );
+    }
+    // MyServices.render() re-fetches /me/services on every open, so
+    // the next overlay open will see the updated rows. Nothing to
+    // invalidate here.
+}
+
+// Cross-tab signal from a new-tab OAuth flow. The BE's callback
+// page posts `{type: "oauth_result", status, slug, message}` on
+// the `dmh-ai-oauth` BroadcastChannel right before `window.close()`.
+// This chat tab listens; on receive, fires the same toast UX as
+// the same-tab `?services=connected` path.
+function setupOauthBroadcastChannel() {
+    if (!('BroadcastChannel' in window)) return;
+    try {
+        var bc = new BroadcastChannel('dmh-ai-oauth');
+        bc.onmessage = function(ev) {
+            if (!ev.data || ev.data.type !== 'oauth_result') return;
+            var slug = (ev.data.slug || '').replace(/[^a-z0-9_]/gi, '');
+            showOauthResultToast(ev.data.status, slug || null, ev.data.message || null);
+        };
+    } catch (e) { /* BroadcastChannel unavailable — benign */ }
 }
 
 document.addEventListener('DOMContentLoaded', function() {
     Lightbox.init();
     UIManager.init();
     handleConnectorOauthReturn();
+    setupOauthBroadcastChannel();
     document.addEventListener('visibilitychange', function() {
         if (document.visibilityState === 'visible') handleConnectorOauthReturn();
     });

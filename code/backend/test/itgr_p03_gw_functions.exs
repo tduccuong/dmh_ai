@@ -81,6 +81,33 @@ defmodule DmhAi.P03GoogleWorkspaceFunctionsTest do
       assert is_list(items)
       assert Enum.any?(items, fn item -> item["name"] == s.drive_file end)
     end
+
+    test "tasks.list returns the fixture task by title",
+         %{user_id: user_id, sentinels: s} do
+      assert {:ok, %{"tasks" => tasks}} =
+               Dispatcher.call("google_workspace.tasks.list", %{}, %{user_id: user_id})
+
+      assert Enum.any?(tasks, fn t -> t["title"] == s.task_title end)
+    end
+
+    test "contacts.search returns the fixture contact",
+         %{user_id: user_id, sentinels: s} do
+      assert {:ok, %{"contacts" => contacts}} =
+               Dispatcher.call("google_workspace.contacts.search",
+                               %{"query" => "Petra"}, %{user_id: user_id})
+
+      assert Enum.any?(contacts, fn c -> c["email"] == s.contact_email end)
+    end
+
+    test "sheets.read_range returns the fixture cell value",
+         %{user_id: user_id, sentinels: s} do
+      assert {:ok, %{"values" => rows}} =
+               Dispatcher.call("google_workspace.sheets.read_range",
+                               %{"spreadsheet_id" => "sheet-mock-001", "range" => "Sheet1!A1:B2"},
+                               %{user_id: user_id})
+
+      assert Enum.any?(rows, fn row -> s.sheet_value in row end)
+    end
   end
 
   describe "write functions (require active task + carry idempotency_key)" do
@@ -135,6 +162,30 @@ defmodule DmhAi.P03GoogleWorkspaceFunctionsTest do
 
       assert is_binary(fid) and String.starts_with?(fid, "drv_mock_uploaded_")
       assert name == "Vertrag_Mustermann_2026-05.txt"
+    end
+
+    test "meet.create_meeting inside a task returns the fixture join URL",
+         %{user_id: user_id, sentinels: s} do
+      ctx = %{user_id: user_id, task_id: "t-gw-meet", step_seq: 0}
+
+      assert {:ok, %{"join_url" => url, "meeting_code" => code}} =
+               Dispatcher.call("google_workspace.meet.create_meeting", %{}, ctx)
+
+      assert url == s.meet_join_url
+      assert code == s.meet_code
+    end
+
+    test "tasks.create inside a task returns a generated task id",
+         %{user_id: user_id} do
+      ctx = %{user_id: user_id, task_id: "t-gw-tasks", step_seq: 0}
+
+      assert {:ok, %{"task_id" => tid, "title" => title}} =
+               Dispatcher.call("google_workspace.tasks.create",
+                               %{"title" => "Beleg fotografieren"},
+                               ctx)
+
+      assert is_binary(tid) and String.starts_with?(tid, "task_gw_mock_created_")
+      assert title == "Beleg fotografieren"
     end
   end
 

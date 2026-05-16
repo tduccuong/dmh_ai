@@ -159,9 +159,17 @@ const MyServices = {
         // Click-driven OAuth: POST /me/services/connect/:slug →
         // server mints a pending_oauth_states row with
         // flow_kind="connector_oauth" → returns the provider's
-        // consent URL. We redirect; provider sends them back to
-        // /oauth/callback which finalize_connector_oauth wires up
-        // the three credential rows the connector runtime needs.
+        // consent URL. We open the URL in a NEW TAB so the chat
+        // tab is never navigated away — if the vendor errors out
+        // (e.g. Microsoft rejects an unsupported account type),
+        // the user just closes the broken tab and is right back
+        // in chat. On success, the callback page posts on a
+        // BroadcastChannel and the new tab closes itself; the
+        // chat tab listens for that message + pops a toast.
+        //
+        // Popup-blocker fallback: if `window.open` returns null,
+        // fall back to same-tab navigation — the existing
+        // `?services=connected` return path handles that case.
         try {
             var res = await apiFetch('/me/services/connect/' + encodeURIComponent(svc.slug), {
                 method: 'POST'
@@ -170,7 +178,16 @@ const MyServices = {
             if (res && res.ok) {
                 var d = await res.json();
                 if (d && d.url) {
-                    window.location.href = d.url;
+                    var win = window.open(d.url, '_blank');
+                    if (!win || win.closed || typeof win.closed === 'undefined') {
+                        // Popup blocked (rare on user-initiated click,
+                        // but happens with strict configs). Fall back to
+                        // same-tab navigation; the BE's BroadcastChannel
+                        // post is a no-op in that path but the
+                        // ?services=connected return URL still fires the
+                        // toast.
+                        window.location.href = d.url;
+                    }
                     return;
                 }
                 Modal.alert('Connect ' + svc.display_name, 'Server didn\'t return a URL.');
