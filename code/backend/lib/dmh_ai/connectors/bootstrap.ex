@@ -132,54 +132,50 @@ defmodule DmhAi.Connectors.Bootstrap do
   end
 
   @doc """
-  When `:enable_real_mcp` is true, start the in-process
-  `MCPServer` on the configured port and register every connector
-  module that exposes `mcp_handler_module/0`. Each connector's
-  handler module owns the slug → verbs map; the server reads from
-  the registry on every request, so adding a connector requires
-  zero code in this file.
+  Start the in-process `MCPServer` on the configured port and
+  mount every connector that exposes `mcp_handler_module/0`. One
+  shared Plug app, one port; connectors self-route by URL path
+  (`/<slug>`). Each connector's handler module owns its slug →
+  functions map; the server reads from the registry on every
+  request, so adding a connector requires zero code in this file.
 
-  Production installs leave the flag off when DMH-AI ships
-  against vendor-hosted MCP servers. Stage / on-prem installs
-  using the in-process REST translator turn it on.
+  Always-on: the server boots regardless of whether any connector
+  has a handler today. Vendor-hosted (Case B) connectors simply
+  don't appear in the registry — their admins paste the vendor's
+  hosted URL into the External Connectors page instead of relying
+  on this server. Port is configurable via `:real_mcp_port`
+  (default 8087, env `DMH_AI_REAL_MCP_PORT`).
   """
-  @spec start_real_mcp_server_if_enabled() :: :ok | :not_started
-  def start_real_mcp_server_if_enabled do
-    if Application.get_env(:dmh_ai, :enable_real_mcp, false) do
-      port = Application.get_env(:dmh_ai, :real_mcp_port, 8087)
+  @spec start_real_mcp_server() :: :ok | :not_started
+  def start_real_mcp_server do
+    port = Application.get_env(:dmh_ai, :real_mcp_port, 8087)
 
-      handlers =
-        Registry.universal_modules()
-        |> Enum.flat_map(fn mod ->
-          if function_exported?(mod, :mcp_handler_module, 0) do
-            handler_mod = mod.mcp_handler_module()
-            if function_exported?(handler_mod, :handler, 0),
-              do: [handler_mod.handler()],
-              else: []
-          else
-            []
-          end
-        end)
+    handler_map =
+      Registry.universal_modules()
+      |> Enum.flat_map(fn mod ->
+        if function_exported?(mod, :mcp_handler_module, 0) do
+          handler_mod = mod.mcp_handler_module()
+          if function_exported?(handler_mod, :handler, 0),
+            do: [handler_mod.handler()],
+            else: []
+        else
+          []
+        end
+      end)
+      |> Enum.into(%{}, fn h -> {h.slug, h} end)
 
-      handler_map =
-        handlers
-        |> Enum.into(%{}, fn h -> {h.slug, h} end)
+    DmhAi.Connectors.MCPServer.Registry.install(handler_map)
 
-      DmhAi.Connectors.MCPServer.Registry.install(handler_map)
+    case MCPServer.start_link(port: port) do
+      {:ok, _pid} ->
+        Logger.info(
+          "[Connectors.Bootstrap] in-process MCPServer up: 127.0.0.1:#{port}, slugs=#{inspect(Map.keys(handler_map))}"
+        )
+        :ok
 
-      case MCPServer.start_link(port: port) do
-        {:ok, _pid} ->
-          Logger.info(
-            "[Connectors.Bootstrap] real MCPServer up: 127.0.0.1:#{port}, slugs=#{inspect(Map.keys(handler_map))}"
-          )
-          :ok
-
-        {:error, reason} ->
-          Logger.error("[Connectors.Bootstrap] real MCPServer failed: #{inspect(reason)}")
-          :not_started
-      end
-    else
-      :not_started
+      {:error, reason} ->
+        Logger.error("[Connectors.Bootstrap] in-process MCPServer failed: #{inspect(reason)}")
+        :not_started
     end
   end
 end

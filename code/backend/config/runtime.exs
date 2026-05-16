@@ -42,13 +42,8 @@ if config_env() != :test do
   config :dmh_ai, auto_start_vendor_mocks:
     System.get_env("DMH_AI_ENABLE_VENDOR_MOCKS", "false") == "true"
 
-  # Real in-process MCPServer that translates MCP `tools/call` into
-  # vendor REST API calls. Off by default — admins opt in by
-  # exporting DMH_AI_ENABLE_REAL_MCP=true before install. Port is
-  # configurable via DMH_AI_REAL_MCP_PORT (default 8087).
-  config :dmh_ai, enable_real_mcp:
-    System.get_env("DMH_AI_ENABLE_REAL_MCP", "false") == "true"
-
+  # In-process MCPServer (REST translator) port. The server is
+  # always started at boot; this knob only changes where it binds.
   config :dmh_ai, real_mcp_port:
     System.get_env("DMH_AI_REAL_MCP_PORT", "8087") |> String.to_integer()
 end

@@ -6,7 +6,7 @@
 defmodule DmhAi.Connectors.Mock.VendorMCPServer do
   @moduledoc """
   Generic mock vendor MCP server. Plug-based, parameterised by a
-  verb-fixture map at start time. Shared by every connector's
+  function-fixture map at start time. Shared by every connector's
   integration tests AND the corresponding demo runbook — write the
   fixtures once per vendor, exercise them both ways.
 
@@ -16,10 +16,10 @@ defmodule DmhAi.Connectors.Mock.VendorMCPServer do
     * `initialize` — returns a server-info block, sets the
       `Mcp-Session-Id` response header (required by spec-compliant
       session-tracking clients).
-    * `tools/list` — returns the verb manifest derived from the
+    * `tools/list` — returns the function manifest derived from the
       fixture map keys (or from an explicit `:tools` option for
       tests that want to assert tools/list-vs-manifest divergence).
-    * `tools/call` — looks up the verb in the fixture map and
+    * `tools/call` — looks up the function in the fixture map and
       returns its canned response wrapped in MCP's
       `content[]` envelope.
 
@@ -37,7 +37,7 @@ defmodule DmhAi.Connectors.Mock.VendorMCPServer do
   Fixture values can be either:
 
     * a plain map — returned verbatim
-    * a 1-arity function — invoked with the verb's `arguments`,
+    * a 1-arity function — invoked with the function's `arguments`,
       whatever it returns becomes the response
 
   ## Safety
@@ -61,7 +61,7 @@ defmodule DmhAi.Connectors.Mock.VendorMCPServer do
     * `:instance` — a unique string id for this server (used to
       key the fixture map in application env so multiple mocks can
       run in parallel without clashing).
-    * `:fixtures` — `%{verb_name => response_or_fn}` (see module
+    * `:fixtures` — `%{function_name => response_or_fn}` (see module
       doc for the shape).
 
   Optional:
@@ -125,7 +125,7 @@ defmodule DmhAi.Connectors.Mock.VendorMCPServer do
     |> Enum.map(fn name ->
       %{
         "name"        => name,
-        "description" => "Mock verb #{name}",
+        "description" => "Mock function #{name}",
         "inputSchema" => %{"type" => "object", "properties" => %{}}
       }
     end)
@@ -187,19 +187,19 @@ defmodule DmhAi.Connectors.Mock.VendorMCPServer do
     end
 
     defp handle_request(
-           %{"method" => "tools/call", "id" => id, "params" => %{"name" => verb} = params},
+           %{"method" => "tools/call", "id" => id, "params" => %{"name" => function} = params},
            fixtures,
            _tools
          ) do
       args = Map.get(params, "arguments", %{})
 
       body =
-        case Map.get(fixtures, verb) do
+        case Map.get(fixtures, function) do
           nil ->
             %{
               "jsonrpc" => "2.0",
               "id"      => id,
-              "error"   => %{"code" => -32601, "message" => "Mock has no fixture for verb '#{verb}'"}
+              "error"   => %{"code" => -32601, "message" => "Mock has no fixture for function '#{function}'"}
             }
 
           fixture when is_function(fixture, 1) ->

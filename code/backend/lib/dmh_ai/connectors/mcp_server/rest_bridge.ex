@@ -7,7 +7,7 @@ defmodule DmhAi.Connectors.MCPServer.RestBridge do
   @moduledoc """
   Single HTTP entry point for the MCPServer pipeline. Every
   outbound HTTP call made by a connector — whether driven by a
-  `VerbSpec` or by a custom handler function — passes through
+  `FunctionSpec` or by a custom handler function — passes through
   this module. Tests intercept by setting
   `:__rest_bridge_http_stub__` in application env to a 2-arity
   function `(method, req_opts) -> {:ok, status, body} | {:error,
@@ -15,7 +15,7 @@ defmodule DmhAi.Connectors.MCPServer.RestBridge do
 
   Public surface:
 
-    * `invoke/3` — execute a `VerbSpec` (default path for verbs
+    * `invoke/3` — execute a `FunctionSpec` (default path for functions
       that are 1:1 REST mappings).
     * `simple_get/3`, `simple_post/3` — utilities for custom
       handlers that need multiple HTTP calls but use standard
@@ -28,25 +28,25 @@ defmodule DmhAi.Connectors.MCPServer.RestBridge do
   every outbound call from a handler.
   """
 
-  alias DmhAi.Connectors.MCPServer.{ErrorMap, VerbSpec}
+  alias DmhAi.Connectors.MCPServer.{ErrorMap, FunctionSpec}
   require Logger
 
-  # ─── Public: VerbSpec invocation ────────────────────────────────────────
+  # ─── Public: FunctionSpec invocation ────────────────────────────────────────
 
   @doc """
-  Execute a `VerbSpec` against the vendor API. See module doc
+  Execute a `FunctionSpec` against the vendor API. See module doc
   for the stub-test convention.
   """
-  @spec invoke(VerbSpec.t(), map(), map()) ::
+  @spec invoke(FunctionSpec.t(), map(), map()) ::
           {:ok, term()} | {:error, atom()}
-  def invoke(%VerbSpec{handler: fun}, args, ctx)
+  def invoke(%FunctionSpec{handler: fun}, args, ctx)
       when is_function(fun, 2) and is_map(args) and is_map(ctx) do
-    # Escape hatch — verb owns its own orchestration. Bridge
+    # Escape hatch — function owns its own orchestration. Bridge
     # doesn't touch :method / :url / :request / :response here.
     fun.(args, ctx)
   end
 
-  def invoke(%VerbSpec{} = spec, args, ctx) when is_map(args) and is_map(ctx) do
+  def invoke(%FunctionSpec{} = spec, args, ctx) when is_map(args) and is_map(ctx) do
     url = resolve_url(spec.url, args)
     req_opts = build_req_opts(spec, args, ctx)
 
@@ -60,7 +60,7 @@ defmodule DmhAi.Connectors.MCPServer.RestBridge do
           _ ->
             classified = ErrorMap.classify(status, body)
             Logger.debug(
-              "[RestBridge] non-2xx status=#{status} → #{classified} url=#{url}"
+              "[RestBridge] non-2xx status=#{status} → #{classified.class} url=#{url}"
             )
             {:error, classified}
         end
@@ -82,7 +82,7 @@ defmodule DmhAi.Connectors.MCPServer.RestBridge do
           {:ok, term()} | {:error, atom()}
   def simple_get(url, query, ctx) when is_binary(url) and is_map(ctx) do
     opts =
-      [url: url, query: query]
+      [url: url, params: query]
       |> add_bearer_to_opts(ctx)
 
     case do_request(:get, opts) do
@@ -126,7 +126,7 @@ defmodule DmhAi.Connectors.MCPServer.RestBridge do
   defp resolve_url(url, _args) when is_binary(url), do: url
   defp resolve_url(fun, args) when is_function(fun, 1), do: fun.(args)
 
-  defp build_req_opts(%VerbSpec{} = spec, args, ctx) do
+  defp build_req_opts(%FunctionSpec{} = spec, args, ctx) do
     raw =
       case spec.request do
         nil  -> default_request(spec.method, args)
@@ -140,7 +140,7 @@ defmodule DmhAi.Connectors.MCPServer.RestBridge do
   end
 
   defp default_request(method, args) when method in [:get, :delete],
-    do: [query: stringify_keys(args)]
+    do: [params: stringify_keys(args)]
 
   defp default_request(_method, args), do: [json: args]
 
@@ -161,18 +161,18 @@ defmodule DmhAi.Connectors.MCPServer.RestBridge do
     end)
   end
 
-  # Response handling for VerbSpec invocations (not utility helpers).
+  # Response handling for FunctionSpec invocations (not utility helpers).
 
-  defp apply_response(%VerbSpec{response: nil}, status, body) when status in 200..299 do
+  defp apply_response(%FunctionSpec{response: nil}, status, body) when status in 200..299 do
     case body do
       m when is_map(m) -> {:ok, m}
       other            -> {:ok, %{"text" => to_string_safe(other)}}
     end
   end
 
-  defp apply_response(%VerbSpec{response: nil}, _status, _body), do: :passthrough
+  defp apply_response(%FunctionSpec{response: nil}, _status, _body), do: :passthrough
 
-  defp apply_response(%VerbSpec{response: fun}, status, body) when is_function(fun, 2) do
+  defp apply_response(%FunctionSpec{response: fun}, status, body) when is_function(fun, 2) do
     try do
       case fun.(status, body) do
         {:ok, _}    = ok  -> ok
@@ -180,9 +180,9 @@ defmodule DmhAi.Connectors.MCPServer.RestBridge do
         other -> {:error, {:bad_response_transform, other}}
       end
     rescue
-      # Verb's response function didn't pattern-match this status —
+      # Function's response function didn't pattern-match this status —
       # fall through to default classification (the bridge will then
-      # apply `ErrorMap.classify/2` for non-2xx). Lets per-verb
+      # apply `ErrorMap.classify/2` for non-2xx). Lets per-function
       # response functions stay focused on success-shape mapping
       # without enumerating every HTTP error code.
       FunctionClauseError -> :passthrough

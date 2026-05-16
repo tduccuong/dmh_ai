@@ -10,9 +10,9 @@ defmodule DmhAi.P03McpAdapterTest do
 
     * `__using__` macro wires `call/3` correctly.
     * `missing_credentials` envelope when user has no token.
-    * Successful invoke → `:allowed` audit row written (write verbs).
-    * Read verb successful → silent (no audit row, per volume policy).
-    * Read verb denied → audit row written.
+    * Successful invoke → `:allowed` audit row written (write functions).
+    * Read function successful → silent (no audit row, per volume policy).
+    * Read function denied → audit row written.
     * Vendor error normalisation via the connector's `remap_error/1`
       AND fallthrough to the generic HTTP-status classifier.
   """
@@ -21,7 +21,7 @@ defmodule DmhAi.P03McpAdapterTest do
 
   alias DmhAi.Repo
   alias DmhAi.Tools.{Dispatcher, Manifest}
-  alias DmhAi.Tools.Manifest.Verb
+  alias DmhAi.Tools.Manifest.Function
   import Ecto.Adapters.SQL, only: [query!: 3]
 
   @org_id DmhAi.Constants.default_org_id()
@@ -31,18 +31,18 @@ defmodule DmhAi.P03McpAdapterTest do
   defmodule StubVendor do
     use DmhAi.Connectors.MCPAdapter
     alias DmhAi.Tools.Manifest
-    alias DmhAi.Tools.Manifest.Verb
+    alias DmhAi.Tools.Manifest.Function
 
     def manifest do
       %Manifest{
         connector: "stub_vendor",
         region:    "test",
-        verbs: %{
-          "thing.find" => %Verb{
+        functions: %{
+          "thing.find" => %Function{
             permission:    :read,
             callable_from: [:chat, :task]
           },
-          "thing.create" => %Verb{
+          "thing.create" => %Function{
             permission:      :write,
             callable_from:   [:task],
             idempotency_key: :required
@@ -114,21 +114,21 @@ defmodule DmhAi.P03McpAdapterTest do
          :os.system_time(:millisecond), :os.system_time(:millisecond)])
 
       # Caller stub: echoes args back so we can assert what reached the upstream.
-      Application.put_env(:dmh_ai, :__mcp_caller_stub__, fn slug, verb, args, _creds ->
-        {:ok, %{"echo" => %{"slug" => slug, "verb" => verb, "args" => args}}}
+      Application.put_env(:dmh_ai, :__mcp_caller_stub__, fn slug, function, args, _creds ->
+        {:ok, %{"echo" => %{"slug" => slug, "function" => function, "args" => args}}}
       end)
 
       :ok
     end
 
-    test "read verb → :ok, no audit row (silent allowed-read)", %{admin_id: admin_id} do
+    test "read function → :ok, no audit row (silent allowed-read)", %{admin_id: admin_id} do
       [[before_count]] =
         query!(Repo, "SELECT COUNT(*) FROM audit_log WHERE user_id=?", [admin_id]).rows
 
       assert {:ok, %{"echo" => echo}} =
                Dispatcher.call("stub_vendor.thing.find", %{"q" => "foo"}, %{user_id: admin_id})
 
-      assert echo["verb"] == "thing.find"
+      assert echo["function"] == "thing.find"
       assert echo["args"]["q"] == "foo"
 
       [[after_count]] =
@@ -138,7 +138,7 @@ defmodule DmhAi.P03McpAdapterTest do
              "read+allowed must NOT write an audit row (volume policy)"
     end
 
-    test "write verb inside task → :ok, idempotency_key threaded, audit row written",
+    test "write function inside task → :ok, idempotency_key threaded, audit row written",
          %{admin_id: admin_id} do
       ctx = %{user_id: admin_id, task_id: "task-xyz", step_seq: 1}
 
@@ -162,14 +162,14 @@ defmodule DmhAi.P03McpAdapterTest do
     defmodule ApiKeyStub do
       use DmhAi.Connectors.MCPAdapter
       alias DmhAi.Tools.Manifest
-      alias DmhAi.Tools.Manifest.Verb
+      alias DmhAi.Tools.Manifest.Function
 
       def manifest do
         %Manifest{
           connector: "apikey_stub",
           region:    "test",
-          verbs: %{
-            "thing.find" => %Verb{
+          functions: %{
+            "thing.find" => %Function{
               permission:    :read,
               callable_from: [:chat, :task]
             }
@@ -197,7 +197,7 @@ defmodule DmhAi.P03McpAdapterTest do
     end
 
     test "Caller pulls the api_key row (not the oauth2 row)", %{admin_id: admin_id} do
-      Application.put_env(:dmh_ai, :__mcp_caller_stub__, fn _slug, _verb, _args, creds ->
+      Application.put_env(:dmh_ai, :__mcp_caller_stub__, fn _slug, _function, _args, creds ->
         assert creds["api_key"] == "sk_test_FAKE"
         {:ok, %{}}
       end)
@@ -229,7 +229,7 @@ defmodule DmhAi.P03McpAdapterTest do
     end
 
     test "vendor-specific remap → canonical :duplicate", %{admin_id: admin_id} do
-      Application.put_env(:dmh_ai, :__mcp_caller_stub__, fn _slug, _verb, _args, _creds ->
+      Application.put_env(:dmh_ai, :__mcp_caller_stub__, fn _slug, _function, _args, _creds ->
         {:error, "DUPLICATE_EMAIL"}
       end)
 

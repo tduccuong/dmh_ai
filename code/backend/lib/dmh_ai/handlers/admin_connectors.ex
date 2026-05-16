@@ -135,6 +135,23 @@ defmodule DmhAi.Handlers.AdminConnectors do
       """, [enabled_int, now, org_id, slug])
     end
 
+    # Capability curation — admin's ticked subset. JSON array of
+    # capability ids. NULL/absent means "all enabled" (a row the
+    # admin hasn't yet curated). Empty array means "deliberately
+    # none enabled" — connector reachable but no functions exposed.
+    if Map.has_key?(params, "enabled_capabilities") do
+      caps_json =
+        case params["enabled_capabilities"] do
+          list when is_list(list) -> Jason.encode!(list)
+          nil                      -> nil
+          _                        -> nil
+        end
+
+      query!(Repo, """
+      UPDATE mcp_catalog SET enabled_capabilities=?, updated_at=? WHERE org_id=? AND slug=?
+      """, [caps_json, now, org_id, slug])
+    end
+
     Proxy.json(conn, 200, %{ok: true})
   end
 
@@ -152,18 +169,28 @@ defmodule DmhAi.Handlers.AdminConnectors do
         m    = Map.get(mcp,   slug, %{})
 
         %{
-          slug:              slug,
-          display_name:      Map.get(o, :display_name) || derive_display_name(slug),
-          auth_kind:         apply_or(mod, :credential_kind, :oauth2),
-          status:            "registered",
-          mcp_url:           Map.get(m, :mcp_url),
-          mcp_url_set:       (Map.get(m, :mcp_url) not in [nil, ""]),
-          client_id_present: (Map.get(o, :client_id) not in [nil, ""]),
-          scopes:            Map.get(o, :scopes, []),
-          enabled:           Map.get(m, :enabled, false),
-          last_probe_status: Map.get(m, :last_probe_status),
-          last_probe_at:     Map.get(m, :last_probe_at),
-          manifest_verbs:    manifest_verb_names(mod)
+          slug:                  slug,
+          display_name:          Map.get(o, :display_name) || derive_display_name(slug),
+          auth_kind:             apply_or(mod, :credential_kind, :oauth2),
+          status:                "registered",
+          mcp_url:               Map.get(m, :mcp_url),
+          mcp_url_set:           (Map.get(m, :mcp_url) not in [nil, ""]),
+          # Connectors that host their MCP server in-process (e.g.
+          # GoogleWorkspace's REST translator) export default_mcp_url/0
+          # so the FE can pre-fill the field — admin doesn't need to
+          # know the deployment-internal URL. Case-B vendor-hosted
+          # connectors leave it nil → FE shows an empty placeholder.
+          default_mcp_url:       apply_or(mod, :default_mcp_url, nil),
+          capabilities:          apply_or(mod, :capabilities, []),
+          enabled_capabilities:  Map.get(m, :enabled_capabilities),
+          client_id:             Map.get(o, :client_id, ""),
+          client_id_present:     (Map.get(o, :client_id) not in [nil, ""]),
+          client_secret_present: Map.get(o, :client_secret_present, false),
+          scopes:                Map.get(o, :scopes, []),
+          enabled:               Map.get(m, :enabled, false),
+          last_probe_status:     Map.get(m, :last_probe_status),
+          last_probe_at:         Map.get(m, :last_probe_at),
+          manifest_functions:    manifest_function_names(mod)
         }
       end)
 
@@ -171,18 +198,23 @@ defmodule DmhAi.Handlers.AdminConnectors do
       @planned_connectors
       |> Enum.map(fn p ->
         %{
-          slug:              p.slug,
-          display_name:      p.display_name,
-          auth_kind:         p.auth_kind,
-          status:            "planned",
-          mcp_url:           nil,
-          mcp_url_set:       false,
-          client_id_present: false,
-          scopes:            [],
-          enabled:           false,
-          last_probe_status: nil,
-          last_probe_at:     nil,
-          manifest_verbs:    []
+          slug:                  p.slug,
+          display_name:          p.display_name,
+          auth_kind:             p.auth_kind,
+          status:                "planned",
+          mcp_url:               nil,
+          mcp_url_set:           false,
+          default_mcp_url:       nil,
+          capabilities:          [],
+          enabled_capabilities:  nil,
+          client_id:             "",
+          client_id_present:     false,
+          client_secret_present: false,
+          scopes:                [],
+          enabled:               false,
+          last_probe_status:     nil,
+          last_probe_at:         nil,
+          manifest_functions:    []
         }
       end)
 
@@ -192,19 +224,27 @@ defmodule DmhAi.Handlers.AdminConnectors do
   defp oauth_rows_by_slug do
     rows =
       query!(Repo, """
-      SELECT slug, display_name, client_id, scopes_default,
+      SELECT slug, display_name, client_id, client_secret, scopes_default,
              authorization_endpoint, token_endpoint
       FROM oauth_catalog
       """, []).rows
 
-    Enum.into(rows, %{}, fn [slug, display_name, client_id, scopes_json, auth_url, token_url] ->
+    Enum.into(rows, %{}, fn [slug, display_name, client_id, client_secret, scopes_json, auth_url, token_url] ->
       {slug,
        %{
-         display_name: display_name,
-         client_id:    client_id,
-         scopes:       decode_json_list(scopes_json),
-         auth_url:     auth_url,
-         token_url:    token_url
+         display_name:           display_name,
+         # client_id is NOT a secret — it appears verbatim in every
+         # OAuth consent URL the provider generates. Expose it
+         # directly so the admin UI can pre-fill the field instead
+         # of forcing the operator to remember it.
+         client_id:              client_id,
+         # client_secret IS a secret — never echo back. The FE
+         # uses this presence flag to decide between a "paste new"
+         # vs "redacted dots" placeholder.
+         client_secret_present:  client_secret not in [nil, ""],
+         scopes:                 decode_json_list(scopes_json),
+         auth_url:               auth_url,
+         token_url:              token_url
        }}
     end)
   end
@@ -214,25 +254,38 @@ defmodule DmhAi.Handlers.AdminConnectors do
 
     rows =
       query!(Repo, """
-      SELECT slug, mcp_url, enabled, last_probe_status, last_probe_at
+      SELECT slug, mcp_url, enabled, enabled_capabilities, last_probe_status, last_probe_at
       FROM mcp_catalog
       WHERE org_id=?
       """, [org_id]).rows
 
-    Enum.into(rows, %{}, fn [slug, url, enabled, status, probed_at] ->
+    Enum.into(rows, %{}, fn [slug, url, enabled, caps_json, status, probed_at] ->
       {slug,
        %{
-         mcp_url:           url,
-         enabled:           enabled == 1,
-         last_probe_status: status,
-         last_probe_at:     probed_at
+         mcp_url:              url,
+         enabled:              enabled == 1,
+         # nil here means "admin has not curated yet" (Capabilities
+         # module treats nil as all-enabled); an empty list means
+         # "deliberately none enabled" — semantically distinct.
+         enabled_capabilities: decode_json_list_or_nil(caps_json),
+         last_probe_status:    status,
+         last_probe_at:        probed_at
        }}
     end)
   end
 
-  defp manifest_verb_names(mod) do
+  defp decode_json_list_or_nil(nil), do: nil
+  defp decode_json_list_or_nil(""),  do: nil
+  defp decode_json_list_or_nil(s) when is_binary(s) do
+    case Jason.decode(s) do
+      {:ok, list} when is_list(list) -> list
+      _                              -> nil
+    end
+  end
+
+  defp manifest_function_names(mod) do
     case apply_or(mod, :manifest, nil) do
-      %{verbs: verbs} when is_map(verbs) -> Map.keys(verbs) |> Enum.sort()
+      %{functions: functions} when is_map(functions) -> Map.keys(functions) |> Enum.sort()
       _                                  -> []
     end
   end
@@ -278,8 +331,8 @@ defmodule DmhAi.Handlers.AdminConnectors do
 
         case Transport.request(url, list_req, %{type: "none"}) do
           {:ok, %{"result" => %{"tools" => tools}}, _} when is_list(tools) ->
-            {:ok, %{server_info: info, verb_count: length(tools),
-                    verb_names: Enum.map(tools, & &1["name"])}}
+            {:ok, %{server_info: info, function_count: length(tools),
+                    function_names: Enum.map(tools, & &1["name"])}}
 
           {:ok, _, _} ->
             {:error, "tools/list returned non-MCP body"}

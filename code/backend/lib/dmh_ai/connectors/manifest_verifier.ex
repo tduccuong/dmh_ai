@@ -7,7 +7,7 @@ defmodule DmhAi.Connectors.ManifestVerifier do
   @moduledoc """
   Dev-time tool that diffs a connector's `manifest/0` against the
   vendor's actual `tools/list` payload. Closes the I3 audit loop
-  by making "verbs are vendor-grounded" mechanically checkable
+  by making "functions are vendor-grounded" mechanically checkable
   instead of trust-based.
 
   Not invoked at runtime. Used from `iex` or test setups during a
@@ -21,15 +21,15 @@ defmodule DmhAi.Connectors.ManifestVerifier do
         present: ["gmail.search", "gmail.send", ...]
       }
 
-  The verifier compares verb NAMES only. Arg-shape and return-shape
-  divergences need a separate review (per-verb integration tests
+  The verifier compares function NAMES only. Arg-shape and return-shape
+  divergences need a separate review (per-function integration tests
   serve that role — they fail loudly if the wrapper-layer
   translation in the connector code disagrees with the real MCP).
   """
 
   alias DmhAi.Tools.Manifest
 
-  @typedoc "Diff result. All values are sorted, deduplicated lists of verb names."
+  @typedoc "Diff result. All values are sorted, deduplicated lists of function names."
   @type diff :: %{
           missing: [String.t()],
           extra:   [String.t()],
@@ -37,14 +37,14 @@ defmodule DmhAi.Connectors.ManifestVerifier do
         }
 
   @doc """
-  Compare the connector module's manifest verbs to the vendor's
+  Compare the connector module's manifest functions to the vendor's
   `tools/list` response. `tools/list` is given as the raw list
   inside `result.tools` — i.e. `[%{"name" => name, ...}, ...]`.
   """
   @spec diff(module(), [map()]) :: diff()
   def diff(connector_mod, tools) when is_atom(connector_mod) and is_list(tools) do
-    %Manifest{verbs: verbs} = connector_mod.manifest()
-    manifest_set = verbs |> Map.keys() |> MapSet.new()
+    %Manifest{functions: functions} = connector_mod.manifest()
+    manifest_set = functions |> Map.keys() |> MapSet.new()
     vendor_set =
       tools
       |> Enum.flat_map(fn

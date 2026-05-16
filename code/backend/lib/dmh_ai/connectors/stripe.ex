@@ -10,7 +10,7 @@ defmodule DmhAi.Connectors.Stripe do
   per-user credential row is `target='api_key:stripe'`, `kind='api_key'`
   with payload `{"api_key": "sk_..."}`.
 
-  Six verbs at the SME-relevant slice:
+  Six functions at the SME-relevant slice:
 
     customer.find          [read]   look up customers by query
     customer.create        [write]  create a new customer
@@ -29,7 +29,7 @@ defmodule DmhAi.Connectors.Stripe do
 
   use DmhAi.Connectors.MCPAdapter
   alias DmhAi.Tools.Manifest
-  alias DmhAi.Tools.Manifest.Verb
+  alias DmhAi.Tools.Manifest.Function
 
   @impl true
   def mcp_slug, do: "stripe"
@@ -42,8 +42,8 @@ defmodule DmhAi.Connectors.Stripe do
     %Manifest{
       connector: "stripe",
       region:    "universal",
-      verbs: %{
-        "customer.find" => %Verb{
+      functions: %{
+        "customer.find" => %Function{
           permission:    :read,
           callable_from: [:chat, :task],
           args: %{
@@ -52,7 +52,7 @@ defmodule DmhAi.Connectors.Stripe do
           },
           returns: %{customers: :list}
         },
-        "customer.create" => %Verb{
+        "customer.create" => %Function{
           permission:      :write,
           callable_from:   [:task],
           idempotency_key: :required,
@@ -63,7 +63,7 @@ defmodule DmhAi.Connectors.Stripe do
           returns: %{customer_id: :string},
           errors:  [:unauthorised, :rate_limited, :duplicate]
         },
-        "payment_intent.create" => %Verb{
+        "payment_intent.create" => %Function{
           permission:      :write,
           callable_from:   [:task],
           idempotency_key: :required,
@@ -75,7 +75,7 @@ defmodule DmhAi.Connectors.Stripe do
           returns: %{payment_intent_id: :string, client_secret: :string},
           errors:  [:unauthorised, :rate_limited, :duplicate]
         },
-        "refund.create" => %Verb{
+        "refund.create" => %Function{
           permission:      :write,
           callable_from:   [:task],
           idempotency_key: :required,
@@ -87,7 +87,7 @@ defmodule DmhAi.Connectors.Stripe do
           returns: %{refund_id: :string},
           errors:  [:unauthorised, :not_found, :duplicate]
         },
-        "subscription.find" => %Verb{
+        "subscription.find" => %Function{
           permission:    :read,
           callable_from: [:chat, :task],
           args: %{
@@ -96,7 +96,7 @@ defmodule DmhAi.Connectors.Stripe do
           },
           returns: %{subscriptions: :list}
         },
-        "product.find" => %Verb{
+        "product.find" => %Function{
           permission:    :read,
           callable_from: [:chat, :task],
           args: %{

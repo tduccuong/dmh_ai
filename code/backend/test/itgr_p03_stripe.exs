@@ -54,21 +54,21 @@ defmodule DmhAi.P03StripeTest do
   describe "manifest" do
     test "validates clean", do: assert :ok = Manifest.validate(StripeConn.manifest())
 
-    test "declares 6 verbs across customer/payment_intent/refund/subscription/product" do
-      verbs = StripeConn.manifest().verbs
-      assert Map.has_key?(verbs, "customer.find")
-      assert Map.has_key?(verbs, "customer.create")
-      assert Map.has_key?(verbs, "payment_intent.create")
-      assert Map.has_key?(verbs, "refund.create")
-      assert Map.has_key?(verbs, "subscription.find")
-      assert Map.has_key?(verbs, "product.find")
+    test "declares 6 functions across customer/payment_intent/refund/subscription/product" do
+      functions = StripeConn.manifest().functions
+      assert Map.has_key?(functions, "customer.find")
+      assert Map.has_key?(functions, "customer.create")
+      assert Map.has_key?(functions, "payment_intent.create")
+      assert Map.has_key?(functions, "refund.create")
+      assert Map.has_key?(functions, "subscription.find")
+      assert Map.has_key?(functions, "product.find")
     end
 
     test "every write is callable_from: [:task] with idempotency_key required" do
-      StripeConn.manifest().verbs
+      StripeConn.manifest().functions
       |> Enum.filter(fn {_, v} -> v.permission == :write end)
       |> Enum.each(fn {name, v} ->
-        assert v.callable_from == [:task], "write verb #{name} must be task-only"
+        assert v.callable_from == [:task], "write function #{name} must be task-only"
         assert v.idempotency_key == :required
       end)
     end
@@ -119,7 +119,7 @@ defmodule DmhAi.P03StripeTest do
     end
 
     test "payment_intent.create outside task → write_requires_task", %{admin_id: admin_id} do
-      assert {:error, %{error: "write_requires_task", verb: "stripe.payment_intent.create"}} =
+      assert {:error, %{error: "write_requires_task", function: "stripe.payment_intent.create"}} =
                Dispatcher.call("stripe.payment_intent.create",
                                %{"amount" => 2000, "currency" => "eur"},
                                %{user_id: admin_id})

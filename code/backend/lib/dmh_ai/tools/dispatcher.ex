@@ -5,20 +5,20 @@
 
 defmodule DmhAi.Tools.Dispatcher do
   @moduledoc """
-  Primitive 0.3's single chokepoint for every connector verb call.
+  Primitive 0.3's single chokepoint for every connector function call.
 
   The agent surface (chat handler, task runner) hands a typed call
-  `{verb, args, caller_ctx}` and Dispatcher does:
+  `{function, args, caller_ctx}` and Dispatcher does:
 
-    1. Resolve `verb` (namespace.path → connector + verb name).
+    1. Resolve `function` (namespace.path → connector + function name).
     2. Load the connector manifest (validated at registration time).
     3. **Rule 1 — Permission.** `Permissions.can?(user, action, ...)`;
        deny → audit + typed `permission_denied` envelope.
-    4. **Rule 2 — Write-requires-task.** `permission: :write` verbs
+    4. **Rule 2 — Write-requires-task.** `permission: :write` functions
        refuse with `write_requires_task` envelope when
        `caller_ctx.task_id` is nil.
     5. **Rule 3 — Idempotency.** For writes, compute
-       `sha256(task_id ‖ step_seq ‖ verb)` and pass to the adapter.
+       `sha256(task_id ‖ step_seq ‖ function)` and pass to the adapter.
     6. **Rule 4 — Credentials.** Look up the calling user's
        `user_credentials` for the connector; missing → typed
        `missing_credentials` envelope.
@@ -26,7 +26,7 @@ defmodule DmhAi.Tools.Dispatcher do
        Elixir route, when we add internal connectors).
     8. Normalise the response via the adapter shim.
 
-  Internal verbs (`*_task`, `fetch_index`, `run_script`, …) are
+  Internal functions (`*_task`, `fetch_index`, `run_script`, …) are
   out-of-scope for the dispatcher's rules — they're not in any
   manifest. They keep their existing dispatch path through
   `DmhAi.Tools.Registry`.
@@ -37,7 +37,7 @@ defmodule DmhAi.Tools.Dispatcher do
   connector modules, calls `manifest/0` on each, validates, and
   registers them into the dispatcher's in-memory table (ETS, keyed
   by connector slug). A manifest that fails `Manifest.validate/1`
-  logs a `manifest_violation` and is NOT registered — the verbs
+  logs a `manifest_violation` and is NOT registered — the functions
   become unreachable until the manifest is fixed.
   """
 
@@ -74,7 +74,7 @@ defmodule DmhAi.Tools.Dispatcher do
       case Manifest.validate(manifest) do
         :ok ->
           :ets.insert(@table, {manifest.connector, %{module: mod, manifest: manifest}})
-          Logger.info("[Dispatcher] registered connector=#{manifest.connector} verbs=#{map_size(manifest.verbs)}")
+          Logger.info("[Dispatcher] registered connector=#{manifest.connector} functions=#{map_size(manifest.functions)}")
           :ok
 
         {:error, {:manifest_violation, _conn, reason}} = err ->
@@ -117,35 +117,41 @@ defmodule DmhAi.Tools.Dispatcher do
   # ─── Dispatch ─────────────────────────────────────────────────────────────
 
   @doc """
-  Dispatch a verb call. `verb` is `"<connector>.<path>"` (e.g.
-  `"hubspot.contact.find"`). `args` is the verb's argument map.
+  Dispatch a function call. `function` is `"<connector>.<path>"` (e.g.
+  `"hubspot.contact.find"`). `args` is the function's argument map.
   `caller_ctx` carries `:user_id` (required), `:task_id` (optional
-  — active task id, required for write verbs), `:step_seq` (when
+  — active task id, required for write functions), `:step_seq` (when
   inside a task).
 
   Returns `{:ok, result}` or `{:error, envelope}`.
   """
   @spec call(String.t(), map(), map()) :: {:ok, term()} | {:error, map()}
-  def call(verb_name, args, caller_ctx) when is_binary(verb_name) do
-    with {:ok, connector_slug, verb_path} <- parse_verb(verb_name),
-         {:ok, entry}                     <- get_entry(connector_slug),
-         {:ok, verb}                      <- get_verb(entry, verb_path),
-         :ok                              <- check_callable_from(verb, caller_ctx, verb_name),
-         :ok                              <- check_permission(verb, caller_ctx, verb_name),
-         {:ok, args2}                     <- maybe_inject_idempotency(verb, args, caller_ctx, verb_name) do
-      entry.module.call(verb_path, args2, caller_ctx)
+  def call(function_name, args, caller_ctx) when is_binary(function_name) do
+    # `function_name` (outer) is the FULL `"<connector>.<path>"` form
+    # the caller passed. `function_path` (inner, after parse_function_name) is
+    # just the path part — what the connector's manifest keys on.
+    # Error envelopes embed the FULL `function_name` so the caller can
+    # cite back the exact string they invoked.
+    with {:ok, connector_slug, function_path} <- parse_function_name(function_name),
+         {:ok, entry}                         <- get_entry(connector_slug),
+         {:ok, function}                      <- get_function(entry, function_path, function_name),
+         :ok                                  <- check_capability_enabled(connector_slug, function_path, function_name, caller_ctx),
+         :ok                                  <- check_callable_from(function, caller_ctx, function_name),
+         :ok                                  <- check_permission(function, caller_ctx, function_name),
+         {:ok, args2}                         <- maybe_inject_idempotency(function, args, caller_ctx, function_name) do
+      entry.module.call(function_path, args2, caller_ctx)
     end
   end
 
   # ─── Private ──────────────────────────────────────────────────────────────
 
-  defp parse_verb(verb) do
-    case String.split(verb, ".", parts: 2) do
+  defp parse_function_name(function) do
+    case String.split(function, ".", parts: 2) do
       [connector, path] when connector != "" and path != "" ->
         {:ok, connector, path}
 
       _ ->
-        {:error, error_envelope(:unknown_verb, verb: verb)}
+        {:error, error_envelope(:unknown_function, function: function)}
     end
   end
 
@@ -156,32 +162,47 @@ defmodule DmhAi.Tools.Dispatcher do
     end
   end
 
-  defp get_verb(entry, verb_path) do
-    case entry.manifest.verbs[verb_path] do
-      %Manifest.Verb{} = v -> {:ok, v}
-      _ -> {:error, error_envelope(:unknown_verb, verb: verb_path)}
+  defp get_function(entry, function_path, _function_name) do
+    case entry.manifest.functions[function_path] do
+      %Manifest.Function{} = v -> {:ok, v}
+      _ -> {:error, error_envelope(:unknown_function, function: function_path)}
     end
   end
 
-  defp check_callable_from(%Manifest.Verb{callable_from: from}, ctx, verb) do
+  # Layer 3 of the 3-layer admin-policy enforcement. Even if a
+  # stale tool catalog or a hallucinated function name reaches the
+  # dispatcher, the call is refused with a typed envelope unless the
+  # admin's `enabled_capabilities` covers this function. Capability
+  # lookup is org-scoped per caller_ctx.
+  defp check_capability_enabled(slug, function_path, function_name, ctx) do
+    org_id = org_for_ctx(ctx)
+
+    if DmhAi.Connectors.Capabilities.function_enabled?(slug, function_path, org_id) do
+      :ok
+    else
+      {:error, error_envelope(:capability_disabled, function: function_name, connector: slug)}
+    end
+  end
+
+  defp check_callable_from(%Manifest.Function{callable_from: from}, ctx, function) do
     in_task? = is_binary(ctx[:task_id]) and ctx[:task_id] != ""
 
     cond do
       :task in from and in_task? -> :ok
       :chat in from and not in_task? -> :ok
       :task in from and not in_task? ->
-        # Rule 2 (HARD): write verb attempted outside an active task.
-        {:error, error_envelope(:write_requires_task, verb: verb,
+        # Rule 2 (HARD): write function attempted outside an active task.
+        {:error, error_envelope(:write_requires_task, function: function,
                                 hint: "open a task first via create_task, then retry")}
 
       true ->
-        {:error, error_envelope(:write_requires_task, verb: verb)}
+        {:error, error_envelope(:write_requires_task, function: function)}
     end
   end
 
-  defp check_permission(%Manifest.Verb{permission: perm}, ctx, verb) do
+  defp check_permission(%Manifest.Function{permission: perm}, ctx, function) do
     user_id = ctx[:user_id]
-    resource = {:verb, verb}
+    resource = {:function, function}
     action =
       case perm do
         :read  -> :read
@@ -192,32 +213,32 @@ defmodule DmhAi.Tools.Dispatcher do
     if Permissions.can?(user_id, action, resource) do
       :ok
     else
-      {:error, error_envelope(:permission_denied, verb: verb, required: perm)}
+      {:error, error_envelope(:permission_denied, function: function, required: perm)}
     end
   end
 
-  defp maybe_inject_idempotency(%Manifest.Verb{permission: :write,
-                                               idempotency_key: :required}, args, ctx, verb) do
+  defp maybe_inject_idempotency(%Manifest.Function{permission: :write,
+                                               idempotency_key: :required}, args, ctx, function) do
     task_id  = ctx[:task_id]
     step_seq = ctx[:step_seq] || 0
-    key = :crypto.hash(:sha256, "#{task_id}\0#{step_seq}\0#{verb}") |> Base.encode16(case: :lower)
+    key = :crypto.hash(:sha256, "#{task_id}\0#{step_seq}\0#{function}") |> Base.encode16(case: :lower)
     {:ok, Map.put(args, "__idempotency_key", key)}
   end
 
-  defp maybe_inject_idempotency(_verb, args, _ctx, _verb_name), do: {:ok, args}
+  defp maybe_inject_idempotency(_function, args, _ctx, _function_name), do: {:ok, args}
 
   defp error_envelope(:write_requires_task, opts) do
     %{
       error: "write_requires_task",
-      verb:  opts[:verb],
-      hint:  opts[:hint] || "this verb is only callable inside an active task"
+      function:  opts[:function],
+      hint:  opts[:hint] || "this function is only callable inside an active task"
     }
   end
 
   defp error_envelope(:permission_denied, opts) do
     %{
       error:    "permission_denied",
-      verb:     opts[:verb],
+      function:     opts[:function],
       required: opts[:required]
     }
   end
@@ -226,12 +247,24 @@ defmodule DmhAi.Tools.Dispatcher do
     %{error: "missing_credentials", connector: opts[:connector]}
   end
 
-  defp error_envelope(:unknown_verb, opts) do
-    %{error: "unknown_verb", verb: opts[:verb]}
+  defp error_envelope(:unknown_function, opts) do
+    %{error: "unknown_function", function: opts[:function]}
   end
 
   defp error_envelope(:connector_not_registered, opts) do
     %{error: "connector_not_registered", connector: opts[:connector]}
+  end
+
+  defp error_envelope(:capability_disabled, opts) do
+    %{
+      error:     "capability_disabled",
+      connector: opts[:connector],
+      function:  opts[:function],
+      hint:
+        "Admin disabled this capability for the org. The function is no longer " <>
+          "available. Tell the user to ask their admin to re-enable it via " <>
+          "External Connectors if they need it."
+    }
   end
 
   # Public exports used by adapters/tests.

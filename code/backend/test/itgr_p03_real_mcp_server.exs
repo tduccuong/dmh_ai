@@ -9,8 +9,8 @@ defmodule DmhAi.P03RealMCPServerTest do
 
     * MCP JSON-RPC envelope handling (initialize / tools/list /
       tools/call) over HTTP.
-    * VerbSpec-driven verbs (4 of 6 GW verbs).
-    * Custom-handler verbs (gmail.search fan-out,
+    * FunctionSpec-driven functions (4 of 6 GW functions).
+    * Custom-handler functions (gmail.search fan-out,
       gcal.find_free_slots slot computation, drive.upload
       multipart) — same stub catches all sub-calls because
       `GoogleWorkspace.MCPHandler` routes every HTTP request
@@ -18,7 +18,7 @@ defmodule DmhAi.P03RealMCPServerTest do
       `raw_request/2`.
     * Bearer token forwarding from the MCP request's
       Authorization header to every outbound vendor REST call.
-    * Per-verb request shape (URL, method, body) matches the
+    * Per-function request shape (URL, method, body) matches the
       vendor-grounded comments in
       `Connectors.GoogleWorkspace.MCPHandler`.
   """
@@ -85,10 +85,10 @@ defmodule DmhAi.P03RealMCPServerTest do
       assert %{"jsonrpc" => "2.0", "id" => 1, "result" => result} = resp.body
       assert result["protocolVersion"] == "2024-11-05"
       assert result["serverInfo"]["name"] == "dmh-ai-mcp-google_workspace"
-      assert result["serverInfo"]["verb_count"] == 6
+      assert result["serverInfo"]["function_count"] == 6
     end
 
-    test "tools/list returns 6 GW verbs by name", %{port: port} do
+    test "tools/list returns 6 GW functions by name", %{port: port} do
       resp = post_jsonrpc(port, %{"jsonrpc" => "2.0", "id" => 2, "method" => "tools/list"})
       tools = resp.body["result"]["tools"]
       names = Enum.map(tools, & &1["name"]) |> Enum.sort()
@@ -109,17 +109,17 @@ defmodule DmhAi.P03RealMCPServerTest do
       assert resp.body["error"]["code"] == -32601
     end
 
-    test "unknown verb returns -32601", %{port: port} do
+    test "unknown function returns -32601", %{port: port} do
       Task.start(fn ->
         post_jsonrpc(port, %{
           "jsonrpc" => "2.0",
           "id" => 4,
           "method" => "tools/call",
-          "params" => %{"name" => "nonexistent.verb", "arguments" => %{}}
+          "params" => %{"name" => "nonexistent.function", "arguments" => %{}}
         })
       end)
 
-      # Unknown verb is rejected BEFORE any HTTP stub call.
+      # Unknown function is rejected BEFORE any HTTP stub call.
       refute_receive {:rest_call, _, _}, 200
     end
   end
@@ -145,7 +145,7 @@ defmodule DmhAi.P03RealMCPServerTest do
       # 1. List call — assert URL + query + bearer + reply 2 ids.
       assert_receive {:rest_call, :get, opts, stub_pid}, 1_000
       assert Keyword.get(opts, :url) =~ "/gmail/v1/users/me/messages"
-      query = Keyword.get(opts, :query) || []
+      query = Keyword.get(opts, :params) || []
       assert {"q", "is:unread"} in query
       assert {"maxResults", 2} in query
       assert [{"authorization", "Bearer test-bearer"}] = Keyword.get(opts, :headers)
@@ -334,7 +334,7 @@ defmodule DmhAi.P03RealMCPServerTest do
 
       assert_receive {:rest_call, :get, opts, stub_pid}, 1_000
       assert Keyword.get(opts, :url) =~ "/drive/v3/files"
-      query = Keyword.get(opts, :query) || []
+      query = Keyword.get(opts, :params) || []
       assert {"q", "'folder-XYZ' in parents"} in query
 
       send(stub_pid, {:reply, :get,

@@ -84,10 +84,22 @@ defmodule DmhAi.Handlers.MeServices do
 
     with {:ok, oauth} <- fetch_oauth_row(slug),
          {:ok, mcp}   <- fetch_mcp_row(org_id, slug) do
+      # Layer 1 enforcement — the OAuth consent URL's scope list is
+      # the curated subset from admin's `enabled_capabilities`, NOT
+      # the connector's full surface. A user clicking Connect can't
+      # grant scopes admin didn't enable. Falls back to the static
+      # oauth_catalog scopes list for connectors that haven't
+      # migrated to capability groups yet.
+      scopes =
+        case DmhAi.Connectors.Capabilities.enabled_scopes(slug, org_id) do
+          []   -> oauth.scopes
+          list -> list
+        end
+
       asm = %{
         authorization_endpoint: oauth.auth_url,
         token_endpoint:         oauth.token_url,
-        scopes_supported:       oauth.scopes,
+        scopes_supported:       scopes,
         issuer:                 oauth.auth_url
       }
 
@@ -112,7 +124,7 @@ defmodule DmhAi.Handlers.MeServices do
           client_id:          oauth.client_id,
           client_secret:      oauth.client_secret,
           redirect_uri:       redirect_uri,
-          scopes:             oauth.scopes,
+          scopes:             scopes,
           flow_kind:          "connector_oauth",
           extra_auth_params:  oauth.extra_auth_params
         })

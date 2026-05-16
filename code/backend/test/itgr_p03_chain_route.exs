@@ -13,11 +13,11 @@ defmodule DmhAi.P03ChainRouteTest do
 
   Covers:
 
-    * Free-chat call (no task_id in ctx) to a write verb → typed
+    * Free-chat call (no task_id in ctx) to a write function → typed
       `write_requires_task` envelope (Rule 2 HARD enforced through
       the runtime entry).
-    * In-task call to a write verb → carries the dispatcher-injected
-      idempotency_key derived from (task_id, tool_call_id, verb).
+    * In-task call to a write function → carries the dispatcher-injected
+      idempotency_key derived from (task_id, tool_call_id, function).
     * Unknown connector prefix → falls through to the existing
       MCP.Client path (preserves pre-Phase-C behaviour).
   """
@@ -60,7 +60,7 @@ defmodule DmhAi.P03ChainRouteTest do
     {:ok, %{admin_id: admin_id}}
   end
 
-  describe "Registry.execute routes connector verbs through Dispatcher" do
+  describe "Registry.execute routes connector functions through Dispatcher" do
     test "free-chat write call → write_requires_task envelope", %{admin_id: admin_id} do
       # Free-chat tool_ctx: no :task_id. UserAgent's tool_ctx
       # builder ALWAYS sets :task_id (anchor_task_id_from_ctx
@@ -78,7 +78,7 @@ defmodule DmhAi.P03ChainRouteTest do
         flunk("MCP caller stub should never be hit when dispatcher refuses")
       end)
 
-      assert {:error, %{error: "write_requires_task", verb: "hubspot.deal.create"}} =
+      assert {:error, %{error: "write_requires_task", function: "hubspot.deal.create"}} =
                Registry.execute("hubspot.deal.create",
                                 %{"contact_id" => "c-1", "amount" => 5000},
                                 tool_ctx)
@@ -101,13 +101,13 @@ defmodule DmhAi.P03ChainRouteTest do
         assert is_binary(args["__idempotency_key"])
 
         # Recompute the expected key — proves it's derived from
-        # (task_id, step_seq, verb) per the dispatcher contract.
+        # (task_id, step_seq, function) per the dispatcher contract.
         expected =
           :crypto.hash(:sha256, "task-realdeal\0#{tool_call_id}\0hubspot.deal.create")
           |> Base.encode16(case: :lower)
 
         assert args["__idempotency_key"] == expected,
-               "idempotency_key must be sha256(task_id ‖ step_seq ‖ verb)"
+               "idempotency_key must be sha256(task_id ‖ step_seq ‖ function)"
 
         {:ok, %{"deal_id" => "d-42"}}
       end)

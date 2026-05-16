@@ -27,7 +27,7 @@ UI.
 
 ### 2. Enable the three APIs
 
-Each of the GW connector's 6 verbs lives in one of three APIs.
+Each of the GW connector's 6 functions lives in one of three APIs.
 Enable all three:
 
 1. **Gmail API** — <https://console.cloud.google.com/apis/library/gmail.googleapis.com>
@@ -105,11 +105,13 @@ Click **Enable** on each. Wait ~30 seconds per API for activation.
    you're pointing at an external Google MCP endpoint.
 6. Tick **Enabled** if not already.
 7. Click **Save**.
-8. Click **Test connection**. Expected: ✅ "Reachable — 6 verbs
-   from server dmh-ai-mcp-google_workspace". If you see a
-   network error, double-check that `DMH_AI_ENABLE_REAL_MCP=true`
-   was set when the stage was installed (otherwise the
-   in-process MCPServer isn't running).
+8. Click **Test connection**. Expected: ✅ "Reachable — 6 functions
+   exposed by dmh-ai-mcp-google_workspace." If you see a
+   network error, double-check the MCP URL field — the
+   in-process REST translator runs at the pre-filled default
+   (`http://127.0.0.1:8087/google_workspace`); production-only
+   installs that point at Google's hosted MCP URL need that URL
+   pasted in correctly.
 
 ### 6. Sales staff connects their own Google account
 

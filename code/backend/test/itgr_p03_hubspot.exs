@@ -8,7 +8,7 @@ defmodule DmhAi.P03HubSpotTest do
   Integration tests for the HubSpot connector (Universal Region,
   Case B). Asserts:
 
-    * Manifest passes `Manifest.validate/1` — every write verb has
+    * Manifest passes `Manifest.validate/1` — every write function has
       `callable_from: [:task]` + `idempotency_key: :required`.
     * Connector registers with the Dispatcher (no `manifest_violation`).
     * Vendor-specific error remap: `OBJECT_ALREADY_EXISTS` →
@@ -52,26 +52,26 @@ defmodule DmhAi.P03HubSpotTest do
       assert :ok = Manifest.validate(HubSpot.manifest())
     end
 
-    test "declares 6 verbs at the Primitive 0.3 surface" do
-      verbs = HubSpot.manifest().verbs
+    test "declares 6 functions at the Primitive 0.3 surface" do
+      functions = HubSpot.manifest().functions
 
-      assert Map.has_key?(verbs, "contact.find")
-      assert Map.has_key?(verbs, "contact.create")
-      assert Map.has_key?(verbs, "deal.find")
-      assert Map.has_key?(verbs, "deal.create")
-      assert Map.has_key?(verbs, "deal.update")
-      assert Map.has_key?(verbs, "activity.log")
+      assert Map.has_key?(functions, "contact.find")
+      assert Map.has_key?(functions, "contact.create")
+      assert Map.has_key?(functions, "deal.find")
+      assert Map.has_key?(functions, "deal.create")
+      assert Map.has_key?(functions, "deal.update")
+      assert Map.has_key?(functions, "activity.log")
     end
 
-    test "every write verb is `callable_from: [:task]` (HARD Rule 2)" do
-      HubSpot.manifest().verbs
+    test "every write function is `callable_from: [:task]` (HARD Rule 2)" do
+      HubSpot.manifest().functions
       |> Enum.filter(fn {_, v} -> v.permission == :write end)
       |> Enum.each(fn {name, v} ->
         assert v.callable_from == [:task],
-               "verb #{name} must be callable_from: [:task] only; got #{inspect(v.callable_from)}"
+               "function #{name} must be callable_from: [:task] only; got #{inspect(v.callable_from)}"
 
         assert v.idempotency_key == :required,
-               "verb #{name} must declare idempotency_key: :required"
+               "function #{name} must declare idempotency_key: :required"
       end)
     end
 
@@ -119,7 +119,7 @@ defmodule DmhAi.P03HubSpotTest do
       :ok
     end
 
-    test "read verb (contact.find) from free chat succeeds", %{admin_id: admin_id} do
+    test "read function (contact.find) from free chat succeeds", %{admin_id: admin_id} do
       Application.put_env(:dmh_ai, :__mcp_caller_stub__, fn "hubspot", "contact.find", args, _creds ->
         assert args["query"] == "alice@acme.de"
         {:ok, %{"contacts" => [%{"id" => "c-1", "email" => "alice@acme.de"}]}}
@@ -131,14 +131,14 @@ defmodule DmhAi.P03HubSpotTest do
                                %{user_id: admin_id})
     end
 
-    test "write verb (deal.create) outside an active task is refused", %{admin_id: admin_id} do
-      assert {:error, %{error: "write_requires_task", verb: "hubspot.deal.create"}} =
+    test "write function (deal.create) outside an active task is refused", %{admin_id: admin_id} do
+      assert {:error, %{error: "write_requires_task", function: "hubspot.deal.create"}} =
                Dispatcher.call("hubspot.deal.create",
                                %{"contact_id" => "c-1", "amount" => 5000},
                                %{user_id: admin_id})
     end
 
-    test "write verb inside an active task carries the injected idempotency_key",
+    test "write function inside an active task carries the injected idempotency_key",
          %{admin_id: admin_id} do
       Application.put_env(:dmh_ai, :__mcp_caller_stub__, fn "hubspot", "deal.create", args, _creds ->
         assert is_binary(args["__idempotency_key"]),

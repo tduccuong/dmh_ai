@@ -91,10 +91,10 @@ Live run (2026-05-14) produced:
 The event id **`evt_mock_dmh_demo_001`** is unique to the mock
 fixture (`Connectors.Mock.Fixtures.GoogleWorkspace.sentinels()`).
 Its presence in the chat reply proves the dispatcher routed both
-verbs through the real Caller to the mock and back. The
+functions through the real Caller to the mock and back. The
 `gcal.create_event` write was gated correctly — the model opened
-a task BEFORE invoking the write verb; the dispatcher injected
-an `__idempotency_key` derived from `(task_id, step_seq, verb)`
+a task BEFORE invoking the write function; the dispatcher injected
+an `__idempotency_key` derived from `(task_id, step_seq, function)`
 so a retry of the same step won't double-book.
 
 ## Verifying (acceptance checklist)
@@ -177,7 +177,7 @@ into an odd state; otherwise just open a fresh Tab B session.
   anchor `events.insert`, idempotency-key-required write.
 - `0.3 Connectors.MCPAdapter.Caller.do_real_invoke/5` — same
   real-transport bridge used by demo 01.
-- Composite-verb composition within one chain: read → task →
+- Composite-function composition within one chain: read → task →
   write, all in a single user message.
 
 ## Known gaps
@@ -188,12 +188,12 @@ into an odd state; otherwise just open a fresh Tab B session.
   model picked its own start time within the 9–17 window and
   invoked `create_event` with that, ignoring the slot the read
   returned. Reality: the model didn't strictly compose the two
-  verbs; it used the user's window + duration to pick a slot
+  functions; it used the user's window + duration to pick a slot
   independently. For the next-iteration demo, tighten the
   prompt to force "use the slot from findFreeSlots verbatim".
 - **`createEvent`'s reply doesn't yet expose the
   `__idempotency_key`** in the chat trace. The key is threaded
-  in the verb args but not surfaced to the user — fine for
+  in the function args but not surfaced to the user — fine for
   production (idempotency is a runtime guarantee, not a user
   affordance) but means the customer can't visually verify
   Rule 3 from the chat alone. The audit log row carries it.

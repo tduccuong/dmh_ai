@@ -7,7 +7,7 @@ defmodule DmhAi.Connectors.Mock.Fixtures.GoogleWorkspace do
   @moduledoc """
   Deterministic, fixture-specific canned responses for the Mock
   Vendor MCP server, shaped for the Google Workspace connector
-  verbs.
+  functions.
 
   Every response value is a map (or 1-arg function) returning the
   shape `Connectors.MCPAdapter.Caller.normalize_mcp_result/1`
@@ -56,7 +56,7 @@ defmodule DmhAi.Connectors.Mock.Fixtures.GoogleWorkspace do
     }
   end
 
-  # ── Per-verb fixtures ────────────────────────────────────────────────
+  # ── Per-function fixtures ────────────────────────────────────────────────
 
   defp gmail_search(args) do
     %{nina_email: nina, tobias_email: tobias} = sentinels()

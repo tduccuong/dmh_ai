@@ -10,18 +10,18 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
 
   ## Vendor source-of-truth
 
-  Each verb is grounded in a documented Google REST API endpoint;
+  Each function is grounded in a documented Google REST API endpoint;
   the MCP server (Google's official Cloud MCP catalog, or our own
   thin wrapper) is a JSON-RPC translation layer over those
-  endpoints. Verb names in this manifest follow SME-ergonomic
+  endpoints. Function names in this manifest follow SME-ergonomic
   shapes — the wrapper translates each manifest arg to the
   endpoint's actual parameter name. The `# vendor: <endpoint>`
-  comment on every verb is the auditable link back to the docs.
+  comment on every function is the auditable link back to the docs.
 
-  Verb-to-endpoint mapping (also documented in
+  Function-to-endpoint mapping (also documented in
   `arch_wiki/dmh_ai/sme/layer-0.md` §0.3.2):
 
-    | Verb                  | Endpoint                                          |
+    | Function                  | Endpoint                                          |
     |-----------------------|---------------------------------------------------|
     | gmail.search          | users.messages.list (Gmail API v1)                |
     | gmail.send            | users.messages.send (Gmail API v1)                |
@@ -41,7 +41,7 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
 
   use DmhAi.Connectors.MCPAdapter
   alias DmhAi.Tools.Manifest
-  alias DmhAi.Tools.Manifest.Verb
+  alias DmhAi.Tools.Manifest.Function
 
   @impl true
   def mcp_slug, do: "google_workspace"
@@ -51,16 +51,16 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
     %Manifest{
       connector: "google_workspace",
       region:    "universal",
-      verbs: %{
+      functions: %{
         # vendor: GET https://gmail.googleapis.com/gmail/v1/users/me/messages
         # docs:   https://developers.google.com/gmail/api/reference/rest/v1/users.messages/list
         # shim translation: manifest arg `query` → API arg `q` (Gmail
         # search syntax); `limit` → `maxResults`. Returns the raw
         # `messages[]` list with `id` + `threadId`; if the wrapper
         # fans out to users.messages.get for headers, that's an
-        # opaque optimisation — the verb's return shape doesn't
+        # opaque optimisation — the function's return shape doesn't
         # promise headers in v1.
-        "gmail.search" => %Verb{
+        "gmail.search" => %Function{
           permission:    :read,
           callable_from: [:chat, :task],
           args: %{
@@ -79,7 +79,7 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
         # v1; HTML alternative + attachments deferred (would
         # require multipart MIME — out of scope for the first
         # vertical demo).
-        "gmail.send" => %Verb{
+        "gmail.send" => %Function{
           permission:      :write,
           callable_from:   [:task],
           idempotency_key: :required,
@@ -103,7 +103,7 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
         # 1:1 translation. `between_from` / `between_to` must be
         # RFC-3339 with timezone (e.g.
         # `2026-05-14T09:00:00+02:00`).
-        "gcal.find_free_slots" => %Verb{
+        "gcal.find_free_slots" => %Function{
           permission:    :read,
           callable_from: [:chat, :task],
           args: %{
@@ -124,7 +124,7 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
         # `attendees` → list of `%{"email" => ...}` objects.
         # Calendar id defaults to `primary` — multi-calendar
         # creation deferred.
-        "gcal.create_event" => %Verb{
+        "gcal.create_event" => %Function{
           permission:      :write,
           callable_from:   [:task],
           idempotency_key: :required,
@@ -145,7 +145,7 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
         # as `"'<folder_id>' in parents"`; manifest arg `query`
         # passes through verbatim into `q` (Drive search syntax).
         # If both are provided the shim ANDs them.
-        "drive.list" => %Verb{
+        "drive.list" => %Function{
           permission:    :read,
           callable_from: [:chat, :task],
           args: %{
@@ -165,7 +165,7 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
         # omitted. Resumable upload (`uploadType=resumable`) is
         # deferred until file-size > 5 MB becomes a real
         # constraint.
-        "drive.upload" => %Verb{
+        "drive.upload" => %Function{
           permission:      :write,
           callable_from:   [:task],
           idempotency_key: :required,
@@ -215,17 +215,16 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
   def remap_error(_), do: :passthrough
 
   @doc """
-  OAuth catalog descriptor consumed by
-  `Connectors.OAuthCatalogSeed.upsert!/1` at boot. The scope set
-  here mirrors what the per-verb manifest declares; expanding the
-  manifest with a new scope-using verb means adding the scope here
-  too.
+  OAuth catalog descriptor — vendor facts only. Consumed by
+  `Connectors.OAuthCatalogSeed.upsert!/1` at boot to populate the
+  oauth_catalog row's vendor-metadata columns (endpoints, scopes,
+  host_match, etc.). Credentials (`client_id`, `client_secret`)
+  are operator-set via the External Connectors admin page; the
+  seeder never reads or writes them.
 
-  Operator supplies `DMH_AI_GW_CLIENT_ID` /
-  `DMH_AI_GW_CLIENT_SECRET` from their own Google Cloud project
-  (web-application OAuth client). On a fresh install with these
-  unset, the catalog row exists but with empty client fields —
-  authorize_service will fail-loud when the user tries.
+  The scope set here mirrors what the per-function manifest
+  declares; expanding the manifest with a new scope-using
+  function means adding the scope here too.
 
   `access_type=offline` + `prompt=consent` ensure a refresh token
   is returned on every grant (Google omits it on subsequent
@@ -246,8 +245,6 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
         "https://www.googleapis.com/auth/drive.readonly",
         "https://www.googleapis.com/auth/drive.file"
       ],
-      client_id_env:          "DMH_AI_GW_CLIENT_ID",
-      client_secret_env:      "DMH_AI_GW_CLIENT_SECRET",
       userinfo_endpoint:      "https://openidconnect.googleapis.com/v1/userinfo",
       userinfo_field_path:    "email",
       extra_auth_params:      %{"access_type" => "offline", "prompt" => "consent"}
@@ -255,22 +252,109 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
   end
 
   @doc """
-  MCP catalog descriptor consumed by
-  `Connectors.MCPCatalogSeed.upsert!/1` at boot. The MCP URL is
-  read from `DMH_AI_GW_MCP_URL` — in production this points at
-  Google's official Workspace MCP endpoint; in stage / demo it
-  points at `Connectors.Mock.VendorMCPServer` running on the
-  bind host.
+  MCP catalog descriptor — vendor facts only. Consumed by
+  `Connectors.MCPCatalogSeed.upsert!/1` at boot to populate the
+  mcp_catalog row's vendor-metadata columns. The `mcp_url`
+  (where the vendor's MCP server lives) is operator-set via the
+  External Connectors admin page — in production it points at
+  Google's official Workspace MCP endpoint; in stage / demo
+  the admin pastes the local `Connectors.Mock.VendorMCPServer`
+  URL. The seeder never writes mcp_url.
   """
   def mcp_catalog_descriptor do
     %{
       slug:        "google_workspace",
       name:        "Google Workspace",
       description: "Gmail, Calendar, and Drive via the Google MCP server",
-      mcp_url_env: "DMH_AI_GW_MCP_URL",
       auth_kind:   :oauth,
       categories:  ["productivity", "email", "calendar", "storage"]
     }
+  end
+
+  @doc """
+  Where the GW MCP server is reachable in *this* deployment.
+  DMH-AI hosts the Google Workspace MCP as an in-process REST
+  translator (`DmhAi.Connectors.MCPServer`), so we know the URL
+  without the admin having to look it up. The FE pre-fills the
+  External Connectors form's MCP URL field with this value when
+  the row is empty.
+
+  Admin can override the pre-fill (e.g. point at the mock
+  `127.0.0.1:8086` during a demo, or Google's official Cloud
+  MCP URL when it goes GA); the DB row wins after the first
+  Save.
+  """
+  @spec default_mcp_url() :: String.t()
+  def default_mcp_url do
+    port = System.get_env("DMH_AI_REAL_MCP_PORT") || "8087"
+    "http://127.0.0.1:#{port}/google_workspace"
+  end
+
+  @doc """
+  Capability groups this connector exposes. Each group bundles:
+    * `id` — short slug used in `mcp_catalog.enabled_capabilities`.
+    * `display_name` / `description` — admin-facing copy.
+    * `scopes` — OAuth scopes requested at Connect time when this
+       capability is enabled.
+    * `functions` — manifest function names that belong to this
+       group. Layer-2 tools_list filter + Layer-3 dispatcher gate
+       both consult this list to decide visibility/executability.
+    * `vendor_prereq` — vendor-side setup (API to enable in Cloud
+       Console). Rendered inline on each capability row in the
+       admin FE so the admin clicks through without a separate
+       checklist.
+
+  Admin curates which subset to expose via External Connectors;
+  three enforcement layers (OAuth scope at Connect, tool catalog
+  filter, dispatcher gate) all read from
+  `mcp_catalog.enabled_capabilities` for the slug.
+  """
+  @spec capabilities() :: [map()]
+  def capabilities do
+    [
+      %{
+        id:           "gmail",
+        display_name: "Gmail",
+        description:  "Read inbox messages and send mail on the user's behalf.",
+        scopes: [
+          "https://www.googleapis.com/auth/gmail.readonly",
+          "https://www.googleapis.com/auth/gmail.send"
+        ],
+        functions: ["gmail.search", "gmail.send"],
+        vendor_prereq: %{
+          label:      "Gmail API",
+          enable_url: "https://console.cloud.google.com/apis/library/gmail.googleapis.com"
+        }
+      },
+      %{
+        id:           "calendar",
+        display_name: "Calendar",
+        description:  "Read availability and create calendar events.",
+        scopes: [
+          "https://www.googleapis.com/auth/calendar.readonly",
+          "https://www.googleapis.com/auth/calendar.events"
+        ],
+        functions: ["gcal.find_free_slots", "gcal.create_event"],
+        vendor_prereq: %{
+          label:      "Calendar API",
+          enable_url: "https://console.cloud.google.com/apis/library/calendar-json.googleapis.com"
+        }
+      },
+      %{
+        id:           "drive",
+        display_name: "Drive",
+        description:  "List Drive files and upload new ones.",
+        scopes: [
+          "https://www.googleapis.com/auth/drive.readonly",
+          "https://www.googleapis.com/auth/drive.file"
+        ],
+        functions: ["drive.list", "drive.upload"],
+        vendor_prereq: %{
+          label:      "Drive API",
+          enable_url: "https://console.cloud.google.com/apis/library/drive.googleapis.com"
+        }
+      }
+    ]
   end
 
   @doc """
@@ -293,8 +377,8 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
 
   @doc """
   Points the in-process `Connectors.MCPServer` at the connector's
-  REST verb handler. Returns the module that exposes
-  `handler/0` (the `slug` + `verbs` map the server registers). The
+  REST function handler. Returns the module that exposes
+  `handler/0` (the `slug` + `functions` map the server registers). The
   `MCPServer` boot path enumerates every connector exposing this
   callback; no central list to update when a connector is added.
   """

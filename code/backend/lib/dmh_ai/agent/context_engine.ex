@@ -331,10 +331,15 @@ defmodule DmhAi.Agent.ContextEngine do
     end
   end
 
-  # MCP section — one bullet per attached server with alias + URL.
-  # `connect_mcp` takes a URL, not a target, so the URL is what the
-  # model copies. `[needs_auth]` surfaces re-auth state so the model
-  # can call `connect_mcp` to recover.
+  # MCP section — one bullet per authorized server. Each row carries
+  # the slug plus the connector's self-description (read from the
+  # connector module's `mcp_catalog_descriptor.description` field
+  # via the `mcp_catalog` row); function names are NOT listed
+  # because they appear in the model's tools catalog post-attach
+  # as `<slug>.<function_name>`. Rows whose slug isn't a registered
+  # Universal Region connector (user-added free-form URL) render
+  # description-less. `[needs_auth]` surfaces re-auth state so the
+  # model can call `connect_mcp` to recover.
   defp format_mcp_section(user_id) do
     services = DmhAi.MCP.Registry.list_authorized(user_id)
 
@@ -345,23 +350,38 @@ defmodule DmhAi.Agent.ContextEngine do
       _ ->
         rows =
           services
-          |> Enum.map(fn s ->
-            tag =
-              case s.status do
-                "needs_auth" -> " [needs_auth]"
-                _            -> ""
-              end
-
-            "- slug=`#{s.alias}`#{tag}"
-          end)
+          |> Enum.map(&format_mcp_row/1)
           |> Enum.sort()
           |> Enum.join("\n")
 
-        "**MCP** — already-authorized servers re-attach to the current " <>
-          "task via `connect_mcp(slug: \"<slug>\")` using the slug below " <>
-          "(NOT a URL — these services are already authorised, you're " <>
-          "binding the existing authorisation to this task):\n\n" <>
+        "**MCP** — these MCP servers are already authorized for this " <>
+          "user. Each exposes typed actions on a specific external " <>
+          "system. When the request maps to a slug's scope, attach " <>
+          "with `connect_mcp(slug: \"<slug>\")` — that's the deployment's " <>
+          "source of truth for everything in scope, faster than " <>
+          "`web_search`. After attach, the connector's typed functions " <>
+          "appear in your tools catalog as `<slug>.<function_name>`.\n\n" <>
           rows
+    end
+  end
+
+  defp format_mcp_row(%{alias: alias_, status: status}) do
+    tag = if status == "needs_auth", do: " [needs_auth]", else: ""
+
+    case mcp_description_for(alias_) do
+      nil  -> "- slug=`#{alias_}`#{tag}"
+      desc -> "- slug=`#{alias_}`#{tag} — #{desc}"
+    end
+  end
+
+  # Read the connector's self-description from `mcp_catalog`.
+  # Returns nil for slugs whose row doesn't carry a description
+  # (e.g. free-form URLs the user attached via `connect_mcp(url:)`
+  # — those rows aren't seeded by a connector module).
+  defp mcp_description_for(slug) when is_binary(slug) do
+    case DmhAi.MCP.Catalog.get_by_slug(slug) do
+      %{description: d} when is_binary(d) and d != "" -> d
+      _ -> nil
     end
   end
 

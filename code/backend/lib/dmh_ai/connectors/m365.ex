@@ -8,7 +8,7 @@ defmodule DmhAi.Connectors.M365 do
   Microsoft 365 connector (Universal Region, Case B — Microsoft
   Graph API).
 
-  Six verbs at the SME-relevant Graph slice:
+  Six functions at the SME-relevant Graph slice:
 
     mail.search           [read]   list / search messages
     mail.send             [write]  send a message
@@ -25,7 +25,7 @@ defmodule DmhAi.Connectors.M365 do
 
   use DmhAi.Connectors.MCPAdapter
   alias DmhAi.Tools.Manifest
-  alias DmhAi.Tools.Manifest.Verb
+  alias DmhAi.Tools.Manifest.Function
 
   @impl true
   def mcp_slug, do: "microsoft"
@@ -35,8 +35,8 @@ defmodule DmhAi.Connectors.M365 do
     %Manifest{
       connector: "m365",
       region:    "universal",
-      verbs: %{
-        "mail.search" => %Verb{
+      functions: %{
+        "mail.search" => %Function{
           permission:    :read,
           callable_from: [:chat, :task],
           args: %{
@@ -46,7 +46,7 @@ defmodule DmhAi.Connectors.M365 do
           returns: %{messages: :list},
           scopes:  ["Mail.Read"]
         },
-        "mail.send" => %Verb{
+        "mail.send" => %Function{
           permission:      :write,
           callable_from:   [:task],
           idempotency_key: :required,
@@ -59,7 +59,7 @@ defmodule DmhAi.Connectors.M365 do
           errors:  [:unauthorised, :rate_limited, :upstream_5xx],
           scopes:  ["Mail.Send"]
         },
-        "cal.find_free_slots" => %Verb{
+        "cal.find_free_slots" => %Function{
           permission:    :read,
           callable_from: [:chat, :task],
           args: %{
@@ -71,7 +71,7 @@ defmodule DmhAi.Connectors.M365 do
           returns: %{slots: :list},
           scopes:  ["Calendars.Read"]
         },
-        "cal.create_event" => %Verb{
+        "cal.create_event" => %Function{
           permission:      :write,
           callable_from:   [:task],
           idempotency_key: :required,
@@ -85,7 +85,7 @@ defmodule DmhAi.Connectors.M365 do
           errors:  [:unauthorised, :rate_limited],
           scopes:  ["Calendars.ReadWrite"]
         },
-        "files.list" => %Verb{
+        "files.list" => %Function{
           permission:    :read,
           callable_from: [:chat, :task],
           args: %{
@@ -94,7 +94,7 @@ defmodule DmhAi.Connectors.M365 do
           returns: %{items: :list},
           scopes:  ["Files.Read.All"]
         },
-        "files.upload" => %Verb{
+        "files.upload" => %Function{
           permission:      :write,
           callable_from:   [:task],
           idempotency_key: :required,

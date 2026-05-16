@@ -411,6 +411,8 @@ defmodule DmhAi.Agent.SystemPrompt do
     <connect_mcp>
     `connect_mcp(url, alias?)` attaches an MCP server (services that speak JSON-RPC `initialize` / `tools/list` / `tools/call`) to the current task.
 
+    **Authorized-connector precedence — check `<authorized_services>` FIRST.** Each MCP slug listed there exposes typed actions on a specific external system; the description on each row tells you its scope. When the user's request falls within an authorized slug's scope, call `connect_mcp(slug: "<slug>")` directly — no URL resolution, no `web_search`, no inventing URLs. A connector is the deployment's source of truth for everything in its scope; `web_search` is the fallback only when no authorized connector covers the request.
+
     **You must resolve a concrete URL before calling.** When the user names a service rather than typing a URL, run this resolution cascade — IN ORDER, stopping at the first that yields an authoritative URL:
 
     1. **`fetch_index`** — the operator's curated KB may already document the service's MCP endpoint for this deployment. Try this first.

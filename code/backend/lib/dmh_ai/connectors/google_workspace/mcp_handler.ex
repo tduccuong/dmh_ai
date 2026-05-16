@@ -5,18 +5,18 @@
 
 defmodule DmhAi.Connectors.GoogleWorkspace.MCPHandler do
   @moduledoc """
-  Verb-spec map for the Google Workspace connector consumed by the
-  generic `Connectors.MCPServer`. Each verb declares a
-  `VerbSpec` — most are 1:1 mappings to a Gmail v1 / Calendar v3 /
+  Function-spec map for the Google Workspace connector consumed by the
+  generic `Connectors.MCPServer`. Each function declares a
+  `FunctionSpec` — most are 1:1 mappings to a Gmail v1 / Calendar v3 /
   Drive v3 endpoint; three need custom orchestration (fan-out
   gmail.search, slot computation on freebusy, multipart drive
   upload). The custom logic lives here, not in the bridge.
 
-  Vendor anchors per verb match `Connectors.GoogleWorkspace`'s
+  Vendor anchors per function match `Connectors.GoogleWorkspace`'s
   manifest comments — same `# vendor: …` URL grounding.
   """
 
-  alias DmhAi.Connectors.MCPServer.{ErrorMap, RestBridge, VerbSpec}
+  alias DmhAi.Connectors.MCPServer.{ErrorMap, RestBridge, FunctionSpec}
   require Logger
 
   @gmail_base    "https://gmail.googleapis.com/gmail/v1/users/me"
@@ -30,27 +30,27 @@ defmodule DmhAi.Connectors.GoogleWorkspace.MCPHandler do
   """
   @spec handler() :: DmhAi.Connectors.MCPServer.Registry.handler()
   def handler do
-    %{slug: "google_workspace", verbs: verbs()}
+    %{slug: "google_workspace", functions: functions()}
   end
 
-  @spec verbs() :: %{required(String.t()) => VerbSpec.t()}
-  def verbs do
+  @spec functions() :: %{required(String.t()) => FunctionSpec.t()}
+  def functions do
     %{
-      "gmail.search" => %VerbSpec{
+      "gmail.search" => %FunctionSpec{
         handler: &gmail_search/2,
         doc:     "List Gmail messages matching the query, with sender + subject headers."
       },
-      "gmail.send" => %VerbSpec{
+      "gmail.send" => %FunctionSpec{
         method:  :post,
         url:     "#{@gmail_base}/messages/send",
         request: &gmail_send_request/2,
         doc:     "Send a plain-text Gmail message."
       },
-      "gcal.find_free_slots" => %VerbSpec{
+      "gcal.find_free_slots" => %FunctionSpec{
         handler: &gcal_find_free_slots/2,
         doc:     "List free slots of `duration_min` length within a window."
       },
-      "gcal.create_event" => %VerbSpec{
+      "gcal.create_event" => %FunctionSpec{
         method:  :post,
         url:     "#{@calendar_base}/calendars/primary/events",
         request: &gcal_create_event_request/2,
@@ -58,7 +58,7 @@ defmodule DmhAi.Connectors.GoogleWorkspace.MCPHandler do
                     s, _b when s in 200..299 -> {:ok, %{}} end,
         doc:     "Create a Calendar event on the primary calendar."
       },
-      "drive.list" => %VerbSpec{
+      "drive.list" => %FunctionSpec{
         method:  :get,
         url:     "#{@drive_base}/files",
         request: &drive_list_request/2,
@@ -66,7 +66,7 @@ defmodule DmhAi.Connectors.GoogleWorkspace.MCPHandler do
                     s, _b when s in 200..299 -> {:ok, %{}} end,
         doc:     "List Drive files matching a folder or query."
       },
-      "drive.upload" => %VerbSpec{
+      "drive.upload" => %FunctionSpec{
         handler: &drive_upload/2,
         doc:     "Upload a file to Drive (multipart)."
       }
@@ -190,8 +190,8 @@ defmodule DmhAi.Connectors.GoogleWorkspace.MCPHandler do
 
   # Walk the [from, to] window, skipping over busy intervals; emit
   # every (start, start+duration) pair where start+duration ≤ next
-  # busy boundary. Naive but adequate for the verb's contract; if
-  # SMEs need ranked slots / preferences, that's a separate verb.
+  # busy boundary. Naive but adequate for the function's contract; if
+  # SMEs need ranked slots / preferences, that's a separate function.
   defp compute_free_slots(from_iso, to_iso, duration_min, busy_intervals) do
     with {:ok, from_dt, _} <- DateTime.from_iso8601(from_iso),
          {:ok, to_dt, _}   <- DateTime.from_iso8601(to_iso) do
@@ -298,7 +298,7 @@ defmodule DmhAi.Connectors.GoogleWorkspace.MCPHandler do
       |> Enum.join(" and ")
 
     query = if q == "", do: [], else: [{"q", q}]
-    [query: query ++ [{"pageSize", Map.get(args, "limit", 25)}]]
+    [params: query ++ [{"pageSize", Map.get(args, "limit", 25)}]]
   end
 
   # ─── drive.upload — multipart upload (metadata + content parts) ───────
@@ -343,7 +343,7 @@ defmodule DmhAi.Connectors.GoogleWorkspace.MCPHandler do
 
   # HTTP sub-calls go through RestBridge helpers so the test stub
   # (`:__rest_bridge_http_stub__`) intercepts every outbound
-  # request from this handler — both VerbSpec-driven verbs AND
+  # request from this handler — both FunctionSpec-driven functions AND
   # the custom-handler fan-outs / multipart uploads.
 
   defp bare_get(url, query, ctx),     do: RestBridge.simple_get(url, query, ctx)

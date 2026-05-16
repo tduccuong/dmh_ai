@@ -9,7 +9,7 @@ defmodule DmhAi.Connectors.Registry do
   the `DmhAi.Tools.Dispatcher`. A connector module is registered
   iff its manifest passes `DmhAi.Tools.Manifest.validate/1`; a
   failing manifest is logged as `manifest_violation` and the
-  connector's verbs become unreachable until the manifest is
+  connector's functions become unreachable until the manifest is
   fixed — never silently mis-registered.
 
   Adding a new Universal Region connector is one entry in
@@ -61,4 +61,30 @@ defmodule DmhAi.Connectors.Registry do
   @doc "List of all Universal Region connector modules (compile-time)."
   @spec universal_modules() :: [module()]
   def universal_modules, do: @universal_connectors
+
+  @doc """
+  Resolve a slug back to its connector module. `nil` when the slug
+  isn't a Universal Region connector. Used by the `connect_mcp`
+  dispatcher to decide between the in-process attach path and the
+  vendor-hosted discover path.
+  """
+  @spec module_for_slug(String.t()) :: module() | nil
+  def module_for_slug(slug) when is_binary(slug) do
+    Enum.find(@universal_connectors, fn mod ->
+      function_exported?(mod, :mcp_slug, 0) and mod.mcp_slug() == slug
+    end)
+  end
+
+  @doc """
+  True when the slug's connector module hosts its MCP server
+  in-process (it exports `mcp_handler_module/0`). False for
+  vendor-hosted Case-B connectors and for unknown slugs.
+  """
+  @spec in_process?(String.t()) :: boolean()
+  def in_process?(slug) when is_binary(slug) do
+    case module_for_slug(slug) do
+      nil -> false
+      mod -> function_exported?(mod, :mcp_handler_module, 0)
+    end
+  end
 end

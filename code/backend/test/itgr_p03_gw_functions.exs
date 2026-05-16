@@ -3,16 +3,16 @@
 # See the LICENSE file in the repository root for full details.
 # For commercial inquiries, contact: tduccuong@gmail.com
 
-defmodule DmhAi.P03GoogleWorkspaceVerbsTest do
+defmodule DmhAi.P03GoogleWorkspaceFunctionsTest do
   @moduledoc """
-  Pins every Google Workspace verb against the mock vendor MCP
-  server. Closes I3 for GW: every verb is grounded in a real
+  Pins every Google Workspace function against the mock vendor MCP
+  server. Closes I3 for GW: every function is grounded in a real
   Google API endpoint AND the shim-layer translation contract is
   exercised through the dispatcher.
 
-  Read verbs (no task gate): gmail.search · gcal.find_free_slots ·
+  Read functions (no task gate): gmail.search · gcal.find_free_slots ·
   drive.list.
-  Write verbs (task required + idempotency_key): gmail.send ·
+  Write functions (task required + idempotency_key): gmail.send ·
   gcal.create_event · drive.upload.
 
   Each assertion checks a fixture-only sentinel string in the
@@ -37,14 +37,14 @@ defmodule DmhAi.P03GoogleWorkspaceVerbsTest do
     Dispatcher.reset()
     :ok = Dispatcher.register(GoogleWorkspace)
 
-    %{url: mock_url} = T.start_mock_vendor("gw_verbs_test", GWFixtures.fixtures())
+    %{url: mock_url} = T.start_mock_vendor("gw_functions_test", GWFixtures.fixtures())
     user_id = T.transient_user()
     :ok = T.seed_mcp_authorization(user_id, @slug, @canonical, mock_url)
 
     {:ok, %{user_id: user_id, sentinels: GWFixtures.sentinels()}}
   end
 
-  describe "read verbs (free chat, no task required)" do
+  describe "read functions (free chat, no task required)" do
     test "gmail.search returns fixture messages cited by sentinel email",
          %{user_id: user_id, sentinels: s} do
       assert {:ok, %{"messages" => msgs}} =
@@ -83,7 +83,7 @@ defmodule DmhAi.P03GoogleWorkspaceVerbsTest do
     end
   end
 
-  describe "write verbs (require active task + carry idempotency_key)" do
+  describe "write functions (require active task + carry idempotency_key)" do
     test "gmail.send outside an active task is refused (dispatcher gate)",
          %{user_id: user_id, sentinels: s} do
       assert {:error, %{error: "write_requires_task"}} =
@@ -141,22 +141,22 @@ defmodule DmhAi.P03GoogleWorkspaceVerbsTest do
   describe "manifest verifier" do
     test "diff against the mock's tools/list reports zero divergence" do
       # The mock derives its tools/list from the fixtures map, which
-      # uses the same verb names the manifest declares. This is a
-      # sanity gate: if anyone ADDS a verb to the manifest without
+      # uses the same function names the manifest declares. This is a
+      # sanity gate: if anyone ADDS a function to the manifest without
       # also adding a fixture, this fails — surfaces an unfinished
-      # I3 audit before the per-verb test below catches it as a
+      # I3 audit before the per-function test below catches it as a
       # missing-fixture error.
-      verbs_in_manifest =
-        GoogleWorkspace.manifest().verbs |> Map.keys() |> Enum.sort()
+      functions_in_manifest =
+        GoogleWorkspace.manifest().functions |> Map.keys() |> Enum.sort()
 
-      verbs_in_fixtures =
+      functions_in_fixtures =
         GWFixtures.fixtures() |> Map.keys() |> Enum.sort()
 
-      assert verbs_in_manifest == verbs_in_fixtures,
+      assert functions_in_manifest == functions_in_fixtures,
              """
-             Manifest verbs and fixture verbs disagree.
-             In manifest only: #{inspect(verbs_in_manifest -- verbs_in_fixtures)}
-             In fixtures only: #{inspect(verbs_in_fixtures -- verbs_in_manifest)}
+             Manifest functions and fixture functions disagree.
+             In manifest only: #{inspect(functions_in_manifest -- functions_in_fixtures)}
+             In fixtures only: #{inspect(functions_in_fixtures -- functions_in_manifest)}
              """
     end
   end

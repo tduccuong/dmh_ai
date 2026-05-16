@@ -43,18 +43,18 @@ write-requires-task, idempotency, credentials).
 - Either:
   - **Mock path (default for demos)** — no Google Cloud creds
     needed; the mock vendor MCP server stands in for the real
-    Google MCP endpoint. **This is what step 1 sets up.**
-  - **Real-Google path (opt-in for production UAT)** — your own
-    Google Cloud OAuth client_id / secret in
-    `DMH_AI_GW_CLIENT_ID` / `DMH_AI_GW_CLIENT_SECRET`, plus a real
-    Google MCP URL in `DMH_AI_GW_MCP_URL`. See "Switching to real
-    Google" near the end.
+    Google MCP endpoint. **This is what steps 1–2 set up.**
+  - **Real-Google path (production UAT)** — your own Google
+    Cloud OAuth client_id / secret + the official Google
+    Workspace MCP endpoint URL, all pasted into the External
+    Connectors admin page. See `GOOGLE_CLOUD_SETUP.md` for the
+    Cloud Console walk-through.
 
 ## Steps
 
 Verified live on stage 2026-05-14.
 
-### 1. Rebuild + redeploy stage with vendor mocks enabled
+### 1. Rebuild + redeploy stage with the mock vendor subprocess on
 
 The `DMH_AI_ENABLE_VENDOR_MOCKS=true` env var:
 
@@ -65,16 +65,13 @@ The `DMH_AI_ENABLE_VENDOR_MOCKS=true` env var:
   mock per connector that ships fixtures (today: Google
   Workspace).
 
-The `DMH_AI_GW_MCP_URL=http://127.0.0.1:8086/` env var:
-
-- Tells `Connectors.MCPCatalogSeed.upsert!/1` what URL to write
-  into `mcp_catalog.mcp_url` for the `google_workspace` row at
-  boot. Subsequent `MCP.Client.call_tool/4` lookups read this
-  URL via `authorized_services.server_url`.
+This is the ONLY env var the operator sets — it's a
+process-control toggle (whether the mock subprocess boots),
+not connector data. The MCP URL the admin types into the FE
+in step 2 below points at this mock.
 
 ```bash
 export DMH_AI_ENABLE_VENDOR_MOCKS=true
-export DMH_AI_GW_MCP_URL=http://127.0.0.1:8086/
 ./scripts/build.sh --stage
 ./dist/install.sh --stage
 ```
@@ -91,7 +88,30 @@ curl -s -X POST -H "Content-Type: application/json" \
 
 Expected: `master=200` and `{"name":"dmh-ai-mock-vendor", "version":"0.1.0"}`.
 
-Confirm the boot-seeded catalog rows are correct:
+### 2. Admin configures the GW connector via External Connectors
+
+Same FE workflow used for real Google — only difference is
+that for the mock demo the admin overrides the pre-filled MCP
+URL with the mock's address.
+
+1. Log in as the admin (`admin@dmhai.local`).
+2. Click the user-menu icon → **External Connectors** (or
+   navigate to `/connectors`).
+3. Click **Google Workspace** in the left sidebar.
+4. **MCP URL** field is pre-filled with the in-process default
+   (`http://127.0.0.1:8087/google_workspace`). For the mock
+   demo, **clear it and paste `http://127.0.0.1:8086/`** — the
+   port the `Mock.VendorMCPServer` subprocess from step 1 is
+   listening on. (For real-Google UAT, leave the default
+   untouched.)
+5. **Enabled** → leave ticked
+6. (Client ID / Client Secret left empty — the mock has no
+   OAuth handler, so credentials don't apply on the mock path.)
+7. Click **Save**.
+8. Click **Test connection** → expect ✅ "Reachable — 6
+   functions exposed by dmh-ai-mock-vendor."
+
+Confirm via the DB:
 
 ```bash
 docker exec dmh_ai-master /app/bin/dmh_ai rpc '
@@ -105,7 +125,7 @@ docker exec dmh_ai-master /app/bin/dmh_ai rpc '
 
 Expected: `mcp_catalog: [["google_workspace", "http://127.0.0.1:8086/", 1]]`.
 
-### 2. Bypass the OAuth flow (mock path only)
+### 3. Bypass the OAuth flow (mock path only)
 
 For the deterministic demo we skip the real Google OAuth dance
 — the mock vendor MCP server doesn't run an OAuth handler.
@@ -146,7 +166,7 @@ docker exec dmh_ai-master /app/bin/dmh_ai rpc "
 
 Expected: `authorized`.
 
-### 3. Chat as the employee (⚠ ASSISTANT MODE)
+### 4. Chat as the employee (⚠ ASSISTANT MODE)
 
 ```bash
 USER_TOK=$(curl -s -X POST -H "Content-Type: application/json" \
@@ -165,7 +185,7 @@ curl -s -X POST -H "Authorization: Bearer $USER_TOK" \
   http://127.0.0.1:8080/agent/chat
 ```
 
-### 4. Read the answer + verify the trace
+### 5. Read the answer + verify the trace
 
 ```bash
 sleep 30
@@ -206,10 +226,12 @@ canned response flowing through the real Caller path.
   `initialize` response with `name=dmh-ai-mock-vendor`.
 - ✅ Step 1: `mcp_catalog` row for `google_workspace` has
   `mcp_url=http://127.0.0.1:8086/` and `enabled=1`.
-- ✅ Step 2: RPC prints `authorized`. Confirm by querying
+- ✅ Step 2: External Connectors page shows the GW card with
+  `MCP URL ✓` badge. Test connection succeeds.
+- ✅ Step 3: RPC prints `authorized`. Confirm by querying
   `authorized_services` for the test user — one row,
   `alias=google_workspace`, `server_url=http://127.0.0.1:8086/`.
-- ✅ Step 4: Final reply mentions **both** sentinel emails
+- ✅ Step 5: Final reply mentions **both** sentinel emails
   (`nina.beispiel@dmh-demo.example` AND
   `tobias.beispiel@dmh-demo.example`) AND **both** fixture
   subjects (`Lieferanten-Update Q2` AND `Re: Vertragsentwurf`).
@@ -224,9 +246,13 @@ chat.
 
 ### Demoability today — the friction you can't avoid
 
-- **Step 1 — env-var rebuild** is a one-time setup per stage
-  host. Do this before any customer meeting.
-- **Step 2 — manual credential seed via RPC.** The real
+- **Step 1 — process-control env var + rebuild** is a one-time
+  setup per stage host (`DMH_AI_ENABLE_VENDOR_MOCKS=true`). Do
+  this before any customer meeting.
+- **Step 2 — FE admin paste of the mock URL.** Identical
+  workflow to real Google — same External Connectors page, same
+  Save button. Only the URL value differs.
+- **Step 3 — manual credential seed via RPC.** The real
   customer demo would walk through Google's OAuth (a popup,
   consent screen). For the *mock* path the operator skips OAuth
   with the IEx snippet above. The friction here is "the
@@ -242,18 +268,19 @@ chat.
 
 ### Day-before staging (you, with shell access)
 
-1. Run **Steps 1–2** of the runbook on the stage host. Confirm
-   `mcp_catalog` has the right URL and the RPC prints
+1. Run **Steps 1–3** of the runbook on the stage host. Confirm
+   the External Connectors page shows GW with the MCP URL saved
+   and `Test connection` succeeds, and the RPC prints
    `authorized`.
 2. Open two browser tabs at `http://127.0.0.1:8080`:
-   - **Tab A** — `admin@dmhai.local`, navigated to
-     `/connectors` (the **External Connectors** admin page).
-     Useful for the "this is where I configured it" beat of the
-     customer pitch — they see the Google Workspace card with
-     green badges (Client ID ✓, MCP URL ✓, Enabled).
+   - **Tab A** — `admin@dmhai.local`, already on `/connectors`
+     from step 2 of the runbook. Useful for the "this is where I
+     configured it" beat of the customer pitch — they see the
+     Google Workspace card with green badges (MCP URL ✓,
+     Enabled).
    - **Tab B** — `test@dmhai.local`, session pre-created with
      `mode: "assistant"`.
-3. Run the verification query yourself once (Step 3's chat
+3. Run the verification query yourself once (Step 4's chat
    curl). Confirm both sentinel emails appear in the reply.
 
 ### In the meeting (customer watches)
@@ -287,40 +314,33 @@ re-run a fresh demo cycle:
 
 - Same Tab B can keep going; or open a fresh session.
 - If you want to reset credentials: `dmh_ai rpc` to DELETE the
-  user_credentials rows, then re-seed via Step 2.
+  user_credentials rows, then re-seed via Step 3.
 
 ## Switching to real Google (production UAT)
 
-For real-Google testing, swap the in-process MCPServer (which
-forwards to Google's REST APIs) into the loop with your own
-OAuth client. Two env-var paths, depending on how you supply
-credentials:
-
-**Path A — env vars at install time** (re-seeds the catalog rows
-on every boot):
+For real-Google testing, just turn the mock off and rebuild —
+the in-process MCP REST translator is always on. Everything
+else is the admin pasting into the FE.
 
 ```bash
-export DMH_AI_ENABLE_VENDOR_MOCKS=false   # mock off
-export DMH_AI_ENABLE_REAL_MCP=true        # in-process REST translator
-export DMH_AI_GW_MCP_URL=http://127.0.0.1:8087/google_workspace
-export DMH_AI_GW_CLIENT_ID=<your_client_id>
-export DMH_AI_GW_CLIENT_SECRET=<your_client_secret>
+unset DMH_AI_ENABLE_VENDOR_MOCKS   # or export ...=false
 ./scripts/build.sh --stage && ./dist/install.sh --stage
 ```
 
-**Path B — paste via FE** (preferred — no shell re-deploy, just
-edit credentials on the running stage):
+Then on the running stage:
 
-1. Stage already running with `DMH_AI_ENABLE_REAL_MCP=true`.
-2. Admin opens `/connectors` → Google Workspace → pastes
-   client_id + secret → **Save** → **Test connection**.
-3. See `GOOGLE_CLOUD_SETUP.md` for the exact Google Cloud
+1. Admin opens `/connectors` → Google Workspace → pastes
+   Client ID + Client Secret (from Google Cloud Console). MCP
+   URL is already pre-filled with the in-process default
+   (`http://127.0.0.1:8087/google_workspace`) — leave it as-is
+   for production. → **Save** → **Test connection**.
+2. See `GOOGLE_CLOUD_SETUP.md` for the exact Google Cloud
    Console steps + redirect URI to register.
 
 Then the employee walks through the **real OAuth flow** click-
 driven from the FE: **My Services** → **Connect Google Workspace**
 → browser redirects to Google's consent screen → approve →
-returns to DMH-AI with "Connected as <email>". Step 2's RPC is
+returns to DMH-AI with "Connected as <email>". Step 3's RPC is
 skipped — the OAuth callback writes the credentials via the
 `connector_oauth` flow path.
 
@@ -343,7 +363,7 @@ To turn vendor mocks off and revert to a clean production-ish
 boot:
 
 ```bash
-unset DMH_AI_ENABLE_VENDOR_MOCKS DMH_AI_GW_MCP_URL
+unset DMH_AI_ENABLE_VENDOR_MOCKS
 ./dist/install.sh --stage   # re-deploys without mocks
 ```
 
@@ -366,10 +386,10 @@ unset DMH_AI_ENABLE_VENDOR_MOCKS DMH_AI_GW_MCP_URL
   AND the live stage demo (modularity: shared between tests +
   demo).
 - `0.3 Connectors.Mock.Fixtures.GoogleWorkspace` — canned
-  responses for all 6 verbs; sentinel identifiers
+  responses for all 6 functions; sentinel identifiers
   (`nina.beispiel@…`, etc.).
 - `0.3 Connectors.GoogleWorkspace` — manifest with `# vendor:
-  <endpoint>` line per verb (closes I3 for GW).
+  <endpoint>` line per function (closes I3 for GW).
 
 ## Known gaps
 
@@ -388,7 +408,7 @@ unset DMH_AI_ENABLE_VENDOR_MOCKS DMH_AI_GW_MCP_URL
 - **The model invoked `connect_mcp` once during the live walk.**
   Expected — the user's first interaction with the connector
   needs the service registered against the active task.
-  `task_services` row gets written; subsequent verb calls in
+  `task_services` row gets written; subsequent function calls in
   the same task skip the connect step.
 - **No FE surface for "show me my connected services" /
   "disconnect Google".** Operator manages via `dmh_ai rpc`.

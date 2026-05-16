@@ -94,12 +94,12 @@ defmodule DmhAi.Application do
         # end-to-end without setting up a real Google Cloud / HubSpot /
         # … OAuth app. No-op when the flag is off (production default).
         DmhAi.Connectors.Bootstrap.start_vendor_mocks_if_enabled()
-        # Real-vendor mode: when DMH_AI_ENABLE_REAL_MCP=true, start the
-        # in-process MCPServer that translates MCP `tools/call` into
-        # real vendor REST API calls. Used for production deployments
-        # where DMH-AI hosts its own MCP layer on top of vendor APIs.
-        # Off by default; mock + real can coexist (different ports).
-        DmhAi.Connectors.Bootstrap.start_real_mcp_server_if_enabled()
+        # In-process MCP REST translator: always on. Hosts every
+        # connector that exports `mcp_handler_module/0` (Google
+        # Workspace today; Calendly + others later) at its slug
+        # path. Vendor-hosted Case-B connectors don't appear here;
+        # their admins paste the vendor URL into the FE instead.
+        DmhAi.Connectors.Bootstrap.start_real_mcp_server()
         attach_finch_telemetry()
         Logger.info("Sessions API on :3000")
         {:ok, pid}

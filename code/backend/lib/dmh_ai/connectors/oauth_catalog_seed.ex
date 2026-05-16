@@ -5,19 +5,20 @@
 
 defmodule DmhAi.Connectors.OAuthCatalogSeed do
   @moduledoc """
-  Idempotent seeder for `oauth_catalog` rows. Boot-time and
-  operator-runnable. One call per Universal-Region OAuth connector.
-  Closes I2 generically — the per-connector module simply describes
-  *what* its OAuth handshake looks like; this module is the *how*
-  of writing the row.
+  Seeder for `oauth_catalog` rows. Boot-time. One call per
+  Universal-Region OAuth connector. Writes VENDOR metadata only —
+  `display_name`, `host_match`, endpoints, scopes, userinfo path,
+  extra auth/token params. Never writes `client_id`,
+  `client_secret`, or `enabled` — those are operator-owned via
+  `/admin/connectors/:slug/save`. The admin's FE Save is the only
+  writer of those columns.
 
-  Reads `client_id` / `client_secret` from env vars named in the
-  config so the operator can supply real Google / Microsoft /
-  HubSpot credentials at install time without code change. A
-  missing env var seeds the row with empty string for that field —
-  the row still exists (so `authorize_service` can find it) but
-  the actual OAuth flow will fail loudly until creds are filled in
-  via the admin UI or a re-seed after env-var population.
+  On first install the row is INSERTed with empty `client_id` /
+  `client_secret` and `enabled=1`; the admin then opens External
+  Connectors and pastes their vendor-app credentials. On every
+  subsequent boot the seeder refreshes vendor fields only — if
+  Google changes a scope or endpoint, the next deploy picks it up
+  without clobbering the admin's credentials.
   """
 
   alias DmhAi.Repo
@@ -25,7 +26,7 @@ defmodule DmhAi.Connectors.OAuthCatalogSeed do
   require Logger
 
   @typedoc """
-  Per-connector OAuth catalog descriptor.
+  Per-connector OAuth catalog descriptor — vendor facts only.
 
     * `:slug` — must match the connector module's `mcp_slug/0`
     * `:display_name` — operator-facing label
@@ -33,8 +34,6 @@ defmodule DmhAi.Connectors.OAuthCatalogSeed do
        handler to route incoming tokens back to this catalog row
     * `:authorization_endpoint` / `:token_endpoint` — vendor-fixed
     * `:scopes` — list of OAuth scope strings (vendor-grounded)
-    * `:client_id_env` / `:client_secret_env` — env-var names the
-       operator populates with the values from their vendor app
     * `:userinfo_endpoint` / `:userinfo_field_path` — optional,
        used by the multi-account auth flow to label credentials
        with the authenticated user's email/id
@@ -50,29 +49,23 @@ defmodule DmhAi.Connectors.OAuthCatalogSeed do
           required(:authorization_endpoint) => String.t(),
           required(:token_endpoint)         => String.t(),
           required(:scopes)                 => [String.t()],
-          required(:client_id_env)          => String.t(),
-          required(:client_secret_env)      => String.t(),
           optional(:userinfo_endpoint)      => String.t() | nil,
           optional(:userinfo_field_path)    => String.t() | nil,
           optional(:extra_auth_params)      => map(),
-          optional(:extra_token_params)     => map(),
-          optional(:enabled)                => boolean()
+          optional(:extra_token_params)     => map()
         }
 
   @doc """
-  Upsert an oauth_catalog row by `slug`. Existing row → updated;
-  new slug → inserted. Idempotent — same descriptor in, same DB
-  state.
+  Upsert an oauth_catalog row by `slug`. First boot INSERTs the
+  row with vendor metadata + empty operator fields. Subsequent
+  boots UPDATE vendor metadata only.
   """
   @spec upsert!(descriptor()) :: :ok
   def upsert!(%{slug: slug} = d) when is_binary(slug) and slug != "" do
-    client_id     = System.get_env(d.client_id_env) || ""
-    client_secret = System.get_env(d.client_secret_env)
-    now           = System.os_time(:millisecond)
-    scopes_json   = Jason.encode!(d.scopes)
-    auth_params   = Jason.encode!(Map.get(d, :extra_auth_params, %{}))
-    token_params  = Jason.encode!(Map.get(d, :extra_token_params, %{}))
-    enabled       = if Map.get(d, :enabled, true), do: 1, else: 0
+    now          = System.os_time(:millisecond)
+    scopes_json  = Jason.encode!(d.scopes)
+    auth_params  = Jason.encode!(Map.get(d, :extra_auth_params, %{}))
+    token_params = Jason.encode!(Map.get(d, :extra_token_params, %{}))
 
     %{rows: rows} =
       query!(Repo, """
@@ -92,10 +85,10 @@ defmodule DmhAi.Connectors.OAuthCatalogSeed do
         """, [
           slug, d.display_name, d.host_match,
           d.authorization_endpoint, d.token_endpoint,
-          scopes_json, client_id, client_secret,
+          scopes_json, "", nil,
           auth_params, token_params,
           Map.get(d, :userinfo_endpoint), Map.get(d, :userinfo_field_path),
-          enabled, now, now
+          1, now, now
         ])
 
         Logger.info("[OAuthCatalogSeed] inserted slug=#{slug}")
@@ -105,21 +98,21 @@ defmodule DmhAi.Connectors.OAuthCatalogSeed do
         UPDATE oauth_catalog
            SET display_name=?, host_match=?,
                authorization_endpoint=?, token_endpoint=?,
-               scopes_default=?, client_id=?, client_secret=?,
+               scopes_default=?,
                extra_auth_params=?, extra_token_params=?,
                userinfo_endpoint=?, userinfo_field_path=?,
-               enabled=?, updated_ts=?
+               updated_ts=?
          WHERE slug=?
         """, [
           d.display_name, d.host_match,
           d.authorization_endpoint, d.token_endpoint,
-          scopes_json, client_id, client_secret,
+          scopes_json,
           auth_params, token_params,
           Map.get(d, :userinfo_endpoint), Map.get(d, :userinfo_field_path),
-          enabled, now, slug
+          now, slug
         ])
 
-        Logger.debug("[OAuthCatalogSeed] updated slug=#{slug}")
+        Logger.debug("[OAuthCatalogSeed] refreshed vendor metadata slug=#{slug}")
     end
 
     :ok

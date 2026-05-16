@@ -18,14 +18,14 @@ defmodule DmhAi.Connectors.MCPServer.Registry do
   @key :dmh_ai_mcp_server_handlers
 
   @typedoc """
-  A registered handler: the connector slug + its verb spec map.
+  A registered handler: the connector slug + its function spec map.
   Handlers are decoupled from the model-facing manifest
   (`MCPAdapter` behaviour) so a connector module can grow / shrink
   its REST surface without touching the model's view.
   """
   @type handler :: %{
           required(:slug)  => String.t(),
-          required(:verbs) => %{required(String.t()) => DmhAi.Connectors.MCPServer.VerbSpec.t()}
+          required(:functions) => %{required(String.t()) => DmhAi.Connectors.MCPServer.FunctionSpec.t()}
         }
 
   @doc "Replace the entire handler map. Boot-time only."

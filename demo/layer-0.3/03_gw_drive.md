@@ -1,6 +1,6 @@
 # 03 — Google Workspace Drive Upload
 
-Third Primitive 0.3 demo: write-only verb against Drive. The
+Third Primitive 0.3 demo: write-only function against Drive. The
 agent takes free-form text from the user and uploads it as a
 file. Exercises `drive.upload` end-to-end — `Pipelines.URL`-like
 shape but on the Drive side: task-gated write, multipart upload,
@@ -92,7 +92,7 @@ The file_id prefix **`drv_mock_uploaded_`** is the mock's
 `drive_upload` fixture (the suffix is a per-call unique
 integer). Its presence in the chat reply proves the dispatcher
 routed the write through the real Caller and the mock returned
-its canned response. The `drive.upload` verb is `permission:
+its canned response. The `drive.upload` function is `permission:
 :write, idempotency_key: :required` — the chain opened a task
 first AND the dispatcher injected an `__idempotency_key` so a
 retry of the same upload step won't double-write.
@@ -121,7 +121,7 @@ retry of the same upload step won't double-write.
   "uploaded successfully". Plan to phrase your customer-meeting
   prompt to include the request, or add a system-prompt
   instruction (separate, larger change) that always surfaces
-  write-verb return identifiers.
+  write-function return identifiers.
 
 ### Day-before staging
 
@@ -174,7 +174,7 @@ just open a fresh Tab B session.
 
 ## Known gaps
 
-- **No folder placement.** The current `drive.upload` verb
+- **No folder placement.** The current `drive.upload` function
   doesn't accept `folder_id` — the file lands at the Drive
   root. Customers will ask for this; track in a future
   manifest extension (the Drive v3 API supports it via
@@ -184,7 +184,7 @@ just open a fresh Tab B session.
   technically wrong (`text/plain` would be better) — the agent
   should sniff from the filename extension. Punt as a manifest
   refinement.
-- **Content size limits not enforced.** The verb accepts
+- **Content size limits not enforced.** The function accepts
   arbitrary string content. A 200 MB paste would try to go
   through the chain. Add a soft cap in the connector once
   resumable-upload support lands.

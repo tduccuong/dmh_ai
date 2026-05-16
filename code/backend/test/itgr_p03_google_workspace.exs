@@ -50,21 +50,21 @@ defmodule DmhAi.P03GoogleWorkspaceTest do
   describe "manifest" do
     test "validates clean", do: assert :ok = Manifest.validate(GoogleWorkspace.manifest())
 
-    test "declares 6 verbs across gmail/gcal/drive" do
-      verbs = GoogleWorkspace.manifest().verbs
-      assert Map.has_key?(verbs, "gmail.send")
-      assert Map.has_key?(verbs, "gmail.search")
-      assert Map.has_key?(verbs, "gcal.create_event")
-      assert Map.has_key?(verbs, "gcal.find_free_slots")
-      assert Map.has_key?(verbs, "drive.list")
-      assert Map.has_key?(verbs, "drive.upload")
+    test "declares 6 functions across gmail/gcal/drive" do
+      functions = GoogleWorkspace.manifest().functions
+      assert Map.has_key?(functions, "gmail.send")
+      assert Map.has_key?(functions, "gmail.search")
+      assert Map.has_key?(functions, "gcal.create_event")
+      assert Map.has_key?(functions, "gcal.find_free_slots")
+      assert Map.has_key?(functions, "drive.list")
+      assert Map.has_key?(functions, "drive.upload")
     end
 
     test "every write is callable_from: [:task] with idempotency_key required" do
-      GoogleWorkspace.manifest().verbs
+      GoogleWorkspace.manifest().functions
       |> Enum.filter(fn {_, v} -> v.permission == :write end)
       |> Enum.each(fn {name, v} ->
-        assert v.callable_from == [:task], "write verb #{name} must be task-only"
+        assert v.callable_from == [:task], "write function #{name} must be task-only"
         assert v.idempotency_key == :required
       end)
     end
@@ -115,7 +115,7 @@ defmodule DmhAi.P03GoogleWorkspaceTest do
     end
 
     test "write outside task → write_requires_task", %{admin_id: admin_id} do
-      assert {:error, %{error: "write_requires_task", verb: "google_workspace.gmail.send"}} =
+      assert {:error, %{error: "write_requires_task", function: "google_workspace.gmail.send"}} =
                Dispatcher.call("google_workspace.gmail.send",
                                %{"to" => "alice@example.com",
                                  "subject" => "Hi", "body" => "hello"},

@@ -3,13 +3,13 @@
 # See the LICENSE file in the repository root for full details.
 # For commercial inquiries, contact: tduccuong@gmail.com
 
-defmodule DmhAi.Connectors.MCPServer.VerbSpec do
+defmodule DmhAi.Connectors.MCPServer.FunctionSpec do
   @moduledoc """
-  Declarative spec for one MCP-callable verb on top of a vendor REST
-  API. The generic `MCPServer.RestBridge` reads a `%VerbSpec{}` and
+  Declarative spec for one MCP-callable function on top of a vendor REST
+  API. The generic `MCPServer.RestBridge` reads a `%FunctionSpec{}` and
   executes the call, including OAuth bearer-token forwarding and
-  error normalisation. Per-connector modules supply a `%{verb_name
-  => %VerbSpec{}}` map; everything else (HTTP, JSON, retry, error
+  error normalisation. Per-connector modules supply a `%{function_name
+  => %FunctionSpec{}}` map; everything else (HTTP, JSON, retry, error
   classification) is shared.
 
   ## Fields
@@ -20,16 +20,18 @@ defmodule DmhAi.Connectors.MCPServer.VerbSpec do
       "https://api.example/items/\#{id}" end`.
     * `:request` — optional transform `(args, ctx) -> req_opts`.
       Maps the MCP-side args to Req's call options (`:json`,
-      `:body`, `:query`, `:multipart`, `:headers`). Default behaviour:
-      `:get` / `:delete` puts `args` into `:query`; `:post` /
+      `:body`, `:params`, `:multipart`, `:headers` — Req's option
+      names; `:params` is the query-string keyword, NOT `:query`).
+      Default behaviour: `:get` / `:delete` puts `args` into
+      `:params`; `:post` /
       `:patch` / `:put` puts `args` into `:json`. The default
-      covers 80% of REST verbs; override for verbs that need MIME
+      covers 80% of REST functions; override for functions that need MIME
       composition, multipart bodies, etc.
     * `:response` — optional transform `(status, body) -> {:ok,
       map} | {:error, atom}`. Default behaviour: 2xx → `{:ok,
       body}` (or `{:ok, %{"text" => body}}` for non-map bodies);
       4xx/5xx → `{:error, MCPServer.ErrorMap.classify(status, body)}`.
-      Override for verbs that need to reshape a 2xx body (e.g.
+      Override for functions that need to reshape a 2xx body (e.g.
       `gcal.find_free_slots` computes free slots from busy
       intervals).
     * `:doc` — optional one-line description used by the
@@ -37,7 +39,7 @@ defmodule DmhAi.Connectors.MCPServer.VerbSpec do
 
   ## Construction
 
-      %VerbSpec{
+      %FunctionSpec{
         method: :get,
         url: "https://gmail.googleapis.com/gmail/v1/users/me/messages",
         request: fn args, _ctx ->
@@ -50,11 +52,11 @@ defmodule DmhAi.Connectors.MCPServer.VerbSpec do
   ## Why a struct and not a behaviour
 
   A struct lets the per-connector module emit the spec as data
-  (one `%VerbSpec{}` literal per verb, often 5–15 lines). A
-  behaviour would force one callback per verb — fine for 6 verbs
+  (one `%FunctionSpec{}` literal per function, often 5–15 lines). A
+  behaviour would force one callback per function — fine for 6 functions
   but awkward when a connector grows to 20. The struct shape
   composes naturally with `Enum.into` / `Map.merge` so a future
-  "common verbs" library (e.g. CRUD primitives) can mix in.
+  "common functions" library (e.g. CRUD primitives) can mix in.
   """
 
   defstruct [
@@ -73,14 +75,14 @@ defmodule DmhAi.Connectors.MCPServer.VerbSpec do
   @type response_fn :: (non_neg_integer(), term() -> {:ok, term()} | {:error, atom()})
 
   @typedoc """
-  Custom verb handler for verbs that don't fit the one-HTTP-call
+  Custom function handler for functions that don't fit the one-HTTP-call
   shape. Receives `(args, ctx)` and returns the same `{:ok, term}`
   / `{:error, atom}` shape the bridge produces.
 
-  When `:handler` is set on a `%VerbSpec{}`, `RestBridge.invoke/3`
+  When `:handler` is set on a `%FunctionSpec{}`, `RestBridge.invoke/3`
   calls it directly and ignores `:method`, `:url`, `:request`, and
-  `:response` — the handler has full control. Used for verbs like
-  Gmail's search-then-fetch-headers fan-out, where one MCP verb
+  `:response` — the handler has full control. Used for functions like
+  Gmail's search-then-fetch-headers fan-out, where one MCP function
   corresponds to multiple vendor API calls.
 
   Implementations typically call back into `RestBridge.invoke/3`

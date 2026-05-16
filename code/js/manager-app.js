@@ -812,6 +812,30 @@ UIManager.clearTaskStatusArea = function() {
     area.style.display = 'none';
 };
 
+// Generic toast helper that drives the same `#mode-hint` element
+// used by the mode-hint banner. Caller picks the variant via
+// `kind` ("info" reuses the default warm-yellow palette; "success"
+// flips to the green palette via `.mode-hint.success`). 5 s show
+// + 400 ms fade-out. Pass an HTML string — caller is responsible
+// for escaping.
+UIManager.showToast = function(html, kind) {
+    var el = document.getElementById('mode-hint');
+    if (!el) return;
+    el.innerHTML = html;
+    el.classList.remove('fade-out', 'success');
+    if (kind === 'success') el.classList.add('success');
+    el.style.display = 'block';
+    var self = this;
+    clearTimeout(self._modeHintTimer);
+    self._modeHintTimer = setTimeout(function() {
+        el.classList.add('fade-out');
+        setTimeout(function() {
+            el.style.display = 'none';
+            el.classList.remove('fade-out', 'success');
+        }, 400);
+    }, 5000);
+};
+
 // Mode-hint toast — fires only on a NON-empty session (empty
 // sessions show the splash, which already explains the mode). Picks
 // `hintAssistant` or `hintConfidant` from the i18n table; both are

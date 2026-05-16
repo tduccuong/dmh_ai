@@ -150,19 +150,19 @@ defmodule DmhAi.Tools.Registry do
   def names(user_id, task_id) when is_binary(user_id) do
     names() ++
       Enum.map(DmhAi.MCP.Registry.tools_for_task(user_id, task_id), & &1.name) ++
-      connector_verb_names()
+      connector_function_names()
   end
 
-  # Primitive 0.3 — Universal-Region connector verbs registered with
+  # Primitive 0.3 — Universal-Region connector functions registered with
   # the Dispatcher are valid tool names regardless of task scope (no
   # tools_for_task gating; the connector catalog is org-wide). Joins
-  # the connector slug + verb path with a dot:
+  # the connector slug + function path with a dot:
   # `hubspot.contact.find`, `hubspot.deal.create`, etc.
-  defp connector_verb_names do
+  defp connector_function_names do
     Enum.flat_map(DmhAi.Tools.Dispatcher.connectors(), fn slug ->
       case DmhAi.Tools.Dispatcher.lookup(slug) do
-        {:ok, %{manifest: %{verbs: verbs}}} ->
-          Enum.map(verbs, fn {path, _} -> slug <> "." <> path end)
+        {:ok, %{manifest: %{functions: functions}}} ->
+          Enum.map(functions, fn {path, _} -> slug <> "." <> path end)
 
         _ ->
           []
@@ -170,11 +170,11 @@ defmodule DmhAi.Tools.Registry do
     end)
   end
 
-  defp connector_verb?(name) do
+  defp connector_function?(name) do
     case String.split(name, ".", parts: 2) do
       [slug, path] when slug != "" and path != "" ->
         case DmhAi.Tools.Dispatcher.lookup(slug) do
-          {:ok, %{manifest: %{verbs: verbs}}} -> Map.has_key?(verbs, path)
+          {:ok, %{manifest: %{functions: functions}}} -> Map.has_key?(functions, path)
           _ -> false
         end
 
@@ -198,7 +198,7 @@ defmodule DmhAi.Tools.Registry do
   def known?(name, user_id, task_id) when is_binary(name) and is_binary(user_id) do
     # `known?/1` already checks built-ins + memo tools; this branch
     # adds MCP tools attached to the current anchor task PLUS
-    # Universal-Region connector verbs registered with the Dispatcher.
+    # Universal-Region connector functions registered with the Dispatcher.
     cond do
       known?(name) ->
         true
@@ -206,7 +206,7 @@ defmodule DmhAi.Tools.Registry do
       Enum.any?(DmhAi.MCP.Registry.tools_for_task(user_id, task_id), &(&1.name == name)) ->
         true
 
-      connector_verb?(name) ->
+      connector_function?(name) ->
         true
 
       true ->
@@ -277,7 +277,7 @@ defmodule DmhAi.Tools.Registry do
     # Test hook: Application.put_env(:dmh_ai, :__tool_execute_stub__, fn name, args, ctx -> ... end)
     # Stub must return {:ok, result} | {:error, reason} — same shape as the real path.
     # When a stub returns `:passthrough`, dispatch falls through to the real tool — lets
-    # a test fake just one tool (e.g. run_script) while letting bookkeeping verbs
+    # a test fake just one tool (e.g. run_script) while letting bookkeeping functions
     # (create_task / pickup_task) hit the real Registry path.
     case Application.get_env(:dmh_ai, :__tool_execute_stub__) do
       nil ->

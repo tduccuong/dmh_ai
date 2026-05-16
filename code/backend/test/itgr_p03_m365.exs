@@ -50,21 +50,21 @@ defmodule DmhAi.P03M365Test do
   describe "manifest" do
     test "validates clean", do: assert :ok = Manifest.validate(M365.manifest())
 
-    test "declares 6 verbs across mail/cal/files" do
-      verbs = M365.manifest().verbs
-      assert Map.has_key?(verbs, "mail.send")
-      assert Map.has_key?(verbs, "mail.search")
-      assert Map.has_key?(verbs, "cal.create_event")
-      assert Map.has_key?(verbs, "cal.find_free_slots")
-      assert Map.has_key?(verbs, "files.list")
-      assert Map.has_key?(verbs, "files.upload")
+    test "declares 6 functions across mail/cal/files" do
+      functions = M365.manifest().functions
+      assert Map.has_key?(functions, "mail.send")
+      assert Map.has_key?(functions, "mail.search")
+      assert Map.has_key?(functions, "cal.create_event")
+      assert Map.has_key?(functions, "cal.find_free_slots")
+      assert Map.has_key?(functions, "files.list")
+      assert Map.has_key?(functions, "files.upload")
     end
 
     test "every write is callable_from: [:task] with idempotency_key required" do
-      M365.manifest().verbs
+      M365.manifest().functions
       |> Enum.filter(fn {_, v} -> v.permission == :write end)
       |> Enum.each(fn {name, v} ->
-        assert v.callable_from == [:task], "write verb #{name} must be task-only"
+        assert v.callable_from == [:task], "write function #{name} must be task-only"
         assert v.idempotency_key == :required
       end)
     end
@@ -106,7 +106,7 @@ defmodule DmhAi.P03M365Test do
     end
 
     test "write outside task → write_requires_task", %{admin_id: admin_id} do
-      assert {:error, %{error: "write_requires_task", verb: "m365.mail.send"}} =
+      assert {:error, %{error: "write_requires_task", function: "m365.mail.send"}} =
                Dispatcher.call("m365.mail.send",
                                %{"to" => "alice@example.com",
                                  "subject" => "Hi", "body" => "hello"},

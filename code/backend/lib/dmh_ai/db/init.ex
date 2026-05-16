@@ -365,22 +365,23 @@ defmodule DmhAi.DB.Init do
     # discovery, walking users straight into auth.
     query!(Repo, """
     CREATE TABLE IF NOT EXISTS mcp_catalog (
-      id                INTEGER PRIMARY KEY AUTOINCREMENT,
-      org_id            TEXT NOT NULL,                  -- FK organizations.id; per-org MCP catalog (Primitive 0.1)
-      slug              TEXT NOT NULL,
-      name              TEXT NOT NULL,
-      description       TEXT,
-      mcp_url           TEXT NOT NULL,
-      icon_url          TEXT,
-      categories        TEXT,                          -- JSON array of strings
-      enabled           INTEGER NOT NULL DEFAULT 0,    -- 0/1
-      auth_kind         TEXT,                          -- 'none' | 'oauth' | 'api_key' | NULL
-      auth_metadata     TEXT,                          -- JSON object (PRM hint URL, AS endpoint, scopes…)
-      last_probe_status TEXT,                          -- 'open' | 'gated' | 'not_mcp' | 'error' | NULL
-      last_probe_error  TEXT,                          -- human-readable error from the probe attempt
-      last_probe_at     INTEGER,                       -- ms epoch
-      created_at        INTEGER NOT NULL,
-      updated_at        INTEGER NOT NULL,
+      id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+      org_id               TEXT NOT NULL,                  -- FK organizations.id; per-org MCP catalog (Primitive 0.1)
+      slug                 TEXT NOT NULL,
+      name                 TEXT NOT NULL,
+      description          TEXT,
+      mcp_url              TEXT NOT NULL,
+      icon_url             TEXT,
+      categories           TEXT,                          -- JSON array of strings
+      enabled              INTEGER NOT NULL DEFAULT 0,    -- 0/1; overall connector on/off
+      enabled_capabilities TEXT,                          -- JSON array of capability ids; NULL = all enabled (admin-not-yet-curated)
+      auth_kind            TEXT,                          -- 'none' | 'oauth' | 'api_key' | NULL
+      auth_metadata        TEXT,                          -- JSON object (PRM hint URL, AS endpoint, scopes…)
+      last_probe_status    TEXT,                          -- 'open' | 'gated' | 'not_mcp' | 'error' | NULL
+      last_probe_error     TEXT,                          -- human-readable error from the probe attempt
+      last_probe_at        INTEGER,                       -- ms epoch
+      created_at           INTEGER NOT NULL,
+      updated_at           INTEGER NOT NULL,
       UNIQUE(org_id, slug)
     )
     """)

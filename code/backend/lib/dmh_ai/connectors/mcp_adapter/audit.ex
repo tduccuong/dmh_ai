@@ -9,7 +9,7 @@ defmodule DmhAi.Connectors.MCPAdapter.Audit do
   introduced by Primitive 0.1's Permissions module — same shape,
   different `action` taxonomy.
 
-  Policy: write verbs ALWAYS audit. Read verbs audit only on denial
+  Policy: write functions ALWAYS audit. Read functions audit only on denial
   (volume reasons — read-tier traffic dominates).
   """
 
@@ -22,15 +22,15 @@ defmodule DmhAi.Connectors.MCPAdapter.Audit do
 
   @doc """
   Write one audit row for a connector call. `connector_mod`
-  exposes `manifest/0`, from which we read the verb's permission
+  exposes `manifest/0`, from which we read the function's permission
   tag to decide whether to write a row on the `:allowed` path.
   """
   @spec record(module(), String.t(), map(), outcome()) :: :ok
-  def record(connector_mod, verb_path, caller_ctx, outcome) do
-    permission = verb_permission(connector_mod, verb_path)
+  def record(connector_mod, function_name, caller_ctx, outcome) do
+    permission = function_permission(connector_mod, function_name)
 
     if should_write?(permission, outcome) do
-      do_write(connector_mod, verb_path, caller_ctx, outcome)
+      do_write(connector_mod, function_name, caller_ctx, outcome)
     else
       :ok
     end
@@ -40,26 +40,26 @@ defmodule DmhAi.Connectors.MCPAdapter.Audit do
   defp should_write?(:read, :allowed), do: false
   defp should_write?(_, _), do: true
 
-  defp verb_permission(connector_mod, verb_path) do
-    case connector_mod.manifest().verbs[verb_path] do
-      %Manifest.Verb{permission: p} -> p
+  defp function_permission(connector_mod, function_name) do
+    case connector_mod.manifest().functions[function_name] do
+      %Manifest.Function{permission: p} -> p
       _ -> :read
     end
   end
 
-  defp do_write(connector_mod, verb_path, caller_ctx, outcome) do
+  defp do_write(connector_mod, function_name, caller_ctx, outcome) do
     user_id = caller_ctx[:user_id]
     org_id  = DmhAi.Orgs.for_user(user_id)
     slug    = connector_mod.mcp_slug()
     {outcome_str, reason} = encode_outcome(outcome)
 
     resource = Jason.encode!(%{
-      kind:      "verb",
+      kind:      "function",
       connector: slug,
-      verb:      verb_path
+      function:      function_name
     })
 
-    action = action_for(connector_mod, verb_path)
+    action = action_for(connector_mod, function_name)
 
     query!(Repo, """
     INSERT INTO audit_log (org_id, user_id, action, resource, outcome, reason, created_at)
@@ -81,8 +81,8 @@ defmodule DmhAi.Connectors.MCPAdapter.Audit do
       :ok
   end
 
-  defp action_for(connector_mod, verb_path) do
-    case verb_permission(connector_mod, verb_path) do
+  defp action_for(connector_mod, function_name) do
+    case function_permission(connector_mod, function_name) do
       :read  -> "read"
       :write -> "write"
       :admin -> "administer"

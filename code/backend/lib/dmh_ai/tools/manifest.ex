@@ -5,7 +5,7 @@
 
 defmodule DmhAi.Tools.Manifest do
   @moduledoc """
-  Connector verb manifest — the contract Primitive 0.3 declares
+  Connector function manifest — the contract Primitive 0.3 declares
   between the dispatcher and every connector module.
 
   Each connector implementation (`DmhAi.Connectors.<Name>`) must
@@ -15,8 +15,8 @@ defmodule DmhAi.Tools.Manifest do
         %DmhAi.Tools.Manifest{
           connector: "hubspot",
           region:    "universal",
-          verbs: %{
-            "contact.find" => %DmhAi.Tools.Manifest.Verb{
+          functions: %{
+            "contact.find" => %DmhAi.Tools.Manifest.Function{
               permission:    :read,
               callable_from: [:chat, :task],
               args:          %{
@@ -24,7 +24,7 @@ defmodule DmhAi.Tools.Manifest do
               },
               errors:        [:unauthorised, :rate_limited]
             },
-            "deal.create" => %DmhAi.Tools.Manifest.Verb{
+            "deal.create" => %DmhAi.Tools.Manifest.Function{
               permission:      :write,
               callable_from:   [:task],
               idempotency_key: :required,
@@ -38,16 +38,16 @@ defmodule DmhAi.Tools.Manifest do
         }
       end
 
-  The dispatcher validates this struct at boot. A verb with
+  The dispatcher validates this struct at boot. A function with
   `permission: :write` MUST also have `callable_from: [:task]` and
   `idempotency_key: :required` — otherwise the connector fails to
   register and is logged as `manifest_violation`.
   """
 
-  @enforce_keys [:connector, :region, :verbs]
-  defstruct connector: nil, region: "universal", verbs: %{}
+  @enforce_keys [:connector, :region, :functions]
+  defstruct connector: nil, region: "universal", functions: %{}
 
-  defmodule Verb do
+  defmodule Function do
     @enforce_keys [:permission, :callable_from]
     defstruct permission:      nil,                    # :read | :write | :admin
               callable_from:   [:chat, :task],         # [:chat, :task] | [:task]
@@ -66,42 +66,42 @@ defmodule DmhAi.Tools.Manifest do
   def validate(%__MODULE__{connector: nil}),
     do: {:error, {:manifest_violation, nil, "connector name required"}}
 
-  def validate(%__MODULE__{verbs: verbs}) when map_size(verbs) == 0,
-    do: {:error, {:manifest_violation, "?", "no verbs declared"}}
+  def validate(%__MODULE__{functions: functions}) when map_size(functions) == 0,
+    do: {:error, {:manifest_violation, "?", "no functions declared"}}
 
-  def validate(%__MODULE__{connector: name, verbs: verbs}) do
-    Enum.reduce_while(verbs, :ok, fn {verb_name, verb}, _acc ->
-      case validate_verb(verb_name, verb) do
+  def validate(%__MODULE__{connector: name, functions: functions}) do
+    Enum.reduce_while(functions, :ok, fn {function_name, function}, _acc ->
+      case validate_function(function_name, function) do
         :ok -> {:cont, :ok}
-        {:error, reason} -> {:halt, {:error, {:manifest_violation, name, "#{verb_name}: #{reason}"}}}
+        {:error, reason} -> {:halt, {:error, {:manifest_violation, name, "#{function_name}: #{reason}"}}}
       end
     end)
   end
 
-  defp validate_verb(_name, %Verb{permission: :write} = v) do
+  defp validate_function(_name, %Function{permission: :write} = f) do
     cond do
-      not (:task in v.callable_from and length(v.callable_from) == 1) ->
+      not (:task in f.callable_from and length(f.callable_from) == 1) ->
         {:error,
-         "write verb must declare `callable_from: [:task]` (HARD rule — got #{inspect(v.callable_from)})"}
+         "write function must declare `callable_from: [:task]` (HARD rule — got #{inspect(f.callable_from)})"}
 
-      v.idempotency_key != :required ->
-        {:error, "write verb must declare `idempotency_key: :required`"}
+      f.idempotency_key != :required ->
+        {:error, "write function must declare `idempotency_key: :required`"}
 
       true ->
         :ok
     end
   end
 
-  defp validate_verb(_name, %Verb{permission: p})
+  defp validate_function(_name, %Function{permission: p})
        when p in [:read, :admin],
        do: :ok
 
-  defp validate_verb(_name, %Verb{permission: p}),
+  defp validate_function(_name, %Function{permission: p}),
     do: {:error, "unknown permission #{inspect(p)} (expected :read | :write | :admin)"}
 
   @type t :: %__MODULE__{
           connector: String.t() | nil,
           region: String.t(),
-          verbs: %{optional(String.t()) => Verb.t()}
+          functions: %{optional(String.t()) => Function.t()}
         }
 end

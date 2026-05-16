@@ -17,7 +17,7 @@ defmodule DmhAi.P03DispatcherTest do
 
   alias DmhAi.Repo
   alias DmhAi.Tools.{Dispatcher, Manifest}
-  alias DmhAi.Tools.Manifest.Verb
+  alias DmhAi.Tools.Manifest.Function
   import Ecto.Adapters.SQL, only: [query!: 3]
 
   @org_id DmhAi.Constants.default_org_id()
@@ -26,19 +26,19 @@ defmodule DmhAi.P03DispatcherTest do
 
   defmodule GoodStub do
     alias DmhAi.Tools.Manifest
-    alias DmhAi.Tools.Manifest.Verb
+    alias DmhAi.Tools.Manifest.Function
 
     def manifest do
       %Manifest{
         connector: "stub",
         region:    "test",
-        verbs: %{
-          "read_thing" => %Verb{
+        functions: %{
+          "read_thing" => %Function{
             permission:    :read,
             callable_from: [:chat, :task],
             args:          %{"q" => %{type: :string, required: true}}
           },
-          "write_thing" => %Verb{
+          "write_thing" => %Function{
             permission:      :write,
             callable_from:   [:task],
             idempotency_key: :required,
@@ -52,26 +52,26 @@ defmodule DmhAi.P03DispatcherTest do
     # back via `:test_observer_pid` set in the test's setup so the
     # test can assert what the dispatcher forwarded (e.g.
     # idempotency_key injected on writes).
-    def call(verb_path, args, _ctx) do
+    def call(function_name, args, _ctx) do
       case Process.get(:test_observer_pid) do
-        pid when is_pid(pid) -> send(pid, {:stub_called, verb_path, args})
+        pid when is_pid(pid) -> send(pid, {:stub_called, function_name, args})
         _ -> :noop
       end
 
-      {:ok, %{verb: verb_path, args: args}}
+      {:ok, %{function: function_name, args: args}}
     end
   end
 
   defmodule MissingCallableFromForWriteStub do
     alias DmhAi.Tools.Manifest
-    alias DmhAi.Tools.Manifest.Verb
+    alias DmhAi.Tools.Manifest.Function
 
     def manifest do
       %Manifest{
         connector: "broken_a",
         region:    "test",
-        verbs: %{
-          "bad_write" => %Verb{
+        functions: %{
+          "bad_write" => %Function{
             permission:    :write,
             callable_from: [:chat, :task],   # violates HARD rule
             idempotency_key: :required
@@ -85,14 +85,14 @@ defmodule DmhAi.P03DispatcherTest do
 
   defmodule MissingIdempotencyForWriteStub do
     alias DmhAi.Tools.Manifest
-    alias DmhAi.Tools.Manifest.Verb
+    alias DmhAi.Tools.Manifest.Function
 
     def manifest do
       %Manifest{
         connector: "broken_b",
         region:    "test",
-        verbs: %{
-          "bad_write" => %Verb{
+        functions: %{
+          "bad_write" => %Function{
             permission:    :write,
             callable_from: [:task]
             # idempotency_key defaults to :none → violates Rule 3
@@ -134,14 +134,14 @@ defmodule DmhAi.P03DispatcherTest do
       assert :ok = Manifest.validate(GoodStub.manifest())
     end
 
-    test "write verb without callable_from: [:task] fails (Rule 2 HARD)" do
+    test "write function without callable_from: [:task] fails (Rule 2 HARD)" do
       assert {:error, {:manifest_violation, "broken_a", reason}} =
                Manifest.validate(MissingCallableFromForWriteStub.manifest())
 
-      assert reason =~ "write verb must declare `callable_from: [:task]`"
+      assert reason =~ "write function must declare `callable_from: [:task]`"
     end
 
-    test "write verb without idempotency_key fails (Rule 3)" do
+    test "write function without idempotency_key fails (Rule 3)" do
       assert {:error, {:manifest_violation, "broken_b", reason}} =
                Manifest.validate(MissingIdempotencyForWriteStub.manifest())
 
@@ -161,7 +161,7 @@ defmodule DmhAi.P03DispatcherTest do
     end
   end
 
-  describe "Dispatcher.call/3 — read verb (Rule 1, free chat)" do
+  describe "Dispatcher.call/3 — read function (Rule 1, free chat)" do
     setup do
       :ok = Dispatcher.register(GoodStub)
       :ok
@@ -170,14 +170,14 @@ defmodule DmhAi.P03DispatcherTest do
     test "callable from chat (no task) — succeeds", %{admin_id: admin_id} do
       ctx = %{user_id: admin_id}
 
-      assert {:ok, %{verb: "read_thing", args: %{"q" => "hello"}}} =
+      assert {:ok, %{function: "read_thing", args: %{"q" => "hello"}}} =
                Dispatcher.call("stub.read_thing", %{"q" => "hello"}, ctx)
 
       assert_received {:stub_called, "read_thing", %{"q" => "hello"}}
     end
   end
 
-  describe "Dispatcher.call/3 — write verb (Rule 2 HARD)" do
+  describe "Dispatcher.call/3 — write function (Rule 2 HARD)" do
     setup do
       :ok = Dispatcher.register(GoodStub)
       :ok
@@ -186,7 +186,7 @@ defmodule DmhAi.P03DispatcherTest do
     test "write from free chat (no task) → write_requires_task envelope", %{admin_id: admin_id} do
       ctx = %{user_id: admin_id}
 
-      assert {:error, %{error: "write_requires_task", verb: "stub.write_thing"}} =
+      assert {:error, %{error: "write_requires_task", function: "stub.write_thing"}} =
                Dispatcher.call("stub.write_thing", %{"value" => "x"}, ctx)
 
       refute_received {:stub_called, _, _}
@@ -195,19 +195,19 @@ defmodule DmhAi.P03DispatcherTest do
     test "write inside active task → idempotency_key injected → succeeds", %{admin_id: admin_id} do
       ctx = %{user_id: admin_id, task_id: "task-abc", step_seq: 3}
 
-      assert {:ok, %{verb: "write_thing", args: args}} =
+      assert {:ok, %{function: "write_thing", args: args}} =
                Dispatcher.call("stub.write_thing", %{"value" => "x"}, ctx)
 
       assert is_binary(args["__idempotency_key"]),
              "idempotency_key must be injected on write inside active task"
 
-      # Same (task_id, step_seq, verb) → deterministic key
+      # Same (task_id, step_seq, function) → deterministic key
       assert_received {:stub_called, "write_thing", call_args}
       assert call_args["__idempotency_key"] == args["__idempotency_key"]
     end
   end
 
-  describe "Dispatcher.call/3 — unknown verb / connector" do
+  describe "Dispatcher.call/3 — unknown function / connector" do
     setup do
       :ok = Dispatcher.register(GoodStub)
       :ok
@@ -218,14 +218,14 @@ defmodule DmhAi.P03DispatcherTest do
                Dispatcher.call("nope.something", %{}, %{user_id: admin_id})
     end
 
-    test "unknown verb within registered connector → unknown_verb", %{admin_id: admin_id} do
-      assert {:error, %{error: "unknown_verb", verb: "ghost"}} =
+    test "unknown function within registered connector → unknown_function", %{admin_id: admin_id} do
+      assert {:error, %{error: "unknown_function", function: "ghost"}} =
                Dispatcher.call("stub.ghost", %{}, %{user_id: admin_id})
     end
 
-    test "malformed verb (no dot) → unknown_verb", %{admin_id: admin_id} do
-      assert {:error, %{error: "unknown_verb"}} =
-               Dispatcher.call("bareverb", %{}, %{user_id: admin_id})
+    test "malformed function (no dot) → unknown_function", %{admin_id: admin_id} do
+      assert {:error, %{error: "unknown_function"}} =
+               Dispatcher.call("barename", %{}, %{user_id: admin_id})
     end
   end
 
@@ -248,12 +248,12 @@ defmodule DmhAi.P03DispatcherTest do
       {:ok, %{member_id: member_id}}
     end
 
-    test "member can call a :read verb", %{member_id: member_id} do
+    test "member can call a :read function", %{member_id: member_id} do
       assert {:ok, _} = Dispatcher.call("stub.read_thing", %{"q" => "x"},
                                         %{user_id: member_id})
     end
 
-    test "member can call a :write verb inside a task (members have :write by default)",
+    test "member can call a :write function inside a task (members have :write by default)",
          %{member_id: member_id} do
       assert {:ok, _} =
                Dispatcher.call("stub.write_thing", %{"value" => "x"},

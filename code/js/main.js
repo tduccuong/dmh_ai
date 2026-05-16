@@ -820,7 +820,8 @@ const UIManager = {
                     del.title = 'Remove';
                     del.innerHTML = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>';
                     del.addEventListener('click', async function() {
-                        if (!confirm('Remove ' + u.email + '?')) return;
+                        var ok = await Modal.confirm('Remove user', u.email, 'Remove');
+                        if (!ok) return;
                         await apiFetch('/users/' + u.id, { method: 'DELETE' });
                         await self.refreshUserTable();
                     });
@@ -844,9 +845,43 @@ const UIManager = {
     }
 };
 
+// `?services=connected&slug=<slug>` lands here after the BE's
+// connector_oauth callback meta-refreshes the browser back into the
+// app. Pop a green toast, refresh the My Services overlay if it's
+// open, and strip the query so a reload doesn't re-fire. Also wired
+// to `visibilitychange` for the iOS PWA case where the user runs
+// the OAuth dance in Safari and reopens the home-screen icon —
+// we re-check whenever the PWA regains visibility.
+function handleConnectorOauthReturn() {
+    try {
+        var p = new URLSearchParams(window.location.search);
+        if (p.get('services') !== 'connected') return;
+        var slug = (p.get('slug') || '').replace(/[^a-z0-9_]/gi, '');
+        if (!slug) return;
+
+        // Strip the query so a reload doesn't re-fire.
+        var url = window.location.pathname + window.location.hash;
+        window.history.replaceState({}, '', url);
+
+        var label = slug.split('_').map(function(w) {
+            return w.charAt(0).toUpperCase() + w.slice(1);
+        }).join(' ');
+        if (typeof UIManager !== 'undefined' && UIManager.showToast) {
+            UIManager.showToast('✓ <strong>' + label + '</strong> connected', 'success');
+        }
+        // MyServices.render() re-fetches /me/services on every open, so
+        // the next overlay open will see the new connected row. Nothing
+        // to invalidate here.
+    } catch (e) { /* benign */ }
+}
+
 document.addEventListener('DOMContentLoaded', function() {
     Lightbox.init();
     UIManager.init();
+    handleConnectorOauthReturn();
+    document.addEventListener('visibilitychange', function() {
+        if (document.visibilityState === 'visible') handleConnectorOauthReturn();
+    });
     // Third-tier language fallback. Runs only when neither localStorage
     // nor navigator.languages produced a supported language; resolves
     // async and re-applies the UI strings if the BE returns a hint.

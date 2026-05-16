@@ -18,7 +18,7 @@ defmodule DmhAi.Permissions do
 
       :read       — view a resource
       :write      — create / mutate
-      :invoke     — run a template or call a connector verb
+      :invoke     — run a template or call a connector function
       :approve    — decide on a pending approval
       :administer — manage settings, connectors, templates, members
 
@@ -28,7 +28,7 @@ defmodule DmhAi.Permissions do
 
       {:kb, source_id}
       {:template, id}
-      {:verb, "connector.verb"}    # e.g. {:verb, "hubspot.deal.create"}
+      {:function, "connector.function"}    # e.g. {:function, "hubspot.deal.create"}
       {:approval, id}
       {:connector, name}
       :org_settings
@@ -58,7 +58,7 @@ defmodule DmhAi.Permissions do
   require Logger
 
   @type action     :: :read | :write | :invoke | :approve | :administer
-  @type resource   :: {:kb, integer()} | {:template, String.t()} | {:verb, String.t()}
+  @type resource   :: {:kb, integer()} | {:template, String.t()} | {:function, String.t()}
                       | {:approval, integer()} | {:connector, String.t()} | :org_settings
   @type user_like  :: map() | String.t()
 

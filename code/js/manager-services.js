@@ -102,7 +102,7 @@ const MyServices = {
         disconnectBtn.className = 'settings-add-btn';
         disconnectBtn.style.background = '#7a3a3a';
         disconnectBtn.textContent = 'Disconnect';
-        disconnectBtn.addEventListener('click', function() { self._disconnect(svc.slug); });
+        disconnectBtn.addEventListener('click', function() { self._disconnect(svc); });
         actions.appendChild(disconnectBtn);
 
         row.appendChild(actions);
@@ -173,36 +173,40 @@ const MyServices = {
                     window.location.href = d.url;
                     return;
                 }
-                alert('Connect: server didn\'t return a URL.');
+                Modal.alert('Connect ' + svc.display_name, 'Server didn\'t return a URL.');
             } else {
                 var body = await (res ? res.json().catch(function() { return {}; }) : {});
                 var hint = body.error
                     ? body.error
                     : 'Connect failed (HTTP ' + (res ? res.status : '?') + ').';
-                alert(hint);
+                Modal.alert('Connect ' + svc.display_name, hint);
             }
         } catch (e) {
-            alert('Connect failed: ' + e.message);
+            Modal.alert('Connect ' + svc.display_name, e.message);
         }
     },
 
-    _disconnect: async function(slug) {
-        if (!confirm('Disconnect ' + slug + '? You\'ll need to re-authorise to use it again.')) {
-            return;
-        }
+    _disconnect: async function(svc) {
+        var ok = await Modal.confirm(
+            'Disconnect ' + svc.display_name,
+            'You\'ll need to re-authorise ' + svc.display_name + ' to use it again. Continue?',
+            'Disconnect'
+        );
+        if (!ok) return;
+
         try {
             var res = await apiFetch('/me/services/disconnect', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body:    JSON.stringify({slug: slug})
+                body:    JSON.stringify({slug: svc.slug})
             });
             if (res && res.ok) {
                 this.render();
             } else {
-                alert('Disconnect failed (HTTP ' + (res ? res.status : '?') + ')');
+                Modal.alert('Disconnect ' + svc.display_name, 'HTTP ' + (res ? res.status : '?'));
             }
         } catch (e) {
-            alert('Disconnect failed: ' + e.message);
+            Modal.alert('Disconnect ' + svc.display_name, e.message);
         }
     }
 };

@@ -889,7 +889,10 @@ defmodule DmhAi.Handlers.Data do
             finalize_connection(user_id, session_id, anchor_task_id, alias_, resource, server_url, asm, tokens)
         end
 
-        oauth_html_response(conn, 200, "✓ Authorized — return to your chat.")
+        case flow_kind do
+          "connector_oauth" -> connector_oauth_success_response(conn, alias_)
+          _ -> oauth_html_response(conn, 200, "✓ Authorized — return to your chat.")
+        end
 
       {:error, :not_found} ->
         DmhAi.SysLog.log("[OAUTH] callback FAIL state=#{shorten(state)} reason=not_found (state row gone)")
@@ -1079,7 +1082,7 @@ defmodule DmhAi.Handlers.Data do
   end
 
   # Primitive 0.3 click-driven connector OAuth — writes the three
-  # rows the connector runtime needs to invoke a verb on behalf of
+  # rows the connector runtime needs to invoke a function on behalf of
   # the user. Called from the OAuth callback when the state row's
   # flow_kind == "connector_oauth".
   #
@@ -1250,6 +1253,46 @@ defmodule DmhAi.Handlers.Data do
     conn
     |> put_resp_content_type("text/html")
     |> send_resp(status, html)
+  end
+
+  # Success page for the click-driven `connector_oauth` flow that
+  # started from the My Services FE. Shows the result, then waits
+  # for the user to tap Continue — no auto-redirect, no flash of
+  # a button that disappears under them. The page is the same on
+  # every platform; on iOS PWA the OAuth happened in Safari, so
+  # the user taps Continue here and then taps their home-screen
+  # icon to reopen the PWA (visibilitychange in the FE then pops
+  # the connected-toast).
+  #
+  # The `slug` query param is whitelisted in the FE so a malformed
+  # callback can't redirect to an arbitrary path.
+  defp connector_oauth_success_response(conn, slug) do
+    return_url = "/?services=connected&slug=#{URI.encode_www_form(slug)}"
+    safe_slug  = Plug.HTML.html_escape_to_iodata(slug)
+
+    html = """
+    <!doctype html>
+    <html><head><meta charset="utf-8"><title>Connected</title>
+    <style>
+      body{font-family:system-ui,sans-serif;background:#0a0810;color:#e8d8f0;margin:0;display:flex;align-items:center;justify-content:center;min-height:100vh;text-align:center;padding:24px;}
+      .box{padding:32px 40px;background:#1a1428;border:1px solid #2c2238;border-radius:8px;max-width:480px;}
+      h1{margin:0 0 12px;font-size:18px;color:#60c080;}
+      p{margin:0 0 24px;font-size:13px;color:#b098b8;line-height:1.5;}
+      a.btn{display:inline-block;padding:11px 26px;background:#5a4099;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:600;}
+      a.btn:hover{background:#6a4fb0;}
+      .note{margin-top:16px;font-size:11px;color:#7d6f88;line-height:1.4;}
+    </style></head>
+    <body><div class="box">
+      <h1>✓ #{safe_slug} connected</h1>
+      <p>You can now use #{safe_slug} from DMH-AI chat.</p>
+      <a class="btn" href="#{return_url}">Continue to DMH-AI</a>
+      <div class="note">On iOS, if you started in the DMH-AI home-screen app, tap your home-screen icon instead — Safari can't switch you back automatically.</div>
+    </div></body></html>
+    """
+
+    conn
+    |> put_resp_content_type("text/html")
+    |> send_resp(200, html)
   end
 
   # POST /sessions/:session_id/inputs/:token

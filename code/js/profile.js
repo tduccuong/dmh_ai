@@ -386,12 +386,17 @@ const SettingsModal = {
             var btn = SettingsModal._trashBtn();
             btn.title = 'Revoke this credential';
             btn.addEventListener('click', async function() {
-                if (!confirm('Revoke this credential?\n\n' + ConnectedAccounts.formatLabel(c))) return;
+                var ok = await Modal.confirm(
+                    'Revoke credential',
+                    ConnectedAccounts.formatLabel(c),
+                    'Revoke'
+                );
+                if (!ok) return;
                 try {
                     await ConnectedAccounts.revoke(c.id);
                     SettingsModal._renderConnectedAccounts();
                 } catch (_e) {
-                    alert('Could not revoke this credential. Try again or check the logs.');
+                    Modal.alert('Revoke failed', 'Could not revoke this credential. Try again or check the logs.');
                 }
             });
             row.appendChild(btn);
@@ -583,7 +588,8 @@ const SettingsModal = {
             });
         }
         document.getElementById('settings-profile-clear-btn').addEventListener('click', async function() {
-            if (!confirm(t('profileClearConfirm'))) return;
+            var ok = await Modal.confirm(t('profileClearTitle') || 'Clear profile', t('profileClearConfirm'), t('clear') || 'Clear');
+            if (!ok) return;
             await UserProfile.clear();
         });
     }
@@ -753,7 +759,12 @@ const PoolsAdmin = {
             del.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M9 6V4h6v2"/></svg>';
             del.addEventListener('click', async function(ev) {
                 ev.stopPropagation();
-                if (!confirm('Remove account "' + acct.name + '" from pool "' + pool.name + '"?')) return;
+                var ok = await Modal.confirm(
+                    'Remove account',
+                    'Remove "' + acct.name + '" from pool "' + pool.name + '"?',
+                    'Remove'
+                );
+                if (!ok) return;
                 await self._removeAccount(pool.id, acct.name);
             });
             item.appendChild(del);
@@ -830,7 +841,12 @@ const PoolsAdmin = {
         delBtn.textContent = 'Delete pool';
         delBtn.addEventListener('click', async function(ev) {
             ev.stopPropagation();
-            if (!confirm('Delete pool "' + pool.name + '"? This cannot be undone.')) return;
+            var ok = await Modal.confirm(
+                'Delete pool',
+                '"' + pool.name + '" — this cannot be undone.',
+                'Delete'
+            );
+            if (!ok) return;
             await self._deletePool(pool.id);
         });
 

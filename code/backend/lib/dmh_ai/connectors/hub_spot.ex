@@ -7,7 +7,7 @@ defmodule DmhAi.Connectors.HubSpot do
   @moduledoc """
   HubSpot connector (Universal Region, Case B — vendor MCP).
 
-  Six verbs at the SME-relevant slice of HubSpot's CRM API. The
+  Six functions at the SME-relevant slice of HubSpot's CRM API. The
   vendor hosts an official MCP server at
   `developers.hubspot.com/mcp` (per the 2025 announcement) — we
   point `mcp_catalog` at that URL and let `MCPAdapter.Caller`
@@ -21,7 +21,7 @@ defmodule DmhAi.Connectors.HubSpot do
 
   use DmhAi.Connectors.MCPAdapter
   alias DmhAi.Tools.Manifest
-  alias DmhAi.Tools.Manifest.Verb
+  alias DmhAi.Tools.Manifest.Function
 
   @impl true
   def mcp_slug, do: "hubspot"
@@ -31,8 +31,8 @@ defmodule DmhAi.Connectors.HubSpot do
     %Manifest{
       connector: "hubspot",
       region:    "universal",
-      verbs: %{
-        "contact.find" => %Verb{
+      functions: %{
+        "contact.find" => %Function{
           permission:    :read,
           callable_from: [:chat, :task],
           args: %{
@@ -41,7 +41,7 @@ defmodule DmhAi.Connectors.HubSpot do
           returns: %{contacts: :list},
           scopes:  ["crm.objects.contacts.read"]
         },
-        "contact.create" => %Verb{
+        "contact.create" => %Function{
           permission:      :write,
           callable_from:   [:task],
           idempotency_key: :required,
@@ -53,7 +53,7 @@ defmodule DmhAi.Connectors.HubSpot do
           errors:  [:unauthorised, :duplicate, :rate_limited],
           scopes:  ["crm.objects.contacts.write"]
         },
-        "deal.find" => %Verb{
+        "deal.find" => %Function{
           permission:    :read,
           callable_from: [:chat, :task],
           args: %{
@@ -63,7 +63,7 @@ defmodule DmhAi.Connectors.HubSpot do
           returns: %{deals: :list},
           scopes:  ["crm.objects.deals.read"]
         },
-        "deal.create" => %Verb{
+        "deal.create" => %Function{
           permission:      :write,
           callable_from:   [:task],
           idempotency_key: :required,
@@ -77,7 +77,7 @@ defmodule DmhAi.Connectors.HubSpot do
           errors:  [:unauthorised, :duplicate, :rate_limited],
           scopes:  ["crm.objects.deals.write"]
         },
-        "deal.update" => %Verb{
+        "deal.update" => %Function{
           permission:      :write,
           callable_from:   [:task],
           idempotency_key: :required,
@@ -89,7 +89,7 @@ defmodule DmhAi.Connectors.HubSpot do
           errors:  [:unauthorised, :not_found, :rate_limited],
           scopes:  ["crm.objects.deals.write"]
         },
-        "activity.log" => %Verb{
+        "activity.log" => %Function{
           permission:      :write,
           callable_from:   [:task],
           idempotency_key: :required,

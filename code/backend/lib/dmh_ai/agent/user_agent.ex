@@ -3055,7 +3055,14 @@ defmodule DmhAi.Agent.UserAgent do
 
                 {:error, reason} ->
                   DmhAi.Agent.SessionProgress.mark_tool_done(row.id, duration_ms)
-                  "Error: #{reason}"
+                  # Tool errors are typed envelopes — maps with
+                  # `error` / `connector` / `hint` keys. Naive
+                  # `"#{reason}"` crashes on maps (`String.Chars`
+                  # isn't implemented for them). Run through the
+                  # same `format_tool_result/1` the success path
+                  # uses — JSON for maps/lists, pass-through for
+                  # binaries, nothing leaks Elixir syntax.
+                  "Error: " <> format_tool_result(reason)
               end
 
             # Soft post-execution nudges — Police inspects the call

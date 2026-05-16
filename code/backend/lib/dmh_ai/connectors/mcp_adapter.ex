@@ -33,14 +33,14 @@ defmodule DmhAi.Connectors.MCPAdapter do
        write = always logged).
 
   Per-connector modules typically end up under 100 LoC each —
-  manifest, slug, error remap, and any verb-specific arg massaging.
+  manifest, slug, error remap, and any function-specific arg massaging.
   All cross-cutting code lives here / in the three sibling helpers.
   """
 
   alias DmhAi.Connectors.MCPAdapter.{Audit, Caller, ErrorNormalizer}
   alias DmhAi.Tools.Manifest
 
-  @doc "Returns the connector's verb manifest."
+  @doc "Returns the connector's function manifest."
   @callback manifest() :: Manifest.t()
 
   @doc "The connector's slug as registered in `mcp_catalog`."
@@ -72,8 +72,8 @@ defmodule DmhAi.Connectors.MCPAdapter do
       # Default `call/3` — Dispatcher invokes this once the 4 rule
       # gates have passed. Concrete connectors only need
       # `manifest/0`, `mcp_slug/0`, and (optionally) `remap_error/1`.
-      def call(verb_path, args, caller_ctx) do
-        DmhAi.Connectors.MCPAdapter.dispatch(__MODULE__, verb_path, args, caller_ctx)
+      def call(function_name, args, caller_ctx) do
+        DmhAi.Connectors.MCPAdapter.dispatch(__MODULE__, function_name, args, caller_ctx)
       end
 
       # Default error remap — defer to the generic normaliser.
@@ -94,25 +94,25 @@ defmodule DmhAi.Connectors.MCPAdapter do
   """
   @spec dispatch(module(), String.t(), map(), map()) ::
           {:ok, term()} | {:error, map()}
-  def dispatch(connector_mod, verb_path, args, caller_ctx) do
+  def dispatch(connector_mod, function_name, args, caller_ctx) do
     slug = connector_mod.mcp_slug()
     kind = connector_mod.credential_kind()
 
     with {:ok, creds} <- Caller.lookup_credentials(slug, caller_ctx, kind),
-         {:ok, raw}   <- Caller.invoke(slug, verb_path, args, creds, caller_ctx) do
+         {:ok, raw}   <- Caller.invoke(slug, function_name, args, creds, caller_ctx) do
       result = normalise_result(connector_mod, raw)
 
-      Audit.record(connector_mod, verb_path, caller_ctx, audit_outcome(result))
+      Audit.record(connector_mod, function_name, caller_ctx, audit_outcome(result))
       result
     else
       {:error, :missing_credentials} ->
         envelope = %{error: "missing_credentials", connector: slug}
-        Audit.record(connector_mod, verb_path, caller_ctx, {:denied, "missing_credentials"})
+        Audit.record(connector_mod, function_name, caller_ctx, {:denied, "missing_credentials"})
         {:error, envelope}
 
       {:error, reason} ->
         envelope = ErrorNormalizer.normalize(reason, fn r -> connector_mod.remap_error(r) end)
-        Audit.record(connector_mod, verb_path, caller_ctx,
+        Audit.record(connector_mod, function_name, caller_ctx,
                      {:denied, envelope[:error] || "upstream_error"})
         {:error, envelope}
     end

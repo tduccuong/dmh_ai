@@ -21,12 +21,12 @@ defmodule DmhAi.Connectors.MCPAdapter.Caller do
   Tests stub at this layer to assert the adapter's call contract
   without standing up a real MCP server:
 
-      Application.put_env(:dmh_ai, :__mcp_caller_stub__, fn slug, verb_path, args, creds ->
+      Application.put_env(:dmh_ai, :__mcp_caller_stub__, fn slug, function_name, args, creds ->
         {:ok, %{"echo" => args}}
       end)
 
   The stub is invoked as `/4` or `/5` — `/4` for the historical
-  contract (slug, verb_path, args, creds); `/5` adds the caller_ctx
+  contract (slug, function_name, args, creds); `/5` adds the caller_ctx
   for tests that need the user_id.
   """
 
@@ -71,29 +71,29 @@ defmodule DmhAi.Connectors.MCPAdapter.Caller do
   @doc """
   Invoke an MCP tool. `slug` is the connector's `mcp_catalog.slug`
   AND — by convention — the user's `authorized_services.alias`;
-  `verb_path` is the verb name (e.g. `"contact.find"`); `args` is
-  the verb's arg map (already validated by Dispatcher and carrying
+  `function_name` is the function name (e.g. `"contact.find"`); `args` is
+  the function's arg map (already validated by Dispatcher and carrying
   the injected `__idempotency_key` on writes). `caller_ctx` carries
   at minimum `%{user_id: <id>}` and threads to `MCP.Client.call_tool/4`
   for the per-user MCP connection lookup.
 
   Stub-friendly: if `:__mcp_caller_stub__` is set, that function is
   invoked instead of the real transport. Stubs may be arity 4
-  (slug, verb_path, args, creds) for the historical contract or
+  (slug, function_name, args, creds) for the historical contract or
   arity 5 (… , caller_ctx) for tests that need the user identity.
   """
   @spec invoke(String.t(), String.t(), map(), map(), map()) ::
           {:ok, term()} | {:error, term()}
-  def invoke(slug, verb_path, args, creds, caller_ctx \\ %{}) do
+  def invoke(slug, function_name, args, creds, caller_ctx \\ %{}) do
     case Application.get_env(:dmh_ai, :__mcp_caller_stub__) do
       stub when is_function(stub, 5) ->
-        stub.(slug, verb_path, args, creds, caller_ctx)
+        stub.(slug, function_name, args, creds, caller_ctx)
 
       stub when is_function(stub, 4) ->
-        stub.(slug, verb_path, args, creds)
+        stub.(slug, function_name, args, creds)
 
       _ ->
-        do_real_invoke(slug, verb_path, args, creds, caller_ctx)
+        do_real_invoke(slug, function_name, args, creds, caller_ctx)
     end
   end
 
@@ -105,17 +105,17 @@ defmodule DmhAi.Connectors.MCPAdapter.Caller do
   # time, so a user who walks through `connect_mcp(slug: "google_workspace")`
   # ends up with an alias `"google_workspace"` pointing at the catalog
   # row's `mcp_url`.
-  defp do_real_invoke(slug, verb_path, args, _creds, %{user_id: user_id})
+  defp do_real_invoke(slug, function_name, args, _creds, %{user_id: user_id})
        when is_binary(user_id) do
-    case Client.call_tool(user_id, slug, verb_path, args) do
+    case Client.call_tool(user_id, slug, function_name, args) do
       {:ok, result}   -> {:ok, normalize_mcp_result(result)}
       {:error, _} = e -> e
     end
   end
 
-  defp do_real_invoke(slug, verb_path, _args, _creds, _ctx) do
+  defp do_real_invoke(slug, function_name, _args, _creds, _ctx) do
     Logger.warning(
-      "[Caller] no user_id in caller_ctx (slug=#{slug}, verb=#{verb_path}); refusing real invoke"
+      "[Caller] no user_id in caller_ctx (slug=#{slug}, function=#{function_name}); refusing real invoke"
     )
     {:error, :missing_user_id}
   end

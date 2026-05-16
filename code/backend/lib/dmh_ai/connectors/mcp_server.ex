@@ -6,14 +6,14 @@
 defmodule DmhAi.Connectors.MCPServer do
   @moduledoc """
   Generic, connector-agnostic MCP JSON-RPC server. Hosts every
-  Universal Region connector that registers a verb-spec handler
+  Universal Region connector that registers a function-spec handler
   via `MCPServer.Registry`. The Plug:
 
     * Responds to `initialize` with the protocol version +
       server capabilities.
     * Responds to `tools/list` with the union of all registered
-      verbs across all handlers (slug-prefixed).
-    * Routes `tools/call` to the handler that owns the verb's
+      functions across all handlers (slug-prefixed).
+    * Routes `tools/call` to the handler that owns the function's
       slug-prefix and executes via `RestBridge.invoke/3`.
 
   ## URL convention
@@ -55,11 +55,51 @@ defmodule DmhAi.Connectors.MCPServer do
     )
   end
 
+  @doc """
+  Render the MCP `tools/list` entries for a handler record. Single
+  source of truth used by both the JSON-RPC `tools/list` response
+  served over the wire AND by `ConnectMcp.InProcess.attach/3` which
+  short-circuits the network roundtrip and caches the same shape
+  directly into `authorized_services.server_tools_json`. Two paths,
+  identical rendering — the model can't tell which path produced
+  the catalog.
+
+  Optional `enabled_functions` is a `MapSet` of function names the
+  admin's capability curation has enabled (Layer 2 of the 3-layer
+  policy enforcement). When supplied, functions outside the set
+  are filtered out. `:all` (or omitted) means no filter — every
+  function in the handler is rendered. Connectors that haven't
+  migrated to the capability model end up here.
+
+  Returns a list of `%{"name", "description", "inputSchema"}` maps
+  shaped per the Model Context Protocol spec.
+  """
+  @spec tools_list_for(map(), MapSet.t(String.t()) | :all) :: [map()]
+  def tools_list_for(handler, enabled_functions \\ :all)
+
+  def tools_list_for(%{functions: functions}, enabled_functions) when is_map(functions) do
+    functions
+    |> Enum.filter(fn {name, _} -> function_visible?(name, enabled_functions) end)
+    |> Enum.map(fn {name, spec} ->
+      %{
+        "name"        => name,
+        "description" => spec.doc || "MCP function #{name}",
+        "inputSchema" => %{"type" => "object", "properties" => %{}}
+      }
+    end)
+    |> Enum.sort_by(& &1["name"])
+  end
+
+  def tools_list_for(_, _), do: []
+
+  defp function_visible?(_name, :all), do: true
+  defp function_visible?(name, %MapSet{} = set), do: MapSet.member?(set, name)
+
   defmodule Plug do
     @moduledoc false
 
     use Elixir.Plug.Router
-    alias DmhAi.Connectors.MCPServer.{Registry, RestBridge, VerbSpec}
+    alias DmhAi.Connectors.MCPServer.{Registry, RestBridge, FunctionSpec}
 
     plug :match
     plug Elixir.Plug.Parsers, parsers: [:json], json_decoder: Jason
@@ -90,7 +130,7 @@ defmodule DmhAi.Connectors.MCPServer do
       {jsonrpc_error(id, -32601, "Unknown connector slug: #{slug}"), session_id()}
     end
 
-    defp handle_request(%{verbs: verbs}, %{"method" => "initialize", "id" => id}, _ctx, slug) do
+    defp handle_request(%{functions: functions}, %{"method" => "initialize", "id" => id}, _ctx, slug) do
       {
         %{
           "jsonrpc" => "2.0",
@@ -101,7 +141,7 @@ defmodule DmhAi.Connectors.MCPServer do
             "serverInfo"      => %{
               "name"    => "dmh-ai-mcp-#{slug}",
               "version" => "0.1.0",
-              "verb_count" => map_size(verbs)
+              "function_count" => map_size(functions)
             }
           }
         },
@@ -109,38 +149,35 @@ defmodule DmhAi.Connectors.MCPServer do
       }
     end
 
-    defp handle_request(%{verbs: verbs}, %{"method" => "tools/list", "id" => id}, _ctx, _slug) do
-      tools =
-        verbs
-        |> Enum.map(fn {name, spec} ->
-          %{
-            "name"        => name,
-            "description" => spec.doc || "MCP verb #{name}",
-            "inputSchema" => %{"type" => "object", "properties" => %{}}
-          }
-        end)
-
+    defp handle_request(%{functions: _} = handler, %{"method" => "tools/list", "id" => id}, _ctx, _slug) do
+      tools = DmhAi.Connectors.MCPServer.tools_list_for(handler)
       {%{"jsonrpc" => "2.0", "id" => id, "result" => %{"tools" => tools}}, session_id()}
     end
 
     defp handle_request(
-           %{verbs: verbs},
-           %{"method" => "tools/call", "id" => id, "params" => %{"name" => verb} = params},
+           %{functions: functions},
+           %{"method" => "tools/call", "id" => id, "params" => %{"name" => function} = params},
            ctx,
            slug
          ) do
       args = Map.get(params, "arguments", %{})
 
-      case Map.get(verbs, verb) do
+      case Map.get(functions, function) do
         nil ->
-          {jsonrpc_error(id, -32601, "Unknown verb #{slug}.#{verb}"), session_id()}
+          {jsonrpc_error(id, -32601, "Unknown function #{slug}.#{function}"), session_id()}
 
-        %VerbSpec{} = spec ->
+        %FunctionSpec{} = spec ->
           case RestBridge.invoke(spec, args, ctx) do
             {:ok, payload} ->
               {ok_envelope(id, payload), session_id()}
 
-            {:error, atom} ->
+            {:error, %DmhAi.Connectors.MCPServer.ErrorMap{} = e} ->
+              {error_envelope_from_map(id, e), session_id()}
+
+            {:error, atom} when is_atom(atom) ->
+              # Custom-handler responses that haven't migrated to the
+              # ErrorMap struct yet — surface honestly with whatever
+              # the handler returned.
               {jsonrpc_error(id, -32000, "Vendor error: #{atom}"), session_id()}
           end
       end
@@ -155,7 +192,7 @@ defmodule DmhAi.Connectors.MCPServer do
     end
 
     # MCP `tools/call` results wrap the payload in a `content[]`
-    # envelope with one text item per spec. We encode our verb's
+    # envelope with one text item per spec. We encode our function's
     # return map as JSON inside the text field — the Caller's
     # `normalize_mcp_result/1` JSON-decodes it back into a map on
     # the client side.
@@ -176,6 +213,31 @@ defmodule DmhAi.Connectors.MCPServer do
         "error"   => %{"code" => code, "message" => message}
       }
     end
+
+    # Vendor error from RestBridge → JSON-RPC error envelope.
+    # JSON-RPC 2.0 allows an optional `data` field; we put the
+    # ErrorMap's structured detail there so the Caller can pass
+    # vendor_message + vendor_hint_url through to the model.
+    defp error_envelope_from_map(id, %DmhAi.Connectors.MCPServer.ErrorMap{} = e) do
+      data =
+        %{"class" => Atom.to_string(e.class)}
+        |> maybe_put("vendor_message",  e.vendor_message)
+        |> maybe_put("vendor_hint_url", e.vendor_hint_url)
+
+      %{
+        "jsonrpc" => "2.0",
+        "id"      => id,
+        "error"   => %{
+          "code"    => -32000,
+          "message" => "Vendor error: #{e.class}",
+          "data"    => data
+        }
+      }
+    end
+
+    defp maybe_put(map, _key, nil), do: map
+    defp maybe_put(map, _key, ""),  do: map
+    defp maybe_put(map, key, val),  do: Map.put(map, key, val)
 
     # Streamable HTTP MCP servers allocate a session id on
     # `initialize`. Returning a fixed string is fine — clients

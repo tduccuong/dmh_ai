@@ -139,6 +139,8 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
 .mode-hint { display: none; padding: 5px 18px; background: #2a1f00; color: #f0c040; font-size: 14px; text-align: center; border-bottom: 1px solid #5a4000; flex-shrink: 0; opacity: 1; transition: opacity 0.4s ease; }
 .mode-hint strong { color: #ffd966; font-weight: 700; }
 .mode-hint.fade-out { opacity: 0; }
+.mode-hint.success { background: #082a14; color: #7ad99c; border-bottom-color: #1f5a3a; }
+.mode-hint.success strong { color: #a0e8bc; }
 .error-banner { width: 100%; background: #c0392b; color: white; padding: 10px 20px; text-align: center; display: none; font-size: 14px; flex-shrink: 0; }
 .error-banner button { background: white; color: #c0392b; border: none; padding: 6px 14px; border-radius: 6px; cursor: pointer; margin-left: 15px; font-weight: 600; font-size: 13px; }
 .pw-warning-banner { width: 100%; background: #7a2000; color: #ffb090; padding: 9px 20px; text-align: center; display: none; font-size: 13px; flex-shrink: 0; }
@@ -929,7 +931,8 @@ body.view-external-connectors #external-connectors-view {
     font-size: 13px;
 }
 
-.ec-list-item:hover { background: rgba(255, 255, 255, 0.05); }
+.ec-list-item:hover { background: rgba(255, 255, 255, 0.07); }
+.ec-list-item:hover .ec-list-item-name { color: #f4f4f4; }
 
 .ec-list-item.active {
     background: rgba(200, 120, 48, 0.18);
@@ -976,19 +979,40 @@ body.view-external-connectors #external-connectors-view {
 
 .ec-back-btn:hover { background: #4a3868; }
 
+/* Right-pane two-zone layout: configuration content scrolls, the
+ * action footer (Save / Test connection + per-action result) stays
+ * pinned at the bottom. Means the admin can change anything in a
+ * long form and the Save button is one click away — no need to
+ * scroll all the way down. */
 .ec-detail {
     flex: 1;
-    overflow-y: auto;
-    padding: 32px 40px;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
 }
+.ec-detail-content {
+    flex: 1 1 0;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 32px 40px 24px 40px;
+}
+.ec-detail-footer {
+    flex-shrink: 0;
+    padding: 14px 40px 18px 40px;
+    background: #0a0815;
+    border-top: 1px solid #2a1f3e;
+}
+.ec-detail-footer .ec-actions { margin-top: 0; }
+.ec-detail-footer .ec-result  { margin-top: 10px; }
 
 .ec-empty { opacity: 0.5; text-align: center; padding: 60px 20px; }
 
-.ec-detail-header { margin-bottom: 24px; }
+.ec-detail-header { margin-bottom: 22px; }
 .ec-detail-title { font-size: 20px; margin: 0 0 4px 0; color: #e8d6f0; }
 .ec-detail-slug  { font-size: 12px; color: #888; font-family: monospace; }
 
-.ec-badges { display: flex; gap: 8px; margin: 12px 0 24px 0; flex-wrap: wrap; }
+.ec-badges { display: flex; gap: 8px; margin: 0 0 22px 0; flex-wrap: wrap; }
 .ec-badge {
     font-size: 11px;
     padding: 3px 10px;
@@ -997,7 +1021,7 @@ body.view-external-connectors #external-connectors-view {
     background: rgba(255, 255, 255, 0.03);
 }
 
-.ec-form-group { margin-bottom: 18px; }
+.ec-form-group { margin-bottom: 22px; }
 .ec-form-label {
     display: block;
     font-size: 13px;
@@ -1035,17 +1059,79 @@ body.view-external-connectors #external-connectors-view {
 .ec-btn.primary:hover { background: #6b4dab; }
 .ec-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-.ec-section {
-    margin-top: 32px;
-    padding-top: 18px;
-    border-top: 1px solid #2a1f3e;
+/* Sections (Capabilities, Exposed functions) — bigger top gap to
+ * break from the credential form above, normal gap between
+ * adjacent sections so the inventory blocks read as a related
+ * pair. Section title matches `.ec-form-label` (same size, weight,
+ * colour) so it reads as a peer caption rather than an h3 heading. */
+.ec-section { margin-top: 36px; margin-bottom: 22px; }
+.ec-section + .ec-section { margin-top: 22px; }
+.ec-section-title {
+    font-size: 13px;
+    color: #e8d6f0;
+    font-weight: normal;
+    margin: 0 0 8px 0;
 }
-.ec-section-title { font-size: 13px; color: #e8d6f0; margin: 0 0 12px 0; }
+
+/* Capability ticker — admin curates which subset of the
+ * connector's surface to expose. Each row: checkbox + name +
+ * one-line description + per-capability vendor prerequisite link.
+ * Renders as a normal `.ec-section` (separated by a top border,
+ * same indentation as the other sections — no card wrapper). */
+.ec-caps-help {
+    color: #9988a8;
+    font-size: 11.5px;
+    line-height: 1.5;
+    margin-bottom: 14px;
+}
+.ec-caps-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+.ec-cap {
+    border-top: 1px solid #2a1f3e;
+    padding: 12px 0;
+}
+.ec-cap:first-child { border-top: none; padding-top: 0; }
+.ec-cap-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    cursor: pointer;
+}
+.ec-cap-checkbox {
+    margin-top: 2px;
+    flex-shrink: 0;
+    accent-color: #7ad99c;
+}
+.ec-cap-text { flex: 1; min-width: 0; }
+.ec-cap-name {
+    color: #f4ecf8;
+    font-weight: 600;
+    font-size: 13px;
+    margin-bottom: 2px;
+}
+.ec-cap-desc {
+    color: #c8b8d0;
+    font-size: 12px;
+    line-height: 1.45;
+}
+.ec-cap-prereq {
+    margin-top: 5px;
+    color: #9988a8;
+    font-size: 11px;
+}
+.ec-cap-prereq a {
+    color: #a8c0ff;
+    text-decoration: underline;
+}
+.ec-cap-prereq a:hover { color: #c8d6ff; }
 
 /* Verbs are read-only labels — render them inline as wrapping
  * tags rather than a vertical list, since the user doesn't
  * interact with them. */
-.ec-verb-tags {
+.ec-function-tags {
     display: flex;
     flex-wrap: wrap;
     gap: 6px;
@@ -1053,7 +1139,7 @@ body.view-external-connectors #external-connectors-view {
     padding: 0;
     margin: 0;
 }
-.ec-verb-tags li {
+.ec-function-tags li {
     padding: 3px 9px;
     background: rgba(120, 80, 180, 0.12);
     border: 1px solid rgba(120, 80, 180, 0.30);
