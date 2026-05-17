@@ -413,6 +413,37 @@ defmodule DmhAi.Auth.OAuth2 do
   end
 
   @doc """
+  Single-row variant of `lookup_with_refresh/3` that does NOT
+  require the caller to know the account label. Returns the
+  most-recently-updated row across every account at
+  `(user_id, target)`, refreshing if expired. The canonical
+  lookup for paths whose only handle is the MCP resource —
+  `MCP.Client.load_connection` is the primary caller: a user
+  may have authorised a connector under any account label
+  (e.g. Calendly's `userinfo_endpoint` populates `account` with
+  the user's email; HubSpot's nil userinfo leaves it `""`),
+  and the dispatch path can't hard-code one or the other
+  without missing the row.
+
+  Same error shape as `lookup_with_refresh/3` (`:missing` when
+  no row exists for this resource at all,
+  `{:refresh_failed, _}` when refresh trips).
+  """
+  @spec lookup_one_with_refresh(String.t(), String.t()) ::
+          {:ok, map()}
+          | {:error, :missing | {:refresh_failed, term()}}
+  def lookup_one_with_refresh(user_id, target)
+      when is_binary(user_id) and is_binary(target) do
+    case Credentials.lookup_all(user_id, target) do
+      [] ->
+        {:error, :missing}
+
+      [cred | _] ->
+        lookup_with_refresh(user_id, target, cred.account)
+    end
+  end
+
+  @doc """
   Multi-account auto-refresh. Returns every row at `(user_id, target)`,
   refreshing any that are expired in place. Used by the lookup_creds
   tool to expose all account variants at once so the model can fan

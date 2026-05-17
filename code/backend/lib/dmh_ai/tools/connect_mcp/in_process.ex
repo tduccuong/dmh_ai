@@ -117,30 +117,47 @@ defmodule DmhAi.Tools.ConnectMcp.InProcess do
       granted = granted_scopes(user_id, slug) |> MapSet.new()
 
       if MapSet.subset?(required, granted) do
+        # Self-healing: a prior failed check (or a prior buggy
+        # check) may have left `authorized_services.status` stuck
+        # on `needs_auth`. Now that scopes cover the policy, flip
+        # it back so My Services drops the Reconnect badge. No-op
+        # when the row is already `authorized`.
+        MCPRegistry.mark_authorized(user_id, slug)
         :ok
       else
         missing = MapSet.difference(required, granted) |> MapSet.to_list()
-        # Also flip the authorized_services row to `needs_auth` so
-        # the My Services FE surfaces a Reconnect button alongside
-        # the model's textual nudge. The two surfaces converge:
-        # whether the user reads the agent's reply or notices the
-        # banner on My Services, the recovery action is the same.
+        # Flip the row to `needs_auth` so the My Services FE
+        # surfaces a Reconnect button alongside the model's
+        # textual nudge. The two surfaces converge: whether the
+        # user reads the agent's reply or notices the banner on
+        # My Services, the recovery action is the same.
         MCPRegistry.mark_needs_auth(user_id, slug)
         {:needs_reauth, needs_reauth_envelope(slug, missing)}
       end
     end
   end
 
+  # Union of scopes across every account row the user holds for this
+  # slug's MCP target. A previous version hard-coded `account=""` and
+  # missed connectors that populate the `account` label (e.g. Calendly,
+  # whose `userinfo_endpoint` extracts the user's email) — the row
+  # exists with `account="<email>"`, the empty-string lookup misses,
+  # and the scope check sees an empty grant. `lookup_all/2` ignores
+  # the account dimension and lets us aggregate; for the one-to-one
+  # case (the common path) this is the same row, for multi-account
+  # users this is the union of their grants.
   defp granted_scopes(user_id, slug) do
     case MCPRegistry.find_authorized(user_id, slug) do
       %{canonical_resource: resource} ->
-        case Credentials.lookup(user_id, "mcp:" <> resource, "") do
+        "mcp:" <> resource
+        |> then(&Credentials.lookup_all(user_id, &1))
+        |> Enum.flat_map(fn
           %{payload: %{"scope" => scope}} when is_binary(scope) ->
             String.split(scope, ~r/\s+/, trim: true)
-
           _ ->
             []
-        end
+        end)
+        |> Enum.uniq()
 
       _ ->
         []

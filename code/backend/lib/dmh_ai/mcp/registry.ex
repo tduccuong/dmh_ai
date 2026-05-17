@@ -105,6 +105,30 @@ defmodule DmhAi.MCP.Registry do
     :ok
   end
 
+  @doc """
+  Flip a service's status back to `'authorized'`. Called when a
+  prior `needs_auth` row's underlying scopes now cover the
+  admin's enabled-capabilities set — typically after the user
+  re-completed the OAuth dance and the next dispatcher scope-
+  subset check passes. Without this self-healing reverse, the
+  `My Services` FE would stay stuck on `Reconnect` even after a
+  successful re-grant, because the status field was last written
+  by the failed check.
+
+  No-op when the row is already `'authorized'` or doesn't exist.
+  """
+  @spec mark_authorized(String.t(), String.t()) :: :ok
+  def mark_authorized(user_id, alias_) when is_binary(user_id) and is_binary(alias_) do
+    query!(Repo, """
+    UPDATE authorized_services
+       SET status = 'authorized'
+     WHERE user_id=? AND alias=? AND status != 'authorized'
+    """, [user_id, alias_])
+
+    invalidate_cache(user_id)
+    :ok
+  end
+
   @doc "Cache the server's tools/list result on an existing authorized row."
   @spec set_authorized_tools(String.t(), String.t(), [map()]) :: :ok
   def set_authorized_tools(user_id, alias_, tools) when is_list(tools) do
