@@ -77,6 +77,44 @@ defmodule DmhAi.Connectors.MCPServer do
   @spec tools_list_for(map(), MapSet.t(String.t()) | :all) :: [map()]
   def tools_list_for(handler, enabled_functions \\ :all)
 
+  def tools_list_for(%{slug: slug, functions: functions}, enabled_functions)
+      when is_binary(slug) and is_map(functions) do
+    # Pull the connector's manifest so every function's
+    # `inputSchema` reflects the real argument names + types the
+    # dispatcher will accept. Without this the schema came out
+    # `{"properties": {}}` for every function — the model would
+    # see a tool name + description but had to guess argument
+    # names from prompt context, often wrong, and the vendor
+    # response was just `invalid_request` with no recovery hint.
+    manifest_args =
+      case DmhAi.Connectors.Registry.module_for_slug(slug) do
+        nil -> %{}
+        mod ->
+          try do
+            mod.manifest().functions
+            |> Enum.into(%{}, fn {fn_name, f} -> {fn_name, f.args || %{}} end)
+          rescue
+            _ -> %{}
+          end
+      end
+
+    functions
+    |> Enum.filter(fn {name, _} -> function_visible?(name, enabled_functions) end)
+    |> Enum.map(fn {name, spec} ->
+      args = Map.get(manifest_args, name, %{})
+
+      %{
+        "name"        => name,
+        "description" => spec.doc || "MCP function #{name}",
+        "inputSchema" => json_schema_for(args)
+      }
+    end)
+    |> Enum.sort_by(& &1["name"])
+  end
+
+  # Fallback: handlers without a slug (free-form / test fixtures)
+  # don't have a manifest to consult, so keep the historical
+  # empty-`properties` shape rather than crash.
   def tools_list_for(%{functions: functions}, enabled_functions) when is_map(functions) do
     functions
     |> Enum.filter(fn {name, _} -> function_visible?(name, enabled_functions) end)
@@ -91,6 +129,49 @@ defmodule DmhAi.Connectors.MCPServer do
   end
 
   def tools_list_for(_, _), do: []
+
+  # Manifest arg map → JSON Schema. Each arg's `:type` atom maps
+  # to its JSON-Schema string; `required: true` flags fold into
+  # the top-level `required` array. `:format` (e.g. `:email`) is
+  # passed through verbatim so vendors / models that recognise
+  # the JSON-Schema `format` keyword get the extra hint.
+  defp json_schema_for(args) when is_map(args) and map_size(args) == 0 do
+    %{"type" => "object", "properties" => %{}}
+  end
+
+  defp json_schema_for(args) when is_map(args) do
+    {props, required} =
+      Enum.reduce(args, {%{}, []}, fn {name, spec}, {props, req} ->
+        prop = json_schema_prop(spec)
+        new_req = if Map.get(spec, :required) == true, do: [name | req], else: req
+        {Map.put(props, name, prop), new_req}
+      end)
+
+    base = %{"type" => "object", "properties" => props}
+
+    case Enum.sort(required) do
+      []   -> base
+      list -> Map.put(base, "required", list)
+    end
+  end
+
+  defp json_schema_prop(spec) when is_map(spec) do
+    base = %{"type" => json_schema_type(Map.get(spec, :type))}
+
+    case Map.get(spec, :format) do
+      f when is_atom(f) and not is_nil(f) -> Map.put(base, "format", Atom.to_string(f))
+      f when is_binary(f) and f != ""     -> Map.put(base, "format", f)
+      _                                    -> base
+    end
+  end
+
+  defp json_schema_type(:string),  do: "string"
+  defp json_schema_type(:integer), do: "integer"
+  defp json_schema_type(:number),  do: "number"
+  defp json_schema_type(:boolean), do: "boolean"
+  defp json_schema_type(:map),     do: "object"
+  defp json_schema_type(:list),    do: "array"
+  defp json_schema_type(_),        do: "string"
 
   defp function_visible?(_name, :all), do: true
   defp function_visible?(name, %MapSet{} = set), do: MapSet.member?(set, name)
