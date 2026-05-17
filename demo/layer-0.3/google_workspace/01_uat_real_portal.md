@@ -1,9 +1,8 @@
-# 02 — Google Workspace live-portal UAT script (sales / ops staff)
+# 01 — Google Workspace live-portal UAT script (sales / ops staff)
 
 Six chat prompts the staff user types into DMH-AI to prove the
-real Google Workspace integration end-to-end. Use this when
-the connector is wired to a **real Google Cloud OAuth client**
-(not the mock vendor MCP) — i.e. after the admin has finished
+Google Workspace integration end-to-end against a real Google
+Cloud OAuth client. Run after the admin has finished
 `CLOUD_SETUP.md` and the staff user has clicked **My Services
 → Connect Google Workspace** through the real consent screen.
 

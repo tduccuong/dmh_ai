@@ -1,11 +1,10 @@
-# 02 — HubSpot live-portal UAT script (sales staff)
+# 01 — HubSpot live-portal UAT script (sales staff)
 
 Five chat prompts the sales user types into DMH-AI to prove the
-real HubSpot integration end-to-end. Use this when the
-connector is wired to a **real HubSpot Public App** (not the
-mock vendor MCP) — i.e. after the admin has finished
-`HUBSPOT_APP_SETUP.md` and the sales user has clicked **My
-Services → Connect HubSpot** through the real consent screen.
+HubSpot integration end-to-end against a real HubSpot Public
+App. Run after the admin has finished `HUBSPOT_APP_SETUP.md`
+and the sales user has clicked **My Services → Connect
+HubSpot** through the real consent screen.
 
 Three read prompts come first (safe — never mutate the portal).
 Then two write prompts that actually create records visible in

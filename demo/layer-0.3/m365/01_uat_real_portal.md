@@ -1,12 +1,10 @@
-# 02 — Microsoft 365 live-portal UAT script (sales / ops staff)
+# 01 — Microsoft 365 live-portal UAT script (sales / ops staff)
 
 Six chat prompts the staff user types into DMH-AI to prove the
-real Microsoft Graph integration end-to-end. Use this when
-the connector is wired to a **real Microsoft Entra app
-registration** (not the mock vendor MCP) — i.e. after the admin
-has finished `AZURE_SETUP.md` and the staff user has clicked
-**My Services → Connect Microsoft 365** through the real
-consent screen.
+Microsoft Graph integration end-to-end against a real Microsoft
+Entra app registration. Run after the admin has finished
+`AZURE_SETUP.md` and the staff user has clicked **My Services
+→ Connect Microsoft 365** through the real consent screen.
 
 Four read prompts come first (safe — never mutate the tenant).
 Then two write prompts that actually create records visible in

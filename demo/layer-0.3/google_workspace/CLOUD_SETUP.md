@@ -1,10 +1,9 @@
 # Google Cloud OAuth setup for DMH-AI's Google Workspace connector
 
-One-page checklist for the admin who wants to switch DMH-AI from
-the mock vendor MCP (deterministic, demo-friendly) to real Google
-Workspace (production / live UAT). 10–15 minutes of clicks in
-Google Cloud Console plus pasting the result into DMH-AI's admin
-UI.
+One-page checklist for the admin wiring DMH-AI to real Google
+Workspace — 10–15 minutes of clicks in Google Cloud Console plus
+pasting the result into DMH-AI's admin UI. Required before the
+live-portal UAT script in `01_uat_real_portal.md`.
 
 ## Pre-requisites
 

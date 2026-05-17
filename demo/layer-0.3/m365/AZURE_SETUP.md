@@ -1,10 +1,10 @@
 # Microsoft Entra / Azure AD setup for DMH-AI's Microsoft 365 connector
 
-One-page checklist for the admin switching DMH-AI from the mock
-vendor MCP (deterministic, demo-friendly) to real Microsoft 365
-(production / live UAT). 10–15 minutes of clicks in the Microsoft
-Entra admin centre plus pasting the result into DMH-AI's External
-Connectors page.
+One-page checklist for the admin wiring DMH-AI to real
+Microsoft 365 — 10–15 minutes of clicks in the Microsoft Entra
+admin centre plus pasting the result into DMH-AI's External
+Connectors page. Required before the live-portal UAT script in
+`01_uat_real_portal.md`.
 
 ## Pre-requisites
 

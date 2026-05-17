@@ -1,10 +1,10 @@
 # HubSpot Public App setup for DMH-AI
 
-One-page checklist for the admin switching DMH-AI from the mock
-vendor MCP (deterministic, demo-friendly) to a real HubSpot
-portal (production / live UAT). 10–15 minutes of clicks in
-HubSpot's Developer Portal plus pasting the result into DMH-AI's
-External Connectors page.
+One-page checklist for the admin wiring DMH-AI to a real
+HubSpot portal — 10–15 minutes of clicks in HubSpot's Developer
+Portal plus pasting the result into DMH-AI's External Connectors
+page. Required before the live-portal UAT script in
+`01_uat_real_portal.md`.
 
 ## Pre-requisites
 
@@ -61,8 +61,7 @@ to expose" row; tick those same identifiers in HubSpot's portal.
    approve. After install you can see the app under your
    portal's **Settings → Integrations → Connected Apps**.
 3. This step is so you have a real portal to OAuth into when
-   you test the DMH-AI staff flow. Skip if you're only running
-   the mock-path demo.
+   you test the DMH-AI staff flow.
 
 ### 5. Paste credentials into DMH-AI
 
