@@ -1,0 +1,5 @@
+{
+  "flow_id": "F50",
+  "_note": "no LLM calls — direct POST /tools/execute with task_id verifies idempotency_key contract",
+  "turns": []
+}
