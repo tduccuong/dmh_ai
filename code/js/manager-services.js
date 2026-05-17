@@ -187,6 +187,20 @@ const MyServices = {
                         // ?services=connected return URL still fires the
                         // toast.
                         window.location.href = d.url;
+                    } else {
+                        // New-tab opened cleanly. Close the My Services
+                        // overlay so the chat tab returns to its normal
+                        // state. The user's signal of completion is the
+                        // BroadcastChannel toast (see `setupOauthBroadcastChannel`
+                        // in main.js). Re-opening My Services re-fetches
+                        // `/me/services` so the badges reflect the new
+                        // state — closing here is what guarantees the
+                        // next open is a clean re-render rather than a
+                        // stale-data echo.
+                        if (typeof SettingsModal !== 'undefined' &&
+                            typeof SettingsModal.close === 'function') {
+                            SettingsModal.close();
+                        }
                     }
                     return;
                 }

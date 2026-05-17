@@ -207,6 +207,7 @@ defmodule DmhAi.Agent.ContextEngine do
       |> render_anchor_block()
 
     available_services_block = build_available_services_block(user_id)
+    pending_services_block   = build_pending_services_block(user_id)
 
     # Optional runtime guidance — injected only when the chain-prep's
     # inactive-task classifier returned a positive match. NOT persisted
@@ -215,7 +216,7 @@ defmodule DmhAi.Agent.ContextEngine do
     # in the same message slot it reads the user's actual text.
     last_msgs = maybe_prepend_runtime_hint(last_msgs, Keyword.get(opts, :runtime_resume_hint))
 
-    [system_msg] ++ prefix ++ history_llm ++ relevant_msgs ++ task_list_block ++ available_services_block ++ extracted_files_block ++ anchor_block ++ last_msgs
+    [system_msg] ++ prefix ++ history_llm ++ relevant_msgs ++ task_list_block ++ available_services_block ++ pending_services_block ++ extracted_files_block ++ anchor_block ++ last_msgs
   end
 
   # Prepend a runtime hint string to the content of the most-recent
@@ -286,6 +287,74 @@ defmodule DmhAi.Agent.ContextEngine do
   end
 
   defp build_available_services_block(_), do: []
+
+  # Connectors the admin has configured (enabled in `mcp_catalog`) but
+  # the current user has NOT authorized yet — i.e. the user hasn't
+  # clicked "Connect <name>" through the OAuth flow. Without this
+  # block, the model has no visibility into "this connector exists and
+  # is ready, the user just needs to authorize", and tends to
+  # hallucinate when asked about a not-yet-connected system (e.g.
+  # invents an email by pattern-matching on the user's profile rather
+  # than calling the connector). The block's wording forbids invocation
+  # and tells the model to redirect the user to **My Services →
+  # Connect <name>** instead. Empty list when nothing is pending.
+  defp build_pending_services_block(nil), do: []
+
+  defp build_pending_services_block(user_id) when is_binary(user_id) do
+    pending = list_pending_connectors(user_id)
+
+    case pending do
+      [] ->
+        []
+
+      _ ->
+        rows =
+          pending
+          |> Enum.map(fn c ->
+            base = "- slug=`#{c.slug}` — **#{c.name}**"
+            case c.description do
+              d when is_binary(d) and d != "" -> base <> ": " <> d
+              _ -> base
+            end
+          end)
+          |> Enum.sort()
+          |> Enum.join("\n")
+
+        body =
+          "<pending_services>\n\n" <>
+            "The administrator has CONFIGURED these external systems but " <>
+            "the current user has NOT yet authorized them. " <>
+            "If the user asks anything about a system in this list — its " <>
+            "data, identity, contents, status, ANYTHING — do NOT call its " <>
+            "functions, do NOT invent an answer, and do NOT pattern-match " <>
+            "from unrelated context. The single correct response is to " <>
+            "tell the user that the connector is configured but not yet " <>
+            "authorized for their account, and direct them to click " <>
+            "**My Services → Connect <name>** to authorize.\n\n" <>
+            rows <>
+            "\n\n</pending_services>"
+
+        [
+          %{role: "user",      content: body},
+          %{role: "assistant", content: "Understood — for any system in the pending list I'll instruct the user to click My Services → Connect, never invoke or fabricate."}
+        ]
+    end
+  end
+
+  defp build_pending_services_block(_), do: []
+
+  # Difference: `mcp_catalog` rows with `enabled=1` minus the slugs
+  # the user has already authorized (visible in the authorized block).
+  defp list_pending_connectors(user_id) do
+    authorized =
+      user_id
+      |> DmhAi.MCP.Registry.list_authorized()
+      |> MapSet.new(& &1.alias)
+
+    DmhAi.MCP.Catalog.list()
+    |> Enum.filter(fn c -> c.enabled and is_binary(c.slug) and c.slug != "" end)
+    |> Enum.reject(fn c -> MapSet.member?(authorized, c.slug) end)
+  end
 
   # OAuth section — one bullet per credential row, showing the literal
   # `target=` string the model must pass to `lookup_creds`. Multi-

@@ -40,7 +40,6 @@ defmodule DmhAi.Handlers.AdminConnectors do
     %{slug: "slack",       display_name: "Slack",         auth_kind: "oauth"},
     %{slug: "zoom",        display_name: "Zoom",          auth_kind: "oauth"},
     %{slug: "docusign",    display_name: "DocuSign",      auth_kind: "oauth"},
-    %{slug: "calendly",    display_name: "Calendly",      auth_kind: "oauth"},
     %{slug: "klaviyo",     display_name: "Klaviyo",       auth_kind: "api_key"},
     %{slug: "atlassian",   display_name: "Atlassian",     auth_kind: "oauth"},
     %{slug: "asana",       display_name: "Asana",         auth_kind: "oauth"},
@@ -232,7 +231,13 @@ defmodule DmhAi.Handlers.AdminConnectors do
         }
       end)
 
-    registered ++ planned
+    # Sort alphabetically by display_name within each group so the
+    # FE's left sidebar reads the same on every deploy. Case-
+    # insensitive — "Microsoft 365" vs "m365" shouldn't swap rank
+    # based on capitalisation.
+    by_name = fn a, b -> String.downcase(a.display_name) <= String.downcase(b.display_name) end
+
+    Enum.sort(registered, by_name) ++ Enum.sort(planned, by_name)
   end
 
   defp oauth_rows_by_slug do
