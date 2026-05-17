@@ -42,6 +42,11 @@ defmodule DmhAi.Application do
       DmhAi.Agent.Supervisor,
       {Task.Supervisor, name: DmhAi.Agent.TaskSupervisor},
       DmhAi.Agent.TaskRuntime,
+      # Layer W — workflow trigger poller. Wakes every 60s, dispatches
+      # armed schedule/poll triggers to fire as silent tasks. See
+      # arch_wiki/dmh_ai/sme/layer-0.md §Primitive 0.8 (Trigger ingress)
+      # and `lib/dmh_ai/workflows/poller.ex`.
+      DmhAi.Workflows.Poller,
       # Background re-fetch of stale KB sources triggered by every
       # fetch_index call. See specs/vector_kb.md §Auto-relearn.
       DmhAi.VectorDB.Relearn,

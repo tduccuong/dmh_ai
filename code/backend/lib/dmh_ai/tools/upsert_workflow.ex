@@ -35,7 +35,13 @@ defmodule DmhAi.Tools.UpsertWorkflow do
 
   alias DmhAi.Workflows
   alias DmhAi.Constants
+  alias DmhAi.Connectors.Registry, as: ConnectorRegistry
   require Logger
+
+  # Synthetic functions the compiler may emit even though they aren't
+  # connector-backed. Validation passes them through; the runtime will
+  # resolve them at execution time.
+  @synthetic_functions ~w(llm.compose builtin.compute workflow.invoke)
 
   @impl true
   def name, do: "upsert_workflow"
@@ -173,9 +179,217 @@ defmodule DmhAi.Tools.UpsertWorkflow do
 
   defp shape_validate(%{} = ir) do
     with :ok            <- check_top_level_keys(ir),
-         {:ok, _nodes}  <- check_nodes(ir),
-         :ok            <- check_unique_ids(ir) do
+         {:ok, nodes}   <- check_nodes(ir),
+         :ok            <- check_unique_ids(ir),
+         :ok            <- check_functions_exist(nodes),
+         :ok            <- check_required_args(nodes),
+         :ok            <- check_references(ir, nodes) do
       {:ok, ir}
+    end
+  end
+
+  # ─── deep validation: function catalog ─────────────────────────────────
+
+  defp check_functions_exist(nodes) do
+    nodes
+    |> Enum.filter(&is_step_node?/1)
+    |> Enum.reduce_while(:ok, fn node, _acc ->
+      function_name = node["function"]
+      cond do
+        not is_binary(function_name) ->
+          {:halt, {:error, "upsert_workflow: node #{node["id"]} `function` must be a string, got #{inspect(function_name)}"}}
+
+        function_name in @synthetic_functions ->
+          {:cont, :ok}
+
+        function_exists?(function_name) ->
+          {:cont, :ok}
+
+        true ->
+          {:halt, {:error, "upsert_workflow: node #{node["id"]} references unknown function `#{function_name}` — not in any connector manifest, not a synthetic primitive"}}
+      end
+    end)
+  end
+
+  defp is_step_node?(node) do
+    kind = Map.get(node, "kind", "step")
+    kind == "step" and Map.has_key?(node, "function")
+  end
+
+  # Manifest keys are bare ("contact.find"); the IR namespaces them
+  # ("hubspot.contact.find"). Strip the slug prefix to look up.
+  defp function_exists?(function_name) when is_binary(function_name) do
+    case String.split(function_name, ".", parts: 2) do
+      [slug, bare] ->
+        case ConnectorRegistry.module_for_slug(slug) do
+          nil -> false
+          mod ->
+            try do
+              Map.has_key?(mod.manifest().functions, bare)
+            rescue _ -> false
+            end
+        end
+
+      _ ->
+        false
+    end
+  end
+
+  # ─── deep validation: required args present ────────────────────────────
+
+  defp check_required_args(nodes) do
+    nodes
+    |> Enum.filter(&is_step_node?/1)
+    |> Enum.reject(fn n -> n["function"] in @synthetic_functions end)
+    |> Enum.reduce_while(:ok, fn node, _acc ->
+      case function_spec(node["function"]) do
+        nil ->
+          # Already caught by check_functions_exist; defensive skip.
+          {:cont, :ok}
+
+        %{args: arg_schema} ->
+          declared = Map.keys(Map.get(node, "args", %{}))
+          required = arg_schema
+                     |> Enum.filter(fn {_k, v} -> Map.get(v, :required) == true end)
+                     |> Enum.map(fn {k, _v} -> k end)
+
+          missing = required -- declared
+          unknown = declared -- Map.keys(arg_schema)
+
+          cond do
+            missing != [] ->
+              {:halt, {:error, "upsert_workflow: node #{node["id"]} (`#{node["function"]}`) missing required args: #{inspect(missing)}"}}
+
+            unknown != [] ->
+              {:halt, {:error, "upsert_workflow: node #{node["id"]} (`#{node["function"]}`) declares args not in the function manifest: #{inspect(unknown)}"}}
+
+            true ->
+              {:cont, :ok}
+          end
+      end
+    end)
+  end
+
+  defp function_spec(function_name) when is_binary(function_name) do
+    case String.split(function_name, ".", parts: 2) do
+      [slug, bare] ->
+        case ConnectorRegistry.module_for_slug(slug) do
+          nil -> nil
+          mod ->
+            try do
+              Map.get(mod.manifest().functions, bare)
+            rescue _ -> nil
+            end
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  # ─── deep validation: Mustache references resolve ──────────────────────
+  # For every `{{<expr>}}` in any node's args:
+  #   - `{{T.<path>}}` → root segment `T` is reserved; matches a trigger
+  #     `inputs[]` entry by leading path segment.
+  #   - `{{<id>.<field>}}` → some node with that id must exist (DAG
+  #     ordering check is loose in v1 — same workflow, no forward refs
+  #     beyond branches).
+  #   - `{{now}}`, `{{today}}`, `{{org.<…>}}` — built-in bindings,
+  #     allowed without further checks.
+
+  @builtin_root_bindings ~w(now today org state)
+
+  defp check_references(ir, nodes) do
+    trigger_inputs   = ir |> Map.get("inputs", []) |> Enum.map(& &1["name"])
+    declared_ids     = nodes |> Enum.map(& &1["id"])
+    declared_emits   = collect_emits(nodes)
+
+    refs =
+      nodes
+      |> Enum.flat_map(&extract_node_refs/1)
+
+    refs
+    |> Enum.reduce_while(:ok, fn {node_id, ref_path}, _acc ->
+      case resolve_ref(ref_path, trigger_inputs, declared_ids, declared_emits) do
+        :ok -> {:cont, :ok}
+        {:error, why} -> {:halt, {:error, "upsert_workflow: node #{node_id} reference `{{#{ref_path}}}` — #{why}"}}
+      end
+    end)
+  end
+
+  defp collect_emits(nodes) do
+    Enum.reduce(nodes, %{}, fn n, acc ->
+      case Map.get(n, "emits") do
+        e when is_map(e) -> Map.put(acc, n["id"], Map.keys(e))
+        _                -> Map.put(acc, n["id"], [])
+      end
+    end)
+  end
+
+  defp extract_node_refs(node) do
+    args = Map.get(node, "args", %{})
+    walk_value(args)
+    |> Enum.map(fn ref -> {node["id"], ref} end)
+  end
+
+  defp walk_value(v) when is_binary(v) do
+    Regex.scan(~r/\{\{([^}]+)\}\}/, v, capture: :all_but_first)
+    |> List.flatten()
+    |> Enum.map(&String.trim/1)
+  end
+
+  defp walk_value(v) when is_map(v) do
+    v |> Map.values() |> Enum.flat_map(&walk_value/1)
+  end
+
+  defp walk_value(v) when is_list(v) do
+    Enum.flat_map(v, &walk_value/1)
+  end
+
+  defp walk_value(_), do: []
+
+  defp resolve_ref(ref, trigger_inputs, declared_ids, declared_emits) do
+    case String.split(ref, ".", parts: 2) do
+      ["T", path] ->
+        first = path |> String.split(".") |> List.first()
+        cond do
+          # Match by leading segment OR full path (inputs may declare
+          # nested paths like "deal.id" — both are acceptable).
+          Enum.any?(trigger_inputs, fn n -> n == path or String.starts_with?(path, n <> ".") or n == first end) ->
+            :ok
+
+          true ->
+            {:error, "no matching trigger input (declared: #{inspect(trigger_inputs)})"}
+        end
+
+      [root, _rest] when root in @builtin_root_bindings ->
+        :ok
+
+      [id_str, field] ->
+        case Integer.parse(id_str) do
+          {id, ""} ->
+            cond do
+              not Enum.member?(declared_ids, id) ->
+                {:error, "node id #{id} not declared"}
+
+              not Enum.member?(Map.get(declared_emits, id, []), field |> String.split(".") |> List.first()) ->
+                {:error, "node #{id} doesn't declare emit `#{field}`"}
+
+              true ->
+                :ok
+            end
+
+          _ ->
+            # Non-integer root — treat as built-in/free-form helper (e.g. `now_plus_days(7)`).
+            :ok
+        end
+
+      [_single] ->
+        # Bare reference like `{{now}}` is allowed.
+        :ok
+
+      _ ->
+        {:error, "malformed reference"}
     end
   end
 
