@@ -22,7 +22,10 @@ chmod 0755 "$TMP"
 
 cleanup() {
   echo "[test.sandbox] cleanup"
-  docker rm -f "$SANDBOX" >/dev/null 2>&1 || true
+  # `-v` removes any anonymous volumes attached to the sandbox.
+  # The sandbox image declares no VOLUMEs today, so this is purely
+  # defensive — costs nothing, protects against image drift.
+  docker rm -fv "$SANDBOX" >/dev/null 2>&1 || true
   # The test runner's chown sweep leaves files owned by uid 10000
   # under $TMP — host `rm` (running as `ct`) gets EACCES on those.
   # Delete via a throwaway alpine container running as root.

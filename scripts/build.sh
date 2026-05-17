@@ -347,18 +347,35 @@ services:
       start_period: 15s
 COMPOSE
 
-    #  Reap any prior DMH-AI containers
-    echo "Reaping any prior DMH-AI containers..."
-    LEGACY=$(
-        docker ps -aq --filter "name=^dmh_ai"
-    )
-    LEGACY=$(echo "$LEGACY" | sort -u | tr -d ' ')
+    #  Tear down any prior DMH-AI stack cleanly.
+    # Two stages, in order:
+    #   1. `compose down --volumes` — if a prior install was launched
+    #      via compose, this is the canonical way to tear it down: it
+    #      removes the containers AND the anonymous volumes attached
+    #      to them (SearXNG's image declares /etc/searxng and
+    #      /var/cache/searxng as VOLUMEs, which would otherwise leak
+    #      two anonymous vols per restart cycle).
+    #   2. Defensive sweep — for the case where a prior install was
+    #      torn down dirty and compose has lost track of the
+    #      containers. `docker rm -fv` removes them and their anon
+    #      vols too.
+    # The 1-second settle before `up` is necessary because the master
+    # container uses `network_mode: host` — Docker's network-namespace
+    # teardown isn't synchronous with `rm -f` returning, and a
+    # too-quick `up` afterwards racing with cleanup makes compose
+    # destroy the freshly-created master container with no diagnostic
+    # (just "No such container: <hash>"). One second is overkill but
+    # imperceptible at install time.
+    cd "$INSTALL_DIR"
+    docker compose -p dmh_ai -f docker-compose.yml down --volumes --remove-orphans 2>/dev/null || true
+    LEGACY=$(docker ps -aq --filter "name=^dmh_ai" | sort -u | tr -d ' ')
     if [ -n "$LEGACY" ]; then
-        echo "$LEGACY" | xargs docker rm -f >/dev/null
+        echo "Reaping legacy DMH-AI containers..."
+        echo "$LEGACY" | xargs docker rm -fv >/dev/null
     fi
+    sleep 1
 
     #  Start server
-    cd "$INSTALL_DIR"
     docker compose -p dmh_ai -f docker-compose.yml up -d --remove-orphans
 
     sleep 3
@@ -381,14 +398,40 @@ COMPOSE
 DMHAI_HOME="$HOME/.dmh_ai"
 COMPOSE="docker compose -p dmh_ai -f $DMHAI_HOME/docker-compose.yml"
 
+# Why `down --volumes` everywhere: SearXNG's upstream image declares
+# /etc/searxng + /var/cache/searxng as VOLUMEs. Without --volumes,
+# every `down` orphans two anonymous volumes; over ~hundreds of
+# start/stop cycles this fills the disk with thousands of dead vols.
+# --volumes only removes anonymous volumes attached to this project's
+# containers — named volumes from other projects on the same host
+# are untouched.
+
 case "${1:-}" in
     start)   $COMPOSE up -d --remove-orphans ;;
-    stop)    $COMPOSE down ;;
-    restart) $COMPOSE down && $COMPOSE up -d --remove-orphans ;;
+    stop)    $COMPOSE down --volumes ;;
+    restart) $COMPOSE down --volumes && $COMPOSE up -d --remove-orphans ;;
     logs)    $COMPOSE logs -f ;;
     status)  $COMPOSE ps ;;
+    prune)
+        # Belt-and-braces sweep. `stop` / `restart` already nuke this
+        # cycle's anonymous volumes; `prune` cleans up historical
+        # orphans from prior dirty teardowns. The label filter
+        # restricts removal to volumes Docker auto-created from image
+        # VOLUME directives — named volumes (test build caches, other
+        # projects' explicit volumes) carry no `anonymous` label and
+        # are left alone. Volumes attached to running containers are
+        # skipped by `docker volume prune` automatically.
+        echo "Pruning orphaned anonymous Docker volumes..."
+        docker volume prune -f --filter "label=com.docker.volume.anonymous"
+        STOPPED=$(docker ps -aq --filter "name=^dmh_ai" --filter "status=exited" --filter "status=created")
+        if [ -n "$STOPPED" ]; then
+            echo "Removing stopped DMH-AI containers..."
+            echo "$STOPPED" | xargs docker rm -fv
+        fi
+        echo "Prune complete."
+        ;;
     *)
-        echo "Usage: dmh_ai {start|stop|restart|logs|status}"
+        echo "Usage: dmh_ai {start|stop|restart|logs|status|prune}"
         exit 1
         ;;
 esac
@@ -401,6 +444,7 @@ WRAPPER
     echo ""
     echo "Usage:"
     echo "  dmh_ai start|stop|restart|logs|status"
+    echo "  dmh_ai prune    # sweep orphaned anonymous Docker volumes"
 else
     #  Production install 
     echo "=== DMH-AI Installer ==="
@@ -493,23 +537,32 @@ RemainAfterExit=yes
 User=dmh_ai
 Group=dmh_ai
 WorkingDirectory=$INSTALL_DIR
+# --volumes on every teardown path is required: SearXNG's upstream
+# image declares two VOLUMEs (/etc/searxng, /var/cache/searxng), and
+# without --volumes each restart cycle orphans two anonymous volumes
+# that compound on disk indefinitely. Same reason ExecReload does an
+# explicit down-then-up instead of --force-recreate (which preserves
+# anon vols and leaks just like a bare `down`).
 ExecStart=/usr/bin/docker compose -f $INSTALL_DIR/docker-compose.yml up -d --remove-orphans
-ExecStop=/usr/bin/docker compose -f $INSTALL_DIR/docker-compose.yml down
-ExecReload=/usr/bin/docker compose -f $INSTALL_DIR/docker-compose.yml up -d --force-recreate --remove-orphans
+ExecStop=/usr/bin/docker compose -f $INSTALL_DIR/docker-compose.yml down --volumes
+ExecReload=/bin/sh -c '/usr/bin/docker compose -f $INSTALL_DIR/docker-compose.yml down --volumes && /usr/bin/docker compose -f $INSTALL_DIR/docker-compose.yml up -d --remove-orphans'
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-    #  Reap any prior DMH-AI containers (single-instance invariant) 
-    echo "Reaping any prior DMH-AI containers..."
-    LEGACY=$(
-        docker ps -aq --filter "name=^dmh_ai"
-    )
-    LEGACY=$(echo "$LEGACY" | sort -u | tr -d ' ')
+    #  Tear down any prior DMH-AI stack cleanly (single-instance
+    # invariant) — same two-stage pattern as the stage path above:
+    # compose down for compose-tracked containers + their anon vols,
+    # then a defensive sweep for anything compose has lost track of,
+    # then a 1-second settle for host-networking namespace teardown.
+    docker compose -f "$INSTALL_DIR/docker-compose.yml" -p dmh_ai down --volumes --remove-orphans 2>/dev/null || true
+    LEGACY=$(docker ps -aq --filter "name=^dmh_ai" | sort -u | tr -d ' ')
     if [ -n "$LEGACY" ]; then
-        echo "$LEGACY" | xargs docker rm -f >/dev/null
+        echo "Reaping legacy DMH-AI containers..."
+        echo "$LEGACY" | xargs docker rm -fv >/dev/null
     fi
+    sleep 1
 
     systemctl daemon-reload
     systemctl enable dmh_ai
@@ -518,8 +571,24 @@ EOF
     #  Symlink CLI 
     cat > /usr/local/bin/dmh_ai << 'CLI'
 #!/bin/bash
-echo "DMH-AI running at http://localhost:8080"
-echo "Manage: sudo systemctl start|stop|restart|status dmh_ai"
+case "${1:-}" in
+    prune)
+        # Sweep orphaned anonymous Docker volumes. Production normally
+        # leaks none — systemd ExecStop / ExecReload both pass
+        # --volumes — but if the host has ever been bounced uncleanly,
+        # historical orphans accumulate. The filter scopes removal to
+        # image-VOLUME-directive vols only (named volumes from other
+        # projects are skipped).
+        echo "Pruning orphaned anonymous Docker volumes..."
+        docker volume prune -f --filter "label=com.docker.volume.anonymous"
+        echo "Prune complete."
+        ;;
+    *)
+        echo "DMH-AI running at http://localhost:8080"
+        echo "Manage: sudo systemctl start|stop|restart|status dmh_ai"
+        echo "Maintenance: sudo dmh_ai prune"
+        ;;
+esac
 CLI
     chmod +x /usr/local/bin/dmh_ai
 
@@ -529,6 +598,7 @@ CLI
     echo ""
     echo "Manage:"
     echo "  sudo systemctl start|stop|restart|status dmh_ai"
+    echo "  sudo dmh_ai prune    # sweep orphaned anonymous volumes"
     echo ""
     echo "Connect:"
     echo "  http://localhost:8080"
