@@ -131,6 +131,81 @@ defmodule DmhAi.P03HubSpotFunctionsTest do
 
       assert is_binary(aid) and String.starts_with?(aid, s.activity_id)
     end
+
+    test "contact.update inside a task echoes the patched keys",
+         %{user_id: user_id, sentinels: s} do
+      ctx = %{user_id: user_id, task_id: "t-hs-contact-update", step_seq: 0}
+
+      assert {:ok, %{"contact_id" => cid, "updated" => updated}} =
+               Dispatcher.call("hubspot.contact.update",
+                               %{
+                                 "contact_id" => s.contact_id,
+                                 "patch"      => %{"jobtitle" => "VP Engineering"}
+                               },
+                               ctx)
+
+      assert cid == s.contact_id
+      assert "jobtitle" in updated
+    end
+
+    test "company.create inside a task returns a generated company id",
+         %{user_id: user_id, sentinels: s} do
+      ctx = %{user_id: user_id, task_id: "t-hs-company-create", step_seq: 0}
+
+      assert {:ok, %{"company_id" => cid, "name" => name}} =
+               Dispatcher.call("hubspot.company.create",
+                               %{"name" => "Demo company", "domain" => "demo.example"},
+                               ctx)
+
+      assert is_binary(cid) and String.starts_with?(cid, s.company_id)
+      assert name == "Demo company"
+    end
+
+    test "company.update inside a task echoes the patched keys",
+         %{user_id: user_id, sentinels: s} do
+      ctx = %{user_id: user_id, task_id: "t-hs-company-update", step_seq: 0}
+
+      assert {:ok, %{"company_id" => cid, "updated" => updated}} =
+               Dispatcher.call("hubspot.company.update",
+                               %{
+                                 "company_id" => s.company_id,
+                                 "patch"      => %{"industry" => "Software"}
+                               },
+                               ctx)
+
+      assert cid == s.company_id
+      assert "industry" in updated
+    end
+
+    test "task.create inside a task returns a generated task id",
+         %{user_id: user_id, sentinels: s} do
+      ctx = %{user_id: user_id, task_id: "t-hs-task-create", step_seq: 0}
+
+      assert {:ok, %{"task_id" => tid}} =
+               Dispatcher.call("hubspot.task.create",
+                               %{
+                                 "subject"    => "Follow up with Brian",
+                                 "body"       => "Send the proposal by Friday.",
+                                 "deal_id"    => s.deal_id,
+                                 "priority"   => "high",
+                                 "task_type"  => "todo"
+                               },
+                               ctx)
+
+      assert is_binary(tid) and String.starts_with?(tid, s.task_id)
+    end
+  end
+
+  describe "company.find as a read function (no task gate)" do
+    test "returns the fixture company by name", %{user_id: user_id, sentinels: s} do
+      assert {:ok, %{"companies" => companies}} =
+               Dispatcher.call("hubspot.company.find",
+                               %{"query" => "Mustermann"},
+                               %{user_id: user_id})
+
+      assert Enum.any?(companies, fn c -> c["id"]   == s.company_id   end)
+      assert Enum.any?(companies, fn c -> c["name"] == s.company_name end)
+    end
   end
 
   describe "manifest verifier" do

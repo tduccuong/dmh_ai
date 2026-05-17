@@ -259,6 +259,56 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
           },
           returns: %{values: :list},
           scopes:  ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+        },
+
+        # vendor: POST /gmail/v1/users/me/messages/send  (with threadId)
+        # Replies attach a `threadId` + `In-Reply-To` header so Gmail
+        # threads the reply correctly. Most agent-driven email is a
+        # reply, not a cold send.
+        "gmail.reply" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "thread_id"  => %{type: :string, required: true},
+            "to"         => %{type: :string, required: true, format: :email},
+            "subject"    => %{type: :string, required: true},
+            "body"       => %{type: :string, required: true},
+            "in_reply_to_message_id" => %{type: :string, required: false}
+          },
+          returns: %{message_id: :string},
+          errors:  [:unauthorised, :rate_limited, :upstream_5xx],
+          scopes:  ["https://www.googleapis.com/auth/gmail.send"]
+        },
+
+        # vendor: PATCH /calendar/v3/calendars/primary/events/{eventId}
+        # The model uses this for "move my 3 PM with Brian to Thursday
+        # at the same time" / "shift everything an hour later" prompts.
+        "gcal.update_event" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "event_id"  => %{type: :string, required: true},
+            "patch"     => %{type: :map,    required: true}
+          },
+          returns: %{event_id: :string},
+          errors:  [:unauthorised, :not_found, :rate_limited],
+          scopes:  ["https://www.googleapis.com/auth/calendar.events"]
+        },
+
+        # vendor: GET /v1/documents/{documentId}
+        # Returns the doc's textual content concatenated from its
+        # `body.content` paragraphs — enough for "summarize this
+        # doc" prompts without paying for the full document tree.
+        "docs.read_text" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "document_id" => %{type: :string, required: true}
+          },
+          returns: %{text: :string, title: :string},
+          scopes:  ["https://www.googleapis.com/auth/documents.readonly"]
         }
       }
     }
@@ -325,7 +375,8 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
         "https://www.googleapis.com/auth/calendar.readonly",
         "https://www.googleapis.com/auth/calendar.events",
         "https://www.googleapis.com/auth/drive.readonly",
-        "https://www.googleapis.com/auth/drive.file"
+        "https://www.googleapis.com/auth/drive.file",
+        "https://www.googleapis.com/auth/documents.readonly"
       ],
       userinfo_endpoint:      "https://openidconnect.googleapis.com/v1/userinfo",
       userinfo_field_path:    "email",
@@ -402,7 +453,7 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
           "https://www.googleapis.com/auth/gmail.readonly",
           "https://www.googleapis.com/auth/gmail.send"
         ],
-        functions: ["gmail.search", "gmail.send"],
+        functions: ["gmail.search", "gmail.send", "gmail.reply"],
         vendor_prereq: %{
           label:      "Gmail API",
           enable_url: "https://console.cloud.google.com/apis/library/gmail.googleapis.com"
@@ -416,7 +467,7 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
           "https://www.googleapis.com/auth/calendar.readonly",
           "https://www.googleapis.com/auth/calendar.events"
         ],
-        functions: ["gcal.find_free_slots", "gcal.create_event"],
+        functions: ["gcal.find_free_slots", "gcal.create_event", "gcal.update_event"],
         vendor_prereq: %{
           label:      "Calendar API",
           enable_url: "https://console.cloud.google.com/apis/library/calendar-json.googleapis.com"
@@ -479,10 +530,9 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
       %{
         id:           "docs",
         display_name: "Docs",
-        description:  "Read + write Google Docs content (read paragraphs, append text).",
-        status:       :planned,
-        scopes:       ["https://www.googleapis.com/auth/documents"],
-        functions:    [],
+        description:  "Read Google Docs content as plain text (for summarization, extraction).",
+        scopes:       ["https://www.googleapis.com/auth/documents.readonly"],
+        functions:    ["docs.read_text"],
         vendor_prereq: %{label: "Google Docs API", enable_url: "https://console.cloud.google.com/apis/library/docs.googleapis.com"}
       },
       %{

@@ -7,20 +7,26 @@ defmodule DmhAi.Connectors.HubSpot do
   @moduledoc """
   HubSpot connector (Universal Region, Case B — vendor MCP).
 
-  Six functions at the SME-relevant slice of HubSpot's CRM API
+  Eleven functions at the SME-relevant slice of HubSpot's CRM API
   (developers.hubspot.com/docs/api/crm/*) — contacts, deals,
-  activities:
+  companies, tasks, activities:
 
     contact.find    [read]   search by query string
     contact.create  [write]  upsert a contact
+    contact.update  [write]  PATCH an existing contact's properties
+    company.find    [read]   search companies (B2B org records)
+    company.create  [write]  create a company
+    company.update  [write]  PATCH a company's properties
     deal.find       [read]   list deals (filter by stage / owner)
     deal.create     [write]  open a deal tied to a contact
     deal.update     [write]  patch a deal (stage transition, amount …)
     activity.log    [write]  log a Note engagement on a deal
+    task.create     [write]  create a Task engagement (actionable, not a note)
 
-  Three capability groups (contacts / deals / activities) so admins
-  can scope per-org — a CSM org might tick contacts + activities
-  but not deals; a sales-team org might tick all three.
+  Five capability groups (contacts / deals / companies / tasks /
+  activities) so admins can scope per-org — a CSM-only org might
+  tick contacts + activities + companies + tasks; a sales-team
+  org enables all five.
 
   ## Vendor quirks (`remap_error/1`)
 
@@ -71,6 +77,67 @@ defmodule DmhAi.Connectors.HubSpot do
           returns: %{contact_id: :string},
           errors:  [:unauthorised, :duplicate, :rate_limited],
           scopes:  ["crm.objects.contacts.write"]
+        },
+
+        # vendor: PATCH /crm/v3/objects/contacts/{id}
+        # The agent uses this for post-call "update Brian's title to
+        # VP Engineering" / "set company to Acme" / "fix the email"
+        # follow-ups. `patch` is a free-form map of HubSpot property
+        # names → values; the shim does not enumerate or validate
+        # property names so custom properties pass through.
+        "contact.update" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "contact_id" => %{type: :string, required: true},
+            "patch"      => %{type: :map,    required: true}
+          },
+          returns: %{contact_id: :string},
+          errors:  [:unauthorised, :not_found, :rate_limited],
+          scopes:  ["crm.objects.contacts.write"]
+        },
+
+        # vendor: POST /crm/v3/objects/companies/search
+        "company.find" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "query" => %{type: :string,  required: true},
+            "limit" => %{type: :integer, required: false}
+          },
+          returns: %{companies: :list},
+          scopes:  ["crm.objects.companies.read"]
+        },
+
+        # vendor: POST /crm/v3/objects/companies
+        "company.create" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "name"    => %{type: :string, required: true},
+            "domain"  => %{type: :string, required: false},
+            "city"    => %{type: :string, required: false},
+            "country" => %{type: :string, required: false}
+          },
+          returns: %{company_id: :string},
+          errors:  [:unauthorised, :duplicate, :rate_limited],
+          scopes:  ["crm.objects.companies.write"]
+        },
+
+        # vendor: PATCH /crm/v3/objects/companies/{id}
+        "company.update" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "company_id" => %{type: :string, required: true},
+            "patch"      => %{type: :map,    required: true}
+          },
+          returns: %{company_id: :string},
+          errors:  [:unauthorised, :not_found, :rate_limited],
+          scopes:  ["crm.objects.companies.write"]
         },
 
         # vendor: POST /crm/v3/objects/deals/search
@@ -135,6 +202,30 @@ defmodule DmhAi.Connectors.HubSpot do
           returns: %{activity_id: :string},
           errors:  [:unauthorised, :rate_limited],
           scopes:  ["crm.objects.deals.write"]
+        },
+
+        # vendor: POST /crm/v3/objects/tasks
+        # Tasks are distinct from Notes — they have a status (NOT_STARTED
+        # / IN_PROGRESS / COMPLETED), a priority, a due date, and a type
+        # (CALL / EMAIL / TODO). The agent uses tasks for "remind the rep
+        # to follow up on Thursday" style assignments, vs notes which
+        # are informational.
+        "task.create" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "subject"    => %{type: :string, required: true},
+            "body"       => %{type: :string, required: false},
+            "due_date"   => %{type: :string, required: false},
+            "priority"   => %{type: :string, required: false},
+            "task_type"  => %{type: :string, required: false},
+            "deal_id"    => %{type: :string, required: false},
+            "contact_id" => %{type: :string, required: false}
+          },
+          returns: %{task_id: :string},
+          errors:  [:unauthorised, :rate_limited],
+          scopes:  ["crm.objects.deals.write"]
         }
       }
     }
@@ -172,6 +263,8 @@ defmodule DmhAi.Connectors.HubSpot do
       scopes: [
         "crm.objects.contacts.read",
         "crm.objects.contacts.write",
+        "crm.objects.companies.read",
+        "crm.objects.companies.write",
         "crm.objects.deals.read",
         "crm.objects.deals.write"
       ],
@@ -237,12 +330,13 @@ defmodule DmhAi.Connectors.HubSpot do
   def mcp_handler_module, do: DmhAi.Connectors.HubSpot.MCPHandler
 
   @doc """
-  Capability groups admin curates via External Connectors. Three
-  domain groups — contacts vs deals vs activities — so a CSM-only
-  org can expose contacts + activities and skip deals, while a
-  sales-team org enables all three. The three enforcement layers
-  (OAuth scope filter, tool catalog filter, dispatcher gate) all
-  read from `enabled_capabilities`.
+  Capability groups admin curates via External Connectors. Five
+  domain groups go live — contacts / companies / deals / tasks /
+  activities — so a CSM-only org can expose contacts + activities
+  + companies + tasks and skip deals, while a sales-team org
+  enables all five. The three enforcement layers (OAuth scope
+  filter, tool catalog filter, dispatcher gate) all read from
+  `enabled_capabilities`.
   """
   @spec capabilities() :: [map()]
   def capabilities do
@@ -250,11 +344,22 @@ defmodule DmhAi.Connectors.HubSpot do
       %{
         id:           "contacts",
         display_name: "Contacts",
-        description:  "Search and create CRM contacts.",
+        description:  "Search, create, and update CRM contacts.",
         scopes:       ["crm.objects.contacts.read", "crm.objects.contacts.write"],
-        functions:    ["contact.find", "contact.create"],
+        functions:    ["contact.find", "contact.create", "contact.update"],
         vendor_prereq: %{
           label:      "HubSpot Public App scopes (Contacts)",
+          enable_url: "https://developers.hubspot.com/docs/api/working-with-oauth"
+        }
+      },
+      %{
+        id:           "companies",
+        display_name: "Companies",
+        description:  "Search, create, and update Companies (B2B org records).",
+        scopes:       ["crm.objects.companies.read", "crm.objects.companies.write"],
+        functions:    ["company.find", "company.create", "company.update"],
+        vendor_prereq: %{
+          label:      "HubSpot Public App scopes (Companies)",
           enable_url: "https://developers.hubspot.com/docs/api/working-with-oauth"
         }
       },
@@ -266,6 +371,17 @@ defmodule DmhAi.Connectors.HubSpot do
         functions:    ["deal.find", "deal.create", "deal.update"],
         vendor_prereq: %{
           label:      "HubSpot Public App scopes (Deals)",
+          enable_url: "https://developers.hubspot.com/docs/api/working-with-oauth"
+        }
+      },
+      %{
+        id:           "tasks",
+        display_name: "Tasks",
+        description:  "Create Task engagements — actionable follow-ups with status, due date, and priority (distinct from informational notes).",
+        scopes:       ["crm.objects.deals.write"],
+        functions:    ["task.create"],
+        vendor_prereq: %{
+          label:      "HubSpot Public App scopes (Engagements)",
           enable_url: "https://developers.hubspot.com/docs/api/working-with-oauth"
         }
       },
@@ -282,16 +398,6 @@ defmodule DmhAi.Connectors.HubSpot do
       },
       # ── Planned (CRM surface visible to admins, not yet built) ──
       %{
-        id:           "companies",
-        display_name: "Companies",
-        description:  "Read + manage HubSpot Companies (org records).",
-        status:       :planned,
-        scopes:       ["crm.objects.companies.read", "crm.objects.companies.write"],
-        functions:    [],
-        vendor_prereq: %{label: "HubSpot Public App scopes (Companies)",
-                         enable_url: "https://developers.hubspot.com/docs/api/working-with-oauth"}
-      },
-      %{
         id:           "tickets",
         display_name: "Tickets",
         description:  "Read + manage Service Hub support tickets.",
@@ -299,16 +405,6 @@ defmodule DmhAi.Connectors.HubSpot do
         scopes:       ["tickets"],
         functions:    [],
         vendor_prereq: %{label: "HubSpot Public App scopes (Tickets)",
-                         enable_url: "https://developers.hubspot.com/docs/api/working-with-oauth"}
-      },
-      %{
-        id:           "tasks",
-        display_name: "Tasks",
-        description:  "Read + create Task engagements (separate from notes).",
-        status:       :planned,
-        scopes:       ["crm.objects.deals.read", "crm.objects.deals.write"],
-        functions:    [],
-        vendor_prereq: %{label: "HubSpot Public App scopes (Engagements)",
                          enable_url: "https://developers.hubspot.com/docs/api/working-with-oauth"}
       },
       %{

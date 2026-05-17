@@ -27,15 +27,18 @@ defmodule DmhAi.Connectors.Mock.Fixtures.M365 do
     %{
       "mail.search"         => &mail_search/1,
       "mail.send"           => &mail_send/1,
+      "mail.reply"          => &mail_reply/1,
       "cal.find_free_slots" => &cal_find_free_slots/1,
       "cal.create_event"    => &cal_create_event/1,
+      "cal.update_event"    => &cal_update_event/1,
       "files.list"          => &files_list/1,
       "files.upload"        => &files_upload/1,
       "teams.create_meeting" => &teams_create_meeting/1,
       "todo.list"   => &todo_list/1,
       "todo.create" => &todo_create/1,
       "contacts.search" => &contacts_search/1,
-      "excel.read_range" => &excel_read_range/1
+      "excel.read_range" => &excel_read_range/1,
+      "onenote.read_page" => &onenote_read_page/1
     }
   end
 
@@ -217,5 +220,31 @@ defmodule DmhAi.Connectors.Mock.Fixtures.M365 do
       _ ->
         iso
     end
+  end
+
+  # ── Per-function fixtures: new in slice 3 expansion ──────────────────
+
+  defp mail_reply(args) do
+    %{
+      "ok"         => true,
+      "message_id" => Map.get(args, "message_id")
+    }
+  end
+
+  defp cal_update_event(args) do
+    %{
+      "event_id" => Map.get(args, "event_id"),
+      "updated"  => Map.keys(Map.get(args, "patch") || %{})
+    }
+  end
+
+  defp onenote_read_page(_args) do
+    %{
+      "title" => "Sprint planning — week 22 (mock)",
+      "text"  =>
+        "Goals for the week:\n" <>
+        "• Ship Calendly connector + Slice 3 expansion across HubSpot / GW / M365.\n" <>
+        "• Verify cross-connector flow (HubSpot find → Calendly book → HubSpot log + task)."
+    }
   end
 end

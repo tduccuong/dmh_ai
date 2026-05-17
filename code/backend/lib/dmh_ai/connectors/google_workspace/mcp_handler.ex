@@ -22,6 +22,7 @@ defmodule DmhAi.Connectors.GoogleWorkspace.MCPHandler do
   @gmail_base    "https://gmail.googleapis.com/gmail/v1/users/me"
   @calendar_base "https://www.googleapis.com/calendar/v3"
   @drive_base    "https://www.googleapis.com/drive/v3"
+  @docs_base     "https://docs.googleapis.com/v1"
   @drive_upload  "https://www.googleapis.com/upload/drive/v3"
   @meet_base     "https://meet.googleapis.com/v2"
   @tasks_base    "https://tasks.googleapis.com/tasks/v1"
@@ -50,6 +51,12 @@ defmodule DmhAi.Connectors.GoogleWorkspace.MCPHandler do
         request: &gmail_send_request/2,
         doc:     "Send a plain-text Gmail message."
       },
+      "gmail.reply" => %FunctionSpec{
+        method:  :post,
+        url:     "#{@gmail_base}/messages/send",
+        request: &gmail_reply_request/2,
+        doc:     "Reply to a Gmail thread (attaches threadId + In-Reply-To header)."
+      },
       "gcal.find_free_slots" => %FunctionSpec{
         handler: &gcal_find_free_slots/2,
         doc:     "List free slots of `duration_min` length within a window."
@@ -61,6 +68,14 @@ defmodule DmhAi.Connectors.GoogleWorkspace.MCPHandler do
         response: fn 200, body -> {:ok, %{"event_id" => body["id"], "html_link" => body["htmlLink"]}}
                     s, _b when s in 200..299 -> {:ok, %{}} end,
         doc:     "Create a Calendar event on the primary calendar."
+      },
+      "gcal.update_event" => %FunctionSpec{
+        handler: &gcal_update_event/2,
+        doc:     "Move / reschedule / rename an existing Calendar event."
+      },
+      "docs.read_text" => %FunctionSpec{
+        handler: &docs_read_text/2,
+        doc:     "Read a Google Doc's text content (concatenated body paragraphs)."
       },
       "drive.list" => %FunctionSpec{
         method:  :get,
@@ -284,6 +299,45 @@ defmodule DmhAi.Connectors.GoogleWorkspace.MCPHandler do
     |> IO.iodata_to_binary()
   end
 
+  # ─── gmail.reply — RFC-2822 with In-Reply-To header + threadId ────────
+
+  defp gmail_reply_request(args, _ctx) do
+    headers = [
+      "To: ", args["to"], "\r\n",
+      "Subject: ", args["subject"], "\r\n"
+    ]
+
+    in_reply_to =
+      case Map.get(args, "in_reply_to_message_id") do
+        s when is_binary(s) and s != "" ->
+          [
+            "In-Reply-To: <", s, ">\r\n",
+            "References: <",  s, ">\r\n"
+          ]
+        _ -> []
+      end
+
+    mime =
+      (headers ++ in_reply_to ++
+       [
+         "MIME-Version: 1.0\r\n",
+         "Content-Type: text/plain; charset=UTF-8\r\n",
+         "\r\n",
+         args["body"] || ""
+       ])
+      |> IO.iodata_to_binary()
+
+    encoded = mime |> Base.url_encode64(padding: false)
+
+    [
+      json: %{
+        "raw"      => encoded,
+        "threadId" => args["thread_id"]
+      },
+      headers: [{"content-type", "application/json"}]
+    ]
+  end
+
   # ─── gcal.find_free_slots — freebusy.query + slot computation ─────────
 
   # vendor: POST /calendar/v3/freeBusy
@@ -428,6 +482,60 @@ defmodule DmhAi.Connectors.GoogleWorkspace.MCPHandler do
     query = if q == "", do: [], else: [{"q", q}]
     [params: query ++ [{"pageSize", Map.get(args, "limit", 25)}]]
   end
+
+  # ─── gcal.update_event — PATCH with dynamic URL ───────────────────────
+
+  defp gcal_update_event(args, ctx) do
+    event_id = args["event_id"]
+    patch    = Map.get(args, "patch") || %{}
+
+    url = "#{@calendar_base}/calendars/primary/events/#{URI.encode(event_id)}"
+
+    opts = [url: url, json: patch]
+
+    case RestBridge.raw_request(:patch, with_bearer(opts, ctx)) do
+      {:ok, status, body} when status in 200..299 ->
+        {:ok, %{"event_id" => body["id"], "updated" => Map.keys(patch)}}
+
+      {:ok, status, body} ->
+        {:error, {:http, status, body}}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  # ─── docs.read_text — GET doc + concatenate body paragraphs ───────────
+
+  defp docs_read_text(args, ctx) do
+    document_id = args["document_id"]
+    url = "#{@docs_base}/documents/#{URI.encode(document_id)}"
+
+    case RestBridge.raw_request(:get, with_bearer([url: url], ctx)) do
+      {:ok, status, body} when status in 200..299 ->
+        text =
+          body
+          |> get_in(["body", "content"])
+          |> Kernel.||([])
+          |> Enum.flat_map(&extract_paragraph_text/1)
+          |> Enum.join("\n")
+
+        {:ok, %{"title" => body["title"], "text" => text}}
+
+      {:ok, status, body} ->
+        {:error, {:http, status, body}}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  defp extract_paragraph_text(%{"paragraph" => %{"elements" => elems}}) when is_list(elems) do
+    elems
+    |> Enum.map(fn e -> get_in(e, ["textRun", "content"]) end)
+    |> Enum.reject(&is_nil/1)
+  end
+  defp extract_paragraph_text(_), do: []
 
   # ─── drive.upload — multipart upload (metadata + content parts) ───────
 

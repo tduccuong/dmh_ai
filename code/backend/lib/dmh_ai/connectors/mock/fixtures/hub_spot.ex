@@ -25,10 +25,15 @@ defmodule DmhAi.Connectors.Mock.Fixtures.HubSpot do
     %{
       "contact.find"   => &contact_find/1,
       "contact.create" => &contact_create/1,
+      "contact.update" => &contact_update/1,
+      "company.find"   => &company_find/1,
+      "company.create" => &company_create/1,
+      "company.update" => &company_update/1,
       "deal.find"      => &deal_find/1,
       "deal.create"    => &deal_create/1,
       "deal.update"    => &deal_update/1,
-      "activity.log"   => &activity_log/1
+      "activity.log"   => &activity_log/1,
+      "task.create"    => &task_create/1
     }
   end
 
@@ -40,11 +45,15 @@ defmodule DmhAi.Connectors.Mock.Fixtures.HubSpot do
       contact_name:  "Klara Vertriebsbeispiel",
       contact_email: "klara.vertrieb@dmh-hubspot-demo.example",
       contact_id:    "hs_contact_mock_001",
+      company_name:  "Mustermann GmbH",
+      company_domain: "mustermann-gmbh.example",
+      company_id:    "hs_company_mock_004",
       deal_name:     "Mustermann GmbH — Q2 Stiftungsfeier",
       deal_id:       "hs_deal_mock_002",
       deal_stage:    "appointmentscheduled",
       deal_amount:   "15000",
-      activity_id:   "hs_activity_mock_003"
+      activity_id:   "hs_activity_mock_003",
+      task_id:       "hs_task_mock_005"
     }
   end
 
@@ -112,6 +121,54 @@ defmodule DmhAi.Connectors.Mock.Fixtures.HubSpot do
 
     %{
       "activity_id" => id <> "_" <> Integer.to_string(:erlang.unique_integer([:positive]))
+    }
+  end
+
+  defp contact_update(args) do
+    %{
+      "contact_id" => Map.get(args, "contact_id"),
+      "updated"    => Map.keys(Map.get(args, "patch") || %{})
+    }
+  end
+
+  defp company_find(_args) do
+    %{company_id: id, company_name: name, company_domain: domain} = sentinels()
+
+    %{
+      "companies" => [
+        %{
+          "id"       => id,
+          "name"     => name,
+          "domain"   => domain,
+          "city"     => "Berlin",
+          "country"  => "DE",
+          "industry" => "Manufacturing"
+        }
+      ]
+    }
+  end
+
+  defp company_create(args) do
+    %{company_id: id} = sentinels()
+
+    %{
+      "company_id" => id <> "_" <> Integer.to_string(:erlang.unique_integer([:positive])),
+      "name"       => Map.get(args, "name", "Untitled company")
+    }
+  end
+
+  defp company_update(args) do
+    %{
+      "company_id" => Map.get(args, "company_id"),
+      "updated"    => Map.keys(Map.get(args, "patch") || %{})
+    }
+  end
+
+  defp task_create(_args) do
+    %{task_id: id} = sentinels()
+
+    %{
+      "task_id" => id <> "_" <> Integer.to_string(:erlang.unique_integer([:positive]))
     }
   end
 end

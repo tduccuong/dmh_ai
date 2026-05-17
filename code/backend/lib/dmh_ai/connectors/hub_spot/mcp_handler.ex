@@ -9,12 +9,17 @@ defmodule DmhAi.Connectors.HubSpot.MCPHandler do
   generic `Connectors.MCPServer`. Each function is a 1:1 mapping
   to a HubSpot CRM v3 endpoint at `api.hubapi.com/crm/v3/*`:
 
-    contact.find   — POST /crm/v3/objects/contacts/search
-    contact.create — POST /crm/v3/objects/contacts
-    deal.find      — POST /crm/v3/objects/deals/search
-    deal.create    — POST /crm/v3/objects/deals
+    contact.find   — POST  /crm/v3/objects/contacts/search
+    contact.create — POST  /crm/v3/objects/contacts
+    contact.update — PATCH /crm/v3/objects/contacts/{id}
+    company.find   — POST  /crm/v3/objects/companies/search
+    company.create — POST  /crm/v3/objects/companies
+    company.update — PATCH /crm/v3/objects/companies/{id}
+    deal.find      — POST  /crm/v3/objects/deals/search
+    deal.create    — POST  /crm/v3/objects/deals
     deal.update    — PATCH /crm/v3/objects/deals/{id}
-    activity.log   — POST /crm/v3/objects/notes
+    activity.log   — POST  /crm/v3/objects/notes
+    task.create    — POST  /crm/v3/objects/tasks
 
   HubSpot's search API is POST-with-body (filterGroups + query),
   not the GET-with-$search style Microsoft Graph uses. The shim
@@ -77,6 +82,30 @@ defmodule DmhAi.Connectors.HubSpot.MCPHandler do
         handler: &deal_update/2,
         doc:     "Patch deal properties (stage transitions, amount changes, …)."
       },
+      "contact.update" => %FunctionSpec{
+        handler: &contact_update/2,
+        doc:     "Patch contact properties (title, company, phone, …)."
+      },
+      "company.find" => %FunctionSpec{
+        method:  :post,
+        url:     "#{@api_base}/companies/search",
+        request: &company_find_request/2,
+        response: &company_find_response/2,
+        doc:     "Search HubSpot companies; returns name + domain + id."
+      },
+      "company.create" => %FunctionSpec{
+        method:  :post,
+        url:     "#{@api_base}/companies",
+        request: &company_create_request/2,
+        response: fn s, body when s in 200..299 ->
+                    {:ok, %{"company_id" => body["id"], "name" => get_in(body, ["properties", "name"])}}
+                  end,
+        doc:     "Create a company record."
+      },
+      "company.update" => %FunctionSpec{
+        handler: &company_update/2,
+        doc:     "Patch company properties (industry, employees, …)."
+      },
       "activity.log" => %FunctionSpec{
         method:  :post,
         url:     "#{@api_base}/notes",
@@ -85,6 +114,15 @@ defmodule DmhAi.Connectors.HubSpot.MCPHandler do
                     {:ok, %{"activity_id" => body["id"]}}
                   end,
         doc:     "Log a Note engagement on a deal."
+      },
+      "task.create" => %FunctionSpec{
+        method:  :post,
+        url:     "#{@api_base}/tasks",
+        request: &task_create_request/2,
+        response: fn s, body when s in 200..299 ->
+                    {:ok, %{"task_id" => body["id"]}}
+                  end,
+        doc:     "Create a Task engagement — actionable follow-up tied to a deal or contact."
       }
     }
   end
@@ -223,16 +261,25 @@ defmodule DmhAi.Connectors.HubSpot.MCPHandler do
   # ─── deal.update — PATCH with dynamic URL ─────────────────────────────
 
   defp deal_update(args, ctx) do
-    deal_id = args["deal_id"]
-    patch   = Map.get(args, "patch") || %{}
+    patch_object(:deals, args["deal_id"], "deal_id", args["patch"], ctx)
+  end
 
-    url = "#{@api_base}/deals/#{URI.encode(deal_id)}"
+  defp contact_update(args, ctx) do
+    patch_object(:contacts, args["contact_id"], "contact_id", args["patch"], ctx)
+  end
 
-    opts = [url: url, json: %{"properties" => patch}]
+  defp company_update(args, ctx) do
+    patch_object(:companies, args["company_id"], "company_id", args["patch"], ctx)
+  end
+
+  defp patch_object(object_plural, id, result_key, patch, ctx) do
+    patch = patch || %{}
+    url   = "#{@api_base}/#{object_plural}/#{URI.encode(id)}"
+    opts  = [url: url, json: %{"properties" => patch}]
 
     case RestBridge.raw_request(:patch, with_bearer(opts, ctx)) do
       {:ok, status, body} when status in 200..299 ->
-        {:ok, %{"deal_id" => body["id"], "updated" => Map.keys(patch)}}
+        {:ok, %{result_key => body["id"], "updated" => Map.keys(patch)}}
 
       {:ok, _status, _body} ->
         {:error, :upstream_other}
@@ -240,6 +287,48 @@ defmodule DmhAi.Connectors.HubSpot.MCPHandler do
       {:error, _} = err ->
         err
     end
+  end
+
+  # ─── company.find — POST search ───────────────────────────────────────
+
+  defp company_find_request(args, _ctx) do
+    [
+      json: %{
+        "query"      => Map.get(args, "query", ""),
+        "limit"      => Map.get(args, "limit", 10),
+        "properties" => ["name", "domain", "city", "country", "industry"]
+      }
+    ]
+  end
+
+  defp company_find_response(s, body) when s in 200..299 do
+    companies =
+      Map.get(body, "results", [])
+      |> Enum.map(fn c ->
+        props = Map.get(c, "properties", %{})
+        %{
+          "id"       => c["id"],
+          "name"     => props["name"],
+          "domain"   => props["domain"],
+          "city"     => props["city"],
+          "country"  => props["country"],
+          "industry" => props["industry"]
+        }
+      end)
+
+    {:ok, %{"companies" => companies}}
+  end
+
+  # ─── company.create ───────────────────────────────────────────────────
+
+  defp company_create_request(args, _ctx) do
+    props =
+      %{"name" => args["name"]}
+      |> maybe_put_kv("domain",  Map.get(args, "domain"))
+      |> maybe_put_kv("city",    Map.get(args, "city"))
+      |> maybe_put_kv("country", Map.get(args, "country"))
+
+    [json: %{"properties" => props}]
   end
 
   # ─── activity.log — Note engagement linked to deal ────────────────────
@@ -274,6 +363,76 @@ defmodule DmhAi.Connectors.HubSpot.MCPHandler do
     ]
 
     [json: %{"properties" => props, "associations" => associations}]
+  end
+
+  # ─── task.create — Task engagement ────────────────────────────────────
+
+  defp task_create_request(args, _ctx) do
+    now_ms = :os.system_time(:millisecond)
+
+    props =
+      %{
+        "hs_task_subject"  => args["subject"],
+        "hs_task_status"   => "NOT_STARTED",
+        "hs_timestamp"     => to_string(now_ms)
+      }
+      |> maybe_put_kv("hs_task_body",     Map.get(args, "body"))
+      |> maybe_put_kv("hs_task_priority", normalise_priority(Map.get(args, "priority")))
+      |> maybe_put_kv("hs_task_type",     normalise_task_type(Map.get(args, "task_type")))
+      |> maybe_put_kv("hs_timestamp",     normalise_due_date(Map.get(args, "due_date")) || to_string(now_ms))
+
+    # Associate task with deal (typeId 216 = task-to-deal) and/or
+    # contact (typeId 204 = task-to-contact). HubSpot's standard
+    # association type registry.
+    associations =
+      []
+      |> maybe_append_assoc(Map.get(args, "deal_id"),    216)
+      |> maybe_append_assoc(Map.get(args, "contact_id"), 204)
+
+    [json: %{"properties" => props, "associations" => associations}]
+  end
+
+  defp normalise_priority(nil), do: nil
+  defp normalise_priority(p) when is_binary(p) do
+    case String.upcase(p) do
+      v when v in ["HIGH", "MEDIUM", "LOW", "NONE"] -> v
+      _ -> "MEDIUM"
+    end
+  end
+
+  defp normalise_task_type(nil), do: nil
+  defp normalise_task_type(t) when is_binary(t) do
+    case String.upcase(t) do
+      v when v in ["CALL", "EMAIL", "TODO"] -> v
+      _ -> "TODO"
+    end
+  end
+
+  # HubSpot's `hs_timestamp` is ms since epoch. Accept ISO 8601
+  # strings from the agent and convert; pass through ms strings.
+  defp normalise_due_date(nil), do: nil
+  defp normalise_due_date(""),  do: nil
+  defp normalise_due_date(s) when is_binary(s) do
+    case Integer.parse(s) do
+      {n, ""} when n > 0 -> to_string(n)
+      _ ->
+        case DateTime.from_iso8601(s) do
+          {:ok, dt, _} -> dt |> DateTime.to_unix(:millisecond) |> to_string()
+          _ -> nil
+        end
+    end
+  end
+
+  defp maybe_append_assoc(list, nil, _type_id), do: list
+  defp maybe_append_assoc(list, "",  _type_id), do: list
+  defp maybe_append_assoc(list, id, type_id) do
+    list ++
+      [%{
+        "to" => %{"id" => id},
+        "types" => [
+          %{"associationCategory" => "HUBSPOT_DEFINED", "associationTypeId" => type_id}
+        ]
+      }]
   end
 
   # ─── helpers ──────────────────────────────────────────────────────────

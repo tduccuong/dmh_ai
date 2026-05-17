@@ -52,15 +52,20 @@ defmodule DmhAi.P03HubSpotTest do
       assert :ok = Manifest.validate(HubSpot.manifest())
     end
 
-    test "declares 6 functions at the Primitive 0.3 surface" do
+    test "declares 11 functions at the Primitive 0.3 surface" do
       functions = HubSpot.manifest().functions
 
       assert Map.has_key?(functions, "contact.find")
       assert Map.has_key?(functions, "contact.create")
+      assert Map.has_key?(functions, "contact.update")
+      assert Map.has_key?(functions, "company.find")
+      assert Map.has_key?(functions, "company.create")
+      assert Map.has_key?(functions, "company.update")
       assert Map.has_key?(functions, "deal.find")
       assert Map.has_key?(functions, "deal.create")
       assert Map.has_key?(functions, "deal.update")
       assert Map.has_key?(functions, "activity.log")
+      assert Map.has_key?(functions, "task.create")
     end
 
     test "every write function is `callable_from: [:task]` (HARD Rule 2)" do

@@ -91,7 +91,7 @@ defmodule DmhAi.Flows.F37HubspotWriteRefusal do
     assert decoded["ok"] == false
     err = decoded["error"]
     assert err["error"] == "write_requires_task"
-    assert err["verb"]  == "hubspot.deal.create"
+    assert err["function"] == "hubspot.deal.create"
     assert is_binary(err["hint"])
 
     refute_received :caller_invoked, "MCP caller MUST NOT be invoked when gate refuses"

@@ -106,6 +106,18 @@ defmodule DmhAi.Connectors.M365.MCPHandler do
       "excel.read_range" => %FunctionSpec{
         handler: &excel_read_range/2,
         doc:     "Read a cell range from an Excel workbook in OneDrive (A1 notation)."
+      },
+      "mail.reply" => %FunctionSpec{
+        handler: &mail_reply/2,
+        doc:     "Reply to an Outlook message (Graph preserves the conversation/thread)."
+      },
+      "cal.update_event" => %FunctionSpec{
+        handler: &cal_update_event/2,
+        doc:     "Patch an existing calendar event (reschedule, rename, …)."
+      },
+      "onenote.read_page" => %FunctionSpec{
+        handler: &onenote_read_page/2,
+        doc:     "Read a OneNote page's text content (HTML stripped to plain text)."
       }
     }
   end
@@ -546,4 +558,79 @@ defmodule DmhAi.Connectors.M365.MCPHandler do
   defp with_bearer(opts, _), do: opts
 
   defp user_email_from_ctx(_ctx), do: nil
+
+  # ─── mail.reply — POST /me/messages/{id}/reply ────────────────────────
+
+  defp mail_reply(args, ctx) do
+    message_id = args["message_id"]
+    body_text  = args["body"] || ""
+
+    url = "#{@graph_base}/messages/#{URI.encode(message_id)}/reply"
+
+    body = %{
+      "comment" => body_text
+    }
+
+    case RestBridge.raw_request(:post, with_bearer([url: url, json: body], ctx)) do
+      {:ok, status, _body} when status in 200..299 ->
+        {:ok, %{"ok" => true, "message_id" => message_id}}
+
+      {:ok, status, body} ->
+        {:error, {:http, status, body}}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  # ─── cal.update_event — PATCH /me/events/{id} ─────────────────────────
+
+  defp cal_update_event(args, ctx) do
+    event_id = args["event_id"]
+    patch    = Map.get(args, "patch") || %{}
+
+    url = "#{@graph_base}/events/#{URI.encode(event_id)}"
+
+    case RestBridge.raw_request(:patch, with_bearer([url: url, json: patch], ctx)) do
+      {:ok, status, body} when status in 200..299 ->
+        {:ok, %{"event_id" => body["id"], "updated" => Map.keys(patch)}}
+
+      {:ok, status, body} ->
+        {:error, {:http, status, body}}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  # ─── onenote.read_page — GET /me/onenote/pages/{id}/content ───────────
+  # Graph returns text/html; we strip HTML tags for the agent (the
+  # full HTML is rarely useful and inflates the model's context).
+
+  defp onenote_read_page(args, ctx) do
+    page_id = args["page_id"]
+    url = "#{@graph_base}/onenote/pages/#{URI.encode(page_id)}/content"
+
+    case RestBridge.raw_request(:get, with_bearer([url: url, accept: "text/html"], ctx)) do
+      {:ok, status, html} when status in 200..299 and is_binary(html) ->
+        text = strip_html_to_text(html)
+        {:ok, %{"text" => text, "title" => "OneNote page"}}
+
+      {:ok, status, body} ->
+        {:error, {:http, status, body}}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  defp strip_html_to_text(html) when is_binary(html) do
+    html
+    |> String.replace(~r/<br\s*\/?>/i, "\n")
+    |> String.replace(~r/<\/p>/i, "\n")
+    |> String.replace(~r/<[^>]+>/, "")
+    |> String.replace(~r/\n{3,}/, "\n\n")
+    |> String.trim()
+  end
+  defp strip_html_to_text(_), do: ""
 end

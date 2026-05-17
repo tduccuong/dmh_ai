@@ -227,6 +227,51 @@ defmodule DmhAi.Connectors.M365 do
           },
           returns: %{values: :list},
           scopes:  ["Files.Read"]
+        },
+
+        # vendor: POST /me/messages/{id}/reply
+        # Replies preserve the thread (Outlook calls it a "conversation")
+        # automatically — the agent passes the original message_id and
+        # Graph wires the In-Reply-To headers itself.
+        "mail.reply" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "message_id" => %{type: :string, required: true},
+            "body"       => %{type: :string, required: true}
+          },
+          returns: %{ok: :boolean},
+          errors:  [:unauthorised, :not_found, :rate_limited],
+          scopes:  ["Mail.Send"]
+        },
+
+        # vendor: PATCH /me/events/{id}
+        # Reschedule / rename / move an existing calendar event.
+        "cal.update_event" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "event_id" => %{type: :string, required: true},
+            "patch"    => %{type: :map,    required: true}
+          },
+          returns: %{event_id: :string},
+          errors:  [:unauthorised, :not_found, :rate_limited],
+          scopes:  ["Calendars.ReadWrite"]
+        },
+
+        # vendor: GET /me/onenote/pages/{id}/content
+        # Returns the HTML content of a OneNote page. The shim
+        # extracts plain text from <p>/<h*> blocks for the agent.
+        "onenote.read_page" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "page_id" => %{type: :string, required: true}
+          },
+          returns: %{text: :string, title: :string},
+          scopes:  ["Notes.Read"]
         }
       }
     }
@@ -356,7 +401,7 @@ defmodule DmhAi.Connectors.M365 do
         display_name: "Outlook Mail",
         description:  "Read inbox messages and send mail on the user's behalf.",
         scopes:       ["Mail.Read", "Mail.Send"],
-        functions:    ["mail.search", "mail.send"],
+        functions:    ["mail.search", "mail.send", "mail.reply"],
         vendor_prereq: %{
           label:      "Microsoft Graph (Mail permissions)",
           enable_url: "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade"
@@ -367,7 +412,7 @@ defmodule DmhAi.Connectors.M365 do
         display_name: "Outlook Calendar",
         description:  "Read availability and create calendar events.",
         scopes:       ["Calendars.Read", "Calendars.ReadWrite"],
-        functions:    ["cal.find_free_slots", "cal.create_event"],
+        functions:    ["cal.find_free_slots", "cal.create_event", "cal.update_event"],
         vendor_prereq: %{
           label:      "Microsoft Graph (Calendar permissions)",
           enable_url: "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade"
@@ -442,11 +487,10 @@ defmodule DmhAi.Connectors.M365 do
       %{
         id:           "onenote",
         display_name: "OneNote",
-        description:  "Read + create OneNote pages in the user's notebooks.",
-        status:       :planned,
-        scopes:       ["Notes.ReadWrite"],
-        functions:    [],
-        vendor_prereq: %{label: "Microsoft Graph (Notes.ReadWrite)",
+        description:  "Read OneNote pages as plain text (for summarization, extraction).",
+        scopes:       ["Notes.Read"],
+        functions:    ["onenote.read_page"],
+        vendor_prereq: %{label: "Microsoft Graph (Notes.Read)",
                          enable_url: "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade"}
       },
       %{

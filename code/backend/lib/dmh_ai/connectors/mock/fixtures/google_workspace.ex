@@ -30,10 +30,13 @@ defmodule DmhAi.Connectors.Mock.Fixtures.GoogleWorkspace do
     %{
       "gmail.search" => &gmail_search/1,
       "gmail.send"   => &gmail_send/1,
+      "gmail.reply"  => &gmail_reply/1,
       "gcal.find_free_slots" => &gcal_find_free_slots/1,
       "gcal.create_event"    => &gcal_create_event/1,
+      "gcal.update_event"    => &gcal_update_event/1,
       "drive.list"   => &drive_list/1,
       "drive.upload" => &drive_upload/1,
+      "docs.read_text" => &docs_read_text/1,
       "meet.create_meeting" => &meet_create_meeting/1,
       "tasks.list"   => &tasks_list/1,
       "tasks.create" => &tasks_create/1,
@@ -232,4 +235,30 @@ defmodule DmhAi.Connectors.Mock.Fixtures.GoogleWorkspace do
   end
 
   defp shift_zone(iso, _offset), do: iso
+
+  # ── Per-function fixtures: new in slice 3 expansion ──────────────────
+
+  defp gmail_reply(args) do
+    %{
+      "id"        => "mock_reply_" <> Integer.to_string(:erlang.unique_integer([:positive])),
+      "threadId"  => Map.get(args, "thread_id") || "mock_thread_001"
+    }
+  end
+
+  defp gcal_update_event(args) do
+    %{
+      "event_id" => Map.get(args, "event_id"),
+      "updated"  => Map.keys(Map.get(args, "patch") || %{})
+    }
+  end
+
+  defp docs_read_text(_args) do
+    %{
+      "title" => "Quarterly product roadmap (mock)",
+      "text"  =>
+        "Q2 themes: shipping the SME connector ladder, deepening per-connector workflow primitives,\n" <>
+        "and standing up the live-portal UAT runbooks. Q3 themes: webhook ingress + scheduled-action\n" <>
+        "primitive, opening the door to multi-day autonomous flows."
+    }
+  end
 end
