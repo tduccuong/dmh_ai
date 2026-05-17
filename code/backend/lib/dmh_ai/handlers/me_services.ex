@@ -135,27 +135,27 @@ defmodule DmhAi.Handlers.MeServices do
     end
   end
 
+  # Single canonical oauth_catalog lookup — same path the OAuth
+  # callback finalizer uses. Both flows resolve credentials the
+  # same way; whatever the catalog says here is exactly what
+  # `finalize_connector_oauth/6` will embed in the stored
+  # credential payload. No split-brain.
   defp fetch_oauth_row(slug) do
-    case query!(Repo, """
-    SELECT client_id, client_secret, scopes_default,
-           authorization_endpoint, token_endpoint, extra_auth_params
-    FROM oauth_catalog WHERE slug=?
-    """, [slug]).rows do
-      [[client_id, client_secret, scopes_json, auth_url, token_url, extra_json]]
-          when is_binary(client_id) and client_id != "" ->
+    case DmhAi.OAuth.Catalog.get_by_slug(slug) do
+      %{client_id: cid} = entry when is_binary(cid) and cid != "" ->
         {:ok, %{
-          client_id:         client_id,
-          client_secret:     client_secret,
-          scopes:            decode_json_list(scopes_json),
-          auth_url:          auth_url,
-          token_url:         token_url,
-          extra_auth_params: decode_json_map(extra_json)
+          client_id:         entry.client_id,
+          client_secret:     entry.client_secret,
+          scopes:            entry.scopes_default,
+          auth_url:          entry.authorization_endpoint,
+          token_url:         entry.token_endpoint,
+          extra_auth_params: entry.extra_auth_params
         }}
 
-      [[_, _, _, _, _, _]] ->
+      %{} ->
         {:error, "oauth_catalog row exists for #{slug} but client_id is empty — admin must paste credentials in the Connectors page"}
 
-      _ ->
+      nil ->
         {:error, "no oauth_catalog row for slug=#{slug}"}
     end
   end
@@ -169,24 +169,6 @@ defmodule DmhAi.Handlers.MeServices do
 
       _ ->
         {:error, "no enabled mcp_catalog row for slug=#{slug} in org=#{org_id}"}
-    end
-  end
-
-  defp decode_json_list(nil), do: []
-  defp decode_json_list(""),  do: []
-  defp decode_json_list(s) when is_binary(s) do
-    case Jason.decode(s) do
-      {:ok, list} when is_list(list) -> list
-      _ -> []
-    end
-  end
-
-  defp decode_json_map(nil), do: %{}
-  defp decode_json_map(""),  do: %{}
-  defp decode_json_map(s) when is_binary(s) do
-    case Jason.decode(s) do
-      {:ok, m} when is_map(m) -> m
-      _ -> %{}
     end
   end
 

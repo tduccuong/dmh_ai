@@ -94,6 +94,16 @@ defmodule DmhAi.Connectors.OAuthCatalogSeed do
         Logger.info("[OAuthCatalogSeed] inserted slug=#{slug}")
 
       _ ->
+        # `enabled=1` is part of the vendor-metadata refresh: a slug
+        # owned by a connector module is, by definition, an active
+        # part of the codebase — its catalog row must be visible to
+        # every caller. Without this, a row that was first seeded by
+        # `db/init.ex` from the priv default JSON (which ships every
+        # slug at `enabled=0`) stays stuck at 0 forever, because
+        # this UPDATE branch is the only place the framework owns it
+        # after the first INSERT, and `enabled` would otherwise drift
+        # away from "available". Same row, same answer for every
+        # caller — no split-brain.
         query!(Repo, """
         UPDATE oauth_catalog
            SET display_name=?, host_match=?,
@@ -101,6 +111,7 @@ defmodule DmhAi.Connectors.OAuthCatalogSeed do
                scopes_default=?,
                extra_auth_params=?, extra_token_params=?,
                userinfo_endpoint=?, userinfo_field_path=?,
+               enabled=1,
                updated_ts=?
          WHERE slug=?
         """, [

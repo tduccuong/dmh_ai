@@ -350,22 +350,6 @@
     },
 
     {
-      "slug":                   "hubspot",
-      "display_name":           "HubSpot",
-      "host_match":             "api.hubapi.com",
-      "authorization_endpoint": "https://app.hubspot.com/oauth/authorize",
-      "token_endpoint":         "https://api.hubapi.com/oauth/v1/token",
-      "scopes_default":         ["crm.objects.contacts.read"],
-      "extra_auth_params":      {},
-      "extra_token_params":     {},
-      "userinfo_endpoint":      null,
-      "userinfo_field_path":    null,
-      "client_id":              "",
-      "client_secret":          null,
-      "enabled":                false
-    },
-
-    {
       "slug":                   "zoho",
       "display_name":           "Zoho",
       "host_match":             "zoho.com",
@@ -440,28 +424,6 @@
       "extra_token_params":     {},
       "userinfo_endpoint":      "https://graph.facebook.com/me?fields=email",
       "userinfo_field_path":    "email",
-      "client_id":              "",
-      "client_secret":          null,
-      "enabled":                false
-    },
-
-    {
-      "slug":                   "hubspot",
-      "display_name":           "HubSpot (CRM — contacts, deals, activities)",
-      "host_match":             "api.hubapi.com",
-      "authorization_endpoint": "https://app.hubspot.com/oauth/authorize",
-      "token_endpoint":         "https://api.hubapi.com/oauth/v1/token",
-      "scopes_default":         [
-        "crm.objects.contacts.read",
-        "crm.objects.contacts.write",
-        "crm.objects.deals.read",
-        "crm.objects.deals.write",
-        "oauth"
-      ],
-      "extra_auth_params":      {},
-      "extra_token_params":     {},
-      "userinfo_endpoint":      "https://api.hubapi.com/oauth/v1/access-tokens/{token}",
-      "userinfo_field_path":    "user",
       "client_id":              "",
       "client_secret":          null,
       "enabled":                false
