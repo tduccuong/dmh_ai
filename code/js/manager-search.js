@@ -22,6 +22,13 @@ function digestThinking(raw, final) {
 UIManager.sendMessage = async function() {
     const self = this;
 
+    // Layer W — close the workflow viewer modal whenever the user
+    // submits a chat message. Same pattern as the My Services modal
+    // (close-on-Connect) — refinement turns produce a new version
+    // link in chat; opening the viewer again re-fetches fresh state.
+    try { document.dispatchEvent(new Event('chat-message-submitted')); }
+    catch (_e) { /* benign: CustomEvent may not exist in legacy contexts */ }
+
     // Phase 2 mid-chain send: if a chain is already streaming, take the
     // fast path — POST the message, let the BE queue it (the already-
     // running `pollTurnToCompletion` will pick up both the user message
