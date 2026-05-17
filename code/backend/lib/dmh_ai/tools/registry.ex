@@ -52,7 +52,8 @@ defmodule DmhAi.Tools.Registry do
     DmhAi.Tools.FetchIndex,
     DmhAi.Tools.FetchMemo,
     DmhAi.Tools.AuthorizeService,
-    DmhAi.Tools.MkDownloadLink
+    DmhAi.Tools.MkDownloadLink,
+    DmhAi.Tools.UpsertWorkflow
   ]
 
   # Save tools — runtime-only (invoked by `/index` and `/memo` commands

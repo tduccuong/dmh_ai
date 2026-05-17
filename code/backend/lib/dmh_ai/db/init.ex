@@ -427,6 +427,53 @@ defmodule DmhAi.DB.Init do
     query!(Repo,
       "CREATE INDEX IF NOT EXISTS idx_task_chain_archive_task_ts ON task_chain_archive (task_id, original_ts)")
 
+    # Workflow store — per arch_wiki/dmh_ai/sme/layer-W.md.
+    #
+    # A workflow is an SME-authored automation plan, compiled by the
+    # Assistant from natural-language descriptions and persisted here
+    # in versioned form. Two tables:
+    #
+    #   workflows           — slug + display_name + current_version
+    #                         + active_version. One row per logical
+    #                         workflow.
+    #   workflow_versions   — append-only history; one row per save.
+    #                         ir_json holds the full compiled IR.
+    #
+    # active_version is set when the user explicitly arms a workflow
+    # ("arm v3" in chat); NULL means "draft only, never fires."
+    # current_version is the highest version saved so far; the next
+    # save lands at current_version + 1.
+    query!(Repo, """
+    CREATE TABLE IF NOT EXISTS workflows (
+      id              TEXT NOT NULL,                  -- slug, deterministic from display_name; PK with org_id
+      org_id          TEXT NOT NULL,                  -- FK organizations.id
+      display_name    TEXT NOT NULL,
+      current_version INTEGER NOT NULL,
+      active_version  INTEGER,                        -- nullable; non-NULL when armed
+      created_at      INTEGER NOT NULL,
+      updated_at      INTEGER NOT NULL,
+      PRIMARY KEY (org_id, id)
+    )
+    """)
+
+    query!(Repo, """
+    CREATE TABLE IF NOT EXISTS workflow_versions (
+      workflow_id          TEXT NOT NULL,             -- FK workflows.id
+      org_id               TEXT NOT NULL,             -- FK workflows.org_id (denormalised for cheap reads)
+      version              INTEGER NOT NULL,
+      ir_json              TEXT NOT NULL,             -- the full IR (trigger, nodes, edges, outputs)
+      change_note          TEXT,                      -- one-line summary, e.g. "added approval gate before send"
+      compiled_at          INTEGER NOT NULL,
+      compiled_in_session  TEXT NOT NULL,             -- the chat session that produced this version
+      compiled_by_user_id  TEXT NOT NULL,             -- who saved it
+      open_questions_count INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (org_id, workflow_id, version)
+    )
+    """)
+
+    query!(Repo,
+      "CREATE INDEX IF NOT EXISTS idx_workflow_versions_session ON workflow_versions (compiled_in_session)")
+
     # Vector knowledge base — see specs/vector_kb.md.
     #
     # Per Primitive 0.1 (Hard scoping rule), the corpus splits into

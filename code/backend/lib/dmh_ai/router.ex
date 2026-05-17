@@ -292,6 +292,27 @@ defmodule DmhAi.Router do
     end
   end
 
+  # ── Workflow viewer (Layer W) ─────────────────────────────────────────
+  #
+  # The chat reply renders saved workflows as markdown links like
+  # `[customer_onboarding · v3](/workflows/customer_onboarding/3)`;
+  # the FE intercepts the click and opens a modal that fetches one of
+  # the endpoints below. Read-only — saving / arming / running live
+  # in the LLM tool surface (`upsert_workflow`, future
+  # `arm_workflow` / `workflow.invoke`).
+
+  get "/workflows" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      DmhAi.Handlers.Workflows.list(conn, user)
+    end
+  end
+
+  get "/workflows/:slug/:version" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      DmhAi.Handlers.Workflows.show(conn, user, slug, version)
+    end
+  end
+
   # ── Per-user services view (Primitive 0.3) ────────────────────────────
 
   get "/me/services" do
