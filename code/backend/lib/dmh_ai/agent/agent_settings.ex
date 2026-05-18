@@ -267,6 +267,7 @@ defmodule DmhAi.Agent.AgentSettings do
   @web_crawl_max_chars_per_page_default 3000
   @web_crawl_per_fetch_delay_ms_default 300
   @web_crawl_total_timeout_ms_default   30_000
+  @web_crawl_branch_factor_default      4    # top-K links to follow per depth boundary
 
   # Memo-scope (`/memo`) chunking — much smaller. Users typically
   # save 2-sentence facts (~30–40 tokens) and rarely exceed 20
@@ -682,6 +683,11 @@ defmodule DmhAi.Agent.AgentSettings do
   @spec web_crawl_total_timeout_ms() :: pos_integer()
   def web_crawl_total_timeout_ms,
     do: int_setting("webCrawlTotalTimeoutMs", @web_crawl_total_timeout_ms_default)
+
+  @doc "Top-K outbound links followed per `web_crawl` depth boundary (the focused-crawl pruning factor)."
+  @spec web_crawl_branch_factor() :: pos_integer()
+  def web_crawl_branch_factor,
+    do: int_setting("webCrawlBranchFactor", @web_crawl_branch_factor_default)
 
   @doc """
   Cap on memo hits included in the `<augmented_facts type="memo">`

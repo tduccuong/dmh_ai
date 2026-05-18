@@ -58,7 +58,7 @@ defmodule DmhAi.Tools.WebCrawl do
 
   @behaviour DmhAi.Tools.Behaviour
 
-  alias DmhAi.Agent.AgentSettings
+  alias DmhAi.Agent.{AgentSettings, SessionProgress}
   alias DmhAi.Web.Fetcher
   require Logger
 
@@ -124,6 +124,10 @@ defmodule DmhAi.Tools.WebCrawl do
           same_domain_only: %{
             type: "boolean",
             description: "When true (default), follow only links on the same registrable domain (eTLD+1) as start_url. When false, follow any http(s) link — DON'T set false unless you really mean it."
+          },
+          question: %{
+            type: "string",
+            description: "The user's question in their own words. Used at each depth boundary to prune the link frontier — only the top-N candidates whose URL + anchor-text plausibly help answer the question are followed. PASS THIS — without it, the tool falls back to blind first-N expansion, which on nav-heavy sites wastes the page budget on top-nav links."
           }
         },
         required: ["start_url"]
@@ -132,7 +136,7 @@ defmodule DmhAi.Tools.WebCrawl do
   end
 
   @impl true
-  def execute(args, _ctx) do
+  def execute(args, ctx) do
     start_url = Map.get(args, "start_url")
 
     cond do
@@ -156,14 +160,21 @@ defmodule DmhAi.Tools.WebCrawl do
         )
 
         same_domain? = Map.get(args, "same_domain_only", true)
+        question     = Map.get(args, "question", "") |> to_string()
 
         opts = %{
           max_pages:           max_pages,
           max_depth:           max_depth,
           same_domain_only:    same_domain?,
+          question:            question,
+          branch_factor:       AgentSettings.web_crawl_branch_factor(),
           max_chars_per_page:  AgentSettings.web_crawl_max_chars_per_page(),
           per_fetch_delay_ms:  AgentSettings.web_crawl_per_fetch_delay_ms(),
-          deadline_at:         System.monotonic_time(:millisecond) + AgentSettings.web_crawl_total_timeout_ms()
+          deadline_at:         System.monotonic_time(:millisecond) + AgentSettings.web_crawl_total_timeout_ms(),
+          # `progress_row_id` is threaded by `user_agent.ex` so every
+          # internal fetch + per-depth pruning decision can stream a
+          # sub-label into the parent WebCrawl row.
+          progress_row_id:     Map.get(ctx, :progress_row_id)
         }
 
         run_crawl(start_url, opts)
@@ -178,16 +189,15 @@ defmodule DmhAi.Tools.WebCrawl do
     canonical_start = canonicalize(start_url)
 
     state = %{
-      queue:           :queue.from_list([{canonical_start, 0}]),
-      seen:            MapSet.new([canonical_start]),
       pages:           [],
       skipped:         [],
       truncated_count: 0,
+      seen:            MapSet.new([canonical_start]),
       root_host:       root_host,
       deadline_hit:    false
     }
 
-    final = loop(state, opts)
+    final = focused_loop(state, [canonical_start], 0, opts)
     elapsed = System.monotonic_time(:millisecond) - started_at
 
     {:ok, %{
@@ -205,62 +215,99 @@ defmodule DmhAi.Tools.WebCrawl do
     }}
   end
 
-  defp loop(state, opts) do
-    cond do
-      length(state.pages) >= opts.max_pages ->
-        state
+  # Focused depth-by-depth crawl. At each depth boundary, the
+  # LinkScorer (Swift LLM, batched) picks the top-K candidates from
+  # the merged outbound-link set produced by the current depth's
+  # pages. This replaces blind BFS — on nav-heavy sites the
+  # difference is dramatic.
+  defp focused_loop(state, _frontier, _depth, opts) when length(state.pages) >= opts.max_pages, do: state
+  defp focused_loop(state, [], _depth, _opts), do: state
+  defp focused_loop(state, frontier, depth, opts) do
+    if System.monotonic_time(:millisecond) >= opts.deadline_at do
+      %{state | deadline_hit: true}
+    else
+      # 1. Fetch every URL at this depth (sequential; per_fetch_delay
+      #    enforced).
+      {state, depth_links} =
+        Enum.reduce(frontier, {state, []}, fn url, {st, acc_links} ->
+          if length(st.pages) >= opts.max_pages or
+             System.monotonic_time(:millisecond) >= opts.deadline_at do
+            {st, acc_links}
+          else
+            case fetch_and_collect(url, depth, st, opts) do
+              {:ok, page, links} ->
+                SessionProgress.append_sub_label(opts.progress_row_id, "fetched (d=#{depth}): " <> short_url(url))
 
-      System.monotonic_time(:millisecond) >= opts.deadline_at ->
-        %{state | deadline_hit: true}
+                truncated_bump = if page["_truncated"], do: 1, else: 0
 
-      :queue.is_empty(state.queue) ->
-        state
+                if opts.per_fetch_delay_ms > 0 do
+                  :timer.sleep(opts.per_fetch_delay_ms)
+                end
 
-      true ->
-        {{:value, {url, depth}}, q2} = :queue.out(state.queue)
-        state = %{state | queue: q2}
+                {%{st |
+                   pages:           [page | st.pages],
+                   truncated_count: st.truncated_count + truncated_bump
+                 },
+                 acc_links ++ Enum.map(links, fn l -> {l, page["title"]} end)}
 
-        case fetch_and_collect(url, depth, state, opts) do
-          {:ok, page, links} ->
-            new_pages = [page | state.pages]
-            new_truncated = state.truncated_count + (if page["_truncated"], do: 1, else: 0)
-
-            state =
-              %{state |
-                pages:           new_pages,
-                truncated_count: new_truncated,
-                queue:           enqueue_links(state, links, depth + 1, opts),
-                seen:            Enum.reduce(links, state.seen, &MapSet.put(&2, &1))
-              }
-
-            if opts.per_fetch_delay_ms > 0 do
-              :timer.sleep(opts.per_fetch_delay_ms)
+              {:skip, reason} ->
+                SessionProgress.append_sub_label(opts.progress_row_id, "skipped (#{reason}): " <> short_url(url))
+                {%{st | skipped: [%{"url" => url, "reason" => reason} | st.skipped]}, acc_links}
             end
+          end
+        end)
 
-            loop(state, opts)
+      # 2. If at max depth, no further expansion.
+      if depth >= opts.max_depth do
+        state
+      else
+        # 3. Build candidate set for the next depth: dedupe links by URL,
+        #    drop already-seen, drop same-domain misses, drop skippable
+        #    extensions / asset paths.
+        candidates =
+          depth_links
+          |> Enum.uniq_by(fn {url, _ctx_title} -> url end)
+          |> Enum.reject(fn {url, _} -> MapSet.member?(state.seen, url) end)
+          |> Enum.reject(fn {url, _} ->
+            (opts.same_domain_only and not same_domain?(state.root_host, url)) or
+              skip_extension?(url) or
+              skip_asset_path?(url)
+          end)
+          |> Enum.map(fn {url, parent_title} -> {url, anchor_label(url, parent_title)} end)
 
-          {:skip, reason} ->
-            state = %{state | skipped: [%{"url" => url, "reason" => reason} | state.skipped]}
-            loop(state, opts)
-        end
+        # 4. Per-depth pruning: ask the Swift LLM to pick the top-K
+        #    candidates most likely to help answer the question. Soft-
+        #    fails to first-N on transport / parse errors.
+        next_frontier_pairs =
+          if opts.question == "" do
+            Enum.take(candidates, opts.branch_factor)
+          else
+            DmhAi.Tools.WebCrawl.LinkScorer.pick(candidates, opts.question, opts.branch_factor)
+          end
+
+        next_urls = Enum.map(next_frontier_pairs, fn {url, _} -> url end)
+
+        SessionProgress.append_sub_label(
+          opts.progress_row_id,
+          "depth #{depth + 1}: #{length(candidates)} candidates → keeping #{length(next_urls)}"
+        )
+
+        next_state =
+          %{state | seen: Enum.reduce(next_urls, state.seen, &MapSet.put(&2, &1))}
+
+        focused_loop(next_state, next_urls, depth + 1, opts)
+      end
     end
   end
 
-  defp enqueue_links(state, _links, next_depth, opts) when next_depth > opts.max_depth, do: state.queue
-  defp enqueue_links(state, links, next_depth, opts) do
-    Enum.reduce(links, state.queue, fn link, q ->
-      cond do
-        MapSet.member?(state.seen, link) ->
-          q
-
-        opts.same_domain_only and not same_domain?(state.root_host, link) ->
-          q
-
-        true ->
-          :queue.in({link, next_depth}, q)
-      end
-    end)
-  end
+  # Anchor label used by the scorer — for now the parent page title
+  # (the surface we have without re-parsing every <a>'s text). v2 can
+  # plumb actual anchor-text up from `extract_links_from_html` and
+  # carry it into the {url, label} tuple here.
+  defp anchor_label(_url, parent_title) when is_binary(parent_title) and parent_title != "",
+    do: "(from: " <> truncate_short(parent_title, 60) <> ")"
+  defp anchor_label(_url, _),
+    do: ""
 
   # ── per-page fetch ────────────────────────────────────────────────────
 
@@ -411,6 +458,17 @@ defmodule DmhAi.Tools.WebCrawl do
 
   defp clamp(v, lo, hi) when is_integer(v), do: max(lo, min(v, hi))
   defp clamp(_, lo, _),                     do: lo
+
+  # Compact URL for sub-label rendering — drop scheme + trim long paths.
+  defp short_url(url) when is_binary(url) do
+    url
+    |> String.replace_prefix("https://", "")
+    |> String.replace_prefix("http://",  "")
+    |> truncate_short(70)
+  end
+
+  defp truncate_short(s, max) when byte_size(s) > max, do: String.slice(s, 0, max - 1) <> "…"
+  defp truncate_short(s, _), do: s
 
   defp format_error({:fetch_failed, reason, _url, _tried}), do: "fetch_failed: #{inspect(reason) |> String.slice(0, 200)}"
   defp format_error({:invalid_url, _}),                     do: "invalid_url"
