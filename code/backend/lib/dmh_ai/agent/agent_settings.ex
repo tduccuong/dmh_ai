@@ -256,6 +256,18 @@ defmodule DmhAi.Agent.AgentSettings do
   @learn_url_max_pages_default 200
   @learn_url_concurrency_default 1
 
+  # Ad-hoc `web_crawl` tool (Layer-1 Q&A; ephemeral, not KB-indexed).
+  # Defaults are conservative — the result lands inline in the LLM's
+  # tool-result message, so 20 × 3000 = ~60 KB plain text. The hard
+  # caps prevent a runaway from exhausting context.
+  @web_crawl_max_pages_default        20
+  @web_crawl_max_pages_hard_cap       50
+  @web_crawl_max_depth_default        2
+  @web_crawl_max_depth_hard_cap       4
+  @web_crawl_max_chars_per_page_default 3000
+  @web_crawl_per_fetch_delay_ms_default 300
+  @web_crawl_total_timeout_ms_default   30_000
+
   # Memo-scope (`/memo`) chunking — much smaller. Users typically
   # save 2-sentence facts (~30–40 tokens) and rarely exceed 20
   # sentences (~300–400 tokens). At ~50 tokens / chunk, a typical
@@ -633,6 +645,43 @@ defmodule DmhAi.Agent.AgentSettings do
   @doc "Parallel page fetches per crawl. Default 1 (strict sequential — one progress row at a time on the FE)."
   @spec learn_url_concurrency() :: pos_integer()
   def learn_url_concurrency, do: int_setting("learnUrlConcurrency", @learn_url_concurrency_default)
+
+  # ── web_crawl tool ──────────────────────────────────────────────────
+
+  @doc "Default `max_pages` for `web_crawl`; hard-capped by `web_crawl_max_pages_hard_cap/0`."
+  @spec web_crawl_max_pages_default() :: pos_integer()
+  def web_crawl_max_pages_default,
+    do: int_setting("webCrawlMaxPagesDefault", @web_crawl_max_pages_default)
+
+  @doc "Absolute upper bound on `max_pages` regardless of caller arg — protects context."
+  @spec web_crawl_max_pages_hard_cap() :: pos_integer()
+  def web_crawl_max_pages_hard_cap,
+    do: int_setting("webCrawlMaxPagesHardCap", @web_crawl_max_pages_hard_cap)
+
+  @doc "Default `max_depth` for `web_crawl`; hard-capped by `web_crawl_max_depth_hard_cap/0`."
+  @spec web_crawl_max_depth_default() :: pos_integer()
+  def web_crawl_max_depth_default,
+    do: int_setting("webCrawlMaxDepthDefault", @web_crawl_max_depth_default)
+
+  @doc "Absolute upper bound on `max_depth`."
+  @spec web_crawl_max_depth_hard_cap() :: pos_integer()
+  def web_crawl_max_depth_hard_cap,
+    do: int_setting("webCrawlMaxDepthHardCap", @web_crawl_max_depth_hard_cap)
+
+  @doc "Per-page text truncation cap for `web_crawl` results."
+  @spec web_crawl_max_chars_per_page() :: pos_integer()
+  def web_crawl_max_chars_per_page,
+    do: int_setting("webCrawlMaxCharsPerPage", @web_crawl_max_chars_per_page_default)
+
+  @doc "Delay between successive fetches in `web_crawl` (politeness to remote sites)."
+  @spec web_crawl_per_fetch_delay_ms() :: non_neg_integer()
+  def web_crawl_per_fetch_delay_ms,
+    do: int_setting("webCrawlPerFetchDelayMs", @web_crawl_per_fetch_delay_ms_default)
+
+  @doc "Total wall-clock budget per `web_crawl` invocation; returns what's been fetched at deadline."
+  @spec web_crawl_total_timeout_ms() :: pos_integer()
+  def web_crawl_total_timeout_ms,
+    do: int_setting("webCrawlTotalTimeoutMs", @web_crawl_total_timeout_ms_default)
 
   @doc """
   Cap on memo hits included in the `<augmented_facts type="memo">`

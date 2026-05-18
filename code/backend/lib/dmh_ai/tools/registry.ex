@@ -37,6 +37,7 @@ defmodule DmhAi.Tools.Registry do
     DmhAi.Tools.FetchTask,
     DmhAi.Tools.WebSearch,
     DmhAi.Tools.WebFetch,
+    DmhAi.Tools.WebCrawl,
     DmhAi.Tools.RunScript,
     DmhAi.Tools.ReadFile,
     DmhAi.Tools.WriteFile,

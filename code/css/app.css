@@ -1254,7 +1254,7 @@ body.view-external-connectors #external-connectors-view {
  * appear on top. */
 .wfv-overlay {
     position: fixed; inset: 0; z-index: 1150;
-    background: rgba(0,0,0,0.7);
+    background: rgba(0,0,0,0.78);              /* darker backdrop — clearly separates modal */
     display: none;
     align-items: center; justify-content: center;
     padding: 20px 16px;
@@ -1262,74 +1262,85 @@ body.view-external-connectors #external-connectors-view {
 .wfv-overlay.visible { display: flex; }
 
 .wfv-modal {
-    background: #0a0612;
-    border: 1px solid #382850;
-    border-radius: 8px;
-    width: 100%; max-width: 720px;
-    max-height: 90vh;
+    background: #1a1530;                       /* lifted off chat bubble #0a0612 */
+    border: 1px solid #5a4099;                 /* purple accent — matches the Connect button family */
+    border-radius: 10px;
+    box-shadow: 0 12px 40px rgba(0,0,0,0.6),
+                inset 0 0 0 1px rgba(255,255,255,0.04);
+    width: 100%; max-width: 760px;
+    max-height: 88vh;
     display: flex; flex-direction: column;
     overflow: hidden;
 }
 .wfv-hdr {
     display: flex; justify-content: space-between; align-items: center;
-    padding: 12px 16px;
-    border-bottom: 1px solid #1c1430;
+    padding: 14px 18px;
+    background: #110d24;                       /* darker header strip — clear layer separation */
+    border-bottom: 1px solid #382850;
     flex-shrink: 0;
 }
 .wfv-hdr-title {
-    font-size: 15px; color: #d8c8f8; font-weight: 500;
+    font-size: 16px; color: #f4ecf8; font-weight: 600;
+    letter-spacing: 0.2px;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .wfv-close-btn {
-    background: transparent; border: none; color: #888;
-    font-size: 18px; cursor: pointer;
-    padding: 4px 8px;
+    background: transparent; border: none; color: #c0a8e0;
+    font-size: 20px; cursor: pointer;
+    padding: 4px 10px;
+    border-radius: 4px;
+    line-height: 1;
 }
-.wfv-close-btn:hover { color: #fff; }
+.wfv-close-btn:hover { color: #fff; background: rgba(255,255,255,0.08); }
 
 .wfv-tabs {
-    display: flex; gap: 4px;
-    padding: 0 16px;
-    border-bottom: 1px solid #1c1430;
+    display: flex; gap: 2px;
+    padding: 0 14px;
+    background: #1a1530;
+    border-bottom: 1px solid #382850;
     flex-shrink: 0;
 }
 .wfv-tab {
-    background: transparent; border: none; color: #888;
-    padding: 10px 14px;
-    font-size: 13px; font-family: inherit;
+    background: transparent; border: none; color: #9080b0;
+    padding: 11px 16px;
+    font-size: 13px; font-family: inherit; font-weight: 500;
     cursor: pointer;
     border-bottom: 2px solid transparent;
     margin-bottom: -1px;
 }
-.wfv-tab:hover { color: #d8c8f8; }
-.wfv-tab.active { color: #d8c8f8; border-bottom-color: #5a4099; }
+.wfv-tab:hover { color: #e8d8ff; }
+.wfv-tab.active { color: #fff; border-bottom-color: #8060c0; }
 
 .wfv-meta {
-    display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
-    padding: 10px 16px;
-    border-bottom: 1px solid #1c1430;
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+    padding: 11px 18px;
+    background: #1a1530;
+    border-bottom: 1px solid #382850;
     flex-shrink: 0;
 }
 .wfv-meta-pill {
-    font-size: 11px; color: #c8b8e8;
-    background: #1c1430;
-    border-radius: 10px;
-    padding: 3px 8px;
+    font-size: 11px; color: #d8c8f8;
+    background: #2e1e50;
+    border: 1px solid #5a4099;
+    border-radius: 12px;
+    padding: 3px 10px;
+    font-weight: 500;
 }
-.wfv-meta-warn  { color: #e6c46a; background: rgba(230, 196, 106, 0.12); }
-.wfv-meta-note  { font-size: 12px; color: #888; margin-left: 4px; }
+.wfv-meta-warn  { color: #ffd970; background: rgba(255, 215, 112, 0.15); border-color: rgba(255, 215, 112, 0.4); }
+.wfv-meta-note  { font-size: 12px; color: #a890c8; margin-left: 6px; font-style: italic; }
 
 .wfv-body {
     flex: 1 1 auto;
     overflow-y: auto;
-    padding: 14px 16px;
+    padding: 18px 22px;
+    background: #100920;                       /* slightly darker than the modal frame — visual depth */
 }
 .wfv-graph {
-    font-family: 'Courier New', monospace;
-    font-size: 13px;
-    color: #d8c0a0;
-    line-height: 1.5;
+    font-family: 'Menlo', 'Consolas', 'Courier New', monospace;
+    font-size: 13.5px;
+    color: #e8d8ff;                            /* brighter — readable on the darker body */
+    line-height: 1.65;
     margin: 0;
-    white-space: pre-wrap;       /* wrap long lines on narrow viewports */
+    white-space: pre-wrap;                     /* wrap long lines on narrow viewports */
     overflow-wrap: anywhere;
 }
