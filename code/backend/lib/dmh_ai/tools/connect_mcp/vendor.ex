@@ -265,7 +265,7 @@ defmodule DmhAi.Tools.ConnectMcp.Vendor do
       status:  "needs_setup",
       alias:   alias_,
       form:    form,
-      message: "Paste this service's API key and pick which auth header it expects. If you pick the wrong one the server returns 401 and you can retry with another. If this URL isn't an MCP server but a regular REST API or webhook, abandon `connect_mcp` and call the API directly with `run_script` + `curl`."
+      message: "Paste this service's API key and pick which auth header it expects. If you pick the wrong one the server returns 401 and you can retry with another."
     }}
   end
 

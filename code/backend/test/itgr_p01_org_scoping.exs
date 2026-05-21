@@ -105,13 +105,13 @@ defmodule DmhAi.P01OrgScopingTest do
       {:ok, %{user_id: uid}}
     end
 
-    test "member can :read but not :administer", %{user_id: uid} do
-      assert Permissions.can?(uid, :read, {:kb, 1})
-      refute Permissions.can?(uid, :administer, :org_settings)
+    test "member can :read_kb but not :write_settings", %{user_id: uid} do
+      assert Permissions.can?(uid, :read_kb, "kb:*")
+      refute Permissions.can?(uid, :write_settings, "org_settings")
     end
 
     test "member denial writes an audit_log row with reason", %{user_id: uid} do
-      refute Permissions.can?(uid, :administer, :org_settings)
+      refute Permissions.can?(uid, :write_settings, "org_settings")
 
       [[reason, outcome]] =
         query!(
@@ -121,18 +121,74 @@ defmodule DmhAi.P01OrgScopingTest do
         ).rows
 
       assert outcome == "denied"
-      assert reason == "admin_only"
+      assert reason == "role_too_low"
+    end
+
+    test "member acting on their own creds is allowed (self-pass)", %{user_id: uid} do
+      assert Permissions.can?(uid, :act_as_creds, "creds:google_workspace:#{uid}")
+    end
+
+    test "member acting on another user's creds is denied", %{user_id: uid} do
+      # Seed a peer user in the same org.
+      peer = "peer_user_" <> T.uid()
+
+      query!(
+        Repo,
+        """
+        INSERT INTO users (id, email, name, password_hash, role,
+                           org_id, org_role, created_at)
+        VALUES (?, ?, NULL, 'x', 'user', ?, ?, ?)
+        """,
+        [peer, "#{peer}@test.local", @default_org, "member", System.os_time(:second)]
+      )
+
+      on_exit(fn -> query!(Repo, "DELETE FROM users WHERE id=?", [peer]) end)
+
+      refute Permissions.can?(uid, :act_as_creds, "creds:google_workspace:#{peer}")
+
+      denial = Permissions.denial(uid, :act_as_creds, "creds:google_workspace:#{peer}")
+      assert denial.reason == :not_admin
+      assert is_list(denial.remediation)
+      assert length(denial.remediation) > 0
+    end
+
+    test "admin acting on another same-org user's creds is allowed", %{user_id: uid} do
+      [[admin_uid, _]] =
+        query!(Repo, "SELECT id, role FROM users WHERE email=?", ["admin@dmhai.local"]).rows
+
+      # The admin's install-level role is "admin" — every check passes
+      # via the install-admin bypass, including cross-user creds.
+      assert Permissions.can?(admin_uid, :act_as_creds, "creds:google_workspace:#{uid}")
     end
 
     test "install-level admin bypass" do
-      # The seeded admin user has install-level role='admin'. Any
-      # action against any resource should pass.
       [[admin_uid]] =
         query!(Repo, "SELECT id FROM users WHERE email=?", ["admin@dmhai.local"]).rows
 
-      assert Permissions.can?(admin_uid, :administer, :org_settings)
-      assert Permissions.can?(admin_uid, :write, {:kb, 1})
-      assert Permissions.can?(admin_uid, :approve, {:approval, 1})
+      assert Permissions.can?(admin_uid, :write_settings, "org_settings")
+      assert Permissions.can?(admin_uid, :write_kb, "kb:*")
+      assert Permissions.can?(admin_uid, :request_approval, "user:#{admin_uid}")
+      assert Permissions.can?(admin_uid, :administer, "org_settings")
+    end
+
+    test "parse_target splits the tagged forms" do
+      assert Permissions.parse_target("user:u_abc") ==
+               %{tag: :user, user_id: "u_abc"}
+
+      assert Permissions.parse_target("creds:google_workspace:u_abc") ==
+               %{tag: :creds, slug: "google_workspace", user_id: "u_abc"}
+
+      assert Permissions.parse_target("kb:src_42") ==
+               %{tag: :kb, source_id: "src_42"}
+
+      assert Permissions.parse_target("org_settings") ==
+               %{tag: :org_settings}
+    end
+
+    test "unknown action atom raises", %{user_id: uid} do
+      assert_raise ArgumentError, ~r/unknown action/, fn ->
+        Permissions.can?(uid, :not_a_real_action, "user:#{uid}")
+      end
     end
   end
 

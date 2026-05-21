@@ -5,10 +5,10 @@
 
 defmodule DmhAi.Tools.InvokeWorkflow do
   @moduledoc """
-  Manually invoke a workflow with caller-supplied inputs. Opens a
-  task pinned to the workflow's currently-armed version (or a
-  caller-specified version), populating the trigger.inputs from
-  the args.
+  Run a saved workflow once with caller-supplied inputs. Always
+  fires the workflow's `current_version` (the latest saved shape) —
+  there is no version arg. Non-latest versions are historical and
+  not runnable.
 
   Distinct from `arm_workflow` — arming registers a trigger
   (schedule / poll / webhook) that fires the workflow autonomously.
@@ -17,17 +17,17 @@ defmodule DmhAi.Tools.InvokeWorkflow do
 
   Use cases:
   - User says *"run customer_onboarding_from_deal for deal-12345"* in chat.
+  - User picks a workflow via the picker (inserts a `&<slug>` reference);
+    the model translates the user's prose around it into an inputs
+    map and calls this tool.
   - One workflow invokes another (`workflow.invoke` as a synthetic
     step in an IR).
-
-  v1 scope: creates the task row; the actual workflow executor that
-  walks the IR step-by-step lives in a follow-up. v1 returns the
-  task_id + the IR snapshot so the caller can render progress.
   """
 
   @behaviour DmhAi.Tools.Behaviour
 
   alias DmhAi.{Workflows, Constants}
+  alias DmhAi.Workflows.Executor
   alias DmhAi.Agent.Tasks
   require Logger
 
@@ -37,8 +37,8 @@ defmodule DmhAi.Tools.InvokeWorkflow do
   @impl true
   def description do
     "Run a saved workflow once with supplied inputs. " <>
-      "Args: name (slug), inputs (map matching the trigger's inputs), " <>
-      "optional version (defaults to active_version)."
+      "Args: name (slug), inputs (map matching the trigger's inputs). " <>
+      "Always uses the workflow's latest saved version."
   end
 
   @impl true
@@ -56,10 +56,6 @@ defmodule DmhAi.Tools.InvokeWorkflow do
           inputs: %{
             type:        "object",
             description: "Values for the workflow's trigger inputs, e.g. {deal: {id: '12345', contact_email: 'x@y.com'}}."
-          },
-          version: %{
-            type:        "integer",
-            description: "Optional. Default = workflows.active_version (must be armed). Pass to run a specific historical version."
           }
         },
         required: ["name", "inputs"]
@@ -75,42 +71,174 @@ defmodule DmhAi.Tools.InvokeWorkflow do
 
     name_arg = args["name"]
     inputs   = args["inputs"]
-    version  = args["version"]
 
-    with :ok            <- require_string(name_arg, "name"),
-         :ok            <- require_map(inputs, "inputs"),
-         :ok            <- require_string(user_id, "ctx.user_id"),
-         :ok            <- require_string(session_id, "ctx.session_id"),
-         {:ok, wf}      <- fetch_workflow(org_id, name_arg),
-         {:ok, version} <- resolve_version(wf, version),
-         {:ok, _v}      <- fetch_version(org_id, name_arg, version) do
-
-      task_spec =
-        "Run workflow `#{name_arg}` v#{version} with inputs: #{Jason.encode!(inputs)}"
+    with :ok        <- require_string(name_arg, "name"),
+         :ok        <- require_map(inputs, "inputs"),
+         :ok        <- require_string(user_id, "ctx.user_id"),
+         :ok        <- require_string(session_id, "ctx.session_id"),
+         {:ok, wf}  <- fetch_workflow(org_id, name_arg),
+         {:ok, ver} <- resolve_current_version(wf),
+         {:ok, v}   <- fetch_version(org_id, name_arg, ver),
+         :ok        <- require_manual_trigger(name_arg, v.ir),
+         :ok        <- validate_trigger_inputs(name_arg, v.ir, inputs) do
 
       task_id = Tasks.insert(
         user_id:    user_id,
         session_id: session_id,
         task_type:   "one_off",
         intvl_sec:  0,
-        task_title:  "Run #{wf.display_name} v#{version}",
-        task_spec:   task_spec,
+        task_title:  "Run #{wf.display_name} v#{ver}",
+        task_spec:   "Run workflow `#{name_arg}` v#{ver} (deterministic executor)",
         attachments: [],
-        task_status: "pending",
+        task_status: "running",
         language:   "en"
       )
 
-      Logger.info("[InvokeWorkflow] task=#{task_id} workflow=#{name_arg} v#{version} session=#{session_id}")
+      Logger.info("[InvokeWorkflow] task=#{task_id} workflow=#{name_arg} v#{ver} session=#{session_id}")
 
-      {:ok, %{
-        "name"             => name_arg,
-        "display_name"     => wf.display_name,
-        "version"          => version,
-        "task_id"          => task_id,
-        "url"              => "/workflows/#{URI.encode(name_arg)}/#{version}",
-        "executor_status"  => "queued_v1_stub",
-        "note"             => "v1: task row created; the workflow executor that walks the IR ships in chunk 6 alongside the poller. Until then the task is a placeholder."
-      }}
+      # The deterministic executor takes over. The LLM is no longer
+      # in the workflow run loop (except for explicit llm.compose
+      # steps). caller_ctx.user_id is the workflow's owner; the
+      # LLM-driven task spec is just provenance.
+      exec_ctx = %{org_id: org_id, task_id: task_id}
+
+      case Executor.start_run(name_arg, ver, inputs, exec_ctx) do
+        {:ok, run_state} ->
+          # The model must surface `run_url` (NOT workflow_url) so
+          # the user sees the run's emit values, not the static IR.
+          # `workflow_url` is provided as a secondary link for IR
+          # inspection. See arch_wiki/dmh_ai/sme/layer-W.md.
+          {:ok, %{
+            "name"            => name_arg,
+            "display_name"    => wf.display_name,
+            "version"         => ver,
+            "task_id"         => task_id,
+            "run_id"          => run_state.id,
+            "run_url"         => "/runs/#{run_state.id}",
+            "workflow_url"    => "/workflows/#{URI.encode(name_arg)}/#{ver}",
+            "executor_status" => run_state.status,
+            "emits"           => Map.get(run_state.bindings, "emits", %{})
+          }}
+
+        {:error, reason} ->
+          {:error, "invoke_workflow: executor failed: #{inspect(reason)}"}
+      end
+    end
+  end
+
+  # A manual invocation only makes sense for `trigger_kind: manual`.
+  # For poll / schedule / webhook, "running it once" would either lie
+  # about its data (no real trigger event happened) or interfere with
+  # the autonomous loop's cursor. Refuse with a structured envelope so
+  # the model relays it cleanly to the user.
+  defp require_manual_trigger(name, ir) do
+    case trigger_kind(ir) do
+      "manual" ->
+        :ok
+
+      other ->
+        connector =
+          ir
+          |> trigger_node()
+          |> case do
+            nil -> nil
+            t   -> Map.get(t, "connector_function") || Map.get(t, "event")
+          end
+
+        {:error,
+         "invoke_workflow: workflow `#{name}` has trigger_kind=`#{other}`; " <>
+           "manual one-off runs are only allowed on `manual` triggers. " <>
+           "To exercise this workflow, either:\n" <>
+           " (a) cause the real trigger event (for `#{other}` + " <>
+           "`#{connector || "—"}` this means causing the connector to fire — " <>
+           "the model should suggest a concrete way based on the connector); or\n" <>
+           " (b) arm the autonomous trigger via `arm_workflow` so it starts " <>
+           "firing on its own.\n\n" <>
+           "Reply to the user with these two options in their language. " <>
+           "Do NOT retry `invoke_workflow` on this workflow."}
+    end
+  end
+
+  defp trigger_node(ir) do
+    ir |> Map.get("nodes", []) |> Enum.find(fn n -> n["kind"] == "trigger" end)
+  end
+
+  defp trigger_kind(ir) do
+    case trigger_node(ir) do
+      nil -> "manual"
+      t   -> Map.get(t, "trigger_kind", "manual")
+    end
+  end
+
+  # Required-input check. Trigger declared inputs are treated as
+  # required by default — if a workflow needs an optional input,
+  # the IR should mark it explicitly (future extension). For now
+  # every declared input MUST appear in the supplied `inputs` map
+  # for the run to start.
+  defp validate_trigger_inputs(name, ir, inputs) do
+    declared =
+      ir
+      |> Map.get("nodes", [])
+      |> Enum.find(fn n -> n["kind"] == "trigger" end)
+      |> case do
+        nil -> []
+        t   -> Map.get(t, "inputs", [])
+      end
+
+    declared_names =
+      declared
+      |> Enum.flat_map(fn
+        %{"name" => n} when is_binary(n) and n != "" -> [n]
+        _                                            -> []
+      end)
+
+    # Each declared `name` may be a dotted path (e.g. `"deal.id"`).
+    # Matching against a supplied inputs map allows either:
+    #   1. an exact top-level key `"deal.id"`
+    #   2. a nested resolution `inputs["deal"]["id"]`
+    # Both are valid because the executor flattens via Mustache
+    # at run-time. We accept the simpler case (top-level only)
+    # plus the explicit nested form.
+    missing =
+      Enum.reject(declared_names, fn n ->
+        Map.has_key?(inputs, n) or nested_present?(inputs, n)
+      end)
+
+    case missing do
+      [] ->
+        :ok
+
+      fields ->
+        schema_json = Jason.encode!(declared)
+        supplied    = inputs |> Map.keys() |> Jason.encode!()
+
+        {:error,
+         "invoke_workflow: missing required trigger inputs for `#{name}`: " <>
+           "#{Enum.join(fields, ", ")}. " <>
+           "Declared schema: #{schema_json}. Supplied keys: #{supplied}. " <>
+           "Push back to the user with: (a) the names of the missing fields, " <>
+           "(b) the full schema (types + names), (c) a brief example of " <>
+           "prose that WOULD work for this workflow. Do NOT invent values."}
+    end
+  end
+
+  defp nested_present?(inputs, dotted) when is_binary(dotted) do
+    dotted
+    |> String.split(".")
+    |> Enum.reduce_while({:ok, inputs}, fn key, {:ok, acc} ->
+      case acc do
+        m when is_map(m) ->
+          case Map.fetch(m, key) do
+            {:ok, v} -> {:cont, {:ok, v}}
+            :error   -> {:halt, :missing}
+          end
+
+        _ -> {:halt, :missing}
+      end
+    end)
+    |> case do
+      {:ok, _} -> true
+      _        -> false
     end
   end
 
@@ -131,10 +259,12 @@ defmodule DmhAi.Tools.InvokeWorkflow do
     end
   end
 
-  defp resolve_version(_wf, v) when is_integer(v) and v >= 0, do: {:ok, v}
-  defp resolve_version(%{active_version: av}, _) when is_integer(av), do: {:ok, av}
-  defp resolve_version(_, _),
-    do: {:error, "invoke_workflow: workflow is not armed and no version arg supplied — pass version: N or call arm_workflow first"}
+  # Only `current_version` is runnable — non-latest versions are
+  # historical. See layer-W.md §Latest-version-only runnability.
+  defp resolve_current_version(%{current_version: cv}) when is_integer(cv) and cv >= 0,
+    do: {:ok, cv}
+  defp resolve_current_version(_),
+    do: {:error, "invoke_workflow: workflow has no saved versions"}
 
   defp fetch_version(org_id, name, v) do
     case Workflows.get_version(org_id, name, v) do

@@ -86,6 +86,13 @@ defmodule DmhAi.Handlers.AgentChat do
     content = String.trim(d["content"] || "")
     files   = parse_files(d["files"])
 
+    # Layer W — @-mention + &-workflow picker sidecars. Resolved
+    # ids from the FE; both blocks augment the LLM-bound content
+    # only. The persisted user message stays at the user's literal
+    # text — internal augmentation MUST NOT leak into chat history.
+    mentions  = parse_mentions(d["mentions"])
+    workflows = parse_workflows(d["workflows"])
+
     # FE-supplied idempotency key. Persisted alongside the message so a
     # lost POST response + FE retry (or a BE crash + FE poll-based
     # recovery) resolves to the same canonical row instead of creating
@@ -119,10 +126,11 @@ defmodule DmhAi.Handlers.AgentChat do
         end
       end
 
-      # Build and persist the user message ourselves. The FE never PUTs
-      # session.messages; the BE is the sole writer of session-message
-      # state from this entry point on. Attachment paths are inlined
-      # into content so the stored message is canonical.
+      # Build the persisted user message — user's literal text plus
+      # attachment paths. NO sidecar augmentation here; the BE is the
+      # sole writer of session-message state, and "internal mechanic
+      # must not be visible to user" means the persisted content
+      # matches what the user actually typed.
       stored_content =
         if attachment_names == [] do
           content
@@ -131,16 +139,39 @@ defmodule DmhAi.Handlers.AgentChat do
           if content == "", do: paths, else: content <> "\n\n" <> paths
         end
 
+      # Defensive `&<slug>` resolution against the workflows table.
+      # The FE picker registers a sidecar entry on selection, but
+      # users sometimes type / paste a slug from memory. Scan the
+      # user's prose; for tokens NOT already in the picker sidecar,
+      # look up the workflow and (a) augment the workflows list if
+      # found, or (b) collect into `unresolved` so the model can
+      # tell the user "no such workflow" instead of hallucinating
+      # an adjacent intent.
+      org_id_for_user = org_id_for(user)
+      {workflows, unresolved_slugs} =
+        resolve_inline_ampersand_refs(stored_content, workflows, org_id_for_user)
+
+      # LLM-bound content: stored_content + per-turn sidecar blocks.
+      # Never persisted; the augmentation evaporates after this chain
+      # ends (same lifecycle as a tool result decaying out of future
+      # turns, stricter implementation — it never lands in
+      # `sessions.messages` at all).
+      llm_content =
+        stored_content
+        |> prepend_workflow_refs_block(workflows)
+        |> prepend_unresolved_workflow_refs_block(unresolved_slugs)
+        |> prepend_mentions_block(mentions)
+
       # Slash-command intercept (`/index`, `/memo`). Runs BEFORE the
-      # LLM dispatch, persists its own user + synthetic ack rows,
-      # returns immediately. See specs/commands.md.
-      #
-      # `user_ts` (the BE-stamped ts of the persisted user row) is
-      # echoed back so the FE can patch its optimistic local copy.
-      # Without it, the FE poll picks up the BE row as a "new"
-      # message that doesn't match anything via `(ts, role)` dedup
-      # → the user's line renders twice.
-      case DmhAi.Commands.dispatch(stored_content, session_id, user.id, request_lang(d)) do
+      # LLM dispatch. Two outcomes:
+      #   * `{:handled, _}` — runtime took it. Persistence + ack done;
+      #     no LLM dispatch. `user_ts` is echoed back so the FE
+      #     patches its optimistic local copy.
+      #   * `:not_a_command` — plain user message, continue.
+      command_result =
+        DmhAi.Commands.dispatch(stored_content, session_id, user.id, request_lang(d))
+
+      case command_result do
         {:handled, user_ts} ->
           json(conn, 200, %{user_ts: user_ts, handled: true})
 
@@ -160,7 +191,7 @@ defmodule DmhAi.Handlers.AgentChat do
           case DmhAi.Agent.UserAgentMessages.append(session_id, user.id, message) do
             {:ok, user_ts} ->
               fire_and_forget(conn, user_ts, fn ->
-                Http.dispatch_assistant(user.id, session_id, content, self(),
+                Http.dispatch_assistant(user.id, session_id, llm_content, self(),
                   attachment_names: attachment_names,
                   files:            files,
                   timezone:         tz,
@@ -189,19 +220,21 @@ defmodule DmhAi.Handlers.AgentChat do
     if not has_payload do
       json(conn, 400, %{error: "Missing content"})
     else
-      # Slash-command intercept (`/index`, `/memo`). Same dispatch as the
-      # Assistant route — Memo runtime is mode-agnostic. Runs BEFORE the
-      # LLM dispatch, persists its own user + synthetic ack rows, returns
-      # immediately. See specs/commands.md §Command parser.
-      case DmhAi.Commands.dispatch(content, session_id, user.id, request_lang(d)) do
+      # Slash-command intercept. Two outcomes:
+      #   * `{:handled, _}` — runtime took it.
+      #   * `:not_a_command` — plain user message, continue.
+      command_result =
+        DmhAi.Commands.dispatch(content, session_id, user.id, request_lang(d))
+
+      case command_result do
         {:handled, user_ts} ->
           json(conn, 200, %{user_ts: user_ts, handled: true})
 
         :not_a_command ->
-          # BE owns every persisted message write. Store text only —
-          # image base64 payloads flow through the current request and
-          # feed the LLM inline; they are not persisted on the stored
-          # message.
+          # BE owns every persisted message write. Store the user's
+          # literal text (no augmentation); image base64 payloads
+          # flow through the current request and feed the LLM
+          # inline, but are not persisted on the stored message.
           {tz, local_date} = client_tz(conn)
           case DmhAi.Agent.UserAgentMessages.append(session_id, user.id,
                   %{role: "user", content: content}) do
@@ -300,6 +333,197 @@ defmodule DmhAi.Handlers.AgentChat do
   defp parse_string_list(nil), do: []
   defp parse_string_list(list) when is_list(list), do: Enum.filter(list, &is_binary/1)
   defp parse_string_list(_), do: []
+
+  # Layer W — @-mention sidecar. FE ships an array of
+  # `{token, user_id}` pairs; we keep only entries with a non-empty
+  # binary user_id (the LLM sees them as authoritative).
+  defp parse_mentions(nil), do: []
+
+  defp parse_mentions(list) when is_list(list) do
+    list
+    |> Enum.flat_map(fn
+      %{"token" => t, "user_id" => uid}
+        when is_binary(t) and is_binary(uid) and t != "" and uid != "" ->
+        [%{token: t, user_id: uid}]
+
+      _ ->
+        []
+    end)
+    |> Enum.uniq_by(& &1.token)
+    |> Enum.take(20)
+  end
+
+  defp parse_mentions(_), do: []
+
+  defp prepend_mentions_block(content, []), do: content
+
+  defp prepend_mentions_block(content, mentions) when is_list(mentions) do
+    lines =
+      mentions
+      |> Enum.map(fn %{token: t, user_id: uid} -> "  " <> t <> " => " <> uid end)
+      |> Enum.join("\n")
+
+    "<mentions>\n" <> lines <> "\n</mentions>\n" <> content
+  end
+
+  # Layer W — &-workflow sidecar. FE ships an array of resolved
+  # workflow references from the picker. The BE prepends a
+  # `<workflow_references>` block to the LLM-bound content so the
+  # model has authoritative slug + metadata + trigger schema for
+  # every `&<slug>` it sees in the user's text. Never persisted —
+  # augmentation evaporates after this chain ends.
+  defp parse_workflows(nil), do: []
+
+  defp parse_workflows(list) when is_list(list) do
+    list
+    |> Enum.flat_map(fn
+      %{"token" => t, "id" => id} = e
+        when is_binary(t) and is_binary(id) and t != "" and id != "" ->
+        [%{
+           token:           t,
+           id:              id,
+           display_name:    safe_string(e["display_name"]),
+           description:     safe_string(e["description"]),
+           current_version: safe_int(e["current_version"]),
+           trigger_kind:    safe_trigger_kind(e["trigger_kind"]),
+           trigger_inputs:  safe_list(e["trigger_inputs"])
+         }]
+
+      _ ->
+        []
+    end)
+    |> Enum.uniq_by(& &1.token)
+    |> Enum.take(10)
+  end
+
+  defp parse_workflows(_), do: []
+
+  defp prepend_workflow_refs_block(content, []), do: content
+
+  defp prepend_workflow_refs_block(content, refs) when is_list(refs) do
+    body =
+      refs
+      |> Enum.map(&render_workflow_ref/1)
+      |> Enum.join("\n\n")
+
+    "<workflow_references>\n" <> body <> "\n</workflow_references>\n" <> content
+  end
+
+  # Surfaces `&<slug>` tokens the user typed that don't match any
+  # workflow. The model is taught (in `<workflow_authoring>`) to tell
+  # the user the slug is unknown instead of guessing an adjacent
+  # intent. Empty list → no block emitted.
+  defp prepend_unresolved_workflow_refs_block(content, []), do: content
+
+  defp prepend_unresolved_workflow_refs_block(content, slugs) when is_list(slugs) do
+    body = slugs |> Enum.map(fn s -> "  &" <> s end) |> Enum.join("\n")
+
+    "<unresolved_workflow_references>\n" <> body <>
+      "\n</unresolved_workflow_references>\n" <> content
+  end
+
+  # Scan user content for `&<slug>` tokens, resolve against the
+  # workflows table. Returns `{augmented_workflows_list, unresolved_slugs}`.
+  # Tokens already present in the picker-sourced sidecar are skipped;
+  # tokens not in DB are collected as unresolved.
+  defp resolve_inline_ampersand_refs(content, sidecar_workflows, org_id) when is_binary(content) do
+    already_resolved =
+      sidecar_workflows
+      |> Enum.map(fn w -> w.id end)
+      |> MapSet.new()
+
+    inline_slugs =
+      Regex.scan(~r/(?:^|\s)&([a-z0-9_]+)\b/, content, capture: :all_but_first)
+      |> List.flatten()
+      |> Enum.map(&String.downcase/1)
+      |> Enum.uniq()
+      |> Enum.reject(&MapSet.member?(already_resolved, &1))
+
+    {newly_resolved, unresolved} =
+      Enum.reduce(inline_slugs, {[], []}, fn slug, {res_acc, unres_acc} ->
+        case DmhAi.Workflows.get_workflow(org_id, slug) do
+          nil ->
+            {res_acc, [slug | unres_acc]}
+
+          wf ->
+            entry = inline_workflow_entry(org_id, wf)
+            {[entry | res_acc], unres_acc}
+        end
+      end)
+
+    {sidecar_workflows ++ Enum.reverse(newly_resolved), Enum.reverse(unresolved)}
+  end
+
+  defp resolve_inline_ampersand_refs(_, sidecar_workflows, _org_id),
+    do: {sidecar_workflows, []}
+
+  defp inline_workflow_entry(org_id, wf) do
+    ver = DmhAi.Workflows.get_version(org_id, wf.id, wf.current_version)
+
+    {kind, inputs} =
+      case ver do
+        %{ir: ir} ->
+          ir
+          |> Map.get("nodes", [])
+          |> Enum.find(fn n -> n["kind"] == "trigger" end)
+          |> case do
+            nil -> {"manual", []}
+            t   -> {Map.get(t, "trigger_kind", "manual"), Map.get(t, "inputs", [])}
+          end
+
+        _ ->
+          {"manual", []}
+      end
+
+    %{
+      token:           "&" <> wf.id,
+      id:              wf.id,
+      display_name:    wf.display_name,
+      description:     Map.get(wf, :description, ""),
+      current_version: wf.current_version,
+      trigger_kind:    kind,
+      trigger_inputs:  inputs
+    }
+  end
+
+  # Resolve the user's org_id. Falls back to the install's default
+  # when the user record carries nothing usable.
+  defp org_id_for(user) do
+    case Map.get(user, :org_id) do
+      s when is_binary(s) and s != "" -> s
+      _ -> DmhAi.Constants.default_org_id()
+    end
+  end
+
+  defp render_workflow_ref(%{token: t, id: id, display_name: dn, description: desc,
+                             current_version: ver, trigger_kind: kind,
+                             trigger_inputs: inputs}) do
+    schema =
+      case Jason.encode(inputs || []) do
+        {:ok, j} -> j
+        _        -> "[]"
+      end
+
+    "  " <> t <> "\n" <>
+      "    id: " <> id <> "\n" <>
+      "    display_name: " <> (dn || "") <> "\n" <>
+      "    description: " <> (desc || "") <> "\n" <>
+      "    current_version: " <> to_string(ver || 0) <> "\n" <>
+      "    trigger_kind: " <> kind <> "\n" <>
+      "    trigger_inputs: " <> schema
+  end
+
+  defp safe_string(v) when is_binary(v), do: v
+  defp safe_string(_),                   do: ""
+
+  defp safe_int(v) when is_integer(v), do: v
+  defp safe_int(_),                    do: 0
+
+  defp safe_list(v) when is_list(v), do: v
+  defp safe_list(_),                 do: []
+
+  defp safe_trigger_kind(v) when v in ["manual", "poll", "schedule", "webhook"], do: v
+  defp safe_trigger_kind(_),                                                     do: "manual"
 
   defp parse_files(nil), do: []
   defp parse_files(list) when is_list(list) do

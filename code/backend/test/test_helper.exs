@@ -455,6 +455,60 @@ defmodule T do
   end
 
   @doc """
+  Grant the test user every OAuth scope every registered connector
+  declares — collapsed per host_match into one `user_credentials` row.
+  Lets workflow-build tests exercise the IR validator without each
+  test enumerating the scope list of the functions it touches; the
+  compile-time scope gate (`upsert_workflow` Pass 4) passes through
+  because the user appears fully authorized.
+
+  Cleanup is the caller's responsibility (usually `DELETE FROM
+  user_credentials WHERE user_id=?` in `on_exit`).
+  """
+  def grant_all_scopes(user_id) when is_binary(user_id) do
+    DmhAi.Connectors.Registry.universal_modules()
+    |> Enum.flat_map(fn mod ->
+      manifest =
+        if function_exported?(mod, :manifest, 0), do: mod.manifest(), else: %{}
+
+      manifest
+      |> Map.get(:functions, %{})
+      |> Map.values()
+      |> Enum.flat_map(fn fn_spec -> Map.get(fn_spec, :scopes, []) end)
+      |> case do
+        [] -> []
+        scopes -> [{mod, scopes |> Enum.uniq()}]
+      end
+    end)
+    |> Enum.each(fn {mod, scopes} ->
+      slug =
+        if function_exported?(mod, :oauth_catalog_descriptor, 0) do
+          d = mod.oauth_catalog_descriptor()
+          Map.get(d, :slug)
+        else
+          nil
+        end
+
+      host =
+        case slug && DmhAi.OAuth.Catalog.get_by_slug(slug) do
+          %{host_match: h} -> h
+          _ -> nil
+        end
+
+      if is_binary(host) do
+        :ok = DmhAi.Auth.Credentials.save(
+          user_id, "oauth:" <> host, "oauth2",
+          %{"access_token" => "test-token-" <> host,
+            "scope"        => Enum.join(scopes, " ")},
+          account: ""
+        )
+      end
+    end)
+
+    :ok
+  end
+
+  @doc """
   Create a transient user for an integration test. Returns the
   generated user_id; the row is DELETEd on_exit along with its
   credentials, authorized_services, and audit_log entries.

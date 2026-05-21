@@ -49,13 +49,36 @@ defmodule DmhAi.Tools.Manifest do
 
   defmodule Function do
     @enforce_keys [:permission, :callable_from]
-    defstruct permission:      nil,                    # :read | :write | :admin
-              callable_from:   [:chat, :task],         # [:chat, :task] | [:task]
-              idempotency_key: :none,                  # :required | :none
-              args:            %{},                    # %{name => %{type, required}}
-              returns:         %{},                    # informational
-              errors:          [],                     # informational
-              scopes:          []                      # OAuth scopes required
+    defstruct permission:           nil,                # :read | :write | :admin
+              callable_from:        [:chat, :task],     # [:chat, :task] | [:task]
+              idempotency_key:      :none,              # :required | :none
+              args:                 %{},                # %{name => %{type, required}}
+              returns:              %{},                # informational
+              errors:               [],                 # informational
+              scopes:               [],                 # OAuth scopes required
+
+              # Poll-trigger metadata. A connector function flagged
+              # `poll_trigger_capable` can be used as a workflow's
+              # `trigger.connector_function` for change-detection
+              # polling. The runtime calls the function with the
+              # caller's args plus `{cursor_arg => last_cursor}`,
+              # walks `items_path` for new items, and persists the
+              # value at `cursor_response_path` as the next cursor.
+              # See arch_wiki/dmh_ai/sme/layer-W.md §Cursor semantics
+              # and §Cadence (`every_seconds`).
+              poll_trigger_capable: false,
+              cursor_arg:           nil,                # string: arg name accepting prior cursor
+              cursor_response_path: nil,                # jsonpath into response for new cursor
+              items_path:           nil,                # jsonpath to the items array
+
+              # Cadence envelope for poll triggers. `min_poll_seconds`
+              # is the hard floor — below this the vendor rate-limits;
+              # validator rejects. `default_poll_seconds` is the
+              # recommended cadence the model emits when the user
+              # didn't express a preference. Both fields are required
+              # alongside `poll_trigger_capable: true`.
+              min_poll_seconds:     nil,
+              default_poll_seconds: nil
   end
 
   @doc """

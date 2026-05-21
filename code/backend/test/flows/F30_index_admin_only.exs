@@ -9,7 +9,7 @@
 #   POST /agent/chat with content="/index ..."
 #     → Router → AgentChat handler
 #     → Commands.dispatch → run_index → admin? check
-#     → Permissions.can?(:administer, :org_settings)
+#     → Permissions.can?(uid, :write_settings, "org_settings")
 #
 # Asserts:
 #   * Non-admin gets a refusal ack persisted under kind="command_ack".

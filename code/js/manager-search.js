@@ -274,6 +274,17 @@ UIManager.sendMessage = async function() {
     // rows, streaming-buffer text, final assistant message) lives in the DB
     // and reaches the FE via `/sessions/:id/poll` (see specs §Polling-based
     // delivery). No SSE / chunked response on /agent/chat anymore.
+    // Layer W — collect resolved @-mention + &-workflow sidecars
+    // from the pickers. The BE injects <mentions> +
+    // <workflow_references> blocks into the LLM-bound content; the
+    // persisted user message stays at the literal text the user
+    // typed. Both pickers reset after the POST is in flight so a
+    // re-typed reference rebuilds its entry from scratch.
+    var mentionsForAPI  = (typeof MentionPicker  !== 'undefined') ? MentionPicker.collect()  : [];
+    var workflowsForAPI = (typeof WorkflowPicker !== 'undefined') ? WorkflowPicker.collect() : [];
+    if (typeof MentionPicker  !== 'undefined') MentionPicker.reset();
+    if (typeof WorkflowPicker !== 'undefined') WorkflowPicker.reset();
+
     apiFetch('/agent/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -285,6 +296,8 @@ UIManager.sendMessage = async function() {
             files: filesForAPI,
             hasVideo: hasVideo,
             attachmentNames: attachmentNamesForAssistant,
+            mentions: mentionsForAPI,
+            workflows: workflowsForAPI,
             // FE-supplied locale, used by the slash-command runtime
             // (e.g. /memo's static-i18n ack) to render in the user's
             // language without an LLM round-trip. The chat path itself

@@ -5,13 +5,21 @@
 
 defmodule DmhAi.Handlers.Workflows do
   @moduledoc """
-  Read-only HTTP surface for the workflow viewer modal:
+  Read-only HTTP surface for the workflow viewer modal + the
+  `&`-keystroke / topbar Workflow picker:
 
       GET /workflows/:slug/:version    → returns the version's IR JSON
-      GET /workflows                   → lists workflows for the user's org
-
-  The modal renderer fetches a specific version's IR; the list
-  endpoint backs the (future) "my workflows" panel.
+      GET /workflows                   → list workflows in the user's org
+      GET /workflows?q=<prefix>        → picker variant; substring match
+                                          on display_name + description.
+                                          Each result carries the latest
+                                          version's trigger_inputs
+                                          schema so the FE can persist
+                                          it as a sidecar entry. The BE
+                                          prepends a
+                                          <workflow_references> block
+                                          to the LLM-bound content for
+                                          every resolved `&<slug>`.
 
   Org-scoping: a user can only read workflows in their own org.
   Authentication is required (every endpoint goes through the
@@ -61,6 +69,8 @@ defmodule DmhAi.Handlers.Workflows do
               workflow: %{
                 id:              workflow.id,
                 display_name:    workflow.display_name,
+                description:     workflow.description,
+                created_by:      workflow.created_by,
                 current_version: workflow.current_version,
                 active_version:  workflow.active_version,
                 created_at:      workflow.created_at,
@@ -69,20 +79,32 @@ defmodule DmhAi.Handlers.Workflows do
               version: %{
                 version:              v.version,
                 ir:                   v.ir,
+                description:          v.description,
                 change_note:          v.change_note,
                 compiled_at:          v.compiled_at,
                 compiled_in_session:  v.compiled_in_session,
-                open_questions_count: v.open_questions_count
+                compiled_by_user_id:  v.compiled_by_user_id
               }
             })
         end
     end
   end
 
-  @doc "GET /workflows — list workflows in the user's org."
+  @doc """
+  GET /workflows[?q=<prefix>]
+  Lists workflows in the user's org. With `q`, runs the picker
+  substring search (display_name OR description, case-insensitive).
+  """
   def list(conn, user) do
+    conn = Plug.Conn.fetch_query_params(conn)
     org_id = Map.get(user, :org_id) || Constants.default_org_id()
-    workflows = Workflows.list_workflows(org_id)
-    Proxy.json(conn, 200, %{workflows: workflows})
+
+    case Map.get(conn.query_params, "q") do
+      nil ->
+        Proxy.json(conn, 200, %{workflows: Workflows.list_workflows(org_id)})
+
+      q when is_binary(q) ->
+        Proxy.json(conn, 200, %{workflows: Workflows.search(org_id, q)})
+    end
   end
 end

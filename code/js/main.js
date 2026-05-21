@@ -259,7 +259,17 @@ const UIManager = {
             // are FE-local prep, not an assistant chain.
             if (e.key === 'Enter' && e.ctrlKey) { e.preventDefault(); if (!self._pendingVideo && !self._pendingDesc) self.sendMessage(); }
         });
-        document.getElementById('message-input').addEventListener('input', function() {
+
+        // Layer W — @-mention + &-workflow pickers. Both listen for
+        // their trigger char anywhere in the textarea (after
+        // whitespace or at start), substitute the resolved token on
+        // selection, and keep a sidecar the BE consumes to augment
+        // LLM context. The persisted user message stays at the
+        // literal text — sidecar data lives only in this turn's POST.
+        var msgInput = document.getElementById('message-input');
+        if (typeof MentionPicker !== 'undefined')  MentionPicker.attach(msgInput);
+        if (typeof WorkflowPicker !== 'undefined') WorkflowPicker.attach(msgInput);
+        msgInput.addEventListener('input', function() {
             this.style.height = 'auto';
             this.style.height = Math.min(this.scrollHeight, 100) + 'px';
             self.updateSendBtn();
@@ -335,7 +345,9 @@ const UIManager = {
         document.getElementById('about-overlay').addEventListener('click', function(e) {
             if (e.target === this) this.style.display = 'none';
         });
-        document.getElementById('clear-session-btn').addEventListener('click', function() { self.clearSession(); });
+        document.getElementById('workflow-modal-btn').addEventListener('click', function() {
+            if (typeof WorkflowModal !== 'undefined') WorkflowModal.open();
+        });
         document.getElementById('user-change-pw-btn').addEventListener('click', function() {
             userDropdown.classList.remove('open');
             self.showChangePassword();

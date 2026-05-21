@@ -63,8 +63,9 @@ defmodule DmhAi.Tools.PickupTask do
          {:ok, task_id} <- Tasks.resolve_num(session_id, task_num),
          %{} = task     <- Tasks.get(task_id) do
       from_status = task.task_status
+      was_already_ongoing? = from_status == "ongoing"
 
-      if from_status != "ongoing" do
+      unless was_already_ongoing? do
         Tasks.mark_ongoing(task_id)
         Logger.info("[PickupTask] task=(#{task_num})[#{task_id}] from=#{from_status} → ongoing")
       end
@@ -75,12 +76,17 @@ defmodule DmhAi.Tools.PickupTask do
 
       envelope = render_envelope(task, task_num, have_live, archive_msgs, have_archive)
 
-      # Return the envelope as a raw string — `format_tool_result/1`
-      # passes binaries through verbatim so the model sees the
-      # `<requested_task_content>…</requested_task_content>` block
-      # directly, not wrapped in JSON. See architecture.md §Tool
-      # result formatting + rule #10.
-      {:ok, envelope}
+      # Native return — the runtime pattern-matches on this shape to
+      # advance the anchor; the LLM-facing envelope string sits in
+      # `:envelope`. `format_tool_result/1` reads `:envelope` and
+      # emits ONLY that string to the model (so the LLM still sees
+      # the `<requested_task_content>…</requested_task_content>`
+      # block verbatim, not a JSON wrap).
+      {:ok, %{
+        task_num:             task_num,
+        was_already_ongoing:  was_already_ongoing?,
+        envelope:             envelope
+      }}
     else
       {:error, :not_found} ->
         {:error,

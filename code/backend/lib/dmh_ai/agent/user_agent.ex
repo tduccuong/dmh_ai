@@ -856,18 +856,12 @@ defmodule DmhAi.Agent.UserAgent do
   end
 
   # Sweep the user's memo data when the wrap is unrecoverable. The
-  # ciphertext is now garbage so deleting it loses nothing. Vec rows
-  # share the same id space and get cleaned via explicit DELETE.
+  # ciphertext is now garbage so deleting it loses nothing. Delegates
+  # to the canonical store helper so the table set stays in one place.
   defp wipe_user_memo_state(user_id) do
-    try do
-      query!(Repo,
-        "DELETE FROM kb_vec_memo WHERE rowid IN (SELECT id FROM kb_chunks_meta WHERE scope='memo' AND user_id=?)",
-        [user_id])
-      query!(Repo, "DELETE FROM kb_chunks_meta WHERE scope='memo' AND user_id=?", [user_id])
-      query!(Repo, "DELETE FROM kb_sources WHERE scope='memo' AND user_id=?", [user_id])
-    rescue
-      e -> Logger.error("[UserAgent] wipe_user_memo_state failed for user=#{user_id}: #{Exception.message(e)}")
-    end
+    DmhAi.VectorDB.Sources.wipe_user_memos(user_id)
+  rescue
+    e -> Logger.error("[UserAgent] wipe_user_memo_state failed for user=#{user_id}: #{Exception.message(e)}")
   end
 
   # Post-turn hook: check for another pending task in the same session
@@ -1703,16 +1697,18 @@ defmodule DmhAi.Agent.UserAgent do
         end
       end
 
-    # Auto-fetch indexed (org KB) + memo (user-personal) before the
-    # LLM round-trip. Always-on for Assistant mode so the model
-    # sees `<augmented_facts type="indexed">` + `<augmented_facts
-    # type="memo">` blocks populated with top-N relevants per turn.
-    # Costs ~one embedder call + two vector searches; cheap and
-    # eliminates the model's "should I call fetch_index?" coin-flip.
-    # See specs/layer-0.md §0.2 retrieval cascade.
+    # Auto-fetch ORG KB is OFF: KB pre-fetch returned more poison than
+    # signal in practice (third-party platform docs poisoning workflow
+    # compile turns, KB chunks suggesting adjacent intents the user
+    # didn't ask for). The model now decides when org knowledge is
+    # relevant and calls `fetch_index` explicitly.
+    #
+    # Memo (user-personal scratchpad) auto-fetch stays — it's bounded
+    # by user, can't pollute with vendor docs, and the model can't
+    # otherwise discover what the user told it to remember.
     user_msgs = extract_user_messages(session_data)
     {memo_context, _memo_hits} = build_memo_context(command.content, user_msgs, user_id)
-    {indexed_context, _indexed_hits} = build_indexed_context(command.content, user_msgs, user_id)
+    indexed_context = nil
 
     llm_messages =
       ContextEngine.build_assistant_messages(session_data,
@@ -2018,7 +2014,7 @@ defmodule DmhAi.Agent.UserAgent do
           # Capture the pre-call anchor so the conservative-token-saving
           # mid-chain refilter (below) can detect anchor flips.
           prev_anchor_task_num = Map.get(ctx, :anchor_task_num)
-          {tool_result_msgs_raw, tagged_calls, ctx} = execute_tools(calls, messages, ctx)
+          {tool_result_msgs_raw, tagged_calls, exec_results, ctx} = execute_tools(calls, messages, ctx)
           assistant_msg = %{role: "assistant", content: clean_narration, tool_calls: tagged_calls}
 
           # Tally any tagged Police rejections from this turn and bump
@@ -2027,7 +2023,7 @@ defmodule DmhAi.Agent.UserAgent do
           # model just sees the nudge prose.
           {ctx, tool_result_msgs} = bump_nudge_counters(ctx, tool_result_msgs_raw)
 
-          form = if may_emit_form?, do: extract_form_from_results(tool_result_msgs), else: nil
+          form = if may_emit_form?, do: extract_form_from_results(exec_results), else: nil
 
           # Close-verb chain termination (Y rule). Detect successful close-verb
           # tool calls (Police-rejected ones don't count). The chain ends right
@@ -2179,7 +2175,7 @@ defmodule DmhAi.Agent.UserAgent do
               end
           end
 
-        {:ok, text} when is_binary(text) and text != "" ->
+        {:ok, text} when is_binary(text) ->
           case DmhAi.Agent.Police.check_assistant_text(text) do
             {:rejected, tagged_or_reason} ->
               # Model emitted what meant to be a tool call as plain text,
@@ -2312,13 +2308,6 @@ defmodule DmhAi.Agent.UserAgent do
               end
           end
 
-        {:ok, ""} ->
-          DmhAi.SysLog.log("[ASSISTANT] turn=#{turn} empty response — no message persisted")
-          StreamBuffer.clear(ctx.session_id, ctx.user_id)
-          ThinkingBuffer.clear(ctx.session_id, ctx.user_id)
-          emit_chain_end(ctx, "empty_response")
-          {:chain_done, max_user_ts_in_messages(messages), false}
-
         {:error, reason} ->
           DmhAi.SysLog.log("[ASSISTANT] turn=#{turn} ERROR: #{inspect(reason)}")
           StreamBuffer.clear(ctx.session_id, ctx.user_id)
@@ -2361,6 +2350,9 @@ defmodule DmhAi.Agent.UserAgent do
   @system_error_rate_limit_markers     ["rate_limit", "rate limit", "429"]
   @system_error_server_markers         ["server_error", "HTTP 5", "bad_gateway", "service_unavailable"]
   @system_error_timeout_markers        ["timeout", "timed out", "econnrefused", "connection reset", "closed"]
+
+  defp classify_llm_error({:arguments_decode_failed, _raw}),
+    do: {:system_error, "system_error_cause_arguments_decode_failed"}
 
   defp classify_llm_error(reason) do
     text = error_reason_to_string(reason)
@@ -2459,31 +2451,19 @@ defmodule DmhAi.Agent.UserAgent do
     end
   end
 
-  # Pull the `form` spec out of a `request_input` call's tool result.
-  # The tool returns `{:ok, %{token, expires_at, form}}`; the runtime
-  # JSON-encodes that into the tool message's content. Match the
-  # tool_call by name + id, decode its tool_result, return the `form`
-  # Look at every tool result in the batch and return the first one
-  # whose JSON-encoded content carries a top-level `"form"` field.
-  # Tool-name-agnostic — works for both `request_input` (always
-  # form-bearing) and `connect_mcp` (form-bearing only on the
-  # `needs_setup` branch). Returns the form map (string keys) ready
-  # for embedding in `session.messages`, or `nil` when no result in
-  # the batch carried a form.
-  defp extract_form_from_results(tool_result_msgs) do
-    Enum.find_value(tool_result_msgs, fn m ->
-      decode_form_from_content(m[:content] || m["content"])
+  # Pull the `form` spec out of a tool result. The tools that emit
+  # forms return `{:ok, %{form: form, ...}}` natively (request_input
+  # always; connect_mcp on the `needs_setup` branch). Pattern-match
+  # on the native exec_result tuple — no JSON round-trip, no atom-key
+  # → string-key drift. Returns the form map (atom keys, as the tool
+  # built it) ready for embedding in `session.messages`, or `nil`
+  # when no result in the batch carried a form.
+  defp extract_form_from_results(exec_results) do
+    Enum.find_value(exec_results, fn
+      {:ok, %{form: form}} when is_map(form) -> form
+      _                                       -> nil
     end)
   end
-
-  defp decode_form_from_content(content) when is_binary(content) do
-    case Jason.decode(content) do
-      {:ok, %{"form" => form}} when is_map(form) -> form
-      _                                            -> nil
-    end
-  end
-
-  defp decode_form_from_content(_), do: nil
 
   # Conservative-token-saving mid-chain refilter. Fires once per
   # `session_chain_loop` iteration AFTER `execute_tools` returns,
@@ -2843,6 +2823,17 @@ defmodule DmhAi.Agent.UserAgent do
   defp circuit_breaker_message(:no_consecutive_web_search),
     do: "I ran out of search budget for this task. I'm sorry — please narrow down what you're looking for."
 
+  defp circuit_breaker_message(:empty_response),
+    do: "I tried to reply and produced nothing several times in a row — something on my side blocked a response. I'm sorry. Please retry, or rephrase your last message."
+
+  defp circuit_breaker_message(:repeated_tool_error),
+    do: "I kept hitting the same tool error and couldn't make progress. I'm sorry — please rephrase or share what additional information you can provide."
+
+  defp circuit_breaker_message(:tool_call_schema),
+    do: "I kept calling one of my tools with the wrong arguments — I couldn't get " <>
+        "the shape right after several tries. I'm sorry. Please try again; if it " <>
+        "fails the same way, rephrasing the request a bit usually helps me re-anchor."
+
   defp circuit_breaker_message(_other),
     do: "I hit an internal safety limit on this task — I was repeating the same kind of mistake too many times. I'm sorry — please rephrase or try again."
 
@@ -2891,7 +2882,7 @@ defmodule DmhAi.Agent.UserAgent do
     chain_start_idx = Map.get(ctx, :chain_start_idx, 0)
     in_chain_prior  = Enum.drop(messages, chain_start_idx)
 
-    {pairs, {_final_prior, final_ctx}} =
+    {triples, {_final_prior, final_ctx}} =
       Enum.flat_map_reduce(calls, {in_chain_prior, ctx}, fn call, {prior_acc, ctx} ->
         name         = get_in(call, ["function", "name"]) || ""
         args         = get_in(call, ["function", "arguments"]) || %{}
@@ -2907,7 +2898,13 @@ defmodule DmhAi.Agent.UserAgent do
           task_id:    args["task_id"]
         }
 
-        tool_msg =
+        # `{tool_msg, exec_result}` — tool_msg is the LLM-facing
+        # string envelope; exec_result is the NATIVE tuple
+        # ({:ok, term} / {:error, term} / {:rejected, term}) the
+        # runtime pattern-matches on for anchor mutation, auto-create
+        # hooks, etc. Never re-parse tool_msg.content to derive
+        # native semantics. See feedback_native_terms_runtime_serial_llm.md.
+        {tool_msg, exec_result} =
           # Police gate 1 — tool-name validity. Rejects garbled blobs /
           # hallucinated names before we ever log or dispatch. Silent to the
           # user (no progress row). Model reads the error on its next turn
@@ -3080,38 +3077,66 @@ defmodule DmhAi.Agent.UserAgent do
                 advisory  -> advisory <> content
               end
 
-            %{role: "tool", content: content, tool_call_id: tool_call_id}
+            # Repeated-tool-error gate (Bug 2b). Only fires when the
+            # current result is an ERROR and identical to the most
+            # recent error this same tool emitted earlier in the
+            # chain. Marks the tool_msg with the `[[ISSUE:...]]`
+            # marker so `bump_nudge_counters` raises the
+            # `:repeated_tool_error` count — the 3-strike circuit
+            # breaker handles escalation.
+            content =
+              case exec_result do
+                {:error, _} ->
+                  case DmhAi.Agent.Police.check_repeated_tool_error(name, content, prior_acc) do
+                    {:rejected, {issue_atom, nudge_reason}} ->
+                      "[[ISSUE:#{issue_atom}:#{name}]]\n" <> nudge_reason <> "\n\n" <> content
+
+                    :ok ->
+                      content
+                  end
+
+                _ ->
+                  content
+              end
+
+            {%{role: "tool", name: name, content: content, tool_call_id: tool_call_id}, exec_result}
           else
             # Plain string rejection — return as a tool-result message,
-            # no issue tracking.
-            {:rejected, reason} when is_binary(reason) ->
-              %{role: "tool", content: reason, tool_call_id: tool_call_id}
+            # no issue tracking. Native form passed through to
+            # downstream runtime hooks as `{:rejected, reason}`.
+            {:rejected, reason} = rej when is_binary(reason) ->
+              {%{role: "tool", name: name, content: reason, tool_call_id: tool_call_id}, rej}
 
             # Tagged rejection `{issue_atom, reason}` — emit a marker in the
             # message that the session loop can sniff later to bump the
             # matching counter in ctx.nudges AND record a telemetry row.
             # Marker format: `[[ISSUE:<atom>:<tool_name>]]` — tool_name
-            # allows the stats row to be scoped per-tool.
-            {:rejected, {issue_atom, reason}} when is_atom(issue_atom) ->
+            # allows the stats row to be scoped per-tool. The runtime
+            # carries the native tagged-rejection tuple in `exec_result`
+            # so the `[[ISSUE:...]]` substring check above stays a
+            # one-line localisation, not a control-flow signal.
+            {:rejected, {issue_atom, reason}} = rej when is_atom(issue_atom) ->
               marker = "[[ISSUE:#{issue_atom}:#{name}]]\n"
-              %{role: "tool", content: marker <> reason, tool_call_id: tool_call_id}
+              {%{role: "tool", name: name, content: marker <> reason, tool_call_id: tool_call_id}, rej}
           end
 
-        # Police rejections leave a `[[ISSUE:...]]` marker on the
-        # tool_msg's content; tag the call so dedup checks (both
-        # within this batch and across turns once the call lands in
-        # `assistant_msg.tool_calls`) can skip it. Rejection means
-        # the call never actually ran; the next attempt with the
-        # same args is a legitimate retry, not a duplicate.
-        rejected? = is_binary(tool_msg.content) and String.starts_with?(tool_msg.content, "[[ISSUE:")
+        # Police rejections — the rejected? flag is the only string
+        # check that remains in the runtime: the `[[ISSUE:...]]`
+        # marker IS injected into the LLM-visible content and the
+        # dedup check needs to see it post-injection. Pattern-match
+        # on `exec_result` is the runtime-correct form when the
+        # information is purely about whether the tool ran — kept
+        # here to mirror the tool_msg content the LLM sees.
+        rejected? = match?({:rejected, _}, exec_result)
         tagged_call = if rejected?, do: Map.put(call, "_rejected", true), else: call
 
         pseudo = %{"role" => "assistant", "tool_calls" => [tagged_call]}
 
         # Update ctx.anchor_task_num based on the verb and its outcome.
-        # Also persists back_to_when_done on pickup_task success. See
+        # Pattern-matches on the NATIVE exec_result tuple — never
+        # re-parses the LLM-facing tool_msg.content. See
         # architecture.md §Anchor mutation via back_to_when_done back-stack.
-        new_ctx = maybe_mutate_anchor(ctx, name, args, tool_msg)
+        new_ctx = maybe_mutate_anchor(ctx, name, args, exec_result)
 
         # Per-call task_num attribution. The (assistant_tool_call,
         # tool_result) pair we just produced is stamped with the
@@ -3129,30 +3154,36 @@ defmodule DmhAi.Agent.UserAgent do
         # path, and emit it alongside the original call so the model
         # sees both events. Returns `{extra_pairs, extra_pseudos,
         # ctx''}`; empty when the trigger doesn't match.
-        {extra_pairs, extra_pseudos, new_ctx} =
-          maybe_auto_create_task(name, tool_msg, new_ctx)
+        {extra_triples, extra_pseudos, new_ctx} =
+          maybe_auto_create_task(name, exec_result, new_ctx)
 
-        # Stamp every extra (synthetic auto-create_task) pair too —
+        # Stamp every extra (synthetic auto-create_task) triple too —
         # its post-mutation anchor is the just-created task, which is
         # the right tag for the pair.
         new_ctx =
-          Enum.reduce(extra_pairs, new_ctx, fn {_extra_msg, extra_call}, acc ->
+          Enum.reduce(extra_triples, new_ctx, fn {_extra_msg, extra_call, _extra_exec}, acc ->
             extra_id   = Map.get(extra_call, "id") || Map.get(extra_call, :id) || ""
             extra_name = get_in(extra_call, ["function", "name"]) || ""
             extra_args = get_in(extra_call, ["function", "arguments"]) || %{}
             stamp_tool_call_task_num(acc, extra_id, extra_name, extra_args)
           end)
 
-        pairs    = [{tool_msg, tagged_call}] ++ extra_pairs
+        # `triples` carry tool_msg (LLM-facing string), tagged_call
+        # (the assistant turn's tool_call record), and exec_result
+        # (native Elixir tuple for runtime decisions — anchor
+        # mutation already used it; downstream `form` extraction
+        # uses it too instead of re-decoding the stringified content).
+        triples  = [{tool_msg, tagged_call, exec_result}] ++ extra_triples
         pseudos  = [pseudo] ++ extra_pseudos
 
-        {pairs, {prior_acc ++ pseudos, new_ctx}}
+        {triples, {prior_acc ++ pseudos, new_ctx}}
       end)
 
-    tool_msgs    = Enum.map(pairs, fn {m, _} -> m end)
-    tagged_calls = Enum.map(pairs, fn {_, c} -> c end)
+    tool_msgs    = Enum.map(triples, fn {m, _, _} -> m end)
+    tagged_calls = Enum.map(triples, fn {_, c, _} -> c end)
+    exec_results = Enum.map(triples, fn {_, _, r} -> r end)
 
-    {tool_msgs, tagged_calls, final_ctx}
+    {tool_msgs, tagged_calls, exec_results, final_ctx}
   end
 
   # Stamp the (assistant_tool_call, tool_result) pair we just produced
@@ -3209,74 +3240,65 @@ defmodule DmhAi.Agent.UserAgent do
   # can pop back to it. `last_rendered_anchor` is advanced too
   # (EXPLICIT model-driven transition — no refresh block needed; the
   # model knows it just created this task).
-  defp maybe_mutate_anchor(ctx, "create_task", _args, %{content: content, role: "tool"}) do
-    case extract_task_num_from_success(content) do
-      nil ->
-        ctx
+  #
+  # Native pattern-match on `exec_result`. `{:ok, %{task_num: n}}` is
+  # the canonical success shape (create_task.ex:82). No string
+  # parsing — the `:ok` atom IS the success signal.
+  defp maybe_mutate_anchor(ctx, "create_task", _args, {:ok, %{task_num: n}}) when is_integer(n) do
+    prev = Map.get(ctx, :anchor_task_num)
 
-      n ->
-        prev = Map.get(ctx, :anchor_task_num)
+    if is_integer(prev) and prev != n do
+      case Tasks.resolve_num(ctx.session_id, n) do
+        {:ok, task_id} ->
+          Tasks.set_back_ref(task_id, prev)
+          DmhAi.SysLog.log("[ASSISTANT] anchor_back_ref set on create task=(#{n}) ← was_anchor=(#{prev})")
 
-        if is_integer(prev) and prev != n do
-          case Tasks.resolve_num(ctx.session_id, n) do
-            {:ok, task_id} ->
-              Tasks.set_back_ref(task_id, prev)
-              DmhAi.SysLog.log("[ASSISTANT] anchor_back_ref set on create task=(#{n}) ← was_anchor=(#{prev})")
-
-            _ ->
-              :ok
-          end
-        end
-
-        DmhAi.SysLog.log("[ASSISTANT] anchor create+pickup: (#{inspect(prev)}) → (#{n})")
-        ctx
-        |> Map.put(:anchor_task_num, n)
-        |> Map.put(:last_rendered_anchor_task_num, n)
+        _ ->
+          :ok
+      end
     end
+
+    DmhAi.SysLog.log("[ASSISTANT] anchor create+pickup: (#{inspect(prev)}) → (#{n})")
+    ctx
+    |> Map.put(:anchor_task_num, n)
+    |> Map.put(:last_rendered_anchor_task_num, n)
   end
 
-  defp maybe_mutate_anchor(ctx, "pickup_task", args, %{content: content, role: "tool"}) do
-    # Detect success by absence of the `[[ISSUE:...]]` Police marker AND
-    # absence of the "Error:" prefix from tool errors. The tool's
-    # payload is a JSON blob with `ok: true` on success.
-    success? = is_binary(content) and String.contains?(content, "\"ok\": true")
-    was_already_ongoing? = is_binary(content) and String.contains?(content, "was_already_ongoing")
+  # pickup_task — `{:ok, %{task_num: n, was_already_ongoing: ao}}` per
+  # pickup_task.ex. The `:ok` atom is the only success signal we need;
+  # the envelope string (also in the payload as `:envelope`) is for
+  # the LLM and is irrelevant here.
+  defp maybe_mutate_anchor(ctx, "pickup_task", _args,
+                           {:ok, %{task_num: n, was_already_ongoing: was_already_ongoing?}})
+       when is_integer(n) do
+    prev = Map.get(ctx, :anchor_task_num)
 
-    case {success?, coerce_task_num(args["task_num"])} do
-      {true, n} when is_integer(n) ->
-        prev = Map.get(ctx, :anchor_task_num)
+    # Only write back-ref on a fresh transition to a different task.
+    # Idempotent re-pickup (was already ongoing) or pickup of the
+    # current anchor: don't overwrite the stored back-ref — we might
+    # clobber a valid earlier back-ref with a stale current=N value.
+    if not was_already_ongoing? and is_integer(prev) and prev != n do
+      case Tasks.resolve_num(ctx.session_id, n) do
+        {:ok, task_id} ->
+          Tasks.set_back_ref(task_id, prev)
+          DmhAi.SysLog.log("[ASSISTANT] anchor_back_ref set task=(#{n}) ← was_anchor=(#{prev})")
 
-        # Only write back-ref on a fresh transition to a different
-        # task. Idempotent re-pickup (already ongoing) or pickup of
-        # the current anchor: don't overwrite the stored back-ref —
-        # we might clobber a valid earlier back-ref with a stale
-        # current=N value.
-        if not was_already_ongoing? and is_integer(prev) and prev != n do
-          case Tasks.resolve_num(ctx.session_id, n) do
-            {:ok, task_id} ->
-              Tasks.set_back_ref(task_id, prev)
-              DmhAi.SysLog.log("[ASSISTANT] anchor_back_ref set task=(#{n}) ← was_anchor=(#{prev})")
-
-            {:error, :not_found} ->
-              :ok
-          end
-        end
-
-        DmhAi.SysLog.log("[ASSISTANT] anchor pickup: (#{inspect(prev)}) → (#{n})")
-        # EXPLICIT transition: the model called pickup_task(N) itself,
-        # so it already knows N is the new anchor — no refresh block
-        # needed. Advance `last_rendered_anchor_task_num` to match
-        # so `maybe_refresh_anchor_block/2` sees no divergence and
-        # stays silent. Only IMPLICIT transitions (back-ref pops from
-        # complete/cancel/pause) leave `last_rendered_anchor_task_num`
-        # trailing so the refresh block fires.
-        ctx
-        |> Map.put(:anchor_task_num, n)
-        |> Map.put(:last_rendered_anchor_task_num, n)
-
-      _ ->
-        ctx
+        {:error, :not_found} ->
+          :ok
+      end
     end
+
+    DmhAi.SysLog.log("[ASSISTANT] anchor pickup: (#{inspect(prev)}) → (#{n})")
+    # EXPLICIT transition: the model called pickup_task(N) itself,
+    # so it already knows N is the new anchor — no refresh block
+    # needed. Advance `last_rendered_anchor_task_num` to match so
+    # `maybe_refresh_anchor_block/2` sees no divergence and stays
+    # silent. Only IMPLICIT transitions (back-ref pops from
+    # complete/cancel/pause) leave `last_rendered_anchor_task_num`
+    # trailing so the refresh block fires.
+    ctx
+    |> Map.put(:anchor_task_num, n)
+    |> Map.put(:last_rendered_anchor_task_num, n)
   end
 
   # complete_task / cancel_task / pause_task on the CURRENT anchor →
@@ -3284,73 +3306,79 @@ defmodule DmhAi.Agent.UserAgent do
   # = free mode). If the verb targets some OTHER task_num, anchor
   # stays put — the model can close unrelated rows without disturbing
   # its current focus.
-  defp maybe_mutate_anchor(ctx, verb, args, %{content: content, role: "tool"})
-       when verb in ["complete_task", "cancel_task", "pause_task"] do
-    success? = is_binary(content) and String.contains?(content, "\"ok\": true")
-    current  = Map.get(ctx, :anchor_task_num)
-    n        = coerce_task_num(args["task_num"])
+  defp maybe_mutate_anchor(ctx, verb, _args, {:ok, %{task_num: n}})
+       when verb in ["complete_task", "cancel_task", "pause_task"] and is_integer(n) do
+    current = Map.get(ctx, :anchor_task_num)
 
-    case {success?, current, n} do
-      {true, c, n} when is_integer(c) and is_integer(n) and c == n ->
-        # Closes / pauses the current anchor — flip to its back-ref.
-        case Tasks.lookup_by_num(ctx.session_id, n) do
-          %{back_to_when_done_task_num: back} ->
-            DmhAi.SysLog.log("[ASSISTANT] anchor #{verb} on current: (#{n}) → back=(#{inspect(back)})")
-            # Clear the back-ref on the closed task so a future
-            # re-pickup starts clean.
-            case Tasks.resolve_num(ctx.session_id, n) do
-              {:ok, task_id} ->
-                Tasks.set_back_ref(task_id, nil)
+    if is_integer(current) and current == n do
+      # Closes / pauses the current anchor — flip to its back-ref.
+      case Tasks.lookup_by_num(ctx.session_id, n) do
+        %{back_to_when_done_task_num: back} ->
+          DmhAi.SysLog.log("[ASSISTANT] anchor #{verb} on current: (#{n}) → back=(#{inspect(back)})")
+          # Clear the back-ref on the closed task so a future
+          # re-pickup starts clean.
+          case Tasks.resolve_num(ctx.session_id, n) do
+            {:ok, task_id} ->
+              Tasks.set_back_ref(task_id, nil)
 
-              {:error, _} = err ->
-                # The task we just closed ALSO can't be re-resolved by
-                # number? Either the row was deleted mid-chain (race) or
-                # the session_id is wrong. Log loudly — this contradicts
-                # the success? path having just passed.
-                Logger.error("[UserAgent] anchor #{verb}: resolve_num failed for current anchor (#{n}) session=#{ctx.session_id} err=#{inspect(err)}")
-                DmhAi.SysLog.log("[ASSISTANT] anchor #{verb} resolve_num failed task_num=(#{n}) — back_ref left dangling")
-            end
-            Map.put(ctx, :anchor_task_num, back)
+            {:error, _} = err ->
+              # The task we just closed ALSO can't be re-resolved by
+              # number? Either the row was deleted mid-chain (race) or
+              # the session_id is wrong. Log loudly — this contradicts
+              # the {:ok, _} success having just passed.
+              Logger.error("[UserAgent] anchor #{verb}: resolve_num failed for current anchor (#{n}) session=#{ctx.session_id} err=#{inspect(err)}")
+              DmhAi.SysLog.log("[ASSISTANT] anchor #{verb} resolve_num failed task_num=(#{n}) — back_ref left dangling")
+          end
+          Map.put(ctx, :anchor_task_num, back)
 
-          nil ->
-            # `lookup_by_num` returns nil when the row was deleted mid-
-            # chain — extremely rare race. Best-effort: drop the anchor
-            # so the next chain doesn't act on a dangling task_num.
-            Logger.warning("[UserAgent] anchor #{verb}: lookup_by_num returned nil for (#{n}) session=#{ctx.session_id} — dropping anchor")
-            Map.put(ctx, :anchor_task_num, nil)
+        nil ->
+          # `lookup_by_num` returns nil when the row was deleted mid-
+          # chain — extremely rare race. Best-effort: drop the anchor
+          # so the next chain doesn't act on a dangling task_num.
+          Logger.warning("[UserAgent] anchor #{verb}: lookup_by_num returned nil for (#{n}) session=#{ctx.session_id} — dropping anchor")
+          Map.put(ctx, :anchor_task_num, nil)
 
-          other ->
-            # Anything else from lookup_by_num is a contract violation
-            # (Tasks.lookup_by_num is documented to return %Task{} | nil).
-            # Fail loud so the schema regression surfaces in tests, not
-            # in prod after subtle anchor corruption.
-            raise "Tasks.lookup_by_num returned unexpected shape #{inspect(other)} for session=#{ctx.session_id} num=#{n}"
-        end
-
-      _ ->
-        # Either the verb was rejected / Police-blocked (success? = false),
-        # or it targeted some OTHER task_num (c != n) which is allowed —
-        # the model can close non-anchor rows without disturbing focus.
-        # Both are legitimate; ctx passes through unchanged.
-        ctx
+        other ->
+          # Anything else from lookup_by_num is a contract violation
+          # (Tasks.lookup_by_num is documented to return %Task{} | nil).
+          # Fail loud so the schema regression surfaces in tests, not
+          # in prod after subtle anchor corruption.
+          raise "Tasks.lookup_by_num returned unexpected shape #{inspect(other)} for session=#{ctx.session_id} num=#{n}"
+      end
+    else
+      # Verb targeted some OTHER task_num (current != n) which is
+      # allowed — the model can close non-anchor rows without
+      # disturbing focus. ctx passes through unchanged.
+      ctx
     end
   end
 
-  # Absolute fallback for `maybe_mutate_anchor`. We only reach here
-  # for verbs OUTSIDE the dispatch table above — execution tools
-  # (web_search, run_script, ...), MCP-namespaced tools, fetch_task,
-  # request_input, etc. None of them mutate the anchor, so passing
-  # ctx through is correct.
-  #
-  # If a NEW task-management verb gets added (e.g. resume_task,
-  # archive_task), wire it into the dispatch above with explicit
-  # mutation rules; do not rely on this fallback. To keep the
-  # invariant tight, a future audit can constrain `name` here to a
-  # pattern-match on the known non-mutating verbs and raise on
-  # genuinely-unknown ones, but that requires a single source of
-  # truth for verb names which doesn't exist today (tools are
-  # plugin-registered).
-  defp maybe_mutate_anchor(ctx, _name, _args, _tool_msg), do: ctx
+  # Absolute fallback for `maybe_mutate_anchor`. Catches:
+  #   * any tool that doesn't manage tasks (exec_result is some
+  #     unrelated {:ok, ...} payload — web_search results, run_script
+  #     stdout, MCP-namespaced tool returns, ...);
+  #   * task-verb failures: `{:error, _}` or `{:rejected, _}` — the
+  #     verb never ran (or didn't succeed), anchor stays put;
+  #   * shape mismatches: the task verbs above narrow on a specific
+  #     payload shape, so a future tool change that breaks the shape
+  #     contract lands here too. The runtime should not silently
+  #     mutate the anchor on an unrecognised shape.
+  defp maybe_mutate_anchor(ctx, _name, _args, _exec_result), do: ctx
+
+  @doc false
+  # Test seam — call the private anchor-mutation logic with a
+  # synthetic exec_result from outside the module. Used only by
+  # `itgr_anchor_mutation.exs`; do not call from runtime.
+  def __mutate_anchor_for_test__(ctx, name, args, exec_result),
+    do: maybe_mutate_anchor(ctx, name, args, exec_result)
+
+  @doc false
+  # Test seam for `extract_form_from_results/1` — same pattern:
+  # public-but-underscored wrapper so the test file can pin the
+  # native-tuple contract without going through the whole
+  # session_chain_loop. Used only by `itgr_anchor_mutation.exs`.
+  def __extract_form_for_test__(exec_results),
+    do: extract_form_from_results(exec_results)
 
   @doc false
   # Public for unit testing in `itgr_oracle_pivot.exs`. Not part of
@@ -3372,9 +3400,9 @@ defmodule DmhAi.Agent.UserAgent do
   # iteration output; `extra_pseudos` is the matching list of
   # `assistant` pseudo-messages for the duplicate-tool-call gate's
   # in-chain accumulator. Empty lists when no auto-create fires.
-  def maybe_auto_create_task(name, %{content: content} = _tool_msg, ctx)
-       when name in ~w(pause_task cancel_task) and is_binary(content) do
-    if pause_or_cancel_succeeded?(content) do
+  def maybe_auto_create_task(name, exec_result, ctx)
+       when name in ~w(pause_task cancel_task) do
+    if pause_or_cancel_succeeded?(exec_result) do
       do_auto_create_task(ctx)
     else
       {[], [], ctx}
@@ -3406,19 +3434,11 @@ defmodule DmhAi.Agent.UserAgent do
   # auto-create-task hook should fire after the model closes the
   # current anchor on a confirmed pivot.
   #
-  # Returns true when:
-  #   * `content` is a binary, AND
-  #   * the JSON payload carries `"ok": true`, AND
-  #   * the content does NOT start with the `[[ISSUE:...]]` Police
-  #     rejection marker, AND
-  #   * the content does NOT start with the `Error:` prefix used by
-  #     execute-tools' `{:error, reason}` branch.
-  def pause_or_cancel_succeeded?(content) do
-    is_binary(content) and
-      String.contains?(content, "\"ok\": true") and
-      not String.starts_with?(content, "[[ISSUE:") and
-      not String.starts_with?(content, "Error:")
-  end
+  # Native pattern-match: `{:ok, %{task_num: _}}` is the canonical
+  # success shape per pause_task.ex / cancel_task.ex. `{:error, _}`
+  # and `{:rejected, _}` (Police block) both report failure.
+  def pause_or_cancel_succeeded?({:ok, %{task_num: n}}) when is_integer(n), do: true
+  def pause_or_cancel_succeeded?(_), do: false
 
   defp do_auto_create_task(ctx) do
     session_id = Map.get(ctx, :session_id)
@@ -3465,7 +3485,7 @@ defmodule DmhAi.Agent.UserAgent do
           DmhAi.Agent.SessionProgress.append(progress_ctx, "tool", progress_label, status: "pending")
 
         case DmhAi.Tools.Registry.execute("create_task", args, ctx) do
-          {:ok, result} ->
+          {:ok, result} = exec_result ->
             DmhAi.Agent.SessionProgress.mark_tool_done(progress_row.id)
             content = format_tool_result(result)
             tool_msg = %{role: "tool", content: content, tool_call_id: synthetic_tool_call_id}
@@ -3479,7 +3499,7 @@ defmodule DmhAi.Agent.UserAgent do
 
             ctx_after =
               ctx
-              |> maybe_mutate_anchor("create_task", args, tool_msg)
+              |> maybe_mutate_anchor("create_task", args, exec_result)
 
             DmhAi.Agent.PendingPivots.clear(session_id)
             # Verdict against the OLD anchor is now stale (the
@@ -3493,7 +3513,7 @@ defmodule DmhAi.Agent.UserAgent do
                 "spec=#{inspect(String.slice(user_msg, 0, 80))}"
             )
 
-            {[{tool_msg, tagged_call}], [pseudo], ctx_after}
+            {[{tool_msg, tagged_call, exec_result}], [pseudo], ctx_after}
 
           {:error, reason} ->
             DmhAi.Agent.SessionProgress.mark_tool_done(progress_row.id)
@@ -3598,30 +3618,14 @@ defmodule DmhAi.Agent.UserAgent do
     end
   end
 
-  defp coerce_task_num(n) when is_integer(n), do: n
-  defp coerce_task_num(n) when is_binary(n) do
-    case Integer.parse(n) do
-      {i, ""} -> i
-      _        -> nil
-    end
-  end
-  defp coerce_task_num(_), do: nil
-
-  # `create_task` returns its newly-allocated `task_num` in the tool
-  # result (rendered as a JSON blob in the `content` field). Parse
-  # it out so `maybe_mutate_anchor` can advance the anchor. Returns
-  # nil on parse failure / missing field — ctx stays unchanged then.
-  defp extract_task_num_from_success(content) when is_binary(content) do
-    case Jason.decode(content) do
-      {:ok, %{"task_num" => n}} when is_integer(n) -> n
-      _ -> nil
-    end
-  end
-  defp extract_task_num_from_success(_), do: nil
-
   # Normalise a tool's {:ok, result} payload into the string that the model
   # receives as `tool` role content. Rules:
   #   binary → pass-through (verbatim text, e.g. stdout)
+  #   map with :envelope key → emit ONLY that string. The rest of the
+  #     map is runtime-only metadata (e.g. pickup_task's task_num /
+  #     was_already_ongoing) used by `maybe_mutate_anchor`. The LLM
+  #     never sees those fields. Separation of concerns: runtime ←
+  #     native term, LLM ← envelope string.
   #   map/list → pretty JSON after recursive atom/tuple normalisation
   #   number / boolean → to_string
   #   nil → ""
@@ -3629,6 +3633,7 @@ defmodule DmhAi.Agent.UserAgent do
   #   anything else → JSON of the normalised value
   # NEVER `inspect/1` — it leaks Elixir syntax into the model's context.
   defp format_tool_result(result) when is_binary(result), do: result
+  defp format_tool_result(%{envelope: env}) when is_binary(env), do: env
   defp format_tool_result(result) when is_map(result) or is_list(result),
     do: Jason.encode!(normalise_json(result), pretty: true)
   defp format_tool_result(result) when is_number(result) or is_boolean(result),
@@ -3856,85 +3861,14 @@ defmodule DmhAi.Agent.UserAgent do
   # (bullets list with usage rules). The wrapping XML tag is added by
   # `ContextEngine.build_current_msg/4`; this helper returns just the
   # inside-the-tag text.
-  # Indexed (KB) auto-retrieve for Assistant turns. Mirrors
-  # `build_memo_context/3` shape but searches the org-wide
-  # `:knowledge` scope. Always-on; runs before the Assistant LLM
-  # round-trip so the model sees `<augmented_facts type="indexed">`
-  # populated with the top-N relevants per org. Cheaper than
-  # leaving fetch_index as elective — the model often skips it
-  # otherwise. See specs/layer-0.md §0.2 retrieval cascade.
-  #
-  # Returns `{indexed_block, indexed_hits}` mirroring the memo
-  # helper. `nil` on infrastructure error (embed/search failure);
-  # `[]` on no-org-content (handled by the empty-format branch).
-  defp build_indexed_context(current_content, recent_user_msgs, user_id) do
-    org_id = DmhAi.Orgs.for_user(user_id)
-
-    prior =
-      recent_user_msgs
-      |> Enum.drop(-1)
-      |> Enum.take(-2)
-
-    embed_text = (prior ++ [current_content]) |> Enum.join("\n") |> String.trim()
-
-    case Embedder.embed(embed_text) do
-      {:ok, vec} ->
-        top_n = AgentSettings.kb_top_n()
-
-        case VectorDB.search(:knowledge, embed_text, vec, top_n, {:org, org_id}) do
-          {:ok, hits} ->
-            log_indexed_retrieval(embed_text, hits)
-            {format_indexed_context_block(hits), hits}
-
-          {:error, reason} ->
-            line = "[Indexed auto] search failed: #{inspect(reason, limit: 80)}"
-            Logger.warning(line)
-            DmhAi.SysLog.log(line)
-            {nil, []}
-        end
-
-      {:error, reason} ->
-        line = "[Indexed auto] embed failed: #{inspect(reason, limit: 80)}"
-        Logger.warning(line)
-        DmhAi.SysLog.log(line)
-        {nil, []}
-    end
-  end
-
-  defp log_indexed_retrieval(embed_text, hits) do
-    score_summary =
-      hits
-      |> Enum.map(fn h ->
-        s = if is_number(h.score), do: Float.round(h.score, 3), else: h.score
-        "#{s}|#{String.slice(h.chunk_text || "", 0, 40) |> String.replace("\n", " ")}"
-      end)
-      |> Enum.join("; ")
-
-    line =
-      "[Indexed auto] embed=#{inspect(String.slice(embed_text, 0, 80))} " <>
-        "hits=#{length(hits)} scores=[#{score_summary}]"
-
-    Logger.info(line)
-    DmhAi.SysLog.log(line)
-  end
-
-  defp format_indexed_context_block([]) do
-    "We checked the organisation's curated knowledge index for this question. Nothing relevant found.\n\n" <>
-      "How to use this signal:\n" <>
-      "- If the question is plausibly about company-specific knowledge (HR policy, internal procedures, product specifics, SOPs, anything an admin would `/index`-curate), try `fetch_index` once with refined keywords before falling back to your training.\n" <>
-      "- Otherwise ignore this block and answer per your usual instructions."
-  end
-
-  defp format_indexed_context_block(hits) do
-    bullets =
-      hits
-      |> Enum.map_join("\n", fn h ->
-        "- " <> String.replace(h.chunk_text || "", "\n", " ")
-      end)
-
-    "Relevant chunks from the organisation's curated knowledge index. **These are authoritative for org-specific facts (handbook policy, internal procedures, product specs, etc.) — use them in preference to your training when answering company-related questions.** Notes may be in a different language than the user's question; translate facts as needed.\n\n" <>
-      bullets
-  end
+  # KB pre-fetch removed. The org-wide `:knowledge` corpus is now
+  # accessed exclusively via the model's explicit `fetch_index` tool
+  # call. Pre-fetching was costing more than it saved — it polluted
+  # the prompt with high-similarity-but-irrelevant chunks (CRM API
+  # docs poisoning workflow-build turns, etc.), and the model
+  # anchored on whatever showed up regardless of whether it was
+  # actually useful. The system prompt now teaches the model when
+  # the org KB is the right source and to fetch on demand.
 
   defp format_memo_context_block([]) do
     "We checked the user's saved memos for this question. Nothing relevant found.\n\n" <>

@@ -21,7 +21,32 @@ defmodule DmhAi.VectorDB.Backend do
 
   @type scope :: :knowledge | :memo
   @type embedding :: [float()]
-  @type filter :: :none | {:org, String.t()} | {:user, String.t()} | {:source_id, integer()}
+
+  # Optional retrieval-time scope predicate. All keys are optional;
+  # only stated constraints apply. See arch_wiki/dmh_ai/knowledge.md
+  # §Source scope.
+  #
+  #   platforms_in     — whitelist: only hits whose source's platform
+  #                       is in this list AND/OR untagged (see
+  #                       `include_untagged`) pass.
+  #   platforms_not_in — blacklist: hits whose platform is in this list
+  #                       are excluded; untagged still pass (subject to
+  #                       `include_untagged`).
+  #   categories_in    — whitelist on category.
+  #   include_untagged — default true. When false, only tagged sources
+  #                       with explicit non-NULL `source_scope` qualify.
+  @type scope_predicate :: %{
+          optional(:platforms_in)     => [String.t() | nil],
+          optional(:platforms_not_in) => [String.t()],
+          optional(:categories_in)    => [String.t()],
+          optional(:include_untagged) => boolean()
+        }
+
+  @type filter :: :none
+                | {:org, String.t()}
+                | {:org, String.t(), scope_predicate()}
+                | {:user, String.t()}
+                | {:source_id, integer()}
 
   # Chunk row shape per scope:
   #   :knowledge — org_id required; no user_id.

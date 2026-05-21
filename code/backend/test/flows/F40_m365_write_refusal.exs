@@ -3,9 +3,9 @@
 # See the LICENSE file in the repository root for full details.
 # For commercial inquiries, contact: tduccuong@gmail.com
 
-# Flow F40 — M365 write verb refused outside an active task.
+# Flow F40 — M365 write function refused outside an active task.
 #
-# Mirrors F37. `mail.send` is a write verb with callable_from:
+# Mirrors F37. `mail.send` is a write function with callable_from:
 # [:task]. Invoking it without a task_id in the body returns the
 # canonical `write_requires_task` envelope and writes a denial audit
 # row. The Caller stub is asserted NOT to fire — the dispatcher
@@ -79,13 +79,13 @@ defmodule DmhAi.Flows.F40M365WriteRefusal do
                      token: token)
 
     # Handlers.Tools.post_execute returns 400 on dispatcher-level
-    # error envelopes (verb refused before invocation).
+    # error envelopes (function refused before invocation).
     assert conn.status == 400, "execute: #{conn.status} #{conn.resp_body}"
     decoded = Jason.decode!(conn.resp_body)
 
     assert decoded["ok"] == false
     assert get_in(decoded, ["error", "error"]) == "write_requires_task"
-    assert get_in(decoded, ["error", "verb"])  == "m365.mail.send"
+    assert get_in(decoded, ["error", "function"]) == "m365.mail.send"
 
     # write_requires_task is a chat-level pre-flight rejection — no
     # audit row is written (matches the HubSpot F37 contract).

@@ -345,7 +345,7 @@ defmodule DmhAi.Agent.LLM do
     cond do
       is_list(tool_calls) and tool_calls != [] ->
         Logger.info("[LLM] call tool_calls=#{length(tool_calls)}")
-        {:ok, {:tool_calls, normalize_tool_calls(tool_calls)}}
+        safe_normalize_tool_calls(tool_calls)
 
       true ->
         Logger.info("[LLM] call done chars=#{String.length(content)} #{model_str}")
@@ -356,6 +356,24 @@ defmodule DmhAi.Agent.LLM do
   defp parse_response(body, _model_str, _on_tokens, _adapter) do
     {:error, "Unexpected response: #{inspect(body, limit: 200)}"}
   end
+
+  # Wraps `normalize_tool_calls/1` so a malformed-arguments raise is
+  # converted to a typed error envelope the chain handler can surface
+  # to the user honestly. We intentionally do NOT swallow this — it's a
+  # harness or model defect that retrying won't fix.
+  defp safe_normalize_tool_calls(calls) do
+    {:ok, {:tool_calls, normalize_tool_calls(calls)}}
+  rescue
+    e in DmhAi.LLM.MalformedArgumentsError ->
+      {:error, {:arguments_decode_failed, e.raw}}
+  end
+
+  # Test-only entry point — exposes the private `normalize_tool_calls`
+  # pipeline so the streaming-accumulator regression tests can verify
+  # both the happy path AND the malformed-arguments raise without
+  # going through the full stream/decode plumbing.
+  @doc false
+  def __test_normalize_tool_calls__(calls), do: normalize_tool_calls(calls)
 
   # Extract <think>...</think> blocks from content (Qwen3-style embedded thinking).
   # Returns {thinking_text, clean_content}.
@@ -495,12 +513,41 @@ defmodule DmhAi.Agent.LLM do
     end)
   end
 
+  # Decode a tool-call's `arguments` field.
+  #
+  # The streaming accumulator builds this field by concatenating
+  # `function.arguments` fragments — the result MUST parse as a JSON
+  # object. A failure means either the model emitted malformed JSON
+  # (rare; usually a real model bug) or the harness corrupted the
+  # stream (e.g. an accumulator merging two distinct tool calls into
+  # one slot). Either way the silent fallback `%{}` masks the bug and
+  # routes blame to a downstream "missing required field" check.
+  #
+  # Fail loud: log the raw string plus the decode error to syslog and
+  # raise. The streaming pipeline unwinds and the user sees an honest
+  # internal-error message rather than a confusing model-correction
+  # loop.
   defp decode_args(args) when is_map(args), do: args
 
   defp decode_args(args) when is_binary(args) do
     case Jason.decode(args) do
-      {:ok, m} -> m
-      _ -> %{}
+      {:ok, m} when is_map(m) ->
+        m
+
+      other ->
+        snippet = String.slice(args, 0, 500)
+
+        Logger.error(
+          "[LLM] tool_call.arguments failed to decode as JSON object. " <>
+            "raw=#{inspect(snippet)} decode=#{inspect(other)}"
+        )
+
+        DmhAi.SysLog.log(
+          "[CRITICAL] LLM tool_call.arguments_decode_failed " <>
+            "raw_len=#{byte_size(args)} raw=#{snippet}"
+        )
+
+        raise DmhAi.LLM.MalformedArgumentsError, raw: args, decode_error: other
     end
   end
 
@@ -550,7 +597,10 @@ defmodule DmhAi.Agent.LLM do
     Process.put(think_key,    "")
     Process.put(in_think_key, false)
     Process.put(chunks_key,   0)
-    Process.put(tc_acc_key,   %{})
+    # Each adapter owns the SHAPE of `tc_acc_key` (anthropic uses a flat
+    # `%{idx => entry}` map; openai uses `%{by_key, order, last}`).
+    # Reset by deleting — let the adapter initialise on first write.
+    Process.delete(tc_acc_key)
     Process.delete(err_key)
     Process.delete(first_byte_key)
 
@@ -686,7 +736,7 @@ defmodule DmhAi.Agent.LLM do
       match?({:ok, _}, result) ->
         if tool_calls != [] do
           Logger.info("[LLM] stream tool_calls=#{length(tool_calls)}")
-          {:ok, {:tool_calls, normalize_tool_calls(tool_calls)}}
+          safe_normalize_tool_calls(tool_calls)
         else
           Logger.info("[LLM] stream done chars=#{String.length(full_text)}")
           {:ok, full_text}

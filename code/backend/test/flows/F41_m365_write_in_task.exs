@@ -53,7 +53,7 @@ defmodule DmhAi.Flows.F41M365WriteInTask do
     query!(Repo,
       "INSERT INTO user_credentials (user_id, target, account, kind, payload, created_at, updated_at) " <>
       "VALUES (?, ?, ?, ?, ?, ?, ?)",
-      [admin_id, "oauth:microsoft", "", "oauth2",
+      [admin_id, "oauth:m365", "", "oauth2",
        Jason.encode!(%{"access_token" => "fake-graph-token"}),
        :os.system_time(:millisecond), :os.system_time(:millisecond)])
 
@@ -71,7 +71,7 @@ defmodule DmhAi.Flows.F41M365WriteInTask do
        %{admin_id: admin_id, email: email, password: password} do
     keys_table = :ets.new(:f41_keys, [:public, :set])
 
-    Application.put_env(:dmh_ai, :__mcp_caller_stub__, fn "microsoft", "mail.send", args, _creds ->
+    Application.put_env(:dmh_ai, :__mcp_caller_stub__, fn "m365", "mail.send", args, _creds ->
       :ets.insert(keys_table, {System.unique_integer([:monotonic]), args["__idempotency_key"]})
       {:ok, %{"message_id" => "msg-42"}}
     end)

@@ -3,7 +3,7 @@
 # See the LICENSE file in the repository root for full details.
 # For commercial inquiries, contact: tduccuong@gmail.com
 
-# Flow F43 — GW write verb refused outside task. Mirrors F37/F40.
+# Flow F43 — GW write function refused outside task. Mirrors F37/F40.
 
 defmodule DmhAi.Flows.F43GWorkspaceWriteRefusal do
   use ExUnit.Case, async: false
@@ -77,7 +77,7 @@ defmodule DmhAi.Flows.F43GWorkspaceWriteRefusal do
 
     assert decoded["ok"] == false
     assert get_in(decoded, ["error", "error"]) == "write_requires_task"
-    assert get_in(decoded, ["error", "verb"])  == "google_workspace.gmail.send"
+    assert get_in(decoded, ["error", "function"]) == "google_workspace.gmail.send"
 
     [[allowed_writes]] =
       query!(Repo, """

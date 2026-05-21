@@ -5,18 +5,19 @@
 
 defmodule DmhAi.Tools.ArmWorkflow do
   @moduledoc """
-  Activate a saved workflow version — sets `workflows.active_version`
-  to the given version. From this point the workflow's trigger
-  (schedule / poll / webhook) starts firing, opening silent tasks
-  pinned to this version.
+  Activate a saved workflow so its autonomous trigger (schedule /
+  poll / webhook) starts firing. Always arms the workflow's
+  `current_version`; non-latest versions are historical and not
+  runnable. A subsequent `upsert_workflow` auto-bumps the armed
+  snapshot in lockstep.
 
   Saving a workflow is NOT arming it. Drafts must be explicitly
   armed; iterating on a workflow may save five versions during
   design, and arming any of them prematurely would be dangerous.
 
-  Companion tool: `disarm_workflow(name)` flips `active_version` back
-  to NULL. In-flight tasks finish on their pinned version; no new
-  tasks start until re-armed.
+  Companion tool: `disarm_workflow(name)` flips the armed state back
+  off. In-flight tasks finish on their pinned version; no new tasks
+  start until re-armed.
   """
 
   @behaviour DmhAi.Tools.Behaviour
@@ -29,8 +30,9 @@ defmodule DmhAi.Tools.ArmWorkflow do
 
   @impl true
   def description do
-    "Activate a saved workflow version so its trigger starts firing. " <>
-      "Required args: name, version. Use `disarm_workflow` to stop it."
+    "Activate a saved workflow so its autonomous trigger starts firing. " <>
+      "Required arg: name. Always arms the latest saved version. " <>
+      "Use `disarm_workflow` to stop it."
   end
 
   @impl true
@@ -44,13 +46,9 @@ defmodule DmhAi.Tools.ArmWorkflow do
           name: %{
             type:        "string",
             description: "The workflow's slug (its stable id, returned by `upsert_workflow`)."
-          },
-          version: %{
-            type:        "integer",
-            description: "The version to activate. Must be a version that has been saved (≤ current_version)."
           }
         },
-        required: ["name", "version"]
+        required: ["name"]
       }
     }
   end
@@ -59,35 +57,59 @@ defmodule DmhAi.Tools.ArmWorkflow do
   def execute(args, ctx) do
     org_id = Map.get(ctx, :org_id) || Constants.default_org_id()
     name_arg = args["name"]
-    version  = args["version"]
 
     cond do
       not is_binary(name_arg) or name_arg == "" ->
         {:error, "arm_workflow: `name` required (string)"}
 
-      not is_integer(version) or version < 0 ->
-        {:error, "arm_workflow: `version` required (non-negative integer)"}
-
       true ->
-        case Workflows.arm(org_id, name_arg, version) do
+        case Workflows.arm(org_id, name_arg) do
           :ok ->
-            wf = Workflows.get_workflow(org_id, name_arg)
-            {:ok, %{
+            wf  = Workflows.get_workflow(org_id, name_arg)
+            ver = Workflows.get_version(org_id, name_arg, wf.current_version)
+
+            base = %{
               "name"            => name_arg,
-              "armed_version"   => version,
+              "armed_version"   => wf.current_version,
               "current_version" => wf.current_version,
-              "url"             => "/workflows/#{URI.encode(name_arg)}/#{version}"
-            }}
+              "url"             => "/workflows/#{URI.encode(name_arg)}/#{wf.current_version}"
+            }
+
+            {:ok, maybe_add_webhook_url(base, org_id, name_arg, ver)}
 
           {:error, :workflow_not_found} ->
             {:error, "arm_workflow: no workflow named `#{name_arg}` in this org"}
 
-          {:error, :version_not_found} ->
-            {:error, "arm_workflow: workflow `#{name_arg}` has no version #{version} (only versions 0..#{(Workflows.get_workflow(org_id, name_arg) || %{current_version: -1}).current_version} exist)"}
-
           {:error, other} ->
             {:error, "arm_workflow: #{inspect(other)}"}
         end
+    end
+  end
+
+  # For webhook-triggered workflows, include the canonical ingress URL
+  # in the tool return. The model surfaces it in chat so the user can
+  # paste it into the external SaaS's webhook configuration.
+  defp maybe_add_webhook_url(base, org_id, _name, ver) do
+    trigger_kind =
+      case ver do
+        %{ir: ir} ->
+          ir
+          |> Map.get("nodes", [])
+          |> Enum.find(fn n -> n["kind"] == "trigger" end)
+          |> case do
+            nil -> "manual"
+            t   -> Map.get(t, "trigger_kind", "manual")
+          end
+
+        _ ->
+          "manual"
+      end
+
+    if trigger_kind == "webhook" do
+      Map.put(base, "webhook_url",
+        DmhAi.Handlers.WfWebhook.webhook_url(org_id, base["name"]))
+    else
+      base
     end
   end
 end

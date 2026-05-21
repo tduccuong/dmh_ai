@@ -7,7 +7,14 @@ config :hammer,
 
 config :dmh_ai, DmhAi.Repo,
   database: "/data/db/chat.db",
-  pool_size: 5
+  pool_size: 5,
+  # Standard SQLite hygiene for multi-writer apps: when the writer
+  # slot is briefly held by another process, wait up to 5 s instead
+  # of raising SQLITE_BUSY immediately. ecto_sqlite3 documents a
+  # 2000ms default but the actual connection pragma was 0 — set
+  # explicitly. See arch_wiki/dmh_ai/architecture.md §DB-write
+  # hygiene for the SQLite writer slot.
+  busy_timeout: 5000
 
 # load_extensions for sqlite-vec is set in runtime.exs because
 # `SqliteVec.path/0` isn't loaded until deps are compiled.

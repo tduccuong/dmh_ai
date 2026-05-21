@@ -41,12 +41,21 @@ defmodule DmhAi.Application do
       {Registry, keys: :unique, name: DmhAi.Agent.Registry},
       DmhAi.Agent.Supervisor,
       {Task.Supervisor, name: DmhAi.Agent.TaskSupervisor},
+      # In-memory cache for per-token streaming state. Owns one ETS
+      # table for stream_buffer + thinking_buffer. See
+      # arch_wiki/dmh_ai/architecture.md §Streaming state lives in
+      # ETS, not the DB. Must boot before any process that streams.
+      DmhAi.Agent.EphemeralCache,
       DmhAi.Agent.TaskRuntime,
       # Layer W — workflow trigger poller. Wakes every 60s, dispatches
       # armed schedule/poll triggers to fire as silent tasks. See
       # arch_wiki/dmh_ai/sme/layer-0.md §Primitive 0.8 (Trigger ingress)
       # and `lib/dmh_ai/workflows/poller.ex`.
       DmhAi.Workflows.Poller,
+      # Layer W — retention sweeper. Hourly tick; archives completed
+      # run_state + step trace older than the retention window
+      # (default 30d) to per-workflow JSONL files, deletes from DB.
+      DmhAi.Workflows.Sweeper,
       # Background re-fetch of stale KB sources triggered by every
       # fetch_index call. See specs/vector_kb.md §Auto-relearn.
       DmhAi.VectorDB.Relearn,

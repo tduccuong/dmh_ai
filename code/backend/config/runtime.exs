@@ -8,6 +8,7 @@ if config_env() != :test do
   config :dmh_ai, DmhAi.Repo,
     database: db_path,
     pool_size: 5,
+    busy_timeout: 5000,
     load_extensions: [SqliteVec.path()]
 else
   # Tests still need the extension loaded so vec0 virtual tables work.

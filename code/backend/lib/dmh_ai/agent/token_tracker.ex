@@ -6,32 +6,52 @@
 defmodule DmhAi.Agent.TokenTracker do
   alias DmhAi.Repo
   import Ecto.Adapters.SQL, only: [query!: 3]
+  require Logger
+
+  # Mid-stream DB-write hygiene: these helpers run from inside the
+  # LLM adapter's streaming loop. If the SQLite writer slot is
+  # briefly held by another process, an Exqlite.Error here would
+  # propagate up uncaught and kill the agent's inline task, taking
+  # the whole chain down with it. Stat rows are non-critical
+  # accounting — degrade gracefully (Logger.warning, skip the row)
+  # rather than crash. See architecture.md §DB-write hygiene for
+  # the SQLite writer slot.
 
   def add_master(session_id, user_id, rx, tx) when rx > 0 or tx > 0 do
     now = System.os_time(:millisecond)
-    query!(Repo,
-      "INSERT INTO session_token_stats (session_id, user_id, master_rx_tokens, master_tx_tokens, updated_at)
-       VALUES (?,?,?,?,?)
-       ON CONFLICT(session_id) DO UPDATE SET
-         master_rx_tokens = master_rx_tokens + excluded.master_rx_tokens,
-         master_tx_tokens = master_tx_tokens + excluded.master_tx_tokens,
-         updated_at = excluded.updated_at",
-      [session_id, user_id, rx, tx, now])
+    try do
+      query!(Repo,
+        "INSERT INTO session_token_stats (session_id, user_id, master_rx_tokens, master_tx_tokens, updated_at)
+         VALUES (?,?,?,?,?)
+         ON CONFLICT(session_id) DO UPDATE SET
+           master_rx_tokens = master_rx_tokens + excluded.master_rx_tokens,
+           master_tx_tokens = master_tx_tokens + excluded.master_tx_tokens,
+           updated_at = excluded.updated_at",
+        [session_id, user_id, rx, tx, now])
+    rescue
+      e ->
+        Logger.warning("[TokenTracker] add_master skipped session=#{session_id}: #{Exception.message(e)}")
+    end
     :ok
   end
   def add_master(_, _, _, _), do: :ok
 
   def add_worker(session_id, user_id, worker_id, task_id, description, rx, tx) when rx > 0 or tx > 0 do
     now = System.os_time(:millisecond)
-    query!(Repo,
-      "INSERT INTO worker_token_stats (session_id, task_id, worker_id, user_id, description, rx_tokens, tx_tokens, updated_at)
-       VALUES (?,?,?,?,?,?,?,?)
-       ON CONFLICT(session_id, task_id, worker_id) DO UPDATE SET
-         rx_tokens = rx_tokens + excluded.rx_tokens,
-         tx_tokens = tx_tokens + excluded.tx_tokens,
-         description = excluded.description,
-         updated_at = excluded.updated_at",
-      [session_id, task_id || "", worker_id, user_id, description, rx, tx, now])
+    try do
+      query!(Repo,
+        "INSERT INTO worker_token_stats (session_id, task_id, worker_id, user_id, description, rx_tokens, tx_tokens, updated_at)
+         VALUES (?,?,?,?,?,?,?,?)
+         ON CONFLICT(session_id, task_id, worker_id) DO UPDATE SET
+           rx_tokens = rx_tokens + excluded.rx_tokens,
+           tx_tokens = tx_tokens + excluded.tx_tokens,
+           description = excluded.description,
+           updated_at = excluded.updated_at",
+        [session_id, task_id || "", worker_id, user_id, description, rx, tx, now])
+    rescue
+      e ->
+        Logger.warning("[TokenTracker] add_worker skipped session=#{session_id} worker=#{worker_id}: #{Exception.message(e)}")
+    end
     :ok
   end
   def add_worker(_, _, _, _, _, _, _), do: :ok

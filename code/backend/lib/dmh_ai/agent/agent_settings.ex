@@ -414,6 +414,51 @@ defmodule DmhAi.Agent.AgentSettings do
   def publish_link_ttl_secs,
     do: int_setting("publishLinkTtlSecs", @publish_link_ttl_secs_default)
 
+  @doc """
+  Days after which completed `workflow_run_state` rows + their
+  step trace get exported to JSONL archive and dropped from the
+  live DB. Default 30. See `arch_wiki/dmh_ai/sme/layer-W.md`
+  §Retention.
+  """
+  @spec workflow_run_retention_days() :: pos_integer()
+  def workflow_run_retention_days,
+    do: int_setting("workflowRunRetentionDays", 30)
+
+  @doc """
+  Install-wide HMAC secret used to sign per-workflow webhook URLs.
+  Lazily generated on first call (32 random bytes, base64-encoded)
+  and persisted in the `settings` table so the URL stays stable
+  across restarts. If the operator rotates this value, EVERY armed
+  webhook URL must be re-pasted into its external system — by
+  design, the secret IS the binding.
+  """
+  @spec install_secret() :: String.t()
+  def install_secret do
+    settings = load()
+
+    case settings["installSecret"] do
+      v when is_binary(v) and v != "" ->
+        v
+
+      _ ->
+        new_secret = 32 |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
+        # Persist alongside the other admin settings (one JSON blob
+        # under the `admin_cloud_settings` key). Re-load + merge so we
+        # don't clobber concurrent edits.
+        DmhAi.Repo
+        |> Ecto.Adapters.SQL.query!("""
+        INSERT INTO settings (key, value)
+        VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """, [
+          "admin_cloud_settings",
+          Jason.encode!(Map.put(load(), "installSecret", new_secret))
+        ])
+
+        new_secret
+    end
+  end
+
   @doc "Minimum post-trim char count for an `extract_content` result to count as 'meaningful' (not blank/scanned)."
   @spec min_extracted_text_chars() :: pos_integer()
   def min_extracted_text_chars, do: int_setting("minExtractedTextChars", @min_extracted_text_chars_default)

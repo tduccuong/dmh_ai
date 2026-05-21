@@ -572,6 +572,26 @@ defmodule DmhAi.Agent.Police do
       Regex.match?(~r/\[(used|via|called|tool)\s*:/u, trimmed)
 
     cond do
+      trimmed == "" ->
+        # Model returned no text AND no tool calls. Same reject-and-
+        # nudge mechanic as other Police rejections — ask the model
+        # itself to surface root cause + options instead of silently
+        # ending the chain. The retry's response becomes the
+        # persisted assistant message. The 3-strike circuit-breaker
+        # in user_agent.ex caps runaway empty-loops.
+        reason =
+          "Your previous response was empty — no text and no tool calls. " <>
+            "Reply now with: (1) the most likely reason on your side that you " <>
+            "produced no output (conflicting context, ambiguous request, " <>
+            "missing information, hit a token / budget limit, an internal " <>
+            "constraint, etc.); and (2) two or three concrete options the " <>
+            "user can choose from to move forward. Speak in the user's " <>
+            "language. Do not return empty again."
+
+        Logger.warning("[Police] REJECTED empty_response")
+        DmhAi.SysLog.log("[POLICE] REJECTED empty_response")
+        {:rejected, {:empty_response, reason}}
+
       exact_match or call_shape_match ->
         reason =
           "Your response was the text `#{String.slice(trimmed, 0, 120)}` which " <>
@@ -713,6 +733,85 @@ defmodule DmhAi.Agent.Police do
     end
   end
   def check_no_duplicate_tool_call(_, _, _), do: :ok
+
+  @doc """
+  Detect tool-error loops: same tool returning the same error message
+  twice in a row within one chain. Generic — no whitelist, no
+  significance keys. Any tool whose runtime / validation produces an
+  identical error twice in a row is by definition not making progress;
+  Police rejects the SECOND occurrence and the existing rejection
+  pipeline (nudge counter + 3-strike circuit breaker) handles
+  escalation.
+
+  Inputs:
+    * `tool_name`   — the tool that just emitted `error_text`.
+    * `error_text`  — the binary content of the tool result message.
+                      Caller passes the raw string; Police trims +
+                      compares as-is.
+    * `prior_messages` — the in-chain accumulator. Police walks back
+                         until it finds the previous role="tool" entry
+                         whose `name == tool_name` and checks whether
+                         its content equals `error_text` after trim.
+
+  Returns `:ok` on first occurrence, `{:rejected, {:repeated_tool_error,
+  reason}}` on the immediate repeat.
+  """
+  @spec check_repeated_tool_error(String.t(), String.t(), [map()]) ::
+          :ok | {:rejected, {atom(), String.t()}}
+  def check_repeated_tool_error(tool_name, error_text, prior_messages)
+      when is_binary(tool_name) and is_binary(error_text) and is_list(prior_messages) do
+    norm = String.trim(error_text)
+
+    case prior_tool_error(tool_name, prior_messages) do
+      ^norm ->
+        reason =
+          "Error: `#{tool_name}` just returned the IDENTICAL error to its previous " <>
+            "call in this chain:\n\n#{ellipsize(norm, 400)}\n\n" <>
+            "Retrying with the same shape will give the same error. STOP repeating " <>
+            "and instead reply to the user with: (1) what the error actually means " <>
+            "in the user's terms, (2) what you'd need from them to proceed " <>
+            "(missing input, ambiguity, an external dependency, …), and (3) two " <>
+            "or three concrete options they can pick from. Do NOT call `#{tool_name}` " <>
+            "again until the user clarifies."
+
+        Logger.warning(
+          "[Police] REJECTED repeated_tool_error: tool=#{tool_name} text=#{inspect(String.slice(norm, 0, 120))}"
+        )
+
+        DmhAi.SysLog.log(
+          "[POLICE] REJECTED repeated_tool_error: tool=#{tool_name}"
+        )
+
+        {:rejected, {:repeated_tool_error, reason}}
+
+      _ ->
+        :ok
+    end
+  end
+
+  def check_repeated_tool_error(_, _, _), do: :ok
+
+  # Walk `prior_messages` newest-first; return the trimmed content of
+  # the most recent role="tool" message attributed to `tool_name`, or
+  # nil if no prior tool-error from this tool exists in this chain.
+  defp prior_tool_error(tool_name, messages) do
+    messages
+    |> Enum.reverse()
+    |> Enum.find_value(fn
+      %{role: "tool", name: ^tool_name, content: content} when is_binary(content) ->
+        String.trim(content)
+
+      %{"role" => "tool", "name" => ^tool_name, "content" => content}
+      when is_binary(content) ->
+        String.trim(content)
+
+      _ ->
+        nil
+    end)
+  end
+
+  defp ellipsize(s, n) when byte_size(s) <= n, do: s
+  defp ellipsize(s, n), do: String.slice(s, 0, n) <> "…"
 
   # Pick the "significant argument" that defines a duplicate. Normalised
   # forms let "Explain X" / "explain x " be treated as the same title.

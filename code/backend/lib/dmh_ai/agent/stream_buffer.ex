@@ -7,30 +7,30 @@ defmodule DmhAi.Agent.StreamBuffer do
   @moduledoc """
   Per-session buffer for the currently-streaming final answer.
 
-  The Assistant / Confidant session loop accumulates tokens in process
-  memory as the LLM generates the final text, and calls `update/3` to
-  flush the accumulator to the `sessions.stream_buffer` DB column so the
-  FE polling can render progressive text. Writes are throttled to
-  `@flush_ms` (default 250 ms) to keep SQLite write pressure low.
+  Backed by `DmhAi.Agent.EphemeralCache` (ETS), NOT the `sessions`
+  table. Per-token DB writes would monopolise SQLite's single-writer
+  slot in WAL mode and starve every other writer; this module's
+  flushes are nanosecond-scale ETS inserts instead. See
+  `arch_wiki/dmh_ai/architecture.md` §Streaming state lives in ETS,
+  not the DB.
 
   Flow:
-    - on turn start, caller constructs a %Buffer{} with now-ts baseline
-    - on every LLM token chunk, caller updates the accumulated text via
-      `append/2` and then `maybe_flush/2` (writes to DB iff the throttle
-      window has elapsed)
-    - on turn end, caller calls `finalize/2` which flushes unconditionally
-      and then `clear/2` (sets the column back to NULL)
+    - On turn start, caller constructs a %Buffer{} with zero baseline.
+    - On every LLM token chunk, caller appends to the in-process
+      accumulator and calls `maybe_flush/1` (writes the accumulated
+      text to the EphemeralCache iff the throttle window has elapsed).
+    - On turn end, caller calls `flush/1` (force-flush) then
+      `clear/2` (drop the cache entry).
 
-  The column is atomic per call — we overwrite the whole blob each
-  flush. For answers up to the model's context limit this is fine;
-  SQLite handles it in tens of microseconds.
+  The cache value is overwritten atomically on each flush. The
+  FE-polling `/sessions/:id/poll` endpoint reads via `read/2`.
   """
 
-  alias DmhAi.Repo
-  import Ecto.Adapters.SQL, only: [query!: 3]
+  alias DmhAi.Agent.EphemeralCache
   require Logger
 
   @flush_ms 250
+  @kind :stream
 
   defstruct [
     :session_id,
@@ -64,7 +64,7 @@ defmodule DmhAi.Agent.StreamBuffer do
   end
 
   @doc """
-  Flush the accumulator to `sessions.stream_buffer` if the throttle window
+  Flush the accumulator to the EphemeralCache if the throttle window
   has elapsed. Returns the (possibly updated) buffer.
   """
   @spec maybe_flush(t()) :: t()
@@ -72,7 +72,7 @@ defmodule DmhAi.Agent.StreamBuffer do
     now = System.os_time(:millisecond)
 
     if now - buf.last_flush_ms >= @flush_ms do
-      do_write(buf.session_id, buf.user_id, buf.accumulated, now)
+      do_write(buf.session_id, buf.accumulated, now)
       %{buf | last_flush_ms: now}
     else
       buf
@@ -83,64 +83,41 @@ defmodule DmhAi.Agent.StreamBuffer do
   @spec flush(t()) :: t()
   def flush(%__MODULE__{} = buf) do
     now = System.os_time(:millisecond)
-    do_write(buf.session_id, buf.user_id, buf.accumulated, now)
+    do_write(buf.session_id, buf.accumulated, now)
     %{buf | last_flush_ms: now}
   end
 
   @doc """
-  Read the current `stream_buffer` text from DB. Returns an empty string
-  when the column is NULL (no active stream). Used by the tool-calls
-  branch of `session_chain_loop` to capture narration the model streamed
-  before emitting tool_calls, so it can be persisted as a real assistant
-  message instead of being wiped by `clear/2`.
+  Read the current buffered text. Returns an empty string when no
+  active stream is buffering. Used by the FE-polling endpoint and by
+  the tool-calls branch of `session_chain_loop` (which captures
+  pre-tool narration the model streamed before emitting tool_calls,
+  so it can be persisted as a real assistant message instead of being
+  dropped by `clear/2`).
   """
   @spec read(String.t(), String.t()) :: String.t()
-  def read(session_id, user_id) do
-    try do
-      case query!(Repo,
-             "SELECT stream_buffer FROM sessions WHERE id=? AND user_id=?",
-             [session_id, user_id]) do
-        %{rows: [[text]]} when is_binary(text) -> text
-        _ -> ""
-      end
-    rescue
-      e ->
-        Logger.error("[StreamBuffer] read failed: #{Exception.message(e)}")
-        ""
+  def read(session_id, _user_id) when is_binary(session_id) do
+    case EphemeralCache.get(session_id, @kind) do
+      {text, _ts} when is_binary(text) -> text
+      _ -> ""
     end
   end
 
-  @doc "Clear the stream_buffer column. Called after the final message has been appended to session.messages."
+  @doc "Drop the cache entry. Called after the final message has been appended to session.messages."
   @spec clear(String.t(), String.t()) :: :ok
-  def clear(session_id, user_id) do
-    try do
-      query!(Repo,
-             "UPDATE sessions SET stream_buffer=NULL, stream_buffer_ts=NULL WHERE id=? AND user_id=?",
-             [session_id, user_id])
-      :ok
-    rescue
-      e ->
-        Logger.error("[StreamBuffer] clear failed: #{Exception.message(e)}")
-        :ok
-    end
+  def clear(session_id, _user_id) when is_binary(session_id) do
+    EphemeralCache.delete(session_id, @kind)
   end
 
   # ── private ───────────────────────────────────────────────────────────
 
-  defp do_write(session_id, user_id, text, ts) do
+  defp do_write(session_id, text, ts) do
     # Sanitize before every flush so the FE never polls a partial
     # pseudo-tool-call annotation (e.g. `[used: complete_task({...`).
     # Truncates at the first tag opener. The in-memory accumulator
     # keeps the raw text intact — Police still sees the full bad
     # output at stream-end to reject / nudge on.
     sanitized = DmhAi.Agent.TextSanitizer.truncate_at_bookkeeping(text)
-
-    try do
-      query!(Repo,
-             "UPDATE sessions SET stream_buffer=?, stream_buffer_ts=? WHERE id=? AND user_id=?",
-             [sanitized, ts, session_id, user_id])
-    rescue
-      e -> Logger.error("[StreamBuffer] write failed: #{Exception.message(e)}")
-    end
+    EphemeralCache.put(session_id, @kind, sanitized, ts)
   end
 end

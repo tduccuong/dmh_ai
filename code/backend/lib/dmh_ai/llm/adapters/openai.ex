@@ -104,21 +104,19 @@ defmodule DmhAi.LLM.Adapters.OpenAI do
 
   @impl true
   def finalize_stream(ctx) do
-    # OpenAI SSE delivers tool_calls FRAGMENTED across chunks (each
-    # delta carries a partial `function.arguments` string we accumulate
-    # by index). Consolidate the per-index map into the same list shape
-    # Ollama-native streaming produces, so the downstream
-    # `normalize_tool_calls/1` works for both formats.
-    acc = Process.get(ctx.tc_acc_key) || %{}
+    # Drain the accumulator (built by `accumulate_tool_calls/2`) into
+    # the same list shape Ollama-native streaming produces, so the
+    # downstream `normalize_tool_calls/1` works for both formats.
+    # No accumulator state (or an unrecognised stale shape from a
+    # previous reset) means nothing to drain — calls_key already
+    # holds the default empty list from stream setup.
+    case Process.get(ctx.tc_acc_key) do
+      %{order: order, by_key: by_key} when order != [] ->
+        calls = Enum.map(order, fn key -> Map.fetch!(by_key, key) end)
+        Process.put(ctx.calls_key, calls)
 
-    if map_size(acc) > 0 do
-      sorted =
-        acc
-        |> Map.to_list()
-        |> Enum.sort_by(fn {idx, _} -> idx end)
-        |> Enum.map(&elem(&1, 1))
-
-      Process.put(ctx.calls_key, sorted)
+      _ ->
+        :ok
     end
 
     :ok
@@ -209,66 +207,109 @@ defmodule DmhAi.LLM.Adapters.OpenAI do
 
   defp handle_choice(_, _ctx), do: :ok
 
+  # OpenAI-compatible streaming gives every tool-call delta two fields
+  # that look like identifiers but mean different things:
+  #
+  #   - `id`    — the server-assigned tool-call identity. Stable for life
+  #               of one tool call.
+  #   - `index` — its position in the final `tool_calls[]` array.
+  #
+  # Standard OpenAI streaming sends `id` ONCE (on the first chunk of a
+  # tool call); subsequent fragments share the same `index` and grow
+  # `function.arguments` by string concatenation. Some servers
+  # (ollama.com) instead emit MULTIPLE complete tool calls in a single
+  # delta, all with `index: 0` but distinct `id`s — in that wire
+  # dialect, keying by `index` collapses them onto the same slot and
+  # concatenates two valid JSON objects into a malformed one
+  # (`{"slug":"a"}{"slug":"b"}`), which then fails to decode downstream.
+  #
+  # Identity is `id`. Use `id` as the slot key when present; fragments
+  # without `id` continue the most recently opened slot (the OpenAI
+  # streaming convention). The accumulator carries `order` for output
+  # ordering and `last` for the continuation target.
   defp accumulate_tool_calls(deltas, ctx) do
-    acc = Process.get(ctx.tc_acc_key) || %{}
+    acc =
+      case Process.get(ctx.tc_acc_key) do
+        %{by_key: _, order: _, last: _} = a -> a
+        _ -> %{by_key: %{}, order: [], last: nil}
+      end
 
-    new_acc =
-      Enum.reduce(deltas, acc, fn delta, a ->
-        idx = delta["index"] || 0
-
-        existing =
-          Map.get(a, idx, %{
-            "id" => "",
-            "type" => "function",
-            "function" => %{"name" => "", "arguments" => ""}
-          })
-
-        existing =
-          case delta["id"] do
-            id when is_binary(id) and id != "" -> Map.put(existing, "id", id)
-            _ -> existing
-          end
-
-        existing =
-          case delta["type"] do
-            t when is_binary(t) and t != "" -> Map.put(existing, "type", t)
-            _ -> existing
-          end
-
-        existing =
-          case delta["function"] do
-            %{} = fn_delta ->
-              fn_existing = existing["function"]
-
-              fn_existing =
-                case fn_delta["name"] do
-                  n when is_binary(n) and n != "" -> Map.put(fn_existing, "name", n)
-                  _ -> fn_existing
-                end
-
-              fn_existing =
-                case fn_delta["arguments"] do
-                  args when is_binary(args) ->
-                    Map.put(
-                      fn_existing,
-                      "arguments",
-                      (fn_existing["arguments"] || "") <> args
-                    )
-
-                  _ ->
-                    fn_existing
-                end
-
-              Map.put(existing, "function", fn_existing)
-
-            _ ->
-              existing
-          end
-
-        Map.put(a, idx, existing)
-      end)
-
+    new_acc = Enum.reduce(deltas, acc, &apply_delta/2)
     Process.put(ctx.tc_acc_key, new_acc)
+  end
+
+  defp apply_delta(delta, acc) do
+    {key, acc} = resolve_slot_key(delta, acc)
+
+    existing =
+      Map.get(acc.by_key, key, %{
+        "id" => "",
+        "type" => "function",
+        "function" => %{"name" => "", "arguments" => ""}
+      })
+
+    existing =
+      case delta["id"] do
+        id when is_binary(id) and id != "" -> Map.put(existing, "id", id)
+        _ -> existing
+      end
+
+    existing =
+      case delta["type"] do
+        t when is_binary(t) and t != "" -> Map.put(existing, "type", t)
+        _ -> existing
+      end
+
+    existing =
+      case delta["function"] do
+        %{} = fn_delta -> apply_function_delta(existing, fn_delta)
+        _              -> existing
+      end
+
+    %{acc | by_key: Map.put(acc.by_key, key, existing), last: key}
+  end
+
+  defp resolve_slot_key(delta, acc) do
+    case delta["id"] do
+      id when is_binary(id) and id != "" ->
+        order = if id in acc.order, do: acc.order, else: acc.order ++ [id]
+        {id, %{acc | order: order}}
+
+      _ ->
+        # Continuation fragment — append to the most recently opened slot.
+        # If no slot has been opened yet (the very first delta arrived
+        # without an `id`), synthesise one from the `index`.
+        key =
+          case acc.last do
+            nil -> "_idx_#{delta["index"] || 0}"
+            k   -> k
+          end
+
+        order = if key in acc.order, do: acc.order, else: acc.order ++ [key]
+        {key, %{acc | order: order}}
+    end
+  end
+
+  defp apply_function_delta(existing, fn_delta) do
+    fn_existing = existing["function"]
+
+    fn_existing =
+      case fn_delta["name"] do
+        n when is_binary(n) and n != "" -> Map.put(fn_existing, "name", n)
+        _ -> fn_existing
+      end
+
+    fn_existing =
+      case fn_delta["arguments"] do
+        args when is_binary(args) ->
+          Map.put(fn_existing, "arguments",
+                  (fn_existing["arguments"] || "") <> args)
+
+        _ ->
+          fn_existing
+      end
+
+    Map.put(existing, "function", fn_existing)
   end
 
   defp strip_data_prefix("data: " <> rest), do: String.trim(rest)

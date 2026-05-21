@@ -668,26 +668,9 @@ defmodule DmhAi.Handlers.Auth do
     end
   end
 
-  defp count_memo_rows(uid) do
-    case query!(Repo,
-           "SELECT COUNT(*) FROM kb_chunks_meta WHERE scope='memo' AND user_id=?",
-           [uid]) do
-      %{rows: [[n] | _]} when is_integer(n) -> n
-      _ -> 0
-    end
-  end
+  defp count_memo_rows(uid), do: DmhAi.VectorDB.Sources.count_user_memos(uid)
 
-  defp wipe_user_memo_state(uid) do
-    # Delete the user's memo metadata rows; the corresponding vector
-    # rows in `kb_vec_memo` and `kb_fts` (if any) reference these
-    # `id`s — but FTS is skipped for memo scope on write, and the
-    # vec table keys by the same rowid as meta. Same row deletion
-    # cascades naturally.
-    query!(Repo,
-      "DELETE FROM kb_vec_memo WHERE rowid IN (SELECT id FROM kb_chunks_meta WHERE scope='memo' AND user_id=?)",
-      [uid])
-    query!(Repo, "DELETE FROM kb_chunks_meta WHERE scope='memo' AND user_id=?", [uid])
-  end
+  defp wipe_user_memo_state(uid), do: DmhAi.VectorDB.Sources.wipe_user_memos(uid)
 
   # DELETE /users/:id (admin: soft-delete user)
   def delete_user(conn, user, uid) do

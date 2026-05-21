@@ -124,6 +124,14 @@ defmodule DmhAi.I18n do
       "es" => "tuvimos un problema transitorio al comunicarnos con el servicio de IA",
       "fr" => "nous avons rencontré un problème temporaire avec le service IA",
       "ja" => "AI サービスとの通信で一時的な問題が発生しました"
+    },
+    "system_error_cause_arguments_decode_failed" => %{
+      "en" => "the AI service returned malformed tool arguments (raw output couldn't be parsed as JSON)",
+      "de" => "der KI-Dienst hat unleserliche Tool-Argumente zurückgegeben (Rohausgabe konnte nicht als JSON gelesen werden)",
+      "vi" => "dịch vụ AI trả về tham số công cụ bị lỗi định dạng (không phải JSON hợp lệ)",
+      "es" => "el servicio de IA devolvió argumentos de herramienta malformados (la salida no se pudo leer como JSON)",
+      "fr" => "le service IA a renvoyé des arguments d'outil malformés (sortie illisible en JSON)",
+      "ja" => "AI サービスからツール引数の不正な出力が返されました (JSON として解析できませんでした)"
     }
   }
 

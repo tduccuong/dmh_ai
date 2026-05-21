@@ -63,7 +63,69 @@ defmodule DmhAi.Connectors.MCPAdapter do
   """
   @callback credential_kind() :: :oauth2 | :api_key
 
-  @optional_callbacks remap_error: 1, credential_kind: 0
+  @doc """
+  Primitive 0.9 hook — describes the vendor function that maps an
+  email (the pivot from DMH-AI's `users.email`) to the vendor's
+  native user identifier. The compiler injects a probe step around
+  this function whenever a workflow references `@user_N` against
+  this connector.
+
+  Return shape:
+
+      %{
+        function:   "<slug>.<function_path>",   # canonical name in Tools.Catalog
+        by_arg:     :email,                      # arg name receiving the email
+        emit_field: "external_id"                # which emit field holds the vendor id
+      }
+
+  Return `nil` when the connector has no usable email-pivot
+  function. Workflows that name `@user_N` against a nil-lookup
+  connector fail at compile time with `unmappable_identity`; the
+  user picks a remediation (manual override row, drop the step,
+  use a literal external_id in source prose).
+  """
+  @callback identity_lookup() :: %{function: String.t(), by_arg: atom(), emit_field: String.t()} | nil
+
+  @doc """
+  Compile-time property introspection (Layer W L2). The compiler
+  calls this when the user names a deep property of a vendor-rich
+  object — e.g. `dealstage` on a HubSpot deal, `recurrence` on a
+  Google Calendar event. The connector either resolves the property
+  from its manifest, OR fetches the user's vendor metadata at call
+  time (the user is online; their token is fresh).
+
+  Arguments:
+    * `function_name` — bare name (e.g. `"deal.create"`).
+    * `path`          — dotted path into the property (e.g.
+                        `"dealstage"`, `"recurrence.frequency"`).
+    * `ctx`           — `%{user_id, org_id}` so the connector can
+                        look up the user's vendor credentials when
+                        the source is `:vendor_metadata`.
+
+  Return shape (success):
+      {:ok, %{
+        type:        "<type>",
+        enum:        ["<v>", ...] | nil,
+        description: "<text>",
+        source:      :manifest | :vendor_metadata
+      }}
+
+  Return `{:error, :not_supported}` when the connector hasn't
+  implemented property introspection for that path. The compiler
+  treats `:not_supported` as "trust the literal" and proceeds —
+  this callback is purely additive.
+  """
+  @callback inspect_property(String.t(), String.t(), map()) ::
+              {:ok, %{
+                 type:        String.t(),
+                 enum:        [String.t()] | nil,
+                 description: String.t() | nil,
+                 source:      :manifest | :vendor_metadata
+               }}
+              | {:error, atom()}
+
+  @optional_callbacks remap_error: 1, credential_kind: 0, identity_lookup: 0,
+                      inspect_property: 3
 
   defmacro __using__(_opts) do
     quote do
@@ -83,7 +145,13 @@ defmodule DmhAi.Connectors.MCPAdapter do
       # override.
       def credential_kind, do: :oauth2
 
-      defoverridable remap_error: 1, credential_kind: 0
+      # Default property introspection — connector hasn't wired
+      # vendor-metadata lookup. Compiler treats this as "trust
+      # the literal" and proceeds.
+      def inspect_property(_function_name, _path, _ctx),
+        do: {:error, :not_supported}
+
+      defoverridable remap_error: 1, credential_kind: 0, inspect_property: 3
     end
   end
 

@@ -35,7 +35,7 @@ const WorkflowViewer = {
 
     _currentIR:        null,
     _currentMeta:      null,           // {workflow: {...}, version: {...}}
-    _activeTab:        'label',         // 'label' | 'technical'
+    _activeTab:        'diagram',       // 'diagram' | 'specification'
 
     init: function() {
         this._buildOverlay();
@@ -59,9 +59,10 @@ const WorkflowViewer = {
                 '<button class="wfv-close-btn" id="wfv-close-btn" aria-label="Close">✕</button>' +
               '</div>' +
               '<div class="wfv-tabs">' +
-                '<button class="wfv-tab active" id="wfv-tab-label" data-tab="label">Label view</button>' +
-                '<button class="wfv-tab"        id="wfv-tab-technical" data-tab="technical">Technical view</button>' +
+                '<button class="wfv-tab active" id="wfv-tab-diagram"        data-tab="diagram">Diagram</button>' +
+                '<button class="wfv-tab"        id="wfv-tab-specification"  data-tab="specification">Specification</button>' +
               '</div>' +
+              '<div class="wfv-description" id="wfv-description"></div>' +
               '<div class="wfv-meta" id="wfv-meta"></div>' +
               '<div class="wfv-body">' +
                 '<pre class="wfv-graph" id="wfv-graph"></pre>' +
@@ -164,6 +165,23 @@ const WorkflowViewer = {
         document.getElementById('wfv-modal-title').textContent =
             (wf.display_name || wf.id || 'Workflow') + '  ·  v' + (typeof v.version === 'number' ? v.version : '?');
 
+        // Compiler-authored description — the per-version description
+        // takes precedence over the workflow's joined-latest (they
+        // differ when looking at a historical version). Falls back to
+        // an explicit placeholder so the slot never collapses
+        // silently — a missing description is itself a signal.
+        var descText = v.description || wf.description || '';
+        var descEl   = document.getElementById('wfv-description');
+        if (descEl) {
+            if (descText) {
+                descEl.textContent = descText;
+                descEl.classList.remove('wfv-description-empty');
+            } else {
+                descEl.textContent = '(no description)';
+                descEl.classList.add('wfv-description-empty');
+            }
+        }
+
         var armed = (wf.active_version !== null && wf.active_version !== undefined);
         var armedStr = armed ? 'armed @ v' + wf.active_version : 'not armed';
 
@@ -183,7 +201,19 @@ const WorkflowViewer = {
         var el = document.getElementById('wfv-graph');
         if (!el) return;
 
-        var lines = this._renderIR(ir, this._activeTab);
+        if (this._activeTab === 'specification') {
+            // Specification: show the full IR JSON verbatim. No ASCII
+            // rendering — the IR is the source of truth and may evolve
+            // (new node fields, new trigger kinds) faster than any
+            // hand-rolled renderer can keep up with.
+            el.textContent = JSON.stringify(ir, null, 2);
+            return;
+        }
+
+        // Diagram: human-readable ASCII rendering using node labels
+        // and the workflow's graph topology. Falls through to
+        // `_renderIR(ir, 'label')` for the label-driven path.
+        var lines = this._renderIR(ir, 'label');
         el.textContent = lines.join('\n');
     },
 

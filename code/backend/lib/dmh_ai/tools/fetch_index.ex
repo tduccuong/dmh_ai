@@ -39,18 +39,66 @@ defmodule DmhAi.Tools.FetchIndex do
         type: "object",
         required: ["q"],
         properties: %{
-          q: %{type: "string", description: "Keywords or a short natural-language phrase."}
+          q: %{
+            type: "string",
+            description:
+              "Keywords or a short natural-language phrase. Be SPECIFIC: " <>
+                "include the subject domain (which platform / product / " <>
+                "topic), not bare jargon. A generic query like \"workflow " <>
+                "output\" returns hits from every product the org has " <>
+                "ever indexed; \"DMH-AI workflow output node\" or " <>
+                "\"HubSpot workflow output step\" narrows to what you " <>
+                "actually want."
+          },
+          scope: %{
+            type: "object",
+            description:
+              "Optional retrieval-scope filter. Restricts hits to KB " <>
+                "sources matching the given platform / category. Use when " <>
+                "you want to exclude unrelated indexed material.",
+            properties: %{
+              platforms_in: %{
+                type: "array",
+                items: %{type: "string"},
+                description:
+                  "Whitelist: only hits whose source's `platform` is in " <>
+                    "this list pass. Use the connector slug " <>
+                    "(`google_workspace`, `hubspot`, `m365`, etc.) or " <>
+                    "the special slug `dmh_ai` for the runtime's own " <>
+                    "docs / saved workflows."
+              },
+              platforms_not_in: %{
+                type: "array",
+                items: %{type: "string"},
+                description:
+                  "Blacklist: hits from these platforms are excluded."
+              },
+              categories_in: %{
+                type: "array",
+                items: %{type: "string"},
+                description:
+                  "Whitelist categories (`api-docs` / `sop` / `policy` / " <>
+                    "`workflow` / `spec` / `general`)."
+              },
+              include_untagged: %{
+                type: "boolean",
+                description:
+                  "Default true. When false, only tagged sources qualify."
+              }
+            }
+          }
         }
       }
     }
   end
 
   @impl true
-  def execute(%{"q" => q}, ctx) when is_binary(q) and q != "" do
+  def execute(%{"q" => q} = args, ctx) when is_binary(q) and q != "" do
     org_id = DmhAi.Orgs.for_user(ctx[:user_id] || ctx["user_id"])
+    filter = build_filter(org_id, args["scope"])
 
     with {:ok, vec}  <- Embedder.embed(q),
-         {:ok, hits} <- VectorDB.search(:knowledge, q, vec, AgentSettings.kb_top_n(), {:org, org_id}) do
+         {:ok, hits} <- VectorDB.search(:knowledge, q, vec, AgentSettings.kb_top_n(), filter) do
       enqueue_bg_refresh(org_id, hits)
       Relearn.enqueue_for_hits(hits)
       {:ok, format(hits)}
@@ -60,6 +108,26 @@ defmodule DmhAi.Tools.FetchIndex do
   end
 
   def execute(_, _), do: {:error, "Missing required argument: q"}
+
+  # Convert the model-supplied `scope` arg into the backend's filter
+  # shape. Absent / malformed `scope` falls back to plain org-only.
+  defp build_filter(org_id, nil), do: {:org, org_id}
+  defp build_filter(org_id, scope) when is_map(scope) do
+    pred =
+      [:platforms_in, :platforms_not_in, :categories_in, :include_untagged]
+      |> Enum.reduce(%{}, fn key, acc ->
+        case Map.get(scope, Atom.to_string(key)) do
+          nil -> acc
+          v   -> Map.put(acc, key, v)
+        end
+      end)
+
+    if map_size(pred) == 0,
+      do: {:org, org_id},
+      else: {:org, org_id, pred}
+  end
+
+  defp build_filter(org_id, _), do: {:org, org_id}
 
   # Per Primitive 0.2: every fetch_index call enqueues one
   # `BgRefreshWorker` per distinct `source_id` whose chunks were

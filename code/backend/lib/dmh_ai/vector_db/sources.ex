@@ -41,6 +41,13 @@ defmodule DmhAi.VectorDB.Sources do
     org_id = require_field!(attrs, :org_id)
     source_id = require_field!(attrs, :source_id)
 
+    # `source_scope` classifies this source for retrieval-time
+    # filtering. Resolution order:
+    #   1. explicit `attrs[:source_scope]` (operator override)
+    #   2. URL hostname → known platform (`SourceScope.from_url/1`)
+    #   3. NULL (untagged; counts as general-purpose org KB)
+    source_scope = resolve_source_scope(attrs)
+
     %{rows: [[id]]} =
       query!(Repo, """
       INSERT INTO kb_sources
@@ -48,9 +55,10 @@ defmodule DmhAi.VectorDB.Sources do
          raw_text, centroid, tags,
          content_sha256, extracted_text_sha256,
          created_by_user_id, parent_source_id,
+         source_scope,
          last_seen_at, last_indexed_at,
          ingest_status, indexed_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'indexed', ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'indexed', ?)
       RETURNING id
       """, [
         org_id,
@@ -64,6 +72,7 @@ defmodule DmhAi.VectorDB.Sources do
         attrs[:extracted_text_sha256],
         attrs[:created_by_user_id],
         attrs[:parent_source_id],
+        source_scope,
         attrs[:last_seen_at] || now,
         attrs[:last_indexed_at] || now,
         now
@@ -71,6 +80,23 @@ defmodule DmhAi.VectorDB.Sources do
 
     {:ok, id}
   end
+
+  defp resolve_source_scope(%{source_scope: scope}) when is_binary(scope) and scope != "", do: scope
+  defp resolve_source_scope(%{"source_scope" => scope}) when is_binary(scope) and scope != "", do: scope
+
+  defp resolve_source_scope(%{source_kind: "url", source_id: source_id})
+       when is_binary(source_id) do
+    DmhAi.VectorDB.SourceScope.from_url(source_id)
+  end
+
+  defp resolve_source_scope(%{source_kind: "url"} = attrs) do
+    case attrs[:source_ref] || attrs["source_ref"] do
+      s when is_binary(s) -> DmhAi.VectorDB.SourceScope.from_url(s)
+      _ -> nil
+    end
+  end
+
+  defp resolve_source_scope(_), do: nil
 
   @doc """
   Fetch nearest KB source by centroid cosine within `org_id`, returning
@@ -192,6 +218,31 @@ defmodule DmhAi.VectorDB.Sources do
     FROM memo_sources WHERE user_id=? ORDER BY id ASC
     """, [user_id]).rows
     |> Enum.map(&memo_row_to_map/1)
+  end
+
+  @doc "Count a user's memo-meta rows (used by account-wipe confirmation flows)."
+  @spec count_user_memos(String.t()) :: non_neg_integer()
+  def count_user_memos(user_id) when is_binary(user_id) do
+    case query!(Repo, "SELECT COUNT(*) FROM memo_chunks_meta WHERE user_id=?", [user_id]) do
+      %{rows: [[n] | _]} when is_integer(n) -> n
+      _                                      -> 0
+    end
+  end
+
+  @doc """
+  Sweep a user's entire memo state — vec rows + chunk meta + sources.
+  Used when the master key wrap is unrecoverable (ciphertext orphaned)
+  and on full account wipe. Order: vec first (FK by rowid → meta.id),
+  then meta, then the sources rows.
+  """
+  @spec wipe_user_memos(String.t()) :: :ok
+  def wipe_user_memos(user_id) when is_binary(user_id) do
+    query!(Repo,
+      "DELETE FROM kb_vec_memo WHERE rowid IN (SELECT id FROM memo_chunks_meta WHERE user_id=?)",
+      [user_id])
+    query!(Repo, "DELETE FROM memo_chunks_meta WHERE user_id=?", [user_id])
+    query!(Repo, "DELETE FROM memo_sources WHERE user_id=?", [user_id])
+    :ok
   end
 
   # ─── Private ──────────────────────────────────────────────────────────────

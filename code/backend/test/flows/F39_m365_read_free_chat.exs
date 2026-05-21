@@ -47,7 +47,7 @@ defmodule DmhAi.Flows.F39M365ReadFreeChat do
     query!(Repo,
       "INSERT INTO user_credentials (user_id, target, account, kind, payload, created_at, updated_at) " <>
       "VALUES (?, ?, ?, ?, ?, ?, ?)",
-      [admin_id, "oauth:microsoft", "", "oauth2",
+      [admin_id, "oauth:m365", "", "oauth2",
        Jason.encode!(%{"access_token" => "fake-graph-token"}),
        :os.system_time(:millisecond), :os.system_time(:millisecond)])
 
@@ -63,7 +63,7 @@ defmodule DmhAi.Flows.F39M365ReadFreeChat do
 
   test "POST /tools/execute m365.mail.search (read, free chat) → 200 with messages",
        %{admin_id: admin_id, email: email, password: password} do
-    Application.put_env(:dmh_ai, :__mcp_caller_stub__, fn "microsoft", "mail.search", args, _creds ->
+    Application.put_env(:dmh_ai, :__mcp_caller_stub__, fn "m365", "mail.search", args, _creds ->
       refute Map.has_key?(args, "__idempotency_key"),
              "read verbs MUST NOT carry an injected idempotency_key"
       assert args["query"] == "invoice"

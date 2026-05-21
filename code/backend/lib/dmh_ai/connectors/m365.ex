@@ -278,6 +278,15 @@ defmodule DmhAi.Connectors.M365 do
   end
 
   @impl true
+  # Primitive 0.9 — no /users?$filter=mail-eq function in this
+  # manifest yet, so workflows can't resolve `@user_N` against
+  # M365 directly. Fix: add `users.find_by_email` (GET
+  # /users?$filter=mail eq '<email>') and switch this to:
+  #   %{function: "m365.users.find_by_email",
+  #     by_arg: :email, emit_field: "id"}
+  def identity_lookup, do: nil
+
+  @impl true
   def remap_error(%{"error" => %{"code" => code}}) do
     case code do
       "RateLimited"                  -> :rate_limited

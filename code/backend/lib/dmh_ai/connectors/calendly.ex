@@ -181,6 +181,15 @@ defmodule DmhAi.Connectors.Calendly do
   end
 
   @impl true
+  # Primitive 0.9 — Calendly creds are single-user OAuth: a user
+  # connects their OWN Calendly. There's no API to look up another
+  # org member's Calendly identity by email. Workflows that name
+  # `@user_N` against Calendly will hit `unmappable_identity` at
+  # compile time and the compiler asks the user to either use
+  # their own Calendly account or supply a manual override row.
+  def identity_lookup, do: nil
+
+  @impl true
   def remap_error({:http, 401, _}), do: :unauthorised
   def remap_error({:http, 403, _}), do: :unauthorised
   def remap_error({:http, 404, _}), do: :not_found

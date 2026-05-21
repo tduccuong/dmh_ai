@@ -153,8 +153,8 @@ defmodule DmhAi.Flows.F23ClosedTaskEviction do
     # Step 7 — assertion 4: pickup_task envelope contains the
     # tool_call signature line but NO `[tool]` content line and none
     # of the tool_result body text.
-    {:ok, envelope} = PickupTask.execute(%{"task_num" => task_num},
-                                         %{session_id: session_id})
+    {:ok, %{envelope: envelope}} =
+      PickupTask.execute(%{"task_num" => task_num}, %{session_id: session_id})
 
     assert String.contains?(envelope, "<requested_task_content number=\"#{task_num}\">"),
            "envelope must include opening tag for task_num=#{task_num}"

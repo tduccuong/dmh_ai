@@ -3,7 +3,7 @@
 # See the LICENSE file in the repository root for full details.
 # For commercial inquiries, contact: tduccuong@gmail.com
 
-# Flow F46 — Stripe write verb refused outside task.
+# Flow F46 — Stripe write function refused outside task.
 
 defmodule DmhAi.Flows.F46StripeWriteRefusal do
   use ExUnit.Case, async: false
@@ -77,7 +77,7 @@ defmodule DmhAi.Flows.F46StripeWriteRefusal do
 
     assert decoded["ok"] == false
     assert get_in(decoded, ["error", "error"]) == "write_requires_task"
-    assert get_in(decoded, ["error", "verb"])  == "stripe.payment_intent.create"
+    assert get_in(decoded, ["error", "function"]) == "stripe.payment_intent.create"
 
     [[allowed_writes]] =
       query!(Repo, """

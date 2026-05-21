@@ -68,6 +68,7 @@ COPY index.html /app/static/
 COPY css/ /app/static/css/
 COPY js/ /app/static/js/
 COPY logo.png /app/static/logo.png
+COPY wf-icon.png /app/static/wf-icon.png
 COPY --from=assets /tmp/apple-touch-icon.png /app/static/apple-touch-icon.png
 COPY manifest.json /app/static/manifest.json
 COPY sw.js /app/static/sw.js

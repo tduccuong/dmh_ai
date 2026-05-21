@@ -34,13 +34,11 @@ defmodule DmhAi.Permissions.LanBlock do
   """
 
   # Tools that issue HTTP from the master container, with the name
-  # of their "URL" argument. `connect_mcp` has both `url` (direct)
-  # and `slug` (catalog lookup) — only the direct case is checkable
-  # here; slug-resolved URLs are operator-curated and trusted at
-  # this layer.
+  # of their "URL" argument. `connect_mcp` resolves via the
+  # operator-curated catalog (no user-supplied URL), so it is not
+  # gated here.
   @lan_gated_tools %{
-    "web_fetch"   => "url",
-    "connect_mcp" => "url"
+    "web_fetch" => "url"
   }
 
   @doc """

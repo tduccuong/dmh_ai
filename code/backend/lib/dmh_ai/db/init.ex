@@ -49,10 +49,11 @@ defmodule DmhAi.DB.Init do
       context TEXT,
       user_id TEXT DEFAULT '',
       mode TEXT DEFAULT 'confidant',
-      stream_buffer TEXT,                   -- partial final-answer tokens being streamed from the LLM; NULL when idle
-      stream_buffer_ts INTEGER,             -- last stream_buffer update ts (ms); used by FE polling to detect change
-      thinking_buffer TEXT,                 -- partial chain-of-thought tokens streamed alongside stream_buffer; NULL when no thinking active. See architecture.md §Polling-based delivery.
-      thinking_buffer_ts INTEGER,           -- last thinking_buffer update ts (ms)
+      -- Streaming state (partial final-answer + chain-of-thought
+      -- tokens during a turn) lives in DmhAi.Agent.EphemeralCache
+      -- ETS, NOT this table. See architecture.md §Streaming state
+      -- lives in ETS, not the DB. Per-token DB writes monopolised
+      -- SQLite's single-writer slot in WAL mode.
       tool_history TEXT DEFAULT NULL,       -- JSON: last-N-turn tool_call / tool_result messages for context retention
       created_at INTEGER,
       updated_at INTEGER DEFAULT 0
@@ -70,6 +71,7 @@ defmodule DmhAi.DB.Init do
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
       email TEXT UNIQUE NOT NULL,
+      email_aliases TEXT,                     -- JSON array of additional emails the user is known by in third-party SaaS (Primitive 0.9). Default NULL = no aliases. Admin-only edit. Identities.resolve/2 tries primary then aliases.
       name TEXT,
       password_hash TEXT NOT NULL,
       role TEXT NOT NULL DEFAULT 'user',       -- install-level superuser flag: 'admin' = admin of the deployment itself; 'user' = regular user. Distinct from org_role.
@@ -241,6 +243,29 @@ defmodule DmhAi.DB.Init do
     """)
 
     query!(Repo, "CREATE INDEX IF NOT EXISTS idx_user_credentials_user ON user_credentials (user_id)")
+
+    # Primitive 0.9 — Identities. Cache mapping a DMH-AI org user
+    # to the same person's identifier inside a connector vendor
+    # (HubSpot owner_id, Slack U02ABC..., Google Workspace directory
+    # id, M365 AAD object id, …). One row per (org, user, slug).
+    # Populated on demand by `Identities.resolve/2` via the
+    # connector's manifest-declared `identity_lookup` function;
+    # admin can write directly via POST /admin/identities for
+    # manual overrides (`resolved_via='manual_override'`, `ttl_s=0`).
+    query!(Repo, """
+    CREATE TABLE IF NOT EXISTS connector_identities (
+      org_id          TEXT NOT NULL,                  -- isolation key
+      user_id         TEXT NOT NULL,                  -- DMH-AI users.id
+      connector_slug  TEXT NOT NULL,                  -- e.g. "hubspot", "google_workspace"
+      external_id     TEXT NOT NULL,                  -- the vendor's identifier
+      resolved_via    TEXT NOT NULL,                  -- "primary_email" | "alias:<n>" | "manual_override"
+      cached_at       INTEGER NOT NULL,               -- UTC seconds
+      ttl_s           INTEGER NOT NULL DEFAULT 86400, -- 24h default; 0 = permanent (manual override)
+      PRIMARY KEY (org_id, user_id, connector_slug)
+    )
+    """)
+
+    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_connector_identities_slug ON connector_identities (connector_slug)")
 
     # Pending OAuth2 state tokens for the connect_mcp flow. One
     # row per in-flight authorization. Carries everything needed to
@@ -448,6 +473,9 @@ defmodule DmhAi.DB.Init do
       id              TEXT NOT NULL,                  -- slug, deterministic from display_name; PK with org_id
       org_id          TEXT NOT NULL,                  -- FK organizations.id
       display_name    TEXT NOT NULL,
+      created_by      TEXT NOT NULL,                  -- FK users.id; the OWNER. Immutable.
+                                                       -- Runtime executor uses this as caller_ctx.user_id;
+                                                       -- "my X" in source prose binds to this user.
       current_version INTEGER NOT NULL,
       active_version  INTEGER,                        -- nullable; non-NULL when armed
       created_at      INTEGER NOT NULL,
@@ -462,17 +490,127 @@ defmodule DmhAi.DB.Init do
       org_id               TEXT NOT NULL,             -- FK workflows.org_id (denormalised for cheap reads)
       version              INTEGER NOT NULL,
       ir_json              TEXT NOT NULL,             -- the full IR (trigger, nodes, edges, outputs)
-      change_note          TEXT,                      -- one-line summary, e.g. "added approval gate before send"
+      change_note          TEXT,                      -- one-line summary of THIS version's delta (e.g. "added approval gate before send")
+      description          TEXT NOT NULL,             -- short prose summary of WHAT the workflow does — what the picker shows for the current_version. Required at upsert; the model writes one or two operator-readable sentences.
       compiled_at          INTEGER NOT NULL,
       compiled_in_session  TEXT NOT NULL,             -- the chat session that produced this version
-      compiled_by_user_id  TEXT NOT NULL,             -- who saved it
-      open_questions_count INTEGER NOT NULL DEFAULT 0,
+      compiled_by_user_id  TEXT NOT NULL,             -- who edited this version (may differ from workflows.created_by)
       PRIMARY KEY (org_id, workflow_id, version)
     )
     """)
 
     query!(Repo,
       "CREATE INDEX IF NOT EXISTS idx_workflow_versions_session ON workflow_versions (compiled_in_session)")
+
+    # Phase B — per-run state for the deterministic executor. One
+    # row per workflow invocation. Bindings persisted at every step
+    # boundary so an executor crash mid-run resumes at the last
+    # successful step. `status` flips through running → completed |
+    # failed | waiting | timed_out.
+    query!(Repo, """
+    CREATE TABLE IF NOT EXISTS workflow_run_state (
+      id               TEXT PRIMARY KEY,                -- UUID
+      workflow_id      TEXT NOT NULL,
+      workflow_version INTEGER NOT NULL,
+      org_id           TEXT NOT NULL,
+      task_id          TEXT NOT NULL,                   -- wrapping task
+      owner_user_id    TEXT NOT NULL,                   -- snapshot of workflows.created_by at run start
+      trigger_payload  TEXT NOT NULL,                   -- JSON: data that triggered THIS instance
+      bindings         TEXT NOT NULL,                   -- JSON {trigger, emits}
+      current_node     INTEGER,                         -- where the executor is
+      status           TEXT NOT NULL,                   -- spawned | running | waiting | paused | completed | failed | cancelled | timed_out
+      paused           INTEGER NOT NULL DEFAULT 0,      -- user-set; executor checks before walking next node
+      last_error       TEXT,                            -- structured envelope JSON on failure
+      started_at       INTEGER NOT NULL,
+      updated_at       INTEGER NOT NULL,
+      completed_at     INTEGER
+    )
+    """)
+
+    query!(Repo,
+      "CREATE INDEX IF NOT EXISTS idx_workflow_run_state_task ON workflow_run_state (task_id)")
+    query!(Repo,
+      "CREATE INDEX IF NOT EXISTS idx_workflow_run_state_status ON workflow_run_state (status)")
+    query!(Repo,
+      "CREATE INDEX IF NOT EXISTS idx_workflow_run_state_workflow ON workflow_run_state (org_id, workflow_id, started_at DESC)")
+
+    # Subordinate table — open `wait` predicates for a run. A run
+    # in `status='waiting'` has one or more rows here; matching events
+    # (scheduler tick, webhook ingress, approval decision) resume
+    # the run via Executor.resume_run/2.
+    query!(Repo, """
+    CREATE TABLE IF NOT EXISTS workflow_run_waits (
+      run_id     TEXT NOT NULL,
+      node_id    INTEGER NOT NULL,
+      kind       TEXT NOT NULL,                          -- 'approval' | 'webhook' | 'schedule'
+      predicate  TEXT NOT NULL,                          -- JSON
+      expires_at INTEGER,                                -- NULL = no timeout
+      PRIMARY KEY (run_id, node_id)
+    )
+    """)
+
+    query!(Repo,
+      "CREATE INDEX IF NOT EXISTS idx_workflow_run_waits_kind ON workflow_run_waits (kind)")
+
+    # Per-step trace. One row per node the executor walks. Fed by
+    # Executor.handle_step / handle_branch / handle_gate / handle_wait
+    # at the start of each step (status='running') and updated to
+    # terminal state (completed | failed | waiting | skipped) when
+    # the step resolves. Surface for `/runs/:run_id` viewer + the
+    # workflow-runs dashboard (#505).
+    query!(Repo, """
+    CREATE TABLE IF NOT EXISTS workflow_run_steps (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id          TEXT NOT NULL,
+      node_id         INTEGER NOT NULL,
+      started_at      INTEGER NOT NULL,
+      completed_at    INTEGER,                          -- NULL while running / waiting
+      status          TEXT NOT NULL,                    -- running | waiting | completed | failed | skipped
+      resolved_input  TEXT,                              -- JSON: args after Mustache substitution
+      output          TEXT,                              -- JSON: emit map the step produced
+      error           TEXT,                              -- JSON: structured error envelope if failed
+      waiting_on      TEXT,                              -- JSON: for wait/gate, what's holding it
+      duration_ms     INTEGER
+    )
+    """)
+
+    query!(Repo,
+      "CREATE INDEX IF NOT EXISTS idx_workflow_run_steps_run ON workflow_run_steps (run_id, started_at)")
+
+    # Trigger-detection state for poll/schedule triggers (and the
+    # autonomous side of webhook delivery accounting). One row per
+    # (org_id, workflow_id). The poller reads `last_cursor` to issue
+    # the next "items since X" query, then writes the connector's
+    # new cursor back. `last_fire_status` distinguishes a tick that
+    # found new items (`ok`) from one that found nothing
+    # (`no_new_items`) — useful for the dashboard's "last fired at"
+    # display.
+    query!(Repo, """
+    CREATE TABLE IF NOT EXISTS workflow_trigger_state (
+      org_id              TEXT NOT NULL,
+      workflow_id         TEXT NOT NULL,
+      last_cursor         TEXT,
+      last_fired_at       INTEGER,
+      last_fire_status    TEXT,                          -- 'ok' | 'error' | 'no_new_items'
+      cursor_updated_at   INTEGER,
+      PRIMARY KEY (org_id, workflow_id)
+    )
+    """)
+
+    # Webhook event-id dedupe (replay protection). 24h retention via
+    # the daily sweeper. Each incoming webhook is rejected with 200
+    # OK if the (workflow_id, event_id) pair already exists.
+    query!(Repo, """
+    CREATE TABLE IF NOT EXISTS workflow_webhook_events (
+      workflow_id   TEXT NOT NULL,
+      event_id      TEXT NOT NULL,                       -- external system's idempotency key
+      received_at   INTEGER NOT NULL,
+      PRIMARY KEY (workflow_id, event_id)
+    )
+    """)
+
+    query!(Repo,
+      "CREATE INDEX IF NOT EXISTS idx_workflow_webhook_events_received ON workflow_webhook_events (received_at)")
 
     # Vector knowledge base — see specs/vector_kb.md.
     #
@@ -525,6 +663,14 @@ defmodule DmhAi.DB.Init do
       chunker_config_version TEXT,
       embedder_model         TEXT,
       parent_source_id       TEXT,
+      -- Semantic classification of this source: JSON
+      --   {"platform": "<connector-slug or null>", "category": "<category>"}
+      -- where category ∈ "api-docs" | "sop" | "policy" | "workflow" | "spec" | "general".
+      -- NULL = untagged ⇔ {platform: null, category: "general"}. Used by
+      -- retrieval-time scope filters so a workflow-compile query
+      -- doesn't latch onto third-party SaaS API docs. See
+      -- arch_wiki/dmh_ai/knowledge.md §Source scope.
+      source_scope           TEXT,
       last_seen_at           INTEGER,
       last_indexed_at        INTEGER,
       last_check_at          INTEGER,

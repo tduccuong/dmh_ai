@@ -185,16 +185,37 @@ defmodule DmhAi.Handlers.Data do
   # Returns:
   #   - messages:      new session.messages entries with ts > msg_since
   #   - progress:      new session_progress rows with id > prog_since
-  #   - stream_buffer: partial final-answer text currently being streamed, or nil
+  #   - stream_buffer: partial final-answer text currently being streamed
+  #                    (read from EphemeralCache ETS, NOT the DB), or "" / nil
   #   - is_working:    true when a turn is in flight (buffer non-null OR ongoing task)
   def poll_session(conn, user, session_id) do
     result =
       query!(Repo,
-             "SELECT messages, stream_buffer, thinking_buffer FROM sessions WHERE id=? AND user_id=?",
+             "SELECT messages FROM sessions WHERE id=? AND user_id=?",
              [session_id, user.id])
 
     case result.rows do
-      [[msgs_json, stream_buffer, thinking_buffer]] ->
+      [[msgs_json]] ->
+        # Streaming state lives in ETS (DmhAi.Agent.EphemeralCache),
+        # NOT the `sessions` table — per-token DB writes monopolised
+        # SQLite's single-writer slot. See architecture.md
+        # §Streaming state lives in ETS, not the DB.
+        #
+        # Preserve the FE contract: `nil` when no active stream, the
+        # text string when streaming. ETS returns `""` for missing
+        # keys; remap to `nil` so `is_binary(stream_buffer)` continues
+        # to mean "active stream".
+        stream_buffer =
+          case DmhAi.Agent.StreamBuffer.read(session_id, user.id) do
+            "" -> nil
+            s  -> s
+          end
+
+        thinking_buffer =
+          case DmhAi.Agent.ThinkingBuffer.read(session_id, user.id) do
+            "" -> nil
+            s  -> s
+          end
         conn = fetch_query_params(conn)
 
         msg_since =

@@ -405,10 +405,10 @@ defmodule DmhAi.Agent.ContextEngine do
   # connector module's `mcp_catalog_descriptor.description` field
   # via the `mcp_catalog` row); function names are NOT listed
   # because they appear in the model's tools catalog post-attach
-  # as `<slug>.<function_name>`. Rows whose slug isn't a registered
-  # Universal Region connector (user-added free-form URL) render
-  # description-less. `[needs_auth]` surfaces re-auth state so the
-  # model can call `connect_mcp` to recover.
+  # as `<slug>.<function_name>`. Rows whose `mcp_catalog` entry
+  # has no description render description-less. `[needs_auth]`
+  # surfaces re-auth state so the model can call `connect_mcp`
+  # to recover.
   defp format_mcp_section(user_id) do
     services = DmhAi.MCP.Registry.list_authorized(user_id)
 
@@ -419,7 +419,7 @@ defmodule DmhAi.Agent.ContextEngine do
       _ ->
         rows =
           services
-          |> Enum.map(&format_mcp_row/1)
+          |> Enum.map(fn s -> format_mcp_row(s, user_id) end)
           |> Enum.sort()
           |> Enum.join("\n")
 
@@ -434,23 +434,49 @@ defmodule DmhAi.Agent.ContextEngine do
     end
   end
 
-  defp format_mcp_row(%{alias: alias_, status: status}) do
-    tag = if status == "needs_auth", do: " [needs_auth]", else: ""
+  defp format_mcp_row(%{alias: alias_, status: status}, user_id) do
+    tag      = if status == "needs_auth", do: " [needs_auth]", else: ""
+    accounts = mcp_accounts_for(alias_, user_id)
+    accounts_clause =
+      case accounts do
+        [] -> ""
+        list -> " (accounts: #{Enum.join(list, ", ")})"
+      end
 
     case mcp_description_for(alias_) do
-      nil  -> "- slug=`#{alias_}`#{tag}"
-      desc -> "- slug=`#{alias_}`#{tag} — #{desc}"
+      nil  -> "- slug=`#{alias_}`#{accounts_clause}#{tag}"
+      desc -> "- slug=`#{alias_}`#{accounts_clause}#{tag} — #{desc}"
     end
   end
 
   # Read the connector's self-description from `mcp_catalog`.
-  # Returns nil for slugs whose row doesn't carry a description
-  # (e.g. free-form URLs the user attached via `connect_mcp(url:)`
-  # — those rows aren't seeded by a connector module).
+  # Returns nil for slugs whose row doesn't carry a description.
   defp mcp_description_for(slug) when is_binary(slug) do
     case DmhAi.MCP.Catalog.get_by_slug(slug) do
       %{description: d} when is_binary(d) and d != "" -> d
       _ -> nil
+    end
+  end
+
+  # Authorized account labels for this slug. Resolves the slug to its
+  # OAuth host_match via the OAuth catalog, then enumerates the
+  # `user_credentials` rows the user holds at `oauth:<host_match>`.
+  # Used to surface the multi-account ambiguity to the model so it
+  # can ask the user which account to bind in a workflow node.
+  defp mcp_accounts_for(slug, user_id) do
+    with %{host_match: host} <- DmhAi.OAuth.Catalog.get_by_slug(slug),
+         creds when is_list(creds) <-
+           DmhAi.Auth.Credentials.lookup_all(user_id, "oauth:" <> host) do
+      creds
+      |> Enum.map(fn c ->
+        case Map.get(c, :account, "") do
+          "" -> "default"
+          acc -> acc
+        end
+      end)
+      |> Enum.uniq()
+    else
+      _ -> []
     end
   end
 

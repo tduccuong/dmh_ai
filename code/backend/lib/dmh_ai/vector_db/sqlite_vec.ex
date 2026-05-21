@@ -267,6 +267,17 @@ defmodule DmhAi.VectorDB.SqliteVec do
     {"AND meta.org_id = ?", [org_id]}
   end
 
+  # `{:org, org_id, scope_predicate}` — org isolation PLUS a scope
+  # filter against `src.source_scope` (JSON column on kb_sources).
+  # The scope filter restricts results to platforms / categories
+  # the caller declared relevant (e.g. compile-mode excludes
+  # third-party SaaS API docs that happen to mention "workflow").
+  # See arch_wiki/dmh_ai/knowledge.md §Source scope.
+  defp build_filter(:knowledge, {:org, org_id, scope_pred}) when is_binary(org_id) and is_map(scope_pred) do
+    {scope_sql, scope_args} = build_scope_predicate(scope_pred)
+    {"AND meta.org_id = ?" <> scope_sql, [org_id | scope_args]}
+  end
+
   defp build_filter(:memo, {:user, user_id}) when is_binary(user_id) do
     {"AND meta.user_id = ?", [user_id]}
   end
@@ -276,6 +287,52 @@ defmodule DmhAi.VectorDB.SqliteVec do
   end
 
   defp build_filter(_scope, _other), do: {"", []}
+
+  # Build the scope-predicate SQL fragment + args. Reads
+  # `src.source_scope` as JSON via SQLite's json_extract. The
+  # default `include_untagged: true` always lets untagged sources
+  # through — they're general-purpose org KB.
+  defp build_scope_predicate(pred) when is_map(pred) do
+    include_untagged = Map.get(pred, :include_untagged, true)
+    untagged_clause  =
+      if include_untagged, do: "src.source_scope IS NULL OR ", else: ""
+
+    {clauses, args} =
+      Enum.reduce(pred, {[], []}, fn
+        {:platforms_in, list}, {sqls, args} when is_list(list) and list != [] ->
+          marks = list |> Enum.map(fn _ -> "?" end) |> Enum.join(", ")
+          vals  = Enum.map(list, &platform_to_param/1)
+          {[~s|json_extract(src.source_scope, '$.platform') IN (#{marks})| | sqls], vals ++ args}
+
+        {:platforms_not_in, list}, {sqls, args} when is_list(list) and list != [] ->
+          marks = list |> Enum.map(fn _ -> "?" end) |> Enum.join(", ")
+          vals  = Enum.map(list, &platform_to_param/1)
+          {[~s|(json_extract(src.source_scope, '$.platform') NOT IN (#{marks}) OR json_extract(src.source_scope, '$.platform') IS NULL)| | sqls], vals ++ args}
+
+        {:categories_in, list}, {sqls, args} when is_list(list) and list != [] ->
+          marks = list |> Enum.map(fn _ -> "?" end) |> Enum.join(", ")
+          {[~s|json_extract(src.source_scope, '$.category') IN (#{marks})| | sqls], list ++ args}
+
+        _, acc ->
+          acc
+      end)
+
+    case clauses do
+      [] ->
+        # No constraints → no filter (untagged option is moot).
+        {"", []}
+
+      cs ->
+        sql = " AND (" <> untagged_clause <> Enum.join(cs, " AND ") <> ")"
+        {sql, args}
+    end
+  end
+
+  # SQL's IN accepts strings and NULLs; convert atom `nil` to NULL.
+  # SQLite-vec stores Jason-encoded scopes, so the platform is a
+  # string or JSON null — both end up as SQL NULL when extracted.
+  defp platform_to_param(nil), do: nil
+  defp platform_to_param(v) when is_binary(v), do: v
 
   # vec0 accepts vectors as packed float32 LE blobs. Exposed (not
   # `defp`) so the memo two-phase ingest path in `VectorDB` can

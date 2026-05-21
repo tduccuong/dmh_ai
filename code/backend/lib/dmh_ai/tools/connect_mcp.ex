@@ -6,7 +6,8 @@
 defmodule DmhAi.Tools.ConnectMcp do
   @moduledoc """
   Single user-facing tool for attaching an MCP server to the current
-  task. Two code paths under one tool, dispatched here:
+  task. The only argument is `slug` — a row in the admin's connector
+  catalog. Two code paths under one tool, both dispatched off the slug:
 
     * **In-process** — slug whose connector module exports
       `mcp_handler_module/0`. DMH-AI hosts the MCP server itself
@@ -14,10 +15,10 @@ defmodule DmhAi.Tools.ConnectMcp do
       the External Connectors admin page + the user's My Services
       Connect click. Just attach. `InProcess.attach/3`.
 
-    * **Vendor-hosted** — every other slug, plus free-form URL
-      connects. DMH-AI doesn't host this server; we have to probe,
-      discover OAuth/API-key metadata at the URL, and run the
-      handshake. `Vendor.connect/1`.
+    * **Vendor-hosted** — every other catalog slug. DMH-AI doesn't
+      host this server; we resolve the catalog row to its
+      `mcp_url` + `auth_kind`, then probe / discover OAuth or
+      API-key metadata and run the handshake. `Vendor.connect/1`.
 
   Token freshness is **not** checked here. The dispatcher answers
   "did the user authorize this connector?" — a state question. The
@@ -41,15 +42,12 @@ defmodule DmhAi.Tools.ConnectMcp do
   @impl true
   def description do
     """
-    Attach an MCP server (JSON-RPC `initialize`/`tools/list`/`tools/call`) to the current task.
-
-    Pass `url` for ad-hoc connections (resolve the URL via fetch_index → web_search → ask the user; never invent URLs from service names), or `slug` for an admin-curated catalog entry. Pass exactly one of url / slug.
+    Attach an MCP server (JSON-RPC `initialize`/`tools/list`/`tools/call`) to the current task. Pass a `slug` from the admin-curated catalog (visible in `<authorized_services>` + the org's `<authorized_services_catalog>` block).
 
     The runtime detects auth automatically by probing the server — you do NOT pick an auth method. The probe outcome routes the flow:
     - server is open → connected immediately.
     - server speaks OAuth 2.1 (Bearer challenge) → automatic OAuth flow with auth_url returned to the user.
     - server uses a static API key (non-Bearer challenge) → single-field form prompts the user for the key.
-    - URL did not respond as MCP → `{:error, ...}` with an honest reason; tell the user the URL isn't an MCP server, don't retry.
 
     Returns: `{status: "connected", alias, tools}` | `{status: "needs_auth", alias, auth_url}` | `{status: "needs_setup", alias, form}` | `{:error, reason}`. The first three are chain-terminating.
 
@@ -65,19 +63,16 @@ defmodule DmhAi.Tools.ConnectMcp do
       parameters: %{
         type: "object",
         properties: %{
-          url: %{
-            type: "string",
-            description: "MCP server URL. Use this for ad-hoc connections — pass `slug` instead to use a catalog entry. Resolve the URL via fetch_index → web_search → ask the user. Never invent URLs from service names."
-          },
           slug: %{
             type: "string",
             description: "Slug of an admin-curated catalog entry (must be enabled). Resolves to the row's mcp_url; the auth flow defaults from the catalog's auth_kind."
           },
           alias: %{
             type: "string",
-            description: "Optional friendly label for this connection. Defaults to the slug, or a label derived from the URL."
+            description: "Optional friendly label for this connection. Defaults to the slug."
           }
-        }
+        },
+        required: ["slug"]
       }
     }
   end
@@ -88,12 +83,11 @@ defmodule DmhAi.Tools.ConnectMcp do
     session_id = Map.get(ctx, :session_id)
     anchor_n   = Map.get(ctx, :anchor_task_num)
     slug       = Map.get(args, "slug")
-    raw_url    = Map.get(args, "url")
     alias_in   = Map.get(args, "alias")
 
     with :ok                    <- require_ctx(user_id, session_id),
          {:ok, anchor_task_id}  <- resolve_anchor(session_id, anchor_n),
-         {:ok, route}           <- classify_route(slug, raw_url) do
+         {:ok, route}           <- classify_route(slug) do
       dispatch(route, user_id, session_id, anchor_task_id, alias_in)
     end
   end
@@ -103,8 +97,7 @@ defmodule DmhAi.Tools.ConnectMcp do
   # `route` is one of:
   #   {:in_process, slug}
   #   {:vendor_slug, slug, url, auth_kind}
-  #   {:vendor_url, url}
-  defp classify_route(slug, _raw_url) when is_binary(slug) and slug != "" do
+  defp classify_route(slug) when is_binary(slug) and slug != "" do
     if ConnectorRegistry.in_process?(slug) do
       {:ok, {:in_process, slug}}
     else
@@ -121,21 +114,10 @@ defmodule DmhAi.Tools.ConnectMcp do
     end
   end
 
-  defp classify_route(_, url) when is_binary(url) and url != "" do
-    case validate_url(url) do
-      :ok          -> {:ok, {:vendor_url, url}}
-      {:error, _} = err -> err
-    end
-  end
-
-  defp classify_route(_, _),
-    do: {:error, "connect_mcp requires either `url` or `slug`"}
+  defp classify_route(_),
+    do: {:error, "connect_mcp requires a non-empty `slug` from the admin's connector catalog"}
 
   defp dispatch({:in_process, slug}, user_id, _session_id, anchor_task_id, _alias_in) do
-    # In-process connectors are always referenced by their slug —
-    # the alias is the slug, full stop. Aliasing only matters when
-    # the user is connecting to a free-form URL with no canonical
-    # name.
     InProcess.attach(user_id, anchor_task_id, slug)
   end
 
@@ -147,17 +129,6 @@ defmodule DmhAi.Tools.ConnectMcp do
       url:               url,
       alias_:            alias_in || slug,
       catalog_auth_kind: auth_kind
-    })
-  end
-
-  defp dispatch({:vendor_url, url}, user_id, session_id, anchor_task_id, alias_in) do
-    Vendor.connect(%{
-      user_id:           user_id,
-      session_id:        session_id,
-      anchor_task_id:    anchor_task_id,
-      url:               url,
-      alias_:            alias_in || derive_alias_from_url(url),
-      catalog_auth_kind: nil
     })
   end
 
@@ -176,42 +147,4 @@ defmodule DmhAi.Tools.ConnectMcp do
 
   defp resolve_anchor(_, _),
     do: {:error, "connect_mcp requires an anchor task — call create_task or pickup_task first"}
-
-  defp validate_url(url) when is_binary(url) and url != "" do
-    case URI.parse(url) do
-      %URI{scheme: scheme, host: host} when scheme in ["http", "https"] and is_binary(host) and host != "" ->
-        :ok
-
-      _ ->
-        {:error, "url must be an http(s) URL"}
-    end
-  end
-
-  defp derive_alias_from_url(url) do
-    case URI.parse(url) do
-      %URI{path: path} when is_binary(path) and path not in ["", "/"] ->
-        path
-        |> String.trim_leading("/")
-        |> String.split("/")
-        |> List.last()
-        |> slugify()
-
-      %URI{host: host} when is_binary(host) ->
-        slugify(host)
-
-      _ ->
-        "service"
-    end
-  end
-
-  defp slugify(s) do
-    s
-    |> String.downcase()
-    |> String.replace(~r/[^a-z0-9]+/, "_")
-    |> String.trim("_")
-    |> case do
-      ""  -> "service"
-      out -> out
-    end
-  end
 end

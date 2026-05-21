@@ -201,19 +201,26 @@ defmodule DmhAi.Tools.Dispatcher do
   end
 
   defp check_permission(%Manifest.Function{permission: perm}, ctx, function) do
-    user_id = ctx[:user_id]
-    resource = {:function, function}
-    action =
+    caller_user_id = ctx[:user_id]
+    # The credential-holder is the caller by default; workflow steps
+    # may override via `act_as_user_id` (compile-time-permitted only).
+    target_user_id = ctx[:act_as_user_id] || caller_user_id
+    slug = function |> String.split(".") |> List.first()
+
+    {action, target} =
       case perm do
-        :read  -> :read
-        :write -> :write
-        :admin -> :administer
+        :admin -> {:write_settings, "org_settings"}
+        _      -> {:act_as_creds,   "creds:#{slug}:#{target_user_id}"}
       end
 
-    if Permissions.can?(user_id, action, resource) do
+    if Permissions.can?(caller_user_id, action, target) do
       :ok
     else
-      {:error, error_envelope(:permission_denied, function: function, required: perm)}
+      denial = Permissions.denial(caller_user_id, action, target)
+      {:error, error_envelope(:permission_denied,
+                              function: function,
+                              required: perm,
+                              denial:   denial)}
     end
   end
 
@@ -236,11 +243,23 @@ defmodule DmhAi.Tools.Dispatcher do
   end
 
   defp error_envelope(:permission_denied, opts) do
-    %{
+    base = %{
       error:    "permission_denied",
-      function:     opts[:function],
+      function: opts[:function],
       required: opts[:required]
     }
+
+    case opts[:denial] do
+      %Permissions.Denial{} = d ->
+        Map.merge(base, %{
+          reason:      d.reason,
+          target:      d.target,
+          remediation: Enum.map(d.remediation, fn {kind, text} -> %{kind: kind, text: text} end)
+        })
+
+      _ ->
+        base
+    end
   end
 
   defp error_envelope(:missing_credentials, opts) do

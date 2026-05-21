@@ -11,7 +11,7 @@ defmodule DmhAi.P02AdminKbSourcesTest do
       GET  /admin/kb-sources           → 200 { sources: [...] }, org-scoped
       POST /admin/kb-sources/remove    → 200 { ok: true, source_id }, writes history row
 
-  Both routes go through `Permissions.can?(:administer, :org_settings)`;
+  Both routes go through `Permissions.can?(uid, :write_settings, "org_settings")`;
   non-admin callers get 403 with no side effect.
 
   Tests use the Router end-to-end (Plug.Test conn → Router.call) so the

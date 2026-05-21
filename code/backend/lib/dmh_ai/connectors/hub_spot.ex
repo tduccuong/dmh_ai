@@ -232,6 +232,14 @@ defmodule DmhAi.Connectors.HubSpot do
   end
 
   @impl true
+  # Primitive 0.9 — HubSpot exposes /crm/v3/owners?email=<email>,
+  # but the function is not yet in this manifest. Fix: add
+  # `owners.find_by_email` and switch this to:
+  #   %{function: "hubspot.owners.find_by_email",
+  #     by_arg: :email, emit_field: "id"}
+  def identity_lookup, do: nil
+
+  @impl true
   def remap_error(%{"category" => "OBJECT_ALREADY_EXISTS"}), do: :duplicate
 
   def remap_error({:http, 409, body}) when is_binary(body) do

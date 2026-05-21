@@ -178,11 +178,16 @@ defmodule DmhAi.VectorDB.Relearn do
   # in the same org's corpus. Looks it up from the row we're about to
   # refresh; falls back to the default org if no existing row matches
   # (rare — relearn is enqueued by hits, so the row exists).
+  #
+  # `source_ref` is the raw URL / file path the caller carries; in
+  # `kb_sources` that value lives in the `source_id` column (the
+  # `_ref` suffix is local terminology, the column has always been
+  # `source_id`).
   defp org_for_source(source_kind, source_ref) do
     import Ecto.Adapters.SQL, only: [query!: 3]
 
     case query!(DmhAi.Repo,
-                "SELECT org_id FROM kb_sources WHERE source_kind=? AND source_ref=? LIMIT 1",
+                "SELECT org_id FROM kb_sources WHERE source_kind=? AND source_id=? LIMIT 1",
                 [source_kind, source_ref]).rows do
       [[org_id]] when is_binary(org_id) and org_id != "" -> org_id
       _ -> DmhAi.Orgs.default_id()

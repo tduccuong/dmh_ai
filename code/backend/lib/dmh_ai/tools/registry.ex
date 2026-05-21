@@ -54,10 +54,16 @@ defmodule DmhAi.Tools.Registry do
     DmhAi.Tools.FetchMemo,
     DmhAi.Tools.AuthorizeService,
     DmhAi.Tools.MkDownloadLink,
+    DmhAi.Tools.InspectFunction,
+    DmhAi.Tools.InspectFunctionProperty,
     DmhAi.Tools.UpsertWorkflow,
+    DmhAi.Tools.ReadWorkflow,
     DmhAi.Tools.ArmWorkflow,
     DmhAi.Tools.DisarmWorkflow,
-    DmhAi.Tools.InvokeWorkflow
+    DmhAi.Tools.InvokeWorkflow,
+    DmhAi.Tools.PauseWorkflowRun,
+    DmhAi.Tools.ResumeWorkflowRun,
+    DmhAi.Tools.CancelWorkflowRun
   ]
 
   # Save tools — runtime-only (invoked by `/index` and `/memo` commands
@@ -70,6 +76,14 @@ defmodule DmhAi.Tools.Registry do
   ]
 
   # ── definitions ───────────────────────────────────────────────────────
+
+  @doc """
+  Primitive 0.10 — list every registered internal tool module.
+  Consumed by `Tools.Catalog.list/1` to enumerate the internal
+  category alongside connector functions and synthetics.
+  """
+  @spec tool_modules() :: [module()]
+  def tool_modules, do: @tools
 
   @doc "Built-in tool definitions only. For static catalog endpoints."
   @spec all_definitions() :: [map()]

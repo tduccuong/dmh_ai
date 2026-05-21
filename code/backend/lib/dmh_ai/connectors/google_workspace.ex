@@ -64,11 +64,28 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
           permission:    :read,
           callable_from: [:chat, :task],
           args: %{
-            "query" => %{type: :string, required: true},
-            "limit" => %{type: :integer, required: false}
+            "query"       => %{type: :string, required: true},
+            "limit"       => %{type: :integer, required: false},
+            "after_epoch" => %{type: :integer, required: false}
           },
           returns: %{messages: :list},
-          scopes:  ["https://www.googleapis.com/auth/gmail.readonly"]
+          scopes:  ["https://www.googleapis.com/auth/gmail.readonly"],
+          # Poll-trigger protocol. Cursor = unix-epoch seconds of the
+          # newest message seen; the runtime passes it as `after_epoch`
+          # on the next tick so the search narrows to genuinely-new
+          # mail. The response's `next_cursor` carries the new value;
+          # `items_path` is the `messages` array.
+          poll_trigger_capable: true,
+          cursor_arg:           "after_epoch",
+          cursor_response_path: "$.next_cursor",
+          items_path:           "$.messages",
+          # Cadence: Gmail's list endpoint has plenty of quota
+          # (250 units/user/s) but polling every second across many
+          # users would still be wasteful + chatty. Floor at 30s,
+          # default 5 min — covers "process incoming mail" without
+          # burning quota.
+          min_poll_seconds:     30,
+          default_poll_seconds: 300
         },
 
         # vendor: POST https://gmail.googleapis.com/gmail/v1/users/me/messages/send
@@ -313,6 +330,15 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
       }
     }
   end
+
+  @impl true
+  # Primitive 0.9 — no Directory API function in this manifest yet,
+  # so workflows can't resolve `@user_N` against Google Workspace.
+  # Fix: add `directory.users.find_by_email` (GET
+  # /admin/directory/v1/users/{userKey}) and switch this to:
+  #   %{function: "google_workspace.directory.users.find_by_email",
+  #     by_arg: :email, emit_field: "id"}
+  def identity_lookup, do: nil
 
   @impl true
   # Google APIs return errors as

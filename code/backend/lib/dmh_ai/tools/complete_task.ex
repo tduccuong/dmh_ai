@@ -51,7 +51,7 @@ defmodule DmhAi.Tools.CompleteTask do
          :ok             <- apply_title(task_id, args["task_title"]) do
       Tasks.mark_done(task_id, result)
       Logger.info("[CompleteTask] task=(#{task_num})[#{task_id}] type=#{task.task_type} result_len=#{String.length(result)}")
-      {:ok, %{task_num: task_num, ok: true}}
+      {:ok, %{task_num: task_num}}
     else
       {:error, :not_found} ->
         {:error,

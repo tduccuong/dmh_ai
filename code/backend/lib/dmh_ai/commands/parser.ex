@@ -7,20 +7,21 @@ defmodule DmhAi.Commands.Parser do
   @moduledoc """
   Slash-command tokenizer. Recognises:
 
-    * `/index <input>`  — save into the global index (runtime, no LLM round-trip)
+    * `/index <input>` — save into the global index (runtime, no LLM round-trip).
     * `/memo <input>`  — save OR query the user's memo store; runtime
       classifies via Oracle (see `DmhAi.Commands.Memo`).
 
+  Workflow intent is NOT a slash command. Natural-language phrasing
+  ("build a workflow that …", "run &<slug>", "edit &<slug> at node N")
+  flows through the assistant's `<workflow_authoring>` heuristic + the
+  `&<slug>` reference resolution sidecar. See
+  `arch_wiki/dmh_ai/sme/layer-W.md`.
+
   Everything after the first whitespace is the verbatim argument
   (preserves URLs with query strings, paths with spaces).
-
-  See specs/commands.md.
   """
 
-  @type result ::
-          {:index, String.t()}
-          | {:memo, String.t()}
-          | :not_a_command
+  @type result :: {:index, String.t()} | {:memo, String.t()} | :not_a_command
 
   @spec parse(String.t()) :: result()
   def parse(content) when is_binary(content) do
@@ -29,9 +30,11 @@ defmodule DmhAi.Commands.Parser do
     cond do
       String.starts_with?(trimmed, "/index ") -> {:index, after_prefix(trimmed, "/index ")}
       trimmed == "/index"                     -> {:index, ""}
-      String.starts_with?(trimmed, "/memo ") -> {:memo, after_prefix(trimmed, "/memo ")}
-      trimmed == "/memo"                     -> {:memo, ""}
-      true                                    -> :not_a_command
+
+      String.starts_with?(trimmed, "/memo ")  -> {:memo, after_prefix(trimmed, "/memo ")}
+      trimmed == "/memo"                      -> {:memo, ""}
+
+      true                                     -> :not_a_command
     end
   end
 

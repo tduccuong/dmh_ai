@@ -43,7 +43,7 @@ defmodule DmhAi.Tools.CancelTask do
       reason = normalise_reason(args["reason"])
       Tasks.mark_cancelled(task_id, reason)
       Logger.info("[CancelTask] task=(#{task_num})[#{task_id}] from=#{task.task_status} → cancelled reason=#{inspect(reason)}")
-      {:ok, %{task_num: task_num, ok: true}}
+      {:ok, %{task_num: task_num}}
     else
       {:error, :not_found} ->
         {:error, "cancel_task: no task (#{task_num}) exists in this session."}

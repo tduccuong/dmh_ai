@@ -36,7 +36,7 @@ defmodule DmhAi.Handlers.AdminKbSources do
 
   @spec remove(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def remove(conn, user) do
-    unless Permissions.can?(user.id, :administer, :org_settings) do
+    unless Permissions.can?(user.id, :write_settings, "org_settings") do
       json(conn, 403, %{error: "admin-only endpoint"})
     else
       case read_body!(conn) do
@@ -59,7 +59,7 @@ defmodule DmhAi.Handlers.AdminKbSources do
 
   @spec list(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def list(conn, user) do
-    unless Permissions.can?(user.id, :administer, :org_settings) do
+    unless Permissions.can?(user.id, :write_settings, "org_settings") do
       json(conn, 403, %{error: "admin-only endpoint"})
     else
       org_id = Orgs.for_user(user.id)

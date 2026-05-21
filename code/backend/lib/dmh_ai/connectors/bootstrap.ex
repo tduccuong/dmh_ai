@@ -156,13 +156,14 @@ defmodule DmhAi.Connectors.Bootstrap do
         if function_exported?(mod, :mcp_handler_module, 0) do
           handler_mod = mod.mcp_handler_module()
           if function_exported?(handler_mod, :handler, 0),
-            do: [handler_mod.handler()],
+            do: [{mod, handler_mod, handler_mod.handler()}],
             else: []
         else
           []
         end
       end)
-      |> Enum.into(%{}, fn h -> {h.slug, h} end)
+      |> tap(fn list -> Enum.each(list, fn {m, hm, h} -> verify_handler_wiring!(m, hm, h) end) end)
+      |> Enum.into(%{}, fn {_mod, _hm, h} -> {h.slug, h} end)
 
     DmhAi.Connectors.MCPServer.Registry.install(handler_map)
 
@@ -177,5 +178,55 @@ defmodule DmhAi.Connectors.Bootstrap do
         Logger.error("[Connectors.Bootstrap] in-process MCPServer failed: #{inspect(reason)}")
         :not_started
     end
+  end
+
+  # Boot-time sanity check on the manifest ⇄ handler wiring. For each
+  # function declared in a connector's `manifest/0`, assert the
+  # corresponding handler module's `functions/0` map exposes a
+  # `%FunctionSpec{}` — otherwise the function would route to "unknown
+  # function" at the first user call. Raises at boot with a clear
+  # message naming the offending connector + function so deploy fails
+  # loud rather than surface as a runtime mystery later.
+  #
+  # We deliberately do NOT require `:response` or `:handler` to be
+  # set: a FunctionSpec with neither falls through to RestBridge's
+  # default 2xx → `{:ok, body}` passthrough, which is a valid
+  # configuration when the manifest's `returns:` already matches the
+  # raw vendor response. Verifying that match is the contract test
+  # (manifest.returns ↔ actual response keys) — a separate gate.
+  defp verify_handler_wiring!(connector_mod, handler_mod, %{slug: slug, functions: handler_functions}) do
+    manifest = try_manifest(connector_mod)
+    manifest_functions = Map.get(manifest, :functions, %{})
+
+    missing =
+      manifest_functions
+      |> Map.keys()
+      |> Enum.reject(fn name -> Map.has_key?(handler_functions, name) end)
+
+    not_a_spec =
+      handler_functions
+      |> Enum.flat_map(fn {name, spec} ->
+        if match?(%DmhAi.Connectors.MCPServer.FunctionSpec{}, spec),
+          do: [],
+          else: [name]
+      end)
+
+    cond do
+      missing != [] ->
+        raise "[Connectors.Bootstrap] connector `#{slug}` (module #{inspect(connector_mod)}) declares " <>
+          "functions in manifest that the handler #{inspect(handler_mod)} doesn't implement: " <>
+          "#{inspect(missing)}"
+
+      not_a_spec != [] ->
+        raise "[Connectors.Bootstrap] connector `#{slug}` handler #{inspect(handler_mod)} " <>
+          "has entries that aren't %FunctionSpec{}: #{inspect(not_a_spec)}"
+
+      true ->
+        :ok
+    end
+  end
+
+  defp try_manifest(mod) do
+    if function_exported?(mod, :manifest, 0), do: mod.manifest(), else: %{}
   end
 end

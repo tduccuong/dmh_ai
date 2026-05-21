@@ -7,7 +7,7 @@ defmodule DmhAi.Router do
   use Plug.Router
   import Plug.Conn
   alias DmhAi.AuthPlug
-  alias DmhAi.Handlers.AdminKbSources
+  alias DmhAi.Handlers.{AdminIdentities, AdminKbSources, OrgUsers}
   alias DmhAi.Handlers.AdminConnectors
   alias DmhAi.Handlers.MeServices
   alias DmhAi.Handlers.AdminPools
@@ -266,6 +266,31 @@ defmodule DmhAi.Router do
     end
   end
 
+  # Primitive 0.9 — manual-override surface for connector_identities.
+  # Admin maps a DMH-AI user_id to a connector's native external_id
+  # when the email-pivot can't (different work email across SaaS,
+  # vendor lookup unreliable, etc.).
+  post "/admin/identities" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      AdminIdentities.put(conn, user)
+    end
+  end
+
+  get "/admin/identities" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      AdminIdentities.list(conn, user)
+    end
+  end
+
+  # Layer W — @-mention picker. Returns up to 10 same-org users
+  # matching the prefix. Authenticated; no role gate (every member
+  # can see the org directory; that's how Slack-style mentions work).
+  get "/org/users" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      OrgUsers.search(conn, user)
+    end
+  end
+
   post "/admin/pools/import" do
     with {:ok, conn, user} <- check_auth(conn) do
       AdminPools.import_many(conn, user)
@@ -311,6 +336,26 @@ defmodule DmhAi.Router do
     with {:ok, conn, user} <- check_auth(conn) do
       DmhAi.Handlers.Workflows.show(conn, user, slug, version)
     end
+  end
+
+  # ── Workflow run viewer (Layer W) ─────────────────────────────────────
+  # Renders the executor's actual output (status + emits + trigger
+  # payload) for one run. The model returns `run_url: "/runs/<id>"`
+  # from `invoke_workflow`; the FE intercepts the click and opens a
+  # modal that fetches this endpoint.
+  get "/runs/:run_id" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      DmhAi.Handlers.Runs.show(conn, user, run_id)
+    end
+  end
+
+  # ── Workflow webhook ingress (Layer W) ────────────────────────────────
+  # External M2M endpoint. NO auth header (the token IS the auth) —
+  # this is the URL the user pastes into the external SaaS's webhook
+  # configuration (HubSpot, Stripe, Calendly, etc). Three-layer
+  # validation lives in the handler.
+  post "/wf/webhook/:workflow_id/:token" do
+    DmhAi.Handlers.WfWebhook.receive(conn, workflow_id, token)
   end
 
   # ── Per-user services view (Primitive 0.3) ────────────────────────────

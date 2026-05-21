@@ -40,7 +40,7 @@ defmodule DmhAi.Tools.PauseTask do
          :ok            <- require_pausable(task, task_num) do
       Tasks.mark_paused(task_id)
       Logger.info("[PauseTask] task=(#{task_num})[#{task_id}] from=#{task.task_status} → paused")
-      {:ok, %{task_num: task_num, ok: true}}
+      {:ok, %{task_num: task_num}}
     else
       {:error, :not_found} ->
         {:error, "pause_task: no task (#{task_num}) exists in this session."}
