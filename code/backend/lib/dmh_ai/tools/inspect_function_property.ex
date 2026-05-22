@@ -30,6 +30,8 @@ defmodule DmhAi.Tools.InspectFunctionProperty do
   @behaviour DmhAi.Tools.Behaviour
 
   alias DmhAi.Connectors.Registry, as: ConnectorRegistry
+  alias DmhAi.Repo
+  import Ecto.Adapters.SQL, only: [query!: 3]
 
   @impl true
   def name, do: "inspect_function_property"
@@ -97,6 +99,8 @@ defmodule DmhAi.Tools.InspectFunctionProperty do
 
   defp dispatch_to_connector(mod, slug, bare, path, ctx) do
     if function_exported?(mod, :inspect_property, 3) do
+      ctx = Map.put(ctx, :vendor_metadata, load_vendor_metadata(slug, ctx))
+
       case mod.inspect_property(bare, path, ctx) do
         {:ok, schema} when is_map(schema) ->
           {:ok, format(slug, bare, path, schema)}
@@ -147,4 +151,38 @@ defmodule DmhAi.Tools.InspectFunctionProperty do
   defp to_string_or_nil(v) when is_atom(v),  do: to_string(v)
   defp to_string_or_nil(v) when is_binary(v), do: v
   defp to_string_or_nil(v),                  do: inspect(v)
+
+  # Load the cached `connector_vendor_metadata` rows for this user +
+  # connector and pass them in `ctx[:vendor_metadata]`. The connector's
+  # `inspect_property/3` callback decides how to map a (function, path)
+  # query onto these rows. Returns `[]` when the user hasn't run
+  # Discover Metadata for this connector yet — the connector should
+  # treat absence as "no cache, fall back to whatever it knows from
+  # the static manifest or return `:not_supported`."
+  defp load_vendor_metadata(slug, ctx) do
+    case ctx[:user_id] || ctx["user_id"] do
+      uid when is_binary(uid) and uid != "" ->
+        %{rows: rows} =
+          query!(Repo, """
+          SELECT path, schema_json
+          FROM connector_vendor_metadata
+          WHERE connector_slug=? AND user_id=?
+          """, [slug, uid])
+
+        Enum.map(rows, fn [path, schema_json] ->
+          schema =
+            case Jason.decode(schema_json || "{}") do
+              {:ok, m} when is_map(m) -> m
+              _ -> %{}
+            end
+
+          %{path: path, schema: schema}
+        end)
+
+      _ ->
+        []
+    end
+  rescue
+    _ -> []
+  end
 end

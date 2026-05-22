@@ -118,6 +118,64 @@ defmodule DmhAi.Connectors.HubSpot do
     end
   end
 
+  # Map a function bare-name to the HubSpot object type whose property
+  # schema is the source of truth for that function's args. The
+  # `inspect_property/3` callback uses this to route a property lookup
+  # at the cached metadata row produced by `discover_metadata/1`.
+  @function_to_object %{
+    "contact.find"   => "contacts",
+    "contact.create" => "contacts",
+    "contact.update" => "contacts",
+    "company.find"   => "companies",
+    "company.create" => "companies",
+    "company.update" => "companies",
+    "deal.find"      => "deals",
+    "deal.create"    => "deals",
+    "deal.update"    => "deals",
+    "activity.log"   => "deals",
+    "task.create"    => "deals"
+  }
+
+  # Layer B reader. The compiler asks "is `<path>` a real property on
+  # the user's HubSpot portal, and what shape does it have?". We
+  # consult the metadata cache populated by `discover_metadata/1`. The
+  # cache holds one row per object type with the full property list;
+  # we locate the matching property by name + return its type, label,
+  # field-type, and (when set) the vendor's option list.
+  #
+  # Returns `:not_supported` when:
+  #   * the function name doesn't map to a known object type
+  #   * the user hasn't run Discover Metadata yet (cache empty)
+  #   * the requested property isn't in the cached schema
+  # The compiler treats `:not_supported` as "trust the literal," which
+  # matches the existing tool contract.
+  @impl true
+  def inspect_property(function_name, path, ctx) do
+    with object when is_binary(object) <- Map.get(@function_to_object, function_name),
+         cache_path = "crm.properties." <> object,
+         %{schema: %{"properties" => props}} when is_list(props) <-
+           Enum.find(ctx[:vendor_metadata] || [], fn r -> r.path == cache_path end),
+         %{} = prop <- Enum.find(props, fn p -> p["name"] == path end) do
+      {:ok,
+       %{
+         type:        prop["type"],
+         enum:        extract_enum(prop),
+         description: prop["label"],
+         source:      :vendor_metadata
+       }}
+    else
+      _ -> {:error, :not_supported}
+    end
+  end
+
+  defp extract_enum(%{"options" => options}) when is_list(options) and options != [] do
+    options
+    |> Enum.map(fn o -> o["value"] end)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp extract_enum(_), do: nil
+
   defp sweep_property_objects(token) do
     objects = ["contacts", "companies", "deals"]
     headers = [{"authorization", "Bearer " <> token}, {"accept", "application/json"}]
