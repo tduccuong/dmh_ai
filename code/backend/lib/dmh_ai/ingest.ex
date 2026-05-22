@@ -157,6 +157,7 @@ defmodule DmhAi.Ingest do
           title:                  attrs[:title],
           centroid:               centroid,
           tags:                   tags,
+          source_scope:           attrs[:source_scope],
           content_sha256:         content_sha,
           extracted_text_sha256:  extracted_sha,
           created_by_user_id:     attrs[:created_by_user_id],

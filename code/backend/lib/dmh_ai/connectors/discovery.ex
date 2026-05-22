@@ -331,7 +331,12 @@ defmodule DmhAi.Connectors.Discovery do
             source_ref:          url,
             title:               title,
             created_by_user_id:  user_id,
-            tags:                ["connector:" <> slug, "docs"]
+            tags:                ["connector:" <> slug, "docs"],
+            # Populates `kb_sources.source_scope` so `fetch_index`'s
+            # `scope.platforms_in: ["<slug>"]` filter picks these
+            # docs up. Without this, the rows are reachable only via
+            # the corpus-wide query — defeating per-connector scoping.
+            source_scope:        %{"platform" => slug, "category" => "api-docs"}
           }
 
           case DmhAi.Ingest.upsert_kb_source(attrs, body) do

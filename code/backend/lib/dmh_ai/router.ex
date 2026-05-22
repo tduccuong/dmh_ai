@@ -486,7 +486,7 @@ defmodule DmhAi.Router do
   # token (single-use, TTL-bounded) ties the request back to a
   # specific user_id + session_id + connection alias. See specs/mcp.md.
   get "/oauth/callback" do
-    Data.oauth_callback(conn)
+    DmhAi.Handlers.OAuthCallback.callback(conn)
   end
 
   get "/image-descriptions/:session_id" do
