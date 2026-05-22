@@ -38,11 +38,52 @@ defmodule DmhAi.Connectors.HubSpot do
   """
 
   use DmhAi.Connectors.MCPAdapter
+  @behaviour DmhAi.Connectors.Discoverable
+  @behaviour DmhAi.Connectors.OAuthIdentity
+
   alias DmhAi.Tools.Manifest
   alias DmhAi.Tools.Manifest.Function
 
+  @impl DmhAi.Connectors.OAuthIdentity
+  def fetch_userinfo(access_token) when is_binary(access_token) do
+    # HubSpot's token-introspect endpoint. Token goes in the URL
+    # PATH (not Bearer auth) and works regardless of which CRM
+    # scopes the user granted — making it the right shape for
+    # capturing the connecting user's email at OAuth time without
+    # requiring a special-purpose scope. Response:
+    #   `{hub_id, app_id, user_id, user, expires_in, ...}`
+    # where `user` is the connecting user's email.
+    url = "https://api.hubapi.com/oauth/v1/access-tokens/" <> access_token
+
+    case http_get(url) do
+      {:ok, %{status: 200, body: %{"user" => email, "user_id" => uid}}}
+          when is_binary(email) and email != "" ->
+        {:ok, %{email: email, id: to_string(uid)}}
+
+      {:ok, %{status: 200, body: %{"user" => email}}}
+          when is_binary(email) and email != "" ->
+        {:ok, %{email: email}}
+
+      {:ok, %{status: s, body: body}} ->
+        {:error, {:http, s, body}}
+
+      {:error, reason} ->
+        {:error, {:transport, reason}}
+    end
+  end
+
+  defp http_get(url) do
+    case Application.get_env(:dmh_ai, :__hubspot_introspect_stub__) do
+      nil  -> Req.get(url, finch: DmhAi.Finch, receive_timeout: 5_000, retry: false)
+      stub -> stub.(url)
+    end
+  end
+
   @impl true
   def mcp_slug, do: "hubspot"
+
+  @impl DmhAi.Connectors.Discoverable
+  def discover_functions, do: DmhAi.Connectors.Seed.read_priv_rows(mcp_slug())
 
   @impl true
   def manifest do
@@ -56,7 +97,12 @@ defmodule DmhAi.Connectors.HubSpot do
           permission:    :read,
           callable_from: [:chat, :task],
           args: %{
-            "query" => %{type: :string,  required: true},
+            # Workflow authors legitimately bake search strings
+            # ("all Enterprise contacts") OR bind them to trigger
+            # inputs (`{{T.search}}`). Either form is fine — the
+            # validator accepts both under `:literal_default`.
+            "query" => %{type: :string,  required: true,
+                         provenance: %{kind: :literal_default}},
             "limit" => %{type: :integer, required: false}
           },
           returns: %{contacts: :list},
@@ -69,7 +115,8 @@ defmodule DmhAi.Connectors.HubSpot do
           callable_from:   [:task],
           idempotency_key: :required,
           args: %{
-            "email"      => %{type: :string, required: true, format: :email},
+            "email"      => %{type: :string, required: true, format: :email,
+                              provenance: %{kind: :from_user}},
             "first_name" => %{type: :string, required: false},
             "last_name"  => %{type: :string, required: false},
             "company"    => %{type: :string, required: false}
@@ -90,8 +137,11 @@ defmodule DmhAi.Connectors.HubSpot do
           callable_from:   [:task],
           idempotency_key: :required,
           args: %{
-            "contact_id" => %{type: :string, required: true},
-            "patch"      => %{type: :map,    required: true}
+            "contact_id" => %{type: :string, required: true,
+                              provenance: %{kind: :lookup,
+                                            source: "hubspot.contact.find"}},
+            "patch"      => %{type: :map,    required: true,
+                              provenance: %{kind: :literal_default}}
           },
           returns: %{contact_id: :string},
           errors:  [:unauthorised, :not_found, :rate_limited],
@@ -103,7 +153,8 @@ defmodule DmhAi.Connectors.HubSpot do
           permission:    :read,
           callable_from: [:chat, :task],
           args: %{
-            "query" => %{type: :string,  required: true},
+            "query" => %{type: :string,  required: true,
+                         provenance: %{kind: :literal_default}},
             "limit" => %{type: :integer, required: false}
           },
           returns: %{companies: :list},
@@ -116,7 +167,8 @@ defmodule DmhAi.Connectors.HubSpot do
           callable_from:   [:task],
           idempotency_key: :required,
           args: %{
-            "name"    => %{type: :string, required: true},
+            "name"    => %{type: :string, required: true,
+                           provenance: %{kind: :from_user}},
             "domain"  => %{type: :string, required: false},
             "city"    => %{type: :string, required: false},
             "country" => %{type: :string, required: false}
@@ -132,8 +184,11 @@ defmodule DmhAi.Connectors.HubSpot do
           callable_from:   [:task],
           idempotency_key: :required,
           args: %{
-            "company_id" => %{type: :string, required: true},
-            "patch"      => %{type: :map,    required: true}
+            "company_id" => %{type: :string, required: true,
+                              provenance: %{kind: :lookup,
+                                            source: "hubspot.company.find"}},
+            "patch"      => %{type: :map,    required: true,
+                              provenance: %{kind: :literal_default}}
           },
           returns: %{company_id: :string},
           errors:  [:unauthorised, :not_found, :rate_limited],
@@ -162,8 +217,17 @@ defmodule DmhAi.Connectors.HubSpot do
           callable_from:   [:task],
           idempotency_key: :required,
           args: %{
-            "contact_id" => %{type: :string, required: true},
-            "amount"     => %{type: :number, required: true},
+            "contact_id" => %{type: :string, required: true,
+                              provenance: %{kind: :lookup,
+                                            source: "hubspot.contact.find"}},
+            # HubSpot's CRM accepts deal creation without an amount
+            # (returns the deal with `amount: null`). The connector
+            # surfaces it as required because a deal with no money
+            # value is rarely useful in practice, but `0` is the
+            # documented vendor default so the model can pick it
+            # autonomously when the user hasn't specified.
+            "amount"     => %{type: :number, required: true,
+                              provenance: %{kind: :literal_default, value: 0}},
             "stage"      => %{type: :string, required: false},
             "name"       => %{type: :string, required: false}
           },
@@ -178,8 +242,11 @@ defmodule DmhAi.Connectors.HubSpot do
           callable_from:   [:task],
           idempotency_key: :required,
           args: %{
-            "deal_id" => %{type: :string, required: true},
-            "patch"   => %{type: :map,    required: true}
+            "deal_id" => %{type: :string, required: true,
+                           provenance: %{kind: :lookup,
+                                         source: "hubspot.deal.find"}},
+            "patch"   => %{type: :map,    required: true,
+                           provenance: %{kind: :literal_default}}
           },
           returns: %{deal_id: :string},
           errors:  [:unauthorised, :not_found, :rate_limited],
@@ -195,9 +262,17 @@ defmodule DmhAi.Connectors.HubSpot do
           callable_from:   [:task],
           idempotency_key: :required,
           args: %{
-            "deal_id" => %{type: :string, required: true},
-            "kind"    => %{type: :string, required: true},
-            "body"    => %{type: :string, required: true}
+            "deal_id" => %{type: :string, required: true,
+                           provenance: %{kind: :lookup,
+                                         source: "hubspot.deal.find"}},
+            # HubSpot's engagement type enum is {NOTE, EMAIL, CALL,
+            # MEETING, TASK}. NOTE is the default for "log this as a
+            # comment on the deal" — what the activity.log function
+            # name implies. Other kinds have dedicated callsites.
+            "kind"    => %{type: :string, required: true,
+                           provenance: %{kind: :literal_default, value: "NOTE"}},
+            "body"    => %{type: :string, required: true,
+                           provenance: %{kind: :literal_default}}
           },
           returns: %{activity_id: :string},
           errors:  [:unauthorised, :rate_limited],
@@ -215,7 +290,8 @@ defmodule DmhAi.Connectors.HubSpot do
           callable_from:   [:task],
           idempotency_key: :required,
           args: %{
-            "subject"    => %{type: :string, required: true},
+            "subject"    => %{type: :string, required: true,
+                              provenance: %{kind: :literal_default}},
             "body"       => %{type: :string, required: false},
             "due_date"   => %{type: :string, required: false},
             "priority"   => %{type: :string, required: false},
@@ -277,11 +353,11 @@ defmodule DmhAi.Connectors.HubSpot do
         "crm.objects.deals.write"
       ],
       # HubSpot doesn't ship an OIDC userinfo endpoint; the
-      # `/oauth/v1/access-tokens/{token}` introspection returns
-      # `user` + `hub_id`. We don't fetch it at finalize time —
-      # the user's `account` label stays blank and the model
-      # treats the connection as default-account. Multi-portal
-      # support can fan out later.
+      # Identity capture lives in `fetch_userinfo/1` (see top of
+      # module). HubSpot uses the `/oauth/v1/access-tokens/<token>`
+      # introspect endpoint — token-in-path, no scope required —
+      # which doesn't fit the OIDC Bearer-auth pattern the catalog's
+      # generic userinfo fields assume.
       userinfo_endpoint:      nil,
       userinfo_field_path:    nil,
       extra_auth_params:      %{}

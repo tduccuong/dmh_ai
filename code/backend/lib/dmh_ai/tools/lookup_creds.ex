@@ -35,7 +35,7 @@ defmodule DmhAi.Tools.LookupCreds do
         properties: %{
           target: %{
             type: "string",
-            description: "Exact target label (e.g. `oauth:googleapis.com`, `mcp:<canonical>`, or a free-form label previously used with save_creds). Omit to list every saved (target, account) pair without payloads."
+            description: "Exact target label (e.g. `oauth:google_workspace`, `oauth:hubspot`, `mcp:<canonical>`, or a free-form label previously used with save_creds). OAuth targets are slug-keyed — see `<authorized_services>` for the valid slugs. Omit to list every saved (target, account) pair without payloads."
           },
           account: %{
             type: "string",

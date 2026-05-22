@@ -228,10 +228,11 @@ defmodule DmhAi.Flows.F15OauthAuthorizeUse do
         "token_endpoint"         => "https://oauth.test/token"
       }
 
-      # For `flow_kind="oauth_service"`, `canonical_resource` is the
-      # bare host pattern; the callback handler stores the credential
-      # at target `"oauth:" <> host_match` (data.ex:1069). Don't pre-
-      # prefix here — that would produce `oauth:oauth:…`.
+      # For `flow_kind="oauth_service"`, the callback handler stores
+      # the credential at target `"oauth:" <> alias` (data.ex's
+      # `finalize_oauth_service`). The slug/alias is the primary
+      # key; `canonical_resource` (host_match) rides along in the
+      # cred payload as metadata.
       seed_pending(state, user_id, session_id, task_id, asm,
         flow_kind: "oauth_service",
         canonical_resource: "api.example.test",
@@ -279,10 +280,10 @@ defmodule DmhAi.Flows.F15OauthAuthorizeUse do
       %{rows: cred_rows} =
         query!(Repo,
           "SELECT kind, payload FROM user_credentials WHERE user_id=? AND target=?",
-          [user_id, "oauth:api.example.test"])
+          [user_id, "oauth:test-alias"])
 
       assert match?([[_kind, _payload]], cred_rows),
-             "expected exactly one credential row at target=oauth:api.example.test for the authed user; got: #{inspect(cred_rows)}"
+             "expected exactly one credential row at target=oauth:test-alias (slug-keyed) for the authed user; got: #{inspect(cred_rows)}"
 
       [[kind, payload_json]] = cred_rows
       assert kind == "oauth2_service"

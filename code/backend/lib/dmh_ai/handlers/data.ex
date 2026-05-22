@@ -1006,10 +1006,13 @@ defmodule DmhAi.Handlers.Data do
 
   # Finalizer for generic-service OAuth (flow_kind = "oauth_service").
   # Same callback URL as MCP, different shape after token exchange:
-  # store at oauth:<host_match>, kind oauth2_service, no MCP Registry
+  # store at `oauth:<slug>`, kind oauth2_service, no MCP Registry
   # attach. The model picks tokens up via lookup_creds and uses them
-  # in run_script + curl. `resource` here carries the catalog's
-  # host_match (the unique key the runtime uses for lookups).
+  # in run_script + curl. The slug is OUR stable identifier; the
+  # vendor's `host_match` rides along in the payload for refresh-
+  # endpoint resolution but is no longer part of the credential's
+  # primary key. Per-slug rows isolate scope sets and re-auth
+  # lifecycles when several connectors share a vendor host.
   defp finalize_oauth_service(user_id, session_id, alias_, host_match, server_url, asm, tokens) do
     # The catalog row is the source of truth for client_id /
     # client_secret AND the per-provider extra_token_params
@@ -1080,7 +1083,7 @@ defmodule DmhAi.Handlers.Data do
 
     DmhAi.Auth.Credentials.save(
       user_id,
-      "oauth:" <> host_match,
+      "oauth:" <> alias_,
       "oauth2_service",
       cred_payload,
       account:    account,
@@ -1088,7 +1091,7 @@ defmodule DmhAi.Handlers.Data do
       expires_at: tokens.expires_at
     )
 
-    DmhAi.SysLog.log("[OAUTH] finalize_oauth_service: stored cred user=#{user_id} target=oauth:#{host_match} account=#{inspect(account)} expires_at=#{inspect(tokens.expires_at)}")
+    DmhAi.SysLog.log("[OAUTH] finalize_oauth_service: stored cred user=#{user_id} target=oauth:#{alias_} account=#{inspect(account)} expires_at=#{inspect(tokens.expires_at)}")
 
     append_oauth_service_connected_message(session_id, user_id, alias_, host_match)
 
@@ -1129,10 +1132,36 @@ defmodule DmhAi.Handlers.Data do
           {nil, nil, %{}, ""}
       end
 
+    # Each Layer-0.3 connector module owns its own identity capture
+    # via the `OAuthIdentity.fetch_userinfo/1` callback — current
+    # best endpoint, vendor-specific auth model (token-in-Bearer
+    # for OIDC providers, token-in-path for HubSpot, etc.), custom
+    # response parsing. Connectors that don't implement the callback
+    # (Stripe, anonymous MCP) leave `account = ""`.
     account =
-      case catalog_row && DmhAi.OAuth.Userinfo.fetch(catalog_row, tokens.access_token) do
-        {:ok, acc} -> acc
-        _          -> ""
+      case DmhAi.Connectors.Registry.module_for_slug(alias_) do
+        nil ->
+          ""
+
+        mod ->
+          if DmhAi.Connectors.OAuthIdentity.implements?(mod) do
+            case mod.fetch_userinfo(tokens.access_token) do
+              {:ok, %{email: e}} when is_binary(e) and e != "" ->
+                e
+
+              {:error, reason} ->
+                DmhAi.SysLog.log(
+                  "[OAUTH] finalize_connector_oauth: " <>
+                    "#{alias_}.fetch_userinfo failed: #{inspect(reason)}"
+                )
+                ""
+
+              _ ->
+                ""
+            end
+          else
+            ""
+          end
       end
 
     # Per RFC 6749 §5.1 the `scope` response parameter is optional —
@@ -1196,14 +1225,14 @@ defmodule DmhAi.Handlers.Data do
   end
 
   defp append_oauth_service_connected_message(session_id, user_id, alias_, host_match) do
-    cred_target = "oauth:" <> host_match
+    cred_target = "oauth:" <> alias_
 
     # The content tells the model EXACTLY where its access_token
-    # lives. Without this hint the model often reaches for
-    # `lookup_creds(target: "oauth:<alias>")` (slug-keyed) on its
-    # first try and gets nothing back, then has to re-run
-    # authorize_service to discover that targets are host-keyed.
-    # Naming the cred_target here saves a wasted round-trip.
+    # lives. The credential target is the slug (`oauth:<alias>`);
+    # `host_match` rides along in the saved payload but isn't part
+    # of the credential's primary key. Naming the cred_target here
+    # saves a wasted round-trip when the model goes to read the
+    # token for the first time.
     content =
       "[#{alias_} authorized] Access token is now stored at " <>
       "`#{cred_target}`. Call `lookup_creds(target: \"#{cred_target}\")` " <>

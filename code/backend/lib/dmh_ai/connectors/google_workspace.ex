@@ -40,11 +40,103 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
   """
 
   use DmhAi.Connectors.MCPAdapter
+  @behaviour DmhAi.Connectors.Discoverable
+  @behaviour DmhAi.Connectors.OAuthIdentity
+
   alias DmhAi.Tools.Manifest
   alias DmhAi.Tools.Manifest.Function
+  alias DmhAi.Connectors.GoogleWorkspace.LiveProbe
+
+  require Logger
+
+  @impl DmhAi.Connectors.OAuthIdentity
+  def fetch_userinfo(token),
+    do: DmhAi.OAuth.Identity.OIDC.fetch(token,
+          "https://openidconnect.googleapis.com/v1/userinfo", "email")
 
   @impl true
   def mcp_slug, do: "google_workspace"
+
+  # Mapping from our connector function name to the Google API method
+  # that backs it. The `discover_functions/0` callback probes each
+  # entry's live Discovery Document and overlays the live `scopes`
+  # field onto the matching priv-seed row. Functions absent from this
+  # map (synthetic recipes, multi-call composites) pass through from
+  # the priv baseline unchanged — they have no 1:1 Google method.
+  @google_method_map %{
+    "gmail.search"       => {"gmail",    "v1", "gmail.users.messages.list"},
+    "gmail.send"         => {"gmail",    "v1", "gmail.users.messages.send"},
+    "gmail.reply"        => {"gmail",    "v1", "gmail.users.messages.send"},
+    "calendar.list"      => {"calendar", "v3", "calendar.events.list"},
+    "calendar.create"    => {"calendar", "v3", "calendar.events.insert"},
+    "drive.upload"       => {"drive",    "v3", "drive.files.create"},
+    "drive.list"         => {"drive",    "v3", "drive.files.list"},
+    "drive.read"         => {"drive",    "v3", "drive.files.get"},
+    "docs.create"        => {"docs",     "v1", "docs.documents.create"},
+    "sheets.read"        => {"sheets",   "v4", "sheets.spreadsheets.values.get"},
+    "tasks.list"         => {"tasks",    "v1", "tasks.tasks.list"},
+    "tasks.create"       => {"tasks",    "v1", "tasks.tasks.insert"}
+  }
+
+  @impl DmhAi.Connectors.Discoverable
+  def discover_functions do
+    case DmhAi.Connectors.Seed.read_priv_rows(mcp_slug()) do
+      {:ok, baseline} ->
+        {:ok, overlay_live_scopes(baseline)}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  # For each baseline row whose function_name has a Google Discovery
+  # mapping, probe the live Discovery Document and verify the row's
+  # `scopes_required` is still in Google's accepted list. Rows are
+  # returned UNCHANGED — the probe's job here is verification, not
+  # silent rewriting. A drift (declared scope absent from the live
+  # list) emits a warning so the operator can investigate; an
+  # auto-substitute would be guessing at Google's permission semantics
+  # and could be wrong.
+  defp overlay_live_scopes(rows) do
+    Enum.map(rows, fn row ->
+      case Map.get(@google_method_map, row.function_name) do
+        nil ->
+          row
+
+        {api, version, method_id} ->
+          case LiveProbe.probe_method(api, version, method_id) do
+            {:ok, %{scopes: live_scopes}} when is_list(live_scopes) ->
+              verify_scopes(row, live_scopes, method_id)
+              row
+
+            {:ok, _} ->
+              row
+
+            {:error, reason} ->
+              Logger.warning(
+                "[GoogleWorkspace.discover_functions] fn=#{row.function_name} probe " <>
+                  "method=#{method_id} failed=#{inspect(reason)}; using priv baseline"
+              )
+              row
+          end
+      end
+    end)
+  end
+
+  defp verify_scopes(row, live_scopes, method_id) do
+    declared = Map.get(row, :scopes_required, [])
+    drift    = declared -- live_scopes
+
+    if drift != [] do
+      Logger.warning(
+        "[GoogleWorkspace.discover_functions] fn=#{row.function_name} method=#{method_id} " <>
+          "declared scopes #{inspect(drift)} NOT in Google's accepted list " <>
+          "#{inspect(live_scopes)} — bundled defaults may be out of date"
+      )
+    end
+
+    :ok
+  end
 
   @impl true
   def manifest do
@@ -64,7 +156,8 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
           permission:    :read,
           callable_from: [:chat, :task],
           args: %{
-            "query"       => %{type: :string, required: true},
+            "query"       => %{type: :string, required: true,
+                               provenance: %{kind: :literal_default}},
             "limit"       => %{type: :integer, required: false},
             "after_epoch" => %{type: :integer, required: false}
           },
@@ -101,9 +194,12 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
           callable_from:   [:task],
           idempotency_key: :required,
           args: %{
-            "to"      => %{type: :string, required: true, format: :email},
-            "subject" => %{type: :string, required: true},
-            "body"    => %{type: :string, required: true}
+            "to"      => %{type: :string, required: true, format: :email,
+                           provenance: %{kind: :literal_default}},
+            "subject" => %{type: :string, required: true,
+                           provenance: %{kind: :literal_default}},
+            "body"    => %{type: :string, required: true,
+                           provenance: %{kind: :literal_default}}
           },
           returns: %{message_id: :string},
           errors:  [:unauthorised, :rate_limited, :upstream_5xx],
@@ -124,9 +220,15 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
           permission:    :read,
           callable_from: [:chat, :task],
           args: %{
-            "duration_min" => %{type: :integer, required: true},
-            "between_from" => %{type: :string,  required: true},
-            "between_to"   => %{type: :string,  required: true},
+            # 30 minutes is the de-facto SME meeting length (calendar
+            # UIs default to it). Model can pick autonomously when the
+            # user says "find me a slot" without specifying length.
+            "duration_min" => %{type: :integer, required: true,
+                                provenance: %{kind: :literal_default, value: 30}},
+            "between_from" => %{type: :string,  required: true,
+                                provenance: %{kind: :literal_default}},
+            "between_to"   => %{type: :string,  required: true,
+                                provenance: %{kind: :literal_default}},
             "attendees"    => %{type: :list,    required: false}
           },
           returns: %{slots: :list},
@@ -146,9 +248,12 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
           callable_from:   [:task],
           idempotency_key: :required,
           args: %{
-            "title"     => %{type: :string, required: true},
-            "start"     => %{type: :string, required: true},
-            "end"       => %{type: :string, required: true},
+            "title"     => %{type: :string, required: true,
+                             provenance: %{kind: :literal_default}},
+            "start"     => %{type: :string, required: true,
+                             provenance: %{kind: :literal_default}},
+            "end"       => %{type: :string, required: true,
+                             provenance: %{kind: :literal_default}},
             "attendees" => %{type: :list,   required: false}
           },
           returns: %{event_id: :string},
@@ -187,8 +292,10 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
           callable_from:   [:task],
           idempotency_key: :required,
           args: %{
-            "name"       => %{type: :string, required: true},
-            "content"    => %{type: :string, required: true},
+            "name"       => %{type: :string, required: true,
+                              provenance: %{kind: :literal_default}},
+            "content"    => %{type: :string, required: true,
+                              provenance: %{kind: :literal_default}},
             "mime_type"  => %{type: :string, required: false}
           },
           returns: %{file_id: :string},
@@ -237,7 +344,8 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
           callable_from:   [:task],
           idempotency_key: :required,
           args: %{
-            "title" => %{type: :string, required: true},
+            "title" => %{type: :string, required: true,
+                         provenance: %{kind: :literal_default}},
             "notes" => %{type: :string, required: false},
             "due"   => %{type: :string, required: false}
           },
@@ -255,7 +363,8 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
           permission:    :read,
           callable_from: [:chat, :task],
           args: %{
-            "query" => %{type: :string, required: true},
+            "query" => %{type: :string, required: true,
+                         provenance: %{kind: :literal_default}},
             "limit" => %{type: :integer, required: false}
           },
           returns: %{contacts: :list},
@@ -271,8 +380,15 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
           permission:    :read,
           callable_from: [:chat, :task],
           args: %{
-            "spreadsheet_id" => %{type: :string, required: true},
-            "range"          => %{type: :string, required: true}
+            # No `sheets.list` verb in this connector — operators
+            # paste the spreadsheet URL / id directly, or surface
+            # it as a trigger input. `:lookup` would dangle.
+            "spreadsheet_id" => %{type: :string, required: true,
+                                  provenance: %{kind: :literal_default}},
+            # A1 notation default that covers a generous read window
+            # without paying for unbounded sheets.
+            "range"          => %{type: :string, required: true,
+                                  provenance: %{kind: :literal_default, value: "A1:Z1000"}}
           },
           returns: %{values: :list},
           scopes:  ["https://www.googleapis.com/auth/spreadsheets.readonly"]
@@ -287,10 +403,15 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
           callable_from:   [:task],
           idempotency_key: :required,
           args: %{
-            "thread_id"  => %{type: :string, required: true},
-            "to"         => %{type: :string, required: true, format: :email},
-            "subject"    => %{type: :string, required: true},
-            "body"       => %{type: :string, required: true},
+            "thread_id"  => %{type: :string, required: true,
+                              provenance: %{kind: :lookup,
+                                            source: "google_workspace.gmail.search"}},
+            "to"         => %{type: :string, required: true, format: :email,
+                              provenance: %{kind: :literal_default}},
+            "subject"    => %{type: :string, required: true,
+                              provenance: %{kind: :literal_default}},
+            "body"       => %{type: :string, required: true,
+                              provenance: %{kind: :literal_default}},
             "in_reply_to_message_id" => %{type: :string, required: false}
           },
           returns: %{message_id: :string},
@@ -306,8 +427,12 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
           callable_from:   [:task],
           idempotency_key: :required,
           args: %{
-            "event_id"  => %{type: :string, required: true},
-            "patch"     => %{type: :map,    required: true}
+            # No `gcal.events_list` verb today — operators paste
+            # the event id (or it arrives as a trigger payload).
+            "event_id"  => %{type: :string, required: true,
+                             provenance: %{kind: :literal_default}},
+            "patch"     => %{type: :map,    required: true,
+                             provenance: %{kind: :literal_default}}
           },
           returns: %{event_id: :string},
           errors:  [:unauthorised, :not_found, :rate_limited],
@@ -322,7 +447,9 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
           permission:    :read,
           callable_from: [:chat, :task],
           args: %{
-            "document_id" => %{type: :string, required: true}
+            "document_id" => %{type: :string, required: true,
+                               provenance: %{kind: :lookup,
+                                             source: "google_workspace.drive.list"}}
           },
           returns: %{text: :string, title: :string},
           scopes:  ["https://www.googleapis.com/auth/documents.readonly"]
@@ -404,8 +531,9 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
         "https://www.googleapis.com/auth/drive.file",
         "https://www.googleapis.com/auth/documents.readonly"
       ],
-      userinfo_endpoint:      "https://openidconnect.googleapis.com/v1/userinfo",
-      userinfo_field_path:    "email",
+      # Identity capture lives in `fetch_userinfo/1` (see top of module).
+      userinfo_endpoint:      nil,
+      userinfo_field_path:    nil,
       extra_auth_params:      %{"access_type" => "offline", "prompt" => "consent"}
     }
   end

@@ -333,17 +333,20 @@ defmodule DmhAi.WorkflowsTest do
     test "implicit emit: ref against a manifest-declared `returns:` key needs no `emits` map",
          %{ctx: ctx} do
       # `hubspot.deal.create` declares `returns: %{deal_id: :string}`. A
-      # downstream node may reference `{{1.deal_id}}` directly — no
-      # `emits` field required on node 1.
+      # downstream node may reference `{{2.deal_id}}` directly — no
+      # `emits` field required on node 2.
       ir = ir_with_trigger(
         [
-          %{"id" => 1, "kind" => "step", "function" => "hubspot.deal.create",
-             "args"  => %{"contact_id" => "{{T.contact_id}}", "amount" => 1000},
+          %{"id" => 1, "kind" => "step", "function" => "hubspot.contact.find",
+             "args"  => %{"query" => "{{T.contact_email}}"}, "next" => 2,
+             "label" => "find contact"},
+          %{"id" => 2, "kind" => "step", "function" => "hubspot.deal.create",
+             "args"  => %{"contact_id" => "{{1.contacts[0].id}}", "amount" => 1000},
              "label" => "create deal"},
-          %{"id" => 2, "kind" => "output", "label" => "Echo deal id",
-             "emit" => %{"deal_id" => "{{1.deal_id}}"}}
+          %{"id" => 3, "kind" => "output", "label" => "Echo deal id",
+             "emit" => %{"deal_id" => "{{2.deal_id}}"}}
         ],
-        [%{"name" => "contact_id", "type" => "string"}]
+        [%{"name" => "contact_email", "type" => "string"}]
       )
 
       assert {:ok, %{"version" => 0}} =
@@ -359,13 +362,16 @@ defmodule DmhAi.WorkflowsTest do
          %{ctx: ctx} do
       ir = ir_with_trigger(
         [
-          %{"id" => 1, "kind" => "step", "function" => "hubspot.deal.create",
-             "args"  => %{"contact_id" => "{{T.contact_id}}", "amount" => 1000},
+          %{"id" => 1, "kind" => "step", "function" => "hubspot.contact.find",
+             "args"  => %{"query" => "{{T.contact_email}}"}, "next" => 2,
+             "label" => "find contact"},
+          %{"id" => 2, "kind" => "step", "function" => "hubspot.deal.create",
+             "args"  => %{"contact_id" => "{{1.contacts[0].id}}", "amount" => 1000},
              "label" => "create deal"},
-          %{"id" => 2, "kind" => "output", "label" => "Wrong key",
-             "emit" => %{"oops" => "{{1.deal_typo}}"}}
+          %{"id" => 3, "kind" => "output", "label" => "Wrong key",
+             "emit" => %{"oops" => "{{2.deal_typo}}"}}
         ],
-        [%{"name" => "contact_id", "type" => "string"}]
+        [%{"name" => "contact_email", "type" => "string"}]
       )
 
       assert {:error, msg} =

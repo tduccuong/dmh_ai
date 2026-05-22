@@ -5,18 +5,18 @@
 
 defmodule DmhAi.WorkflowCompileGatesTest do
   @moduledoc """
-  Pins the two new compile-time gates on `upsert_workflow`:
+  Pins the compile-time scope gate on `upsert_workflow`:
 
     * **Pass 4 — scope gate** (L3 in arch_wiki/dmh_ai/sme/layer-W.md):
       reject the save when the workflow's required OAuth scopes
       aren't already granted on the owner's credentials.
 
-    * **Pass 5 — placeholder soundness** (L5): reject literal args
-      that look like sentinels (`""`, `"1"`, `"x"`, `"unknown"`,
-      `0` on quantity-named args, …) on required arg positions.
-
-  Both fire BEFORE persist so a broken IR never reaches
-  `workflow_versions`.
+  Fires BEFORE persist so a broken IR never reaches
+  `workflow_versions`. (The previous "Pass 5 — placeholder
+  soundness" heuristic is gone — provenance annotations on the
+  manifest now carry every constraint the validator needs; a
+  catch-all literal-shape regex was both false-positive-prone
+  and a clash with `:literal_default` defaults like `amount: 0`.)
   """
 
   use ExUnit.Case, async: false
@@ -55,18 +55,33 @@ defmodule DmhAi.WorkflowCompileGatesTest do
           ctx: %{user_id: user_id, session_id: session_id, org_id: @org_id}}
   end
 
-  defp ir_with_step(args) do
+  # Compose a minimal valid `hubspot.deal.create` workflow: trigger
+  # supplies the contact's email, an upstream `hubspot.contact.find`
+  # step resolves it to the contact id, then deal.create binds the
+  # found id. `args_override` lets a test customise `deal.create`
+  # args (amount, name, …) while keeping the lookup chain intact.
+  defp ir_with_step(args_override) do
+    deal_args = Map.merge(%{
+      "amount"     => 1500,
+      "contact_id" => "{{1.contacts[0].id}}"
+    }, args_override)
+
     %{
       "nodes" => [
         %{"id" => 0, "kind" => "trigger", "trigger_kind" => "manual",
           "label" => "manual",
-          "inputs" => [%{"name" => "alt", "type" => "string"}],
+          "inputs" => [%{"name" => "contact_email", "type" => "string"}],
           "next" => 1},
         %{"id" => 1, "kind" => "step",
+          "function" => "hubspot.contact.find",
+          "args"     => %{"query" => "{{T.contact_email}}"},
+          "label"    => "find",
+          "next"     => 2},
+        %{"id" => 2, "kind" => "step",
           "function" => "hubspot.deal.create",
-          "args"     => args,
+          "args"     => deal_args,
           "label"    => "create"},
-        %{"id" => 2, "kind" => "output", "label" => "done",
+        %{"id" => 3, "kind" => "output", "label" => "done",
           "emit" => %{"ok" => true}}
       ]
     }
@@ -75,7 +90,7 @@ defmodule DmhAi.WorkflowCompileGatesTest do
   describe "Pass 4 — scope gate" do
     test "rejects when the owner has no creds on the required slug", %{ctx: ctx} do
       # No T.grant_all_scopes/1 call → no creds → gate fires.
-      ir = ir_with_step(%{"contact_id" => "{{T.alt}}", "amount" => 1500})
+      ir = ir_with_step(%{})
 
       assert {:error, msg} =
                UpsertWorkflow.execute(%{
@@ -94,7 +109,7 @@ defmodule DmhAi.WorkflowCompileGatesTest do
     test "passes when all required scopes are granted", %{ctx: ctx, user_id: user_id} do
       :ok = T.grant_all_scopes(user_id)
 
-      ir = ir_with_step(%{"contact_id" => "{{T.alt}}", "amount" => 1500})
+      ir = ir_with_step(%{})
 
       assert {:ok, %{"version" => 0}} =
                UpsertWorkflow.execute(%{
@@ -109,12 +124,12 @@ defmodule DmhAi.WorkflowCompileGatesTest do
          %{ctx: ctx, user_id: user_id} do
       # Grant only one of the deal-create scopes — the gate must
       # still fire on the other required scope.
-      :ok = Credentials.save(user_id, "oauth:hubapi.com", "oauth2",
+      :ok = Credentials.save(user_id, "oauth:hubspot", "oauth2",
                              %{"access_token" => "t",
                                "scope" => "crm.objects.deals.read"},
                              account: "")
 
-      ir = ir_with_step(%{"contact_id" => "{{T.alt}}", "amount" => 1500})
+      ir = ir_with_step(%{})
 
       assert {:error, msg} =
                UpsertWorkflow.execute(%{
@@ -128,16 +143,16 @@ defmodule DmhAi.WorkflowCompileGatesTest do
     end
   end
 
-  describe "Pass 5 — placeholder soundness" do
+  describe "lookup provenance" do
     setup %{user_id: user_id} do
-      # Scopes granted so the placeholder check is what catches
-      # these tests — not the scope gate.
       :ok = T.grant_all_scopes(user_id)
       :ok
     end
 
-    test "rejects single-character literal on a required string arg", %{ctx: ctx} do
-      ir = ir_with_step(%{"contact_id" => "1", "amount" => 1500})
+    test "rejects a literal id on a :lookup arg", %{ctx: ctx} do
+      # `hubspot.deal.create.contact_id` is `:lookup` from
+      # `hubspot.contact.find`. A literal id can't satisfy that.
+      ir = ir_with_step(%{"contact_id" => "12345"})
 
       assert {:error, msg} =
                UpsertWorkflow.execute(%{
@@ -147,62 +162,91 @@ defmodule DmhAi.WorkflowCompileGatesTest do
                  "change_note"  => "v0"
                }, ctx)
 
-      assert msg =~ "placeholder-shaped value"
+      assert msg =~ "violates its declared provenance"
       assert msg =~ "contact_id"
+      assert msg =~ "hubspot.contact.find"
     end
 
-    test "rejects zero on quantity-named required args", %{ctx: ctx} do
-      ir = ir_with_step(%{"contact_id" => "{{T.alt}}", "amount" => 0})
+    test "rejects a trigger-input shortcut on a :lookup arg", %{ctx: ctx} do
+      # The pre-tightening validator accepted `{{T.<x>}}` as a
+      # shortcut for `:lookup` — that let the model skip the
+      # upstream find step entirely and ask the user for the
+      # vendor-internal id. Now forbidden.
+      ir = %{
+        "nodes" => [
+          %{"id" => 0, "kind" => "trigger", "trigger_kind" => "manual",
+            "label" => "manual",
+            "inputs" => [%{"name" => "contact_id", "type" => "string"}],
+            "next" => 1},
+          %{"id" => 1, "kind" => "step",
+            "function" => "hubspot.deal.create",
+            "args"     => %{"contact_id" => "{{T.contact_id}}", "amount" => 1500},
+            "label"    => "create"},
+          %{"id" => 2, "kind" => "output", "label" => "done",
+            "emit" => %{"ok" => true}}
+        ]
+      }
 
       assert {:error, msg} =
                UpsertWorkflow.execute(%{
-                 "display_name" => "Bad amount WF",
+                 "display_name" => "Shortcut WF",
                  "description"  => "Test workflow placeholder description used by integration tests.",
                  "ir"           => ir,
                  "change_note"  => "v0"
                }, ctx)
 
-      assert msg =~ "amount"
+      assert msg =~ "violates its declared provenance"
+      assert msg =~ "user typically doesn't know vendor-internal ids"
     end
 
-    test "rejects known placeholder tokens", %{ctx: ctx} do
-      ir = ir_with_step(%{"contact_id" => "unknown", "amount" => 1500})
-
-      assert {:error, msg} =
-               UpsertWorkflow.execute(%{
-                 "display_name" => "Bad token WF",
-                 "description"  => "Test workflow placeholder description used by integration tests.",
-                 "ir"           => ir,
-                 "change_note"  => "v0"
-               }, ctx)
-
-      assert msg =~ "placeholder-shaped value"
-    end
-
-    test "passes when required args are bindings, not literals", %{ctx: ctx} do
-      ir = ir_with_step(%{"contact_id" => "{{T.alt}}", "amount" => 1500})
+    test "passes when :lookup args bind to an upstream emit", %{ctx: ctx} do
+      ir = ir_with_step(%{})
 
       assert {:ok, %{"version" => 0}} =
                UpsertWorkflow.execute(%{
-                 "display_name" => "Bound args WF",
+                 "display_name" => "Lookup happy WF",
                  "description"  => "Test workflow placeholder description used by integration tests.",
                  "ir"           => ir,
                  "change_note"  => "v0"
                }, ctx)
     end
+  end
 
-    test "passes when a literal is genuine (non-placeholder)", %{ctx: ctx} do
-      # `amount: 1500` is a legitimate literal — not in the
-      # placeholder set. `contact_id` is a trigger binding.
-      ir = ir_with_step(%{"contact_id" => "{{T.alt}}", "amount" => 1500})
+  describe "removed bindings" do
+    setup %{user_id: user_id} do
+      :ok = T.grant_all_scopes(user_id)
+      :ok
+    end
 
-      assert {:ok, _} =
+    test "rejects `{{org.me.<x>}}` with a remediation hint", %{ctx: ctx} do
+      # `{{org.me.email}}` was an alias that resolved to the owner's
+      # DMH-AI app email. The alias was removed in favour of the
+      # canonical `{{owner.email}}` (DMH-AI app) /
+      # `{{owner.<slug>.email}}` (vendor identity). The validator must
+      # reject the legacy form so model-authored IRs that still carry
+      # it get migrated explicitly rather than silently resolving to "".
+      ir = ir_with_step(%{})
+      # Inject a legacy ref into hubspot.contact.find's query.
+      ir = %{ir |
+        "nodes" =>
+          ir["nodes"]
+          |> Enum.map(fn
+            %{"function" => "hubspot.contact.find"} = n ->
+              put_in(n, ["args", "query"], "{{org.me.email}}")
+            other -> other
+          end)
+      }
+
+      assert {:error, msg} =
                UpsertWorkflow.execute(%{
-                 "display_name" => "Genuine literal WF",
-                 "description"  => "Test workflow placeholder description used by integration tests.",
+                 "display_name" => "Legacy ref WF",
+                 "description"  => "Verifies the validator rejects `{{org.me.<x>}}` refs.",
                  "ir"           => ir,
                  "change_note"  => "v0"
                }, ctx)
+
+      assert msg =~ "`{{org.me."
+      assert msg =~ "{{owner."
     end
   end
 end

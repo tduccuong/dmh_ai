@@ -317,6 +317,18 @@ defmodule DmhAi.Router do
     end
   end
 
+  get "/admin/connectors/:slug/discovery_state" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      AdminConnectors.discovery_state(conn, user, slug)
+    end
+  end
+
+  post "/admin/connectors/:slug/discover/:layer" do
+    with {:ok, conn, user} <- check_auth(conn) do
+      AdminConnectors.discover(conn, user, slug, layer)
+    end
+  end
+
   # ── Workflow viewer (Layer W) ─────────────────────────────────────────
   #
   # The chat reply renders saved workflows as markdown links like

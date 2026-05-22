@@ -55,7 +55,7 @@ defmodule DmhAi.Workflows.Executor do
   # and wait nodes always suspend) and unbounded fan-out.
   @max_steps 200
 
-  @synthetic_names ~w(llm.compose llm.summarise builtin.compute)
+  @synthetic_names ~w(llm.compose llm.summarise builtin.compute builtin.coalesce)
 
   # ─── Public API ────────────────────────────────────────────────────────
 
@@ -317,22 +317,199 @@ defmodule DmhAi.Workflows.Executor do
   defp handle_step(ir, node, state, n) do
     fn_name = node["function"]
     args    = resolve_args(node["args"] || %{}, state)
-    step_id = Workflows.open_step(state.id, node["id"],
-      %{function: fn_name, args: args})
 
-    case dispatch_step(fn_name, args, node, state) do
-      {:ok, result} ->
-        emit = extract_emits(node, result)
-        Workflows.close_step(step_id, :completed, output: emit)
-        new_bindings = put_emits(state.bindings, node["id"], emit)
-        :ok = Workflows.update_run(state.id, %{bindings: new_bindings})
-        next = find_node_by_id(ir, node["next"])
-        walk(ir, next, %{state | bindings: new_bindings}, n + 1)
+    case detect_index_miss(args) do
+      {:miss, ref_label, idx} ->
+        # Surface an out-of-range array index in the ARG path as a
+        # structured `:lookup_miss` failure BEFORE calling the vendor.
+        # Classic case: an upstream `<vendor>.<find>` returned an empty
+        # list, the downstream consumer wrote `{{N.<list>[0].<field>}}`,
+        # and without this check we'd silently pass `""` (or
+        # `{:index_miss, _}`) to the vendor's API. The IR's
+        # `on_failure[:lookup_miss]` then decides whether to pause for
+        # operator intervention or take a recovery branch — same
+        # machinery as other classes.
+        sanitised_args = scrub_index_miss(args)
 
-      {:error, e} ->
-        handle_step_failure(ir, node, state, step_id, fn_name, e, n)
+        step_id = Workflows.open_step(state.id, node["id"],
+          %{function: fn_name, args: sanitised_args})
+
+        err = build_lookup_miss_err(ir, node, state, ref_label, idx)
+        handle_step_failure(ir, node, state, step_id, fn_name, err, n)
+
+      :ok ->
+        step_id = Workflows.open_step(state.id, node["id"],
+          %{function: fn_name, args: args})
+
+        case dispatch_step(fn_name, args, node, state) do
+          {:ok, result} ->
+            emit = extract_emits(node, result)
+            Workflows.close_step(step_id, :completed, output: emit)
+            new_bindings = put_emits(state.bindings, node["id"], emit)
+            :ok = Workflows.update_run(state.id, %{bindings: new_bindings})
+            next = find_node_by_id(ir, node["next"])
+            walk(ir, next, %{state | bindings: new_bindings}, n + 1)
+
+          {:error, e} ->
+            handle_step_failure(ir, node, state, step_id, fn_name, e, n)
+        end
     end
   end
+
+  # Build the `:lookup_miss` error envelope with enough upstream
+  # context for the assistant to write an accurate user-facing reply.
+  # Specifically: the failed arg name, the raw `{{…}}` binding that
+  # resolved to empty, and the upstream step's function name + what
+  # it was queried with. Without this, the model has to guess which
+  # email / id was used and may quote the wrong value.
+  defp build_lookup_miss_err(ir, node, state, ref_label, idx) do
+    raw_binding = lookup_raw_binding(node["args"] || %{}, ref_label)
+    upstream    = trace_upstream(ir, state, raw_binding)
+
+    %{
+      error:    "lookup_miss",
+      ref:      ref_label,
+      index:    idx,
+      binding:  raw_binding,
+      upstream: upstream,
+      message:  compose_lookup_miss_message(ref_label, idx, upstream)
+    }
+  end
+
+  defp compose_lookup_miss_message(ref_label, idx, %{function: fn_name, input: input})
+       when is_binary(fn_name) and is_map(input) do
+    queried = input |> Map.take(["query", "q", "email", "search"]) |> Enum.to_list()
+    queried_str =
+      case queried do
+        [{k, v}] -> " (queried with #{k}=`#{inspect(v)}`)"
+        _        -> ""
+      end
+
+    "arg `#{ref_label}` came up empty — upstream step `#{fn_name}` returned " <>
+      "no entry at index #{idx}#{queried_str}. To resolve, either ensure the " <>
+      "upstream lookup produces a match, or update the workflow."
+  end
+
+  defp compose_lookup_miss_message(ref_label, idx, _),
+    do: "arg `#{ref_label}` came up empty — upstream lookup produced no entry at index #{idx}."
+
+  # Walk `args` by a dotted path (the form `detect_index_miss/1` returns)
+  # to fetch the original binding string. The path joins keys with "."
+  # so we split it back into segments and walk.
+  defp lookup_raw_binding(args, ref_label) when is_binary(ref_label) do
+    Enum.reduce(String.split(ref_label, "."), args, fn
+      _seg, nil -> nil
+      seg, acc when is_map(acc) -> Map.get(acc, seg)
+      _seg, _ -> nil
+    end)
+  end
+
+  defp lookup_raw_binding(_, _), do: nil
+
+  # Parse the binding to find the source node id, then read that node's
+  # resolved input from the persisted step trace. Returns `nil` when the
+  # binding doesn't reference a prior node (trigger inputs, owner refs,
+  # etc.) or when the upstream step row isn't found.
+  defp trace_upstream(ir, state, binding) when is_binary(binding) do
+    case extract_ref_body(binding) do
+      {:ok, body} ->
+        case DmhAi.Workflows.Path.parse(body) do
+          {:ok, %{root: {:node, n}}} ->
+            up_node = find_node_by_id(ir, n)
+            input   = read_step_input(state.id, n)
+
+            %{
+              node:     n,
+              function: up_node && up_node["function"],
+              input:    input
+            }
+
+          _ ->
+            nil
+        end
+
+      :error ->
+        nil
+    end
+  end
+
+  defp trace_upstream(_, _, _), do: nil
+
+  # Strip the surrounding `{{…}}` from a binding string. Returns
+  # `:error` if the string isn't a single binding (literal value, or
+  # text with embedded interpolation — neither is a node reference).
+  defp extract_ref_body(s) when is_binary(s) do
+    trimmed = String.trim(s)
+    if String.starts_with?(trimmed, "{{") and String.ends_with?(trimmed, "}}") do
+      body = trimmed |> String.slice(2..-3//1) |> String.trim()
+      {:ok, body}
+    else
+      :error
+    end
+  end
+
+  defp extract_ref_body(_), do: :error
+
+  defp read_step_input(run_id, node_id) do
+    case query!(Repo,
+           "SELECT resolved_input FROM workflow_run_steps " <>
+             "WHERE run_id=? AND node_id=? ORDER BY id DESC LIMIT 1",
+           [run_id, node_id]).rows do
+      [[ri]] when is_binary(ri) ->
+        case Jason.decode(ri) do
+          {:ok, %{"args" => args}} -> args
+          {:ok, other}             -> other
+          _                        -> nil
+        end
+
+      _ ->
+        nil
+    end
+  rescue
+    _ -> nil
+  end
+
+  # Replace any `{:index_miss, i}` tuples with a human-readable marker
+  # so the step's `resolved_input` JSON column round-trips through
+  # `Jason.encode!`. The tuple is an internal signal; the persisted
+  # form needs to be JSON-safe for the run-viewer UI.
+  defp scrub_index_miss(value) when is_map(value),
+    do: Enum.into(value, %{}, fn {k, v} -> {k, scrub_index_miss(v)} end)
+
+  defp scrub_index_miss(value) when is_list(value),
+    do: Enum.map(value, &scrub_index_miss/1)
+
+  defp scrub_index_miss({:index_miss, i}),
+    do: "<lookup_miss: index #{i} out of range>"
+
+  defp scrub_index_miss(other), do: other
+
+  # Recursively scan resolved args for any `{:index_miss, i}` tuple
+  # left over from `Path.walk`. Returns `{:miss, <arg_name_path>, i}`
+  # on the first hit, `:ok` when all args resolved cleanly. The label
+  # gives the operator a hint about which arg's ref chain failed.
+  defp detect_index_miss(args) when is_map(args) do
+    Enum.find_value(args, :ok, fn {k, v} ->
+      case detect_index_miss(v) do
+        {:miss, sub, i} -> {:miss, "#{k}." <> sub, i}
+        {:miss_root, i} -> {:miss, to_string(k), i}
+        :ok             -> nil
+      end
+    end)
+  end
+
+  defp detect_index_miss(args) when is_list(args) do
+    Enum.find_value(args, :ok, fn v ->
+      case detect_index_miss(v) do
+        {:miss, sub, i} -> {:miss, sub, i}
+        {:miss_root, i} -> {:miss_root, i}
+        :ok             -> nil
+      end
+    end)
+  end
+
+  defp detect_index_miss({:index_miss, i}), do: {:miss_root, i}
+  defp detect_index_miss(_),                 do: :ok
 
   # Per-step failure routing — reads `on_failure[class]` from the
   # IR node, falls back to defaults the connector contract implies
@@ -378,7 +555,8 @@ defmodule DmhAi.Workflows.Executor do
     "unknown_function"      => :unknown_function,
     "connector_not_registered" => :connector_not_registered,
     "write_requires_task"   => :write_requires_task,
-    "adapter_crash"         => :adapter_crash
+    "adapter_crash"         => :adapter_crash,
+    "lookup_miss"           => :lookup_miss
   }
 
   defp error_class(%{error: e}) when is_binary(e),
@@ -506,6 +684,44 @@ defmodule DmhAi.Workflows.Executor do
     {:ok, %{"result" => expr}}    # v1 placeholder; arithmetic eval not yet implemented
   end
 
+  # `builtin.coalesce` — null-coalescing primitive for the join /
+  # merge problem. Branches that converge on a downstream step's
+  # arg (typical pattern: `contact.find` succeeds OR `contact.create`
+  # runs as a fallback; downstream `deal.create` needs ONE contact_id
+  # regardless of which path ran) put a `coalesce` step at the join
+  # point. Its `values:` arg is an ordered list; the executor picks
+  # the first non-nil value and emits it as `value`.
+  #
+  #   - id: 4
+  #     kind: step
+  #     function: builtin.coalesce
+  #     args:
+  #       values:
+  #         - "{{1.contact_id}}"   # from contact.find (the happy path)
+  #         - "{{3.contact_id}}"   # from contact.create (the fallback)
+  #     emits: { value: $.value }
+  #     next: 5
+  #   - id: 5
+  #     kind: step
+  #     function: hubspot.deal.create
+  #     args:
+  #       contact_id: "{{4.value}}"
+  #       …
+  #
+  # The args are resolved by the executor's normal binding pass
+  # before this synthetic runs; we see the already-substituted
+  # values (nil for branches that didn't execute).
+  defp run_llm_synthetic("builtin.coalesce", args, _state) do
+    values = Map.get(args, "values") || Map.get(args, :values) || []
+
+    picked =
+      values
+      |> List.wrap()
+      |> Enum.find(fn v -> not is_nil(v) and v != "" end)
+
+    {:ok, %{"value" => picked}}
+  end
+
   defp render_template(template, context) when is_binary(template) and is_map(context) do
     Regex.replace(~r/\{\{([^}]+)\}\}/, template, fn _full, key ->
       key = String.trim(key)
@@ -557,45 +773,25 @@ defmodule DmhAi.Workflows.Executor do
 
   defp pick_branch([_ | rest], state), do: pick_branch(rest, state)
 
-  # Small predicate language. Operands are compared after each side
-  # has its bindings substituted and any surrounding quotes stripped.
-  # Supported: `==`, `!=`. Comparison against the literal `null`
-  # tests for empty/absent value.
+  # Predicate evaluation uses the dedicated `DmhAi.Workflows.Expression`
+  # parser. Compile-time validator (`upsert_workflow.ex
+  # check_branch_predicates/1`) has already rejected malformed
+  # expressions, so we expect `parse/1` to succeed; the bare-parse
+  # rescue below handles the residual edge where state-injected
+  # bindings produced an unparseable string.
   defp eval_predicate(pred, state) when is_binary(pred) do
-    cond do
-      # Order matters: `!=` is a longer-prefix match than `==`, but
-      # `==` is a substring of `!=`-free preds — check `!=` first.
-      String.contains?(pred, "!=") -> compare(pred, "!=", state)
-      String.contains?(pred, "==") -> compare(pred, "==", state)
-      true                         -> false
+    case DmhAi.Workflows.Expression.parse(pred) do
+      {:ok, ast} ->
+        DmhAi.Workflows.Expression.evaluate(ast, fn path ->
+          resolve_ref_body(path, state)
+        end)
+
+      {:error, _} ->
+        false
     end
   end
 
   defp eval_predicate(_, _), do: false
-
-  defp compare(pred, op, state) do
-    [lhs_raw, rhs_raw] = String.split(pred, op, parts: 2)
-    lhs = lhs_raw |> resolve_string_for_predicate(state) |> normalise_operand()
-    rhs = rhs_raw |> resolve_string_for_predicate(state) |> normalise_operand()
-
-    case op do
-      "==" -> lhs == rhs
-      "!=" -> lhs != rhs
-    end
-  end
-
-  defp normalise_operand(s) when is_binary(s) do
-    s
-    |> String.trim()
-    |> String.trim("\"")
-    |> case do
-      "null" -> nil
-      ""     -> nil
-      other  -> other
-    end
-  end
-
-  defp normalise_operand(other), do: other
 
   # ── gate (approval) ──────────────────────────────────────────────────
 
@@ -682,22 +878,13 @@ defmodule DmhAi.Workflows.Executor do
   #     Always returns a string so the comparator has typed operands
   #     after `normalise_operand/1`.
 
-  alias DmhAi.Workflows.{Mustache, Path, Refs}
+  alias DmhAi.Workflows.{Path, Refs}
 
   defp resolve_args(args, state) when is_map(args) do
     Refs.substitute(args, fn body -> resolve_ref_body(body, state) end)
   end
 
   defp resolve_args(other, _), do: other
-
-  defp resolve_string_for_predicate(s, state) when is_binary(s) do
-    rendered = Mustache.render(s, fn body -> resolve_ref_body(body, state) end)
-
-    case rendered do
-      r when is_binary(r) -> r
-      typed                -> to_string(typed)
-    end
-  end
 
   # A single ref body resolver. Receives the trimmed inner content
   # of a `{{…}}`; returns the resolved value, or `:passthrough` if
@@ -775,21 +962,59 @@ defmodule DmhAi.Workflows.Executor do
   # ── owner / org lookups ──────────────────────────────────────────────
 
   defp owner_record(user_id) do
-    case query!(Repo, """
-    SELECT id, email, name, org_id, org_role
-      FROM users WHERE id=?
-    """, [user_id]).rows do
-      [[id, email, name, org, role]] ->
-        %{"user_id" => id, "id" => id,
-          "email" => email, "name" => name || "",
-          "display_name" => name || email,
-          "org_id" => org, "org_role" => role}
+    base =
+      case query!(Repo, """
+      SELECT id, email, name, org_id, org_role
+        FROM users WHERE id=?
+      """, [user_id]).rows do
+        [[id, email, name, org, role]] ->
+          %{"user_id" => id, "id" => id,
+            "email" => email, "name" => name || "",
+            "display_name" => name || email,
+            "org_id" => org, "org_role" => role}
 
-      _ ->
-        %{}
-    end
+        _ ->
+          %{}
+      end
+
+    # Embed per-connector identity sub-maps so `{{owner.<slug>.email}}`
+    # resolves to the email the user OAuth'd with AT THAT VENDOR. This
+    # is distinct from `{{owner.email}}` (the DMH-AI app email): a user
+    # may sign into DMH-AI as `admin@acme.com` but connect HubSpot as
+    # `sales-ops@acme.com`. Most workflows that look up the user's own
+    # vendor record (CRM contact, calendar, mailbox) want the VENDOR
+    # email, not the app email.
+    Map.merge(base, connector_identities(user_id))
   rescue
     _ -> %{}
+  end
+
+  # One DB hit per resolution; cheap because there are at most a
+  # handful of `oauth:<slug>` rows per user. Returns a map keyed by
+  # slug → `%{"email" => <vendor email>}` for every connector the
+  # user has authorised AND whose OAuth callback successfully
+  # captured the userinfo email into the credential row's `account`
+  # column. Slugs without an `account` value (the userinfo call
+  # failed, the vendor exposes no email, the OAuth flow predates
+  # this wiring) are absent — accessing them resolves to "" via
+  # the executor's `walked_or_empty/1` fallback, which makes the
+  # missing-data signal recoverable through `on_failure: lookup_miss`
+  # the same way an empty `<vendor>.find` list does.
+  defp connector_identities(user_id) do
+    %{rows: rows} =
+      query!(Repo, """
+      SELECT target, account
+        FROM user_credentials
+       WHERE user_id = ?
+         AND target LIKE 'oauth:%'
+         AND account IS NOT NULL
+         AND account <> ''
+      """, [user_id])
+
+    Enum.into(rows, %{}, fn [target, account] ->
+      slug = String.replace_prefix(target, "oauth:", "")
+      {slug, %{"email" => account, "account" => account}}
+    end)
   end
 
   defp org_record(org_id) do

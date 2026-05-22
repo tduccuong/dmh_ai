@@ -1,0 +1,433 @@
+{
+  "connector_slug": "hubspot",
+  "functions": [
+    {
+      "args": {
+        "body": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "deal_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "hubspot.deal.find"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "kind": {
+          "provenance": {
+            "kind": "literal_default",
+            "value": "NOTE"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "rate_limited"
+      ],
+      "function_name": "activity.log",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "activity_id": "string"
+      },
+      "scopes_required": [
+        "crm.objects.deals.write"
+      ]
+    },
+    {
+      "args": {
+        "city": {
+          "required": false,
+          "type": "string"
+        },
+        "country": {
+          "required": false,
+          "type": "string"
+        },
+        "domain": {
+          "required": false,
+          "type": "string"
+        },
+        "name": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "duplicate",
+        "rate_limited"
+      ],
+      "function_name": "company.create",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "company_id": "string"
+      },
+      "scopes_required": [
+        "crm.objects.companies.write"
+      ]
+    },
+    {
+      "args": {
+        "limit": {
+          "required": false,
+          "type": "integer"
+        },
+        "query": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "company.find",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "companies": "list"
+      },
+      "scopes_required": [
+        "crm.objects.companies.read"
+      ]
+    },
+    {
+      "args": {
+        "company_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "hubspot.company.find"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "patch": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "map"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "company.update",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "company_id": "string"
+      },
+      "scopes_required": [
+        "crm.objects.companies.write"
+      ]
+    },
+    {
+      "args": {
+        "company": {
+          "required": false,
+          "type": "string"
+        },
+        "email": {
+          "format": "email",
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "first_name": {
+          "required": false,
+          "type": "string"
+        },
+        "last_name": {
+          "required": false,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "duplicate",
+        "rate_limited"
+      ],
+      "function_name": "contact.create",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "contact_id": "string"
+      },
+      "scopes_required": [
+        "crm.objects.contacts.write"
+      ]
+    },
+    {
+      "args": {
+        "limit": {
+          "required": false,
+          "type": "integer"
+        },
+        "query": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "contact.find",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "contacts": "list"
+      },
+      "scopes_required": [
+        "crm.objects.contacts.read"
+      ]
+    },
+    {
+      "args": {
+        "contact_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "hubspot.contact.find"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "patch": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "map"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "contact.update",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "contact_id": "string"
+      },
+      "scopes_required": [
+        "crm.objects.contacts.write"
+      ]
+    },
+    {
+      "args": {
+        "amount": {
+          "provenance": {
+            "kind": "literal_default",
+            "value": 0
+          },
+          "required": true,
+          "type": "number"
+        },
+        "contact_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "hubspot.contact.find"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "name": {
+          "required": false,
+          "type": "string"
+        },
+        "stage": {
+          "required": false,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "duplicate",
+        "rate_limited"
+      ],
+      "function_name": "deal.create",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "deal_id": "string"
+      },
+      "scopes_required": [
+        "crm.objects.deals.write"
+      ]
+    },
+    {
+      "args": {
+        "limit": {
+          "required": false,
+          "type": "integer"
+        },
+        "owner": {
+          "required": false,
+          "type": "string"
+        },
+        "stage": {
+          "required": false,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "deal.find",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "deals": "list"
+      },
+      "scopes_required": [
+        "crm.objects.deals.read"
+      ]
+    },
+    {
+      "args": {
+        "deal_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "hubspot.deal.find"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "patch": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "map"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "deal.update",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "deal_id": "string"
+      },
+      "scopes_required": [
+        "crm.objects.deals.write"
+      ]
+    },
+    {
+      "args": {
+        "body": {
+          "required": false,
+          "type": "string"
+        },
+        "contact_id": {
+          "required": false,
+          "type": "string"
+        },
+        "deal_id": {
+          "required": false,
+          "type": "string"
+        },
+        "due_date": {
+          "required": false,
+          "type": "string"
+        },
+        "priority": {
+          "required": false,
+          "type": "string"
+        },
+        "subject": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "task_type": {
+          "required": false,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "rate_limited"
+      ],
+      "function_name": "task.create",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "task_id": "string"
+      },
+      "scopes_required": [
+        "crm.objects.deals.write"
+      ]
+    }
+  ],
+  "vendor_api_version": "v3"
+}

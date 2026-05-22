@@ -1,0 +1,189 @@
+{
+  "connector_slug": "stripe",
+  "functions": [
+    {
+      "args": {
+        "email": {
+          "format": "email",
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "name": {
+          "required": false,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "rate_limited",
+        "duplicate"
+      ],
+      "function_name": "customer.create",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "customer_id": "string"
+      },
+      "scopes_required": []
+    },
+    {
+      "args": {
+        "email": {
+          "format": "email",
+          "required": false,
+          "type": "string"
+        },
+        "query": {
+          "required": false,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "customer.find",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "customers": "list"
+      },
+      "scopes_required": []
+    },
+    {
+      "args": {
+        "amount": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "integer"
+        },
+        "currency": {
+          "provenance": {
+            "kind": "literal_default",
+            "value": "EUR"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "customer_id": {
+          "required": false,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "rate_limited",
+        "duplicate"
+      ],
+      "function_name": "payment_intent.create",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "client_secret": "string",
+        "payment_intent_id": "string"
+      },
+      "scopes_required": []
+    },
+    {
+      "args": {
+        "active": {
+          "required": false,
+          "type": "boolean"
+        },
+        "query": {
+          "required": false,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "product.find",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "products": "list"
+      },
+      "scopes_required": []
+    },
+    {
+      "args": {
+        "amount": {
+          "required": false,
+          "type": "integer"
+        },
+        "charge_id": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "reason": {
+          "required": false,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "duplicate"
+      ],
+      "function_name": "refund.create",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "refund_id": "string"
+      },
+      "scopes_required": []
+    },
+    {
+      "args": {
+        "customer_id": {
+          "required": false,
+          "type": "string"
+        },
+        "status": {
+          "required": false,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "subscription.find",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "subscriptions": "list"
+      },
+      "scopes_required": []
+    }
+  ],
+  "vendor_api_version": "v3"
+}

@@ -130,7 +130,7 @@ defmodule DmhAi.WorkflowRuntimeTest do
       # at the failing node — the user reconnects and resume_run
       # retries the same step.
       query!(Repo, "DELETE FROM user_credentials WHERE user_id=? AND target=?",
-             [user_id, "oauth:googleapis.com"])
+             [user_id, "oauth:google_workspace"])
 
       ir = %{
         "nodes" => [
@@ -147,7 +147,7 @@ defmodule DmhAi.WorkflowRuntimeTest do
 
       # Grant Gmail scope alone so the compile-time gate passes; the
       # OAuth bearer is still missing at run time.
-      :ok = DmhAi.Auth.Credentials.save(user_id, "oauth:googleapis.com", "oauth2_service",
+      :ok = DmhAi.Auth.Credentials.save(user_id, "oauth:google_workspace", "oauth2_service",
         %{"access_token" => nil,
           "scope" => "https://www.googleapis.com/auth/gmail.readonly"},
         account: "")
@@ -161,7 +161,7 @@ defmodule DmhAi.WorkflowRuntimeTest do
       }, ctx)
 
       query!(Repo, "DELETE FROM user_credentials WHERE user_id=? AND target=?",
-             [user_id, "oauth:googleapis.com"])
+             [user_id, "oauth:google_workspace"])
 
       {:ok, run} =
         Executor.start_run(slug, 0, %{}, %{org_id: @default_org, task_id: "t-#{slug}"})
@@ -179,6 +179,157 @@ defmodule DmhAi.WorkflowRuntimeTest do
 
       wait = Workflows.get_wait(run_id, 1)
       assert wait.kind == "reauth_pause"
+    end
+  end
+
+  # ── lookup_miss error class ──────────────────────────────────────────
+
+  describe "lookup_miss" do
+    test "out-of-range index against an empty list fails the step with :lookup_miss",
+         %{ctx: ctx, slug: slug} do
+      # Workflow accepts a `contacts` trigger input (an empty list at
+      # invoke time), then a step references `{{T.contacts[0].id}}`.
+      # The runtime must NOT silently pass `""` to the consumer — it
+      # must fail with class `lookup_miss` so an IR-level
+      # `on_failure[:lookup_miss]` recovery branch (or the default
+      # `:fail`) can act on the structural error.
+      ir = %{
+        "nodes" => [
+          %{"id" => 0, "kind" => "trigger", "trigger_kind" => "manual",
+            "label" => "manual",
+            "inputs" => [%{"name" => "contacts", "type" => "list"}],
+            "next" => 1},
+          %{"id" => 1, "kind" => "step", "function" => "llm.compose",
+            "label" => "consumer that indexes [0] of an empty list",
+            "args" => %{
+              "template" => "id={{slot}}",
+              "context"  => %{"slot" => "{{T.contacts[0].id}}"}
+            },
+            "emits" => %{"body" => "$.body"},
+            "next" => 2},
+          %{"id" => 2, "kind" => "output", "label" => "done",
+            "emit" => %{"ok" => true}}
+        ]
+      }
+
+      {:ok, _} = UpsertWorkflow.execute(%{
+        "display_name" => "Lookup miss",
+        "description"  => "Verifies that an empty upstream list surfaces as a structured lookup_miss step failure.",
+        "name"         => slug,
+        "ir"           => ir,
+        "change_note"  => "v0"
+      }, ctx)
+
+      # Trigger payload supplies an empty list — this is the
+      # "find returned nothing" condition under test.
+      result = Executor.start_run(slug, 0, %{"contacts" => []},
+                                  %{org_id: @default_org, task_id: "t-#{slug}"})
+
+      # Default `:fail` action surfaces as `{:error, envelope}` from
+      # `start_run` — the envelope is the same shape the run-viewer
+      # UI renders. The class is what's load-bearing for the operator
+      # diagnosing why the workflow stopped.
+      assert {:error, envelope} = result
+      assert envelope.class == :lookup_miss
+      assert envelope.function == "llm.compose"
+      assert envelope.detail.ref =~ "context"
+      assert envelope.detail.index == 0
+
+      # The step row also carries the failure for the run viewer.
+      %{rows: [[run_id]]} =
+        query!(Repo, "SELECT id FROM workflow_run_state WHERE workflow_id=? ORDER BY started_at DESC LIMIT 1", [slug])
+
+      [step1] = Workflows.list_steps(run_id) |> Enum.sort_by(& &1.node_id)
+      assert step1.status == "failed"
+      assert step1.error["class"] == "lookup_miss"
+    end
+  end
+
+  # ── owner / org bindings ─────────────────────────────────────────────
+
+  describe "built-in identity bindings" do
+    test "{{owner.<slug>.email}} resolves to the vendor email captured at OAuth time",
+         %{ctx: ctx, slug: slug, user_id: user_id} do
+      # Seed a HubSpot OAuth credential row carrying the vendor email
+      # in the `account` column — the same shape the OAuth finalize
+      # path produces after userinfo lookup. The workflow then
+      # references `{{owner.hubspot.email}}` to confirm the binding
+      # resolves to THAT email (NOT the DMH-AI app email).
+      vendor_email = "sales-ops-#{user_id}@hubspot.test"
+      :ok = DmhAi.Auth.Credentials.save(
+        user_id, "oauth:hubspot", "oauth2",
+        %{"access_token" => "test-token", "scope" => "crm.objects.deals.read"},
+        account: vendor_email
+      )
+
+      ir = %{
+        "nodes" => [
+          %{"id" => 0, "kind" => "trigger", "trigger_kind" => "manual",
+            "label" => "manual", "inputs" => [], "next" => 1},
+          %{"id" => 1, "kind" => "step", "function" => "llm.compose",
+            "label" => "echo vendor email",
+            "args" => %{
+              "template" => "vendor_email={{vemail}}",
+              "context"  => %{"vemail" => "{{owner.hubspot.email}}"}
+            },
+            "emits" => %{"body" => "$.body"},
+            "next" => 2},
+          %{"id" => 2, "kind" => "output", "label" => "done",
+            "emit" => %{"body" => "{{1.body}}"}}
+        ]
+      }
+
+      {:ok, _} = UpsertWorkflow.execute(%{
+        "display_name" => "Vendor identity",
+        "description"  => "Verifies that owner.<slug>.email reads from user_credentials.account.",
+        "name"         => slug,
+        "ir"           => ir,
+        "change_note"  => "v0"
+      }, ctx)
+
+      {:ok, run} = Executor.start_run(slug, 0, %{},
+                                      %{org_id: @default_org, task_id: "t-#{slug}"})
+      assert run.status == "completed"
+
+      [step1, _] = Workflows.list_steps(run.id) |> Enum.sort_by(& &1.node_id)
+      assert step1.output["body"] == "vendor_email=#{vendor_email}"
+    end
+
+    test "{{owner.email}} resolves to the workflow owner's DMH-AI app email",
+         %{ctx: ctx, slug: slug, user_id: user_id} do
+      ir = %{
+        "nodes" => [
+          %{"id" => 0, "kind" => "trigger", "trigger_kind" => "manual",
+            "label" => "manual", "inputs" => [], "next" => 1},
+          %{"id" => 1, "kind" => "step", "function" => "llm.compose",
+            "label" => "compose",
+            "args" => %{
+              "template" => "owner_email={{owner_email}}",
+              "context"  => %{"owner_email" => "{{owner.email}}"}
+            },
+            "emits" => %{"body" => "$.body"},
+            "next" => 2},
+          %{"id" => 2, "kind" => "output", "label" => "done",
+            "emit" => %{"body" => "{{1.body}}"}}
+        ]
+      }
+
+      {:ok, _} = UpsertWorkflow.execute(%{
+        "display_name" => "Owner email binding",
+        "description"  => "Verifies that owner.email resolves to the workflow run's owner email.",
+        "name"         => slug,
+        "ir"           => ir,
+        "change_note"  => "v0"
+      }, ctx)
+
+      {:ok, run} = Executor.start_run(slug, 0, %{},
+                                      %{org_id: @default_org, task_id: "t-#{slug}"})
+      assert run.status == "completed"
+
+      [step1, _output] = Workflows.list_steps(run.id) |> Enum.sort_by(& &1.node_id)
+      expected_email = "rt-#{user_id}@test.local"
+
+      assert step1.output["body"] == "owner_email=#{expected_email}"
     end
   end
 

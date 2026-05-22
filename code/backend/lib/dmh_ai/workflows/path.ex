@@ -278,7 +278,17 @@ defmodule DmhAi.Workflows.Path do
   lookups so the runtime can feed in either shape without conversion.
   Numeric accessors against a list use `Enum.at/2`.
   """
-  @spec walk(any(), [accessor()]) :: any() | :not_found
+  @typedoc """
+  Walk result. The `:index_miss` shape is load-bearing: when a step's
+  arg resolves through `{{N.<list>[I].field}}` and `<list>` was empty
+  (or had < I+1 entries), the executor MUST fail the step with a
+  `:lookup_miss` error class rather than silently passing `""` to the
+  vendor — the workflow's `on_failure` then decides whether to pause
+  for operator intervention or take a recovery branch.
+  """
+  @type walk_result :: any() | :not_found | {:index_miss, non_neg_integer()}
+
+  @spec walk(any(), [accessor()]) :: walk_result()
   def walk(data, []), do: data
 
   def walk(map, [{:key, k} | rest]) when is_map(map) do
@@ -297,9 +307,9 @@ defmodule DmhAi.Workflows.Path do
   end
 
   def walk(list, [{:index, i} | rest]) when is_list(list) and i >= 0 do
-    case Enum.at(list, i, :not_found) do
-      :not_found -> :not_found
-      v          -> walk(v, rest)
+    case Enum.at(list, i, :__index_miss__) do
+      :__index_miss__ -> {:index_miss, i}
+      v               -> walk(v, rest)
     end
   end
 

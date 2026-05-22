@@ -28,11 +28,16 @@ defmodule DmhAi.Connectors.Stripe do
   """
 
   use DmhAi.Connectors.MCPAdapter
+  @behaviour DmhAi.Connectors.Discoverable
+
   alias DmhAi.Tools.Manifest
   alias DmhAi.Tools.Manifest.Function
 
   @impl true
   def mcp_slug, do: "stripe"
+
+  @impl DmhAi.Connectors.Discoverable
+  def discover_functions, do: DmhAi.Connectors.Seed.read_priv_rows(mcp_slug())
 
   @impl true
   def credential_kind, do: :api_key
@@ -57,7 +62,8 @@ defmodule DmhAi.Connectors.Stripe do
           callable_from:   [:task],
           idempotency_key: :required,
           args: %{
-            "email" => %{type: :string, required: true, format: :email},
+            "email" => %{type: :string, required: true, format: :email,
+                         provenance: %{kind: :from_user}},
             "name"  => %{type: :string, required: false}
           },
           returns: %{customer_id: :string},
@@ -68,8 +74,18 @@ defmodule DmhAi.Connectors.Stripe do
           callable_from:   [:task],
           idempotency_key: :required,
           args: %{
-            "amount"      => %{type: :integer, required: true},
-            "currency"    => %{type: :string,  required: true},
+            # Amount is the cents/minor-unit value. Most workflows
+            # bind it to a trigger input (`{{T.amount}}`), but a
+            # subscription-style workflow legitimately bakes a
+            # fixed value — `:literal_default` accepts both.
+            "amount"      => %{type: :integer, required: true,
+                               provenance: %{kind: :literal_default}},
+            # Org-default currency. Stripe accounts have a default
+            # but the API doesn't autofill — workflow author can
+            # override at IR write time when the org operates in a
+            # different currency.
+            "currency"    => %{type: :string,  required: true,
+                               provenance: %{kind: :literal_default, value: "EUR"}},
             "customer_id" => %{type: :string,  required: false}
           },
           returns: %{payment_intent_id: :string, client_secret: :string},
@@ -80,7 +96,11 @@ defmodule DmhAi.Connectors.Stripe do
           callable_from:   [:task],
           idempotency_key: :required,
           args: %{
-            "charge_id" => %{type: :string,  required: true},
+            # No `charge.find` verb yet — operators supply the
+            # charge id directly (from Stripe Dashboard URL) or it
+            # arrives as a webhook payload.
+            "charge_id" => %{type: :string,  required: true,
+                             provenance: %{kind: :from_user}},
             "amount"    => %{type: :integer, required: false},
             "reason"    => %{type: :string,  required: false}
           },

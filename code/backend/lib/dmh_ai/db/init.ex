@@ -301,9 +301,9 @@ defmodule DmhAi.DB.Init do
     # Curated OAuth-service catalog. Operator-managed: each row is a
     # service the operator has registered an OAuth app with (Google
     # Cloud Console, Slack app config, etc.). The model never sees the
-    # client_id/client_secret; it just calls authorize_service(<host>)
+    # client_id/client_secret; it just calls authorize_service(<slug>)
     # and the runtime picks the right entry by `host_match`. Per-user
-    # tokens land in user_credentials at target="oauth:<host>" — no
+    # tokens land in user_credentials at target="oauth:<slug>" — no
     # admin involvement per user.
     query!(Repo, """
     CREATE TABLE IF NOT EXISTS oauth_catalog (
@@ -411,6 +411,81 @@ defmodule DmhAi.DB.Init do
     )
     """)
     query!(Repo, "CREATE INDEX IF NOT EXISTS idx_mcp_catalog_enabled ON mcp_catalog (org_id, enabled)")
+
+    # Connector functions catalog — the data layer for arch_wiki/dmh_ai/
+    # sme/layer-W.md §L1 (function manifests). Each row is one
+    # connector function's contract: args (with provenance), returns,
+    # error classes, OAuth scopes. Populated by `Discovery.run/2` at
+    # admin's click, seeded from `priv/connectors/<slug>/functions.json`
+    # on first deploy when the table is empty for a slug.
+    #
+    # Source of truth = DB. The connector module's code carries the
+    # discovery mechanism + runtime caller + shim translators ONLY;
+    # the function contract itself lives here so vendor changes are
+    # absorbed by an admin Discover click, not a code redeploy.
+    query!(Repo, """
+    CREATE TABLE IF NOT EXISTS connector_functions (
+      id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+      connector_slug         TEXT NOT NULL,
+      function_name          TEXT NOT NULL,
+      permission             TEXT NOT NULL,                   -- 'read' | 'write' | 'admin'
+      args_json              TEXT NOT NULL,                   -- {arg: {type, required, provenance, ...}}
+      returns_json           TEXT NOT NULL,                   -- {field: type}
+      error_classes_json     TEXT,
+      scopes_required_json   TEXT,
+      idempotency_key        TEXT,                            -- 'required' | 'none'
+      vendor_endpoint_hint   TEXT,                            -- "POST /crm/v3/objects/deals" — diagnostics
+      callable_from_json     TEXT,                            -- '[\"chat\",\"task\"]' | '[\"task\"]'
+      poll_trigger_capable   INTEGER NOT NULL DEFAULT 0,
+      cursor_arg             TEXT,
+      cursor_response_path   TEXT,
+      items_path             TEXT,
+      min_poll_seconds       INTEGER,
+      default_poll_seconds   INTEGER,
+      discovered_at          INTEGER NOT NULL,
+      discovered_by          TEXT NOT NULL DEFAULT 'seed',   -- 'seed' | user_id of admin who clicked
+      UNIQUE(connector_slug, function_name)
+    )
+    """)
+    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_connector_functions_slug ON connector_functions (connector_slug)")
+
+    # Per-user vendor metadata cache (§L2) — pipelines, custom
+    # properties, owners, channels. Populated at compile time when
+    # `inspect_function_property` resolves a `:vendor_enum` provenance.
+    # Rows expire on `expires_at`; lazy-refresh on next lookup miss.
+    query!(Repo, """
+    CREATE TABLE IF NOT EXISTS connector_vendor_metadata (
+      id                INTEGER PRIMARY KEY AUTOINCREMENT,
+      connector_slug    TEXT NOT NULL,
+      user_id           TEXT NOT NULL,
+      path              TEXT NOT NULL,                       -- dotted path: "deal.create.stage"
+      schema_json       TEXT NOT NULL,                       -- {type, enum, description, source}
+      discovered_at     INTEGER NOT NULL,
+      expires_at        INTEGER,                              -- ms epoch; NULL = never expires
+      UNIQUE(connector_slug, user_id, path)
+    )
+    """)
+    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_connector_vendor_metadata_lookup ON connector_vendor_metadata (connector_slug, user_id, path)")
+
+    # Discovery run audit log. Every admin click on a Discover
+    # button creates a row; FE polls (or subscribes) for status
+    # transitions. Final state is success / failed with row counts
+    # + error text for diagnostics.
+    query!(Repo, """
+    CREATE TABLE IF NOT EXISTS connector_discovery_runs (
+      id                INTEGER PRIMARY KEY AUTOINCREMENT,
+      connector_slug    TEXT NOT NULL,
+      layer             TEXT NOT NULL,                       -- 'functions' | 'metadata' | 'docs'
+      status            TEXT NOT NULL,                       -- 'queued' | 'running' | 'success' | 'failed'
+      started_at        INTEGER,
+      completed_at      INTEGER,
+      error_text        TEXT,
+      records_affected  INTEGER,
+      triggered_by      TEXT,                                 -- admin user_id; 'seed' for first-deploy fill
+      created_at        INTEGER NOT NULL
+    )
+    """)
+    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_connector_discovery_runs_slug ON connector_discovery_runs (connector_slug, layer, created_at DESC)")
 
     query!(Repo, """
     CREATE TABLE IF NOT EXISTS model_behavior_stats (

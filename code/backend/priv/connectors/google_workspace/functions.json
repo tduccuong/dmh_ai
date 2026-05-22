@@ -1,0 +1,510 @@
+{
+  "connector_slug": "google_workspace",
+  "functions": [
+    {
+      "args": {
+        "limit": {
+          "required": false,
+          "type": "integer"
+        },
+        "query": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "contacts.search",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "contacts": "list"
+      },
+      "scopes_required": [
+        "https://www.googleapis.com/auth/contacts.readonly"
+      ]
+    },
+    {
+      "args": {
+        "document_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "google_workspace.drive.list"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "docs.read_text",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "text": "string",
+        "title": "string"
+      },
+      "scopes_required": [
+        "https://www.googleapis.com/auth/documents.readonly"
+      ]
+    },
+    {
+      "args": {
+        "folder_id": {
+          "required": false,
+          "type": "string"
+        },
+        "query": {
+          "required": false,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "drive.list",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "items": "list"
+      },
+      "scopes_required": [
+        "https://www.googleapis.com/auth/drive.readonly"
+      ]
+    },
+    {
+      "args": {
+        "content": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "mime_type": {
+          "required": false,
+          "type": "string"
+        },
+        "name": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "rate_limited"
+      ],
+      "function_name": "drive.upload",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "file_id": "string"
+      },
+      "scopes_required": [
+        "https://www.googleapis.com/auth/drive.file"
+      ]
+    },
+    {
+      "args": {
+        "attendees": {
+          "required": false,
+          "type": "list"
+        },
+        "end": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "start": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "title": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "rate_limited"
+      ],
+      "function_name": "gcal.create_event",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "event_id": "string"
+      },
+      "scopes_required": [
+        "https://www.googleapis.com/auth/calendar.events"
+      ]
+    },
+    {
+      "args": {
+        "attendees": {
+          "required": false,
+          "type": "list"
+        },
+        "between_from": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "between_to": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "duration_min": {
+          "provenance": {
+            "kind": "literal_default",
+            "value": 30
+          },
+          "required": true,
+          "type": "integer"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "gcal.find_free_slots",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "slots": "list"
+      },
+      "scopes_required": [
+        "https://www.googleapis.com/auth/calendar.readonly"
+      ]
+    },
+    {
+      "args": {
+        "event_id": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "patch": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "map"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "gcal.update_event",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "event_id": "string"
+      },
+      "scopes_required": [
+        "https://www.googleapis.com/auth/calendar.events"
+      ]
+    },
+    {
+      "args": {
+        "body": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "in_reply_to_message_id": {
+          "required": false,
+          "type": "string"
+        },
+        "subject": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "thread_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "google_workspace.gmail.search"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "to": {
+          "format": "email",
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "rate_limited",
+        "upstream_5xx"
+      ],
+      "function_name": "gmail.reply",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "message_id": "string"
+      },
+      "scopes_required": [
+        "https://www.googleapis.com/auth/gmail.send"
+      ]
+    },
+    {
+      "args": {
+        "after_epoch": {
+          "required": false,
+          "type": "integer"
+        },
+        "limit": {
+          "required": false,
+          "type": "integer"
+        },
+        "query": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "cursor_arg": "after_epoch",
+      "cursor_response_path": "$.next_cursor",
+      "default_poll_seconds": 300,
+      "error_classes": [],
+      "function_name": "gmail.search",
+      "idempotency_key": "none",
+      "items_path": "$.messages",
+      "min_poll_seconds": 30,
+      "permission": "read",
+      "poll_trigger_capable": true,
+      "returns": {
+        "messages": "list"
+      },
+      "scopes_required": [
+        "https://www.googleapis.com/auth/gmail.readonly"
+      ]
+    },
+    {
+      "args": {
+        "body": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "subject": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "to": {
+          "format": "email",
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "rate_limited",
+        "upstream_5xx"
+      ],
+      "function_name": "gmail.send",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "message_id": "string"
+      },
+      "scopes_required": [
+        "https://www.googleapis.com/auth/gmail.send"
+      ]
+    },
+    {
+      "args": {},
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "rate_limited"
+      ],
+      "function_name": "meet.create_meeting",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "join_url": "string",
+        "meeting_code": "string"
+      },
+      "scopes_required": [
+        "https://www.googleapis.com/auth/meetings.space.created"
+      ]
+    },
+    {
+      "args": {
+        "range": {
+          "provenance": {
+            "kind": "literal_default",
+            "value": "A1:Z1000"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "spreadsheet_id": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "sheets.read_range",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "values": "list"
+      },
+      "scopes_required": [
+        "https://www.googleapis.com/auth/spreadsheets.readonly"
+      ]
+    },
+    {
+      "args": {
+        "due": {
+          "required": false,
+          "type": "string"
+        },
+        "notes": {
+          "required": false,
+          "type": "string"
+        },
+        "title": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "rate_limited"
+      ],
+      "function_name": "tasks.create",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "task_id": "string"
+      },
+      "scopes_required": [
+        "https://www.googleapis.com/auth/tasks"
+      ]
+    },
+    {
+      "args": {
+        "limit": {
+          "required": false,
+          "type": "integer"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "tasks.list",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "tasks": "list"
+      },
+      "scopes_required": [
+        "https://www.googleapis.com/auth/tasks.readonly"
+      ]
+    }
+  ],
+  "vendor_api_version": "v3"
+}

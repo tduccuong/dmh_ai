@@ -2921,6 +2921,12 @@ defmodule DmhAi.Agent.UserAgent do
                # the "create_task twice with same title" / "extract_content
                # the same PDF twice" misbehaviour.
                :ok <- DmhAi.Agent.Police.check_no_duplicate_tool_call(name, args, prior_acc),
+               # Police gate 4b — workflow-build continuity. When the model
+               # tried `upsert_workflow` earlier in the chain but it hasn't
+               # saved yet, block any connector function dispatch — those
+               # would EXECUTE the action (create a deal, send an email)
+               # instead of baking the value into the IR.
+               :ok <- DmhAi.Agent.Police.check_workflow_build_continuity(name, prior_acc),
                # Police gate 5 — no two `web_search` calls in a row. A single
                # web_search already fans out 2-3 parallel queries in the BE,
                # so back-to-back web_searches are redundant. Catches the

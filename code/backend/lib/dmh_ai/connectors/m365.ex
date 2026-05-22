@@ -44,11 +44,22 @@ defmodule DmhAi.Connectors.M365 do
   """
 
   use DmhAi.Connectors.MCPAdapter
+  @behaviour DmhAi.Connectors.Discoverable
+  @behaviour DmhAi.Connectors.OAuthIdentity
+
   alias DmhAi.Tools.Manifest
   alias DmhAi.Tools.Manifest.Function
 
+  @impl DmhAi.Connectors.OAuthIdentity
+  def fetch_userinfo(token),
+    do: DmhAi.OAuth.Identity.OIDC.fetch(token,
+          "https://graph.microsoft.com/oidc/userinfo", "email")
+
   @impl true
   def mcp_slug, do: "m365"
+
+  @impl DmhAi.Connectors.Discoverable
+  def discover_functions, do: DmhAi.Connectors.Seed.read_priv_rows(mcp_slug())
 
   @impl true
   def manifest do
@@ -61,7 +72,8 @@ defmodule DmhAi.Connectors.M365 do
           permission:    :read,
           callable_from: [:chat, :task],
           args: %{
-            "query" => %{type: :string, required: true},
+            "query" => %{type: :string, required: true,
+                         provenance: %{kind: :literal_default}},
             "limit" => %{type: :integer, required: false}
           },
           returns: %{messages: :list},
@@ -74,9 +86,12 @@ defmodule DmhAi.Connectors.M365 do
           callable_from:   [:task],
           idempotency_key: :required,
           args: %{
-            "to"      => %{type: :string, required: true, format: :email},
-            "subject" => %{type: :string, required: true},
-            "body"    => %{type: :string, required: true}
+            "to"      => %{type: :string, required: true, format: :email,
+                           provenance: %{kind: :literal_default}},
+            "subject" => %{type: :string, required: true,
+                           provenance: %{kind: :literal_default}},
+            "body"    => %{type: :string, required: true,
+                           provenance: %{kind: :literal_default}}
           },
           returns: %{accepted: :boolean},
           errors:  [:unauthorised, :rate_limited, :upstream_5xx],
@@ -90,9 +105,12 @@ defmodule DmhAi.Connectors.M365 do
           permission:    :read,
           callable_from: [:chat, :task],
           args: %{
-            "duration_min" => %{type: :integer, required: true},
-            "between_from" => %{type: :string,  required: true},
-            "between_to"   => %{type: :string,  required: true},
+            "duration_min" => %{type: :integer, required: true,
+                                provenance: %{kind: :literal_default, value: 30}},
+            "between_from" => %{type: :string,  required: true,
+                                provenance: %{kind: :literal_default}},
+            "between_to"   => %{type: :string,  required: true,
+                                provenance: %{kind: :literal_default}},
             "attendees"    => %{type: :list,    required: false}
           },
           returns: %{slots: :list},
@@ -105,9 +123,12 @@ defmodule DmhAi.Connectors.M365 do
           callable_from:   [:task],
           idempotency_key: :required,
           args: %{
-            "title"     => %{type: :string, required: true},
-            "start"     => %{type: :string, required: true},
-            "end"       => %{type: :string, required: true},
+            "title"     => %{type: :string, required: true,
+                             provenance: %{kind: :literal_default}},
+            "start"     => %{type: :string, required: true,
+                             provenance: %{kind: :literal_default}},
+            "end"       => %{type: :string, required: true,
+                             provenance: %{kind: :literal_default}},
             "attendees" => %{type: :list,   required: false}
           },
           returns: %{event_id: :string, web_link: :string},
@@ -136,8 +157,10 @@ defmodule DmhAi.Connectors.M365 do
           callable_from:   [:task],
           idempotency_key: :required,
           args: %{
-            "name"    => %{type: :string, required: true},
-            "content" => %{type: :string, required: true}
+            "name"    => %{type: :string, required: true,
+                           provenance: %{kind: :literal_default}},
+            "content" => %{type: :string, required: true,
+                           provenance: %{kind: :literal_default}}
           },
           returns: %{file_id: :string, web_url: :string},
           errors:  [:unauthorised, :rate_limited, :duplicate],
@@ -186,7 +209,8 @@ defmodule DmhAi.Connectors.M365 do
           callable_from:   [:task],
           idempotency_key: :required,
           args: %{
-            "title"     => %{type: :string, required: true},
+            "title"     => %{type: :string, required: true,
+                             provenance: %{kind: :literal_default}},
             "body"      => %{type: :string, required: false},
             "due"       => %{type: :string, required: false}
           },
@@ -204,7 +228,8 @@ defmodule DmhAi.Connectors.M365 do
           permission:    :read,
           callable_from: [:chat, :task],
           args: %{
-            "query" => %{type: :string, required: true},
+            "query" => %{type: :string, required: true,
+                         provenance: %{kind: :literal_default}},
             "limit" => %{type: :integer, required: false}
           },
           returns: %{contacts: :list},
@@ -221,9 +246,16 @@ defmodule DmhAi.Connectors.M365 do
           permission:    :read,
           callable_from: [:chat, :task],
           args: %{
-            "workbook_id" => %{type: :string, required: true},
-            "worksheet"   => %{type: :string, required: true},
-            "range"       => %{type: :string, required: true}
+            "workbook_id" => %{type: :string, required: true,
+                               provenance: %{kind: :lookup,
+                                             source: "m365.files.list"}},
+            # Outlook calls the default worksheet "Sheet1"; admins
+            # rarely rename it, so this is the right default to try
+            # without prompting.
+            "worksheet"   => %{type: :string, required: true,
+                               provenance: %{kind: :literal_default, value: "Sheet1"}},
+            "range"       => %{type: :string, required: true,
+                               provenance: %{kind: :literal_default, value: "A1:Z1000"}}
           },
           returns: %{values: :list},
           scopes:  ["Files.Read"]
@@ -238,8 +270,11 @@ defmodule DmhAi.Connectors.M365 do
           callable_from:   [:task],
           idempotency_key: :required,
           args: %{
-            "message_id" => %{type: :string, required: true},
-            "body"       => %{type: :string, required: true}
+            "message_id" => %{type: :string, required: true,
+                              provenance: %{kind: :lookup,
+                                            source: "m365.mail.search"}},
+            "body"       => %{type: :string, required: true,
+                              provenance: %{kind: :literal_default}}
           },
           returns: %{ok: :boolean},
           errors:  [:unauthorised, :not_found, :rate_limited],
@@ -253,8 +288,13 @@ defmodule DmhAi.Connectors.M365 do
           callable_from:   [:task],
           idempotency_key: :required,
           args: %{
-            "event_id" => %{type: :string, required: true},
-            "patch"    => %{type: :map,    required: true}
+            # No event-list verb in this connector yet — operators
+            # paste the event id directly or it arrives as a
+            # trigger payload.
+            "event_id" => %{type: :string, required: true,
+                            provenance: %{kind: :literal_default}},
+            "patch"    => %{type: :map,    required: true,
+                            provenance: %{kind: :literal_default}}
           },
           returns: %{event_id: :string},
           errors:  [:unauthorised, :not_found, :rate_limited],
@@ -268,7 +308,10 @@ defmodule DmhAi.Connectors.M365 do
           permission:    :read,
           callable_from: [:chat, :task],
           args: %{
-            "page_id" => %{type: :string, required: true}
+            # OneNote page lookup is currently out-of-band (admin
+            # supplies page id from a OneNote URL).
+            "page_id" => %{type: :string, required: true,
+                           provenance: %{kind: :literal_default}}
           },
           returns: %{text: :string, title: :string},
           scopes:  ["Notes.Read"]
@@ -339,8 +382,9 @@ defmodule DmhAi.Connectors.M365 do
         "offline_access",
         "User.Read"
       ],
-      userinfo_endpoint:      "https://graph.microsoft.com/oidc/userinfo",
-      userinfo_field_path:    "email",
+      # Identity capture lives in `fetch_userinfo/1` (see top of module).
+      userinfo_endpoint:      nil,
+      userinfo_field_path:    nil,
       extra_auth_params:      %{"prompt" => "consent"}
     }
   end

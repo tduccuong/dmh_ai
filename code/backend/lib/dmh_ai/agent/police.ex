@@ -735,6 +735,106 @@ defmodule DmhAi.Agent.Police do
   def check_no_duplicate_tool_call(_, _, _), do: :ok
 
   @doc """
+  Workflow-build continuity gate. When the model has attempted
+  `upsert_workflow` earlier in the chain (or its parent task) AND
+  the most recent attempt did NOT successfully save, block any
+  external connector tool call until the workflow lands.
+
+  Background: a `request_input` issued during workflow compile is a
+  pause to gather a VALUE for the IR, not a green light to run the
+  underlying action. Smaller models occasionally lose the build
+  context across the pause boundary and dispatch the connector
+  function directly with the value the user supplied — producing a
+  real side-effect (a deal, a contact, an email) instead of a saved
+  workflow. This gate is the safety net for that class of failure.
+
+  Skips when:
+    * The tool isn't a connector function (`<slug>.<bare>` where
+      `<slug>` is registered with `Connectors.Registry`).
+    * No `upsert_workflow` attempt is recorded in `prior_messages`
+      (model isn't in build mode).
+    * The most recent `upsert_workflow` tool result parses as a
+      success envelope (`{name, version, url}`) — the workflow IS
+      saved and the model is free to dispatch normally.
+
+  Otherwise: reject with a nudge telling the model the answer goes
+  into the IR + re-upsert, not into a connector dispatch.
+  """
+  @spec check_workflow_build_continuity(String.t(), [map()]) ::
+          :ok | {:rejected, {atom(), String.t()}}
+  def check_workflow_build_continuity(name, prior_messages)
+      when is_binary(name) and is_list(prior_messages) do
+    if connector_function?(name) and workflow_build_pending?(prior_messages) do
+      reason =
+        "Error: you started a workflow build (called `upsert_workflow` earlier in this " <>
+          "chain) but it hasn't saved yet. Calling `#{name}` directly would EXECUTE " <>
+          "the operation in real life (create a deal, send an email, …) — not what the " <>
+          "user asked for. The user asked for a workflow. Bake any new value the user " <>
+          "just supplied into the IR (as a literal arg, or as a new trigger input the " <>
+          "user supplies each run) and re-call `upsert_workflow`. If you genuinely want " <>
+          "to abandon the build, `cancel_task` first."
+
+      Logger.warning(
+        "[Police] REJECTED workflow_build_continuity: tool=#{name}"
+      )
+
+      DmhAi.SysLog.log(
+        "[POLICE] REJECTED workflow_build_continuity: tool=#{name}"
+      )
+
+      {:rejected, {:workflow_build_continuity, reason}}
+    else
+      :ok
+    end
+  end
+
+  def check_workflow_build_continuity(_, _), do: :ok
+
+  defp connector_function?(name) do
+    case String.split(name, ".", parts: 2) do
+      [slug, _bare] when slug != "" ->
+        not is_nil(DmhAi.Connectors.Registry.module_for_slug(slug))
+
+      _ ->
+        false
+    end
+  end
+
+  # True when there's an `upsert_workflow` call in the recent
+  # history AND the most-recent tool result for it wasn't a success.
+  # "Success" is a tool message whose body decodes to a map
+  # containing `name`, `version`, and `url` — the shape
+  # `upsert_workflow` returns on a clean save.
+  defp workflow_build_pending?(prior_messages) do
+    prior_messages
+    |> Enum.reverse()
+    |> Enum.find_value(false, fn msg ->
+      role    = Map.get(msg, :role)    || Map.get(msg, "role")
+      name    = Map.get(msg, :name)    || Map.get(msg, "name")
+      content = Map.get(msg, :content) || Map.get(msg, "content")
+
+      if role == "tool" and name == "upsert_workflow" and is_binary(content) do
+        {:found, content}
+      else
+        nil
+      end
+    end)
+    |> case do
+      {:found, content} -> not workflow_save_succeeded?(content)
+      _ -> false
+    end
+  end
+
+  defp workflow_save_succeeded?(content) when is_binary(content) do
+    case Jason.decode(content) do
+      {:ok, %{"name" => _, "version" => _, "url" => _}} -> true
+      _ -> false
+    end
+  end
+
+  defp workflow_save_succeeded?(_), do: false
+
+  @doc """
   Detect tool-error loops: same tool returning the same error message
   twice in a row within one chain. Generic — no whitelist, no
   significance keys. Any tool whose runtime / validation produces an

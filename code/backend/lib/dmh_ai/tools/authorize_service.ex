@@ -13,12 +13,12 @@ defmodule DmhAi.Tools.AuthorizeService do
   runtime matches the target against catalog entries and:
 
     * If the user already has a fresh OAuth token at
-      `oauth:<host_match>` → return `{status: "authorized"}` so the
+      `oauth:<slug>` → return `{status: "authorized"}` so the
       next chain can use it via `lookup_creds` + `run_script` + curl.
     * If no token (or expired beyond refresh) → fire the OAuth
       flow with `flow_kind = "oauth_service"`, return
       `{status: "needs_auth", auth_url}`. The chain ends; the
-      `/oauth/callback` handler stores the token at `oauth:<host_match>`
+      `/oauth/callback` handler stores the token at `oauth:<slug>`
       and dispatches `auto_resume_assistant`.
     * If the target doesn't match any catalog entry → return a
       structured `{:error, ...}` telling the model to either ask
@@ -48,7 +48,7 @@ defmodule DmhAi.Tools.AuthorizeService do
     `force_new` (optional bool, default false): when the user explicitly asks to ADD or AUTHORIZE a NEW account on a service they've already linked (shape: "add my new <service> account", "authorize another <service> account", "connect a different <service> login"), pass `true`. This bypasses the existing-credential shortcut and runs a fresh OAuth dance; the user picks the account on the provider's UI and the new credential is saved alongside any prior ones.
 
     Returns:
-    - `{status: "authorized"}` — the user already has at least one valid token AND `force_new` was not set. Immediately call `lookup_creds(target: "oauth:<host>")` and proceed with `run_script` + curl.
+    - `{status: "authorized"}` — the user already has at least one valid token AND `force_new` was not set. Immediately call `lookup_creds(target: "oauth:<slug>")` and proceed with `run_script` + curl.
     - `{status: "needs_auth", auth_url}` — first-time auth, OR the user asked to add a new account. Relay the auth_url as a clickable link; chain ends; the OAuth callback auto-resumes the chain after the user authorizes.
     - `{:error, reason}` — host isn't in the catalog (admin hasn't wired it), or another setup issue. Tell the user honestly and offer alternatives.
     """
@@ -155,7 +155,7 @@ defmodule DmhAi.Tools.AuthorizeService do
   end
 
   defp already_authorized_or_init(user_id, session_id, anchor_n, %{host_match: host} = entry, false) do
-    target = "oauth:" <> host
+    target = "oauth:" <> entry.slug
 
     # Multi-account: if ANY account already has a credential for this
     # service, surface that to the model so it skips the OAuth dance.

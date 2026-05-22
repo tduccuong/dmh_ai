@@ -21,7 +21,7 @@ defmodule DmhAi.Tools.InspectFunction do
 
   @behaviour DmhAi.Tools.Behaviour
 
-  alias DmhAi.Connectors.Registry, as: ConnectorRegistry
+  alias DmhAi.Connectors.Manifest
 
   @impl true
   def name, do: "inspect_function"
@@ -60,17 +60,15 @@ defmodule DmhAi.Tools.InspectFunction do
 
   @impl true
   def execute(%{"name" => fn_name}, _ctx) when is_binary(fn_name) do
-    with [slug, bare] <- String.split(fn_name, ".", parts: 2),
-         mod when not is_nil(mod) <- ConnectorRegistry.module_for_slug(slug),
-         manifest <- safe_manifest(mod),
-         %{} = spec <- Map.get(Map.get(manifest, :functions, %{}), bare) do
-      {:ok, format(slug, bare, spec)}
-    else
-      _ ->
+    case Manifest.lookup_fqn(fn_name) do
+      %{} = spec ->
+        {:ok, format(spec)}
+
+      nil ->
         {:error,
          "inspect_function: no function named `#{fn_name}` — name must be `<slug>.<function>` " <>
-           "and the connector must be registered. See `<authorized_services>` for valid slugs " <>
-           "and call `connect_mcp` first to discover function names."}
+           "and the connector must be configured + discovered. See `<authorized_services>` for " <>
+           "valid slugs and call `connect_mcp` first to discover function names."}
     end
   end
 
@@ -79,20 +77,16 @@ defmodule DmhAi.Tools.InspectFunction do
 
   # ─── private ─────────────────────────────────────────────────────────
 
-  defp safe_manifest(mod) do
-    if function_exported?(mod, :manifest, 0), do: mod.manifest(), else: %{functions: %{}}
-  end
-
-  defp format(slug, bare, spec) do
+  defp format(spec) do
     %{
-      "name"             => "#{slug}.#{bare}",
+      "name"             => "#{spec.connector_slug}.#{spec.function_name}",
       "kind"             => kind_for(spec),
-      "permission"       => to_string(Map.get(spec, :permission, :read)),
-      "args"             => format_args(Map.get(spec, :args, %{})),
-      "returns"          => format_returns(Map.get(spec, :returns, %{})),
-      "error_classes"    => format_atoms(Map.get(spec, :errors, [])),
-      "scopes_required"  => Map.get(spec, :scopes, []),
-      "idempotency_key"  => to_string(Map.get(spec, :idempotency_key, :none))
+      "permission"       => to_string(spec.permission),
+      "args"             => format_args(spec.args),
+      "returns"          => format_returns(spec.returns),
+      "error_classes"    => format_atoms(spec.error_classes),
+      "scopes_required"  => spec.scopes_required,
+      "idempotency_key"  => to_string(spec.idempotency_key)
     }
   end
 
@@ -144,7 +138,7 @@ defmodule DmhAi.Tools.InspectFunction do
   #   {kind: "from_user"}                            — bind to trigger input / user prose
   #   {kind: "lookup", source: "<fn>", result_field: "<f>"}
   #                                                   — add an upstream step calling <source>
-  #   {kind: "built_in", binding: "{{org.me.email}}"} — use the named built-in
+  #   {kind: "built_in", binding: "{{owner.email}}"} — use the named built-in
   #   {kind: "vendor_enum", enumerate: "<fn>"}        — value is a vendor enum; call <fn> to list
   #   {kind: "literal_default", value: <v>}           — connector ships a default
   #

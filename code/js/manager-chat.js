@@ -778,7 +778,7 @@ function buildMessageEntryNode(msg, sessionId, renderSession, progressRows) {
             }
             body.innerHTML = renderWithMath(msg.content || '');
             div.appendChild(body);
-            addCopyButtons(body); wrapTables(body);
+            addCopyButtons(body); wrapTables(body); decorateTokens(body);
 
             // Inline form rendered when the assistant emitted a
             // `request_input` tool_call. Pre-submit: live inputs +
@@ -802,7 +802,7 @@ function buildMessageEntryNode(msg, sessionId, renderSession, progressRows) {
                 body.appendChild(renderFormResponseSummary(msg.form_response));
             } else {
                 body.innerHTML = renderWithMath(msg.content || '');
-                wrapTables(body);
+                wrapTables(body); decorateTokens(body);
             }
             if (msg.images && msg.images.length > 0) {
                 msg.images.forEach(function(img) {
@@ -1166,6 +1166,7 @@ UIManager.renderChat = function() {
             streamBody.className = 'msg-body';
             streamBody.id = 'streaming-body';
             streamBody.innerHTML = streamEntry.searchWarning + renderWithMath(streamEntry.content);
+            decorateTokens(streamBody);
             addCopyButtons(streamBody); wrapTables(streamBody);
             streamDiv.appendChild(streamBody);
             container.appendChild(streamDiv);

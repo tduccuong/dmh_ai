@@ -91,6 +91,7 @@ defmodule DmhAi.Application do
         DmhAi.Agent.ChainInFlight.init()
         DmhAi.Agent.BackgroundPipelines.init()
         DmhAi.Agent.RunningTools.init()
+        DmhAi.Connectors.Discovery.init()
         DmhAi.GeoIP.init()
         # Primitive 0.3 — register Universal Region connectors with
         # the Dispatcher. Manifest validation runs here; a connector
@@ -102,6 +103,11 @@ defmodule DmhAi.Application do
         # so a code-side descriptor change ripples to the DB without
         # operator action. Closes I2 + #373 generically.
         DmhAi.Connectors.Bootstrap.seed_all()
+        # First-deploy seed for the DB-backed function manifest. For
+        # each slug that has zero rows in `connector_functions`, load
+        # `priv/connectors/<slug>/functions.json` once. Subsequent
+        # boots are no-ops; refresh happens via admin Discover click.
+        DmhAi.Connectors.Seed.seed_all()
         # Stage / demo / UAT opt-in: when DMH_AI_ENABLE_VENDOR_MOCKS=true,
         # start mock vendor MCP servers for every connector that exposes
         # `mock_descriptor/0`. Lets operators walk the real Caller path

@@ -425,6 +425,27 @@ defmodule DmhAi.Agent.AgentSettings do
     do: int_setting("workflowRunRetentionDays", 30)
 
   @doc """
+  Days after a connector Discover succeeds before the FE shows a
+  yellow "consider refreshing" indicator on that layer. Vendor
+  surfaces drift (new fields, deprecated scopes, renamed methods);
+  this is the soft nudge for the operator to walk each connector
+  periodically.
+  """
+  @spec discovery_warn_after_days() :: pos_integer()
+  def discovery_warn_after_days,
+    do: int_setting("discoveryWarnAfterDays", 7)
+
+  @doc """
+  Days after a connector Discover succeeds before the FE shows a
+  red "stale" indicator. Hard threshold — past this point the
+  bundled defaults are assumed obsolete enough that the model's
+  catalog likely diverges from the vendor.
+  """
+  @spec discovery_stale_after_days() :: pos_integer()
+  def discovery_stale_after_days,
+    do: int_setting("discoveryStaleAfterDays", 180)
+
+  @doc """
   Install-wide HMAC secret used to sign per-workflow webhook URLs.
   Lazily generated on first call (32 random bytes, base64-encoded)
   and persisted in the `settings` table so the URL stays stable

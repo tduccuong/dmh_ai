@@ -51,11 +51,22 @@ defmodule DmhAi.Connectors.Calendly do
   """
 
   use DmhAi.Connectors.MCPAdapter
+  @behaviour DmhAi.Connectors.Discoverable
+  @behaviour DmhAi.Connectors.OAuthIdentity
+
   alias DmhAi.Tools.Manifest
   alias DmhAi.Tools.Manifest.Function
 
+  @impl DmhAi.Connectors.OAuthIdentity
+  def fetch_userinfo(token),
+    do: DmhAi.OAuth.Identity.OIDC.fetch(token,
+          "https://api.calendly.com/users/me", "resource.email")
+
   @impl true
   def mcp_slug, do: "calendly"
+
+  @impl DmhAi.Connectors.Discoverable
+  def discover_functions, do: DmhAi.Connectors.Seed.read_priv_rows(mcp_slug())
 
   @impl true
   def manifest do
@@ -92,9 +103,13 @@ defmodule DmhAi.Connectors.Calendly do
           permission:    :read,
           callable_from: [:chat, :task],
           args: %{
-            "event_type_uri" => %{type: :string, required: true},
-            "start_time"     => %{type: :string, required: true},
-            "end_time"       => %{type: :string, required: true}
+            "event_type_uri" => %{type: :string, required: true,
+                                  provenance: %{kind: :lookup,
+                                                source: "calendly.event_type.list"}},
+            "start_time"     => %{type: :string, required: true,
+                                  provenance: %{kind: :literal_default}},
+            "end_time"       => %{type: :string, required: true,
+                                  provenance: %{kind: :literal_default}}
           },
           returns: %{slots: :list},
           scopes:  ["availability:read"]
@@ -121,7 +136,9 @@ defmodule DmhAi.Connectors.Calendly do
           permission:    :read,
           callable_from: [:chat, :task],
           args: %{
-            "event_uri" => %{type: :string,  required: true},
+            "event_uri" => %{type: :string,  required: true,
+                             provenance: %{kind: :lookup,
+                                           source: "calendly.event.list"}},
             "limit"     => %{type: :integer, required: false}
           },
           returns: %{invitees: :list},
@@ -138,7 +155,9 @@ defmodule DmhAi.Connectors.Calendly do
           callable_from:   [:task],
           idempotency_key: :required,
           args: %{
-            "event_type_uri"  => %{type: :string,  required: true},
+            "event_type_uri"  => %{type: :string,  required: true,
+                                   provenance: %{kind: :lookup,
+                                                 source: "calendly.event_type.list"}},
             "max_event_count" => %{type: :integer, required: false}
           },
           returns: %{booking_url: :string},
@@ -155,7 +174,9 @@ defmodule DmhAi.Connectors.Calendly do
           callable_from:   [:task],
           idempotency_key: :required,
           args: %{
-            "event_uri" => %{type: :string, required: true},
+            "event_uri" => %{type: :string, required: true,
+                             provenance: %{kind: :lookup,
+                                           source: "calendly.event.list"}},
             "reason"    => %{type: :string, required: false}
           },
           returns: %{cancelled: :boolean},
@@ -170,7 +191,9 @@ defmodule DmhAi.Connectors.Calendly do
           callable_from:   [:task],
           idempotency_key: :required,
           args: %{
-            "invitee_uri" => %{type: :string, required: true}
+            "invitee_uri" => %{type: :string, required: true,
+                               provenance: %{kind: :lookup,
+                                             source: "calendly.event.invitees"}}
           },
           returns: %{marked: :boolean},
           errors:  [:unauthorised, :not_found, :rate_limited],
@@ -224,8 +247,9 @@ defmodule DmhAi.Connectors.Calendly do
         "scheduled_events:read",
         "scheduled_events:write"
       ],
-      userinfo_endpoint:      "https://api.calendly.com/users/me",
-      userinfo_field_path:    "resource.email",
+      # Identity capture lives in `fetch_userinfo/1` (see top of module).
+      userinfo_endpoint:      nil,
+      userinfo_field_path:    nil,
       extra_auth_params:      %{}
     }
   end

@@ -89,6 +89,31 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
 .message { margin-bottom: 10px; width: 100%; }
 .message.user { background: linear-gradient(135deg, #180a38 0%, #100630 100%); border: 1px solid rgba(140,95,200,0.6); padding: 12px 16px; border-radius: 5px; font-size: 17px; color: #7df8ff; font-weight: 400; }
 .message.assistant { background: #070510; padding: 12px 16px; border-radius: 8px; line-height: 1.6; font-size: 17px; color: #ffffff; font-weight: 400; }
+
+/* `&<workflow-slug>` and `@<mention>` tokens — runtime references
+ * the BE resolves into the `<workflow_references>` / mentions block.
+ * Pop them visually so the user can tell at a glance which substrings
+ * are runtime-recognised handles vs. plain prose. */
+.token-workflow {
+    background: rgba(122, 217, 156, 0.12);
+    border: 1px solid rgba(122, 217, 156, 0.35);
+    color: #9be0b3;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 0.92em;
+    white-space: nowrap;
+}
+.token-mention {
+    background: rgba(184, 154, 240, 0.14);
+    border: 1px solid rgba(184, 154, 240, 0.40);
+    color: #c8b4f0;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 0.92em;
+    white-space: nowrap;
+}
 .msg-header { font-size: 16px; color: #ece0f0; margin-bottom: 8px; font-weight: 500; }
 .input-area { background: #1c1430; display: flex; flex-direction: column; }
 .input-row { padding: 20px; display: flex; gap: 10px; }
@@ -1255,6 +1280,63 @@ body.view-external-connectors #external-connectors-view {
 .ec-result.ok    { background: rgba(122, 217, 156, 0.1); color: #7ad99c; }
 .ec-result.warn  { background: rgba(230, 196, 106, 0.1); color: #e6c46a; }
 .ec-result.error { background: rgba(224, 80, 96, 0.1);   color: #e05060; }
+
+/* Discovery panel — one row per layer (functions / metadata / docs)
+ * the connector module supports. State indicator left of the
+ * Discover button: idle (grey), running (spinner), success (green
+ * tick + relative timestamp + record count), failed (red ✗ with
+ * tooltip carrying the error text). */
+.ec-discovery-help {
+    color: #9988a8;
+    font-size: 11.5px;
+    line-height: 1.5;
+    margin-bottom: 12px;
+}
+.ec-discovery-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+.ec-discovery-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 8px 0;
+    border-top: 1px solid #2a1f3e;
+}
+.ec-discovery-row:first-child { border-top: none; }
+.ec-discovery-label {
+    flex: 0 0 110px;
+    font-size: 12px;
+    color: #e8d6f0;
+}
+.ec-discovery-state {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11.5px;
+}
+.ec-discovery-text.idle    { color: #9988a8; }
+.ec-discovery-text.running { color: #b8a8c8; }
+.ec-discovery-text.ok      { color: #7ad99c; }
+.ec-discovery-text.warn    { color: #e6c46a; cursor: help; border-bottom: 1px dotted #e6c46a66; }
+.ec-discovery-text.stale   { color: #e08840; cursor: help; border-bottom: 1px dotted #e0884066; }
+.ec-discovery-text.err     { color: #e05060; cursor: help; border-bottom: 1px dotted #e0506066; }
+.ec-discovery-spinner {
+    width: 12px;
+    height: 12px;
+    border: 2px solid rgba(120, 80, 180, 0.3);
+    border-top-color: #b89af0;
+    border-radius: 50%;
+    animation: ec-spin 0.8s linear infinite;
+}
+@keyframes ec-spin {
+    to { transform: rotate(360deg); }
+}
+.ec-discovery-btn {
+    flex: 0 0 auto;
+}
 
 /* Workflow viewer modal — Layer W. Sits at z-index above
  * .settings-overlay (1000) but below the .modal-overlay alert tier

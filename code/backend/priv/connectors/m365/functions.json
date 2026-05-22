@@ -1,0 +1,502 @@
+{
+  "connector_slug": "m365",
+  "functions": [
+    {
+      "args": {
+        "attendees": {
+          "required": false,
+          "type": "list"
+        },
+        "end": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "start": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "title": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "rate_limited"
+      ],
+      "function_name": "cal.create_event",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "event_id": "string",
+        "web_link": "string"
+      },
+      "scopes_required": [
+        "Calendars.ReadWrite"
+      ]
+    },
+    {
+      "args": {
+        "attendees": {
+          "required": false,
+          "type": "list"
+        },
+        "between_from": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "between_to": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "duration_min": {
+          "provenance": {
+            "kind": "literal_default",
+            "value": 30
+          },
+          "required": true,
+          "type": "integer"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "cal.find_free_slots",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "slots": "list"
+      },
+      "scopes_required": [
+        "Calendars.Read"
+      ]
+    },
+    {
+      "args": {
+        "event_id": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "patch": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "map"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "cal.update_event",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "event_id": "string"
+      },
+      "scopes_required": [
+        "Calendars.ReadWrite"
+      ]
+    },
+    {
+      "args": {
+        "limit": {
+          "required": false,
+          "type": "integer"
+        },
+        "query": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "contacts.search",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "contacts": "list"
+      },
+      "scopes_required": [
+        "Contacts.Read"
+      ]
+    },
+    {
+      "args": {
+        "range": {
+          "provenance": {
+            "kind": "literal_default",
+            "value": "A1:Z1000"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "workbook_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "m365.files.list"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "worksheet": {
+          "provenance": {
+            "kind": "literal_default",
+            "value": "Sheet1"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "excel.read_range",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "values": "list"
+      },
+      "scopes_required": [
+        "Files.Read"
+      ]
+    },
+    {
+      "args": {
+        "limit": {
+          "required": false,
+          "type": "integer"
+        },
+        "path": {
+          "required": false,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "files.list",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "items": "list"
+      },
+      "scopes_required": [
+        "Files.Read"
+      ]
+    },
+    {
+      "args": {
+        "content": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "name": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "rate_limited",
+        "duplicate"
+      ],
+      "function_name": "files.upload",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "file_id": "string",
+        "web_url": "string"
+      },
+      "scopes_required": [
+        "Files.ReadWrite"
+      ]
+    },
+    {
+      "args": {
+        "body": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "message_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "m365.mail.search"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "mail.reply",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "ok": "boolean"
+      },
+      "scopes_required": [
+        "Mail.Send"
+      ]
+    },
+    {
+      "args": {
+        "limit": {
+          "required": false,
+          "type": "integer"
+        },
+        "query": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "mail.search",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "messages": "list"
+      },
+      "scopes_required": [
+        "Mail.Read"
+      ]
+    },
+    {
+      "args": {
+        "body": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "subject": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "to": {
+          "format": "email",
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "rate_limited",
+        "upstream_5xx"
+      ],
+      "function_name": "mail.send",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "accepted": "boolean"
+      },
+      "scopes_required": [
+        "Mail.Send"
+      ]
+    },
+    {
+      "args": {
+        "page_id": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "onenote.read_page",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "text": "string",
+        "title": "string"
+      },
+      "scopes_required": [
+        "Notes.Read"
+      ]
+    },
+    {
+      "args": {
+        "end": {
+          "required": false,
+          "type": "string"
+        },
+        "start": {
+          "required": false,
+          "type": "string"
+        },
+        "subject": {
+          "required": false,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "rate_limited"
+      ],
+      "function_name": "teams.create_meeting",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "join_url": "string",
+        "meeting_id": "string"
+      },
+      "scopes_required": [
+        "OnlineMeetings.ReadWrite"
+      ]
+    },
+    {
+      "args": {
+        "body": {
+          "required": false,
+          "type": "string"
+        },
+        "due": {
+          "required": false,
+          "type": "string"
+        },
+        "title": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "rate_limited"
+      ],
+      "function_name": "todo.create",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "task_id": "string"
+      },
+      "scopes_required": [
+        "Tasks.ReadWrite"
+      ]
+    },
+    {
+      "args": {
+        "limit": {
+          "required": false,
+          "type": "integer"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "todo.list",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "tasks": "list"
+      },
+      "scopes_required": [
+        "Tasks.Read"
+      ]
+    }
+  ],
+  "vendor_api_version": "v3"
+}

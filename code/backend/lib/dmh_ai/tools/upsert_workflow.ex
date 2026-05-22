@@ -40,13 +40,13 @@ defmodule DmhAi.Tools.UpsertWorkflow do
 
   alias DmhAi.{Workflows, Constants, Permissions}
   alias DmhAi.Tools.Catalog
-  alias DmhAi.Connectors.Registry, as: ConnectorRegistry
+  alias DmhAi.Connectors.Manifest, as: ConnectorManifest
   require Logger
 
   # Synthetic functions the compiler may emit even though they aren't
   # connector-backed. Validation passes them through; the runtime will
   # resolve them at execution time.
-  @synthetic_functions ~w(llm.compose builtin.compute workflow.invoke)
+  @synthetic_functions ~w(llm.compose llm.summarise builtin.compute builtin.coalesce workflow.invoke)
 
   @impl true
   def name, do: "upsert_workflow"
@@ -293,7 +293,8 @@ defmodule DmhAi.Tools.UpsertWorkflow do
          :ok            <- check_trigger_cadence(nodes),
          :ok            <- check_required_args(nodes),
          :ok            <- check_references(ir, nodes),
-         :ok            <- check_placeholder_args(nodes) do
+         :ok            <- check_arg_provenance(nodes),
+         :ok            <- check_branch_predicates(nodes) do
       {:ok, ir}
     end
   end
@@ -400,23 +401,8 @@ defmodule DmhAi.Tools.UpsertWorkflow do
     kind == "step" and Map.has_key?(node, "function")
   end
 
-  # Manifest keys are bare ("contact.find"); the IR namespaces them
-  # ("hubspot.contact.find"). Strip the slug prefix to look up.
   defp function_exists?(function_name) when is_binary(function_name) do
-    case String.split(function_name, ".", parts: 2) do
-      [slug, bare] ->
-        case ConnectorRegistry.module_for_slug(slug) do
-          nil -> false
-          mod ->
-            try do
-              Map.has_key?(mod.manifest().functions, bare)
-            rescue _ -> false
-            end
-        end
-
-      _ ->
-        false
-    end
+    ConnectorManifest.lookup_fqn(function_name) != nil
   end
 
   # ─── deep validation: required args present ────────────────────────────
@@ -455,105 +441,187 @@ defmodule DmhAi.Tools.UpsertWorkflow do
   end
 
   defp function_spec(function_name) when is_binary(function_name) do
-    case String.split(function_name, ".", parts: 2) do
-      [slug, bare] ->
-        case ConnectorRegistry.module_for_slug(slug) do
-          nil -> nil
-          mod ->
-            try do
-              Map.get(mod.manifest().functions, bare)
-            rescue _ -> nil
-            end
-        end
-
-      _ ->
-        nil
-    end
+    ConnectorManifest.lookup_fqn(function_name)
   end
 
-  # ─── L5 — Placeholder soundness backstop ──────────────────────────────
+  # ─── L1 — Arg provenance enforcement ──────────────────────────────────
   #
-  # See `arch_wiki/dmh_ai/sme/layer-W.md` §Runtime self-sufficiency / L5.
-  # The compiler must never let the model save an IR whose required args
-  # carry placeholder-shaped literals — armed workflows fire without an
-  # LLM around to recover from a vendor rejection rooted in an invented
-  # value.
+  # See `arch_wiki/dmh_ai/sme/layer-W.md` §Runtime self-sufficiency / L1.
+  # Each connector function's manifest may annotate required args with a
+  # `provenance:` clause stating WHERE the value must come from at IR
+  # write time. The validator enforces that clause — the runtime can
+  # then rely on every required value tracing to a known source instead
+  # of relying on regex heuristics to spot placeholders.
+  #
+  # Provenance kinds:
+  #   :from_user        → value MUST be `{{T.<x>}}` (trigger input). No
+  #                       literal allowed; the user supplies the value at
+  #                       invoke time. Forces the model to declare a
+  #                       trigger input or ask the user.
+  #   :lookup           → value MUST be `{{<N>.<field>}}` (an upstream
+  #                       step's emit). The model can't satisfy the
+  #                       requirement by inventing a literal.
+  #   :built_in         → value MUST equal the named built-in binding.
+  #   :literal_default  → literals are acceptable (the connector author
+  #                       has decided this arg is configuration the
+  #                       workflow author legitimately bakes in).
+  #
+  # Default when no annotation: `:literal_default` (permissive). Connector
+  # authors opt INTO strict enforcement by annotating `from_user` /
+  # `lookup` / `built_in` per arg. This lets the spec land incrementally
+  # — each connector's annotation surface grows over time without
+  # breaking workflows that legitimately use literals on un-annotated args.
 
-  @placeholder_tokens ~w(unknown todo placeholder foo bar example test xxx none)
-  @quantity_arg_pattern ~r/amount|price|quantity|count|limit|max_/
-
-  defp check_placeholder_args(nodes) do
+  defp check_arg_provenance(nodes) do
     nodes
     |> Enum.filter(&is_step_node?/1)
     |> Enum.reject(fn n -> n["function"] in @synthetic_functions end)
     |> Enum.reduce_while(:ok, fn node, _acc ->
-      case scan_node_for_placeholders(node) do
+      case scan_node_provenance(node) do
         :ok ->
           {:cont, :ok}
 
-        {:placeholder, arg, value} ->
+        {:provenance_error, arg_name, prov, value} ->
           {:halt,
            {:error,
             "upsert_workflow: node #{node["id"]} (`#{node["function"]}`) required arg " <>
-              "`#{arg}` has a placeholder-shaped value #{inspect(value)}. " <>
-              "Workflows run autonomously — every required value must trace to a trigger " <>
-              "input (`{{T.<name>}}`), a prior step's emit (`{{N.<field>}}`), a built-in " <>
-              "(`{{org.*}}`, `{{now}}`), or a literal the user explicitly stated. " <>
-              "Either declare a trigger input the user supplies at invoke time, add an " <>
-              "upstream lookup step that emits the value, or ask the user before saving."}}
+              "`#{arg_name}` violates its declared provenance " <>
+              "(#{inspect(prov)}). Got value: #{inspect(value)}. " <>
+              provenance_advice(prov)}}
       end
     end)
   end
 
-  defp scan_node_for_placeholders(node) do
+  defp scan_node_provenance(node) do
     case function_spec(node["function"]) do
-      %{args: arg_schema} ->
-        required =
-          arg_schema
-          |> Enum.filter(fn {_k, v} -> Map.get(v, :required) == true end)
-          |> Enum.map(fn {k, _v} -> to_string(k) end)
-
+      %{args: arg_schema} when is_map(arg_schema) ->
         args = Map.get(node, "args", %{})
 
-        Enum.find_value(required, :ok, fn arg ->
-          value = Map.get(args, arg)
+        arg_schema
+        |> Enum.filter(fn {_k, meta} -> Map.get(meta, :required) == true end)
+        |> Enum.find_value(:ok, fn {arg_name, arg_meta} ->
+          prov = Map.get(arg_meta, :provenance, %{kind: :literal_default})
+          value = Map.get(args, to_string(arg_name))
 
-          if looks_like_placeholder?(arg, value),
-            do: {:placeholder, arg, value},
-            else: nil
+          case validate_value_provenance(value, prov) do
+            :ok -> nil
+            :error -> {:provenance_error, arg_name, prov, value}
+          end
         end)
-        |> case do
-          {:placeholder, _, _} = hit -> hit
-          _                          -> :ok
-        end
 
       _ ->
         :ok
     end
   end
 
-  # A value is a "placeholder" only if it's a literal (not a `{{...}}`
-  # binding) AND matches one of the shapes we know the model invents
-  # when it has no real source for a required arg. Bindings to trigger
-  # inputs / prior emits / built-ins always pass; the runtime resolves
-  # them deterministically.
-  defp looks_like_placeholder?(_arg, value) when is_binary(value) do
-    cond do
-      String.starts_with?(value, "{{") -> false   # binding
-      value == ""                       -> true
-      String.length(value) == 1         -> true   # "1", "x"
-      String.downcase(value) in @placeholder_tokens -> true
-      true                              -> false
-    end
+  # Permissive default — literals + bindings all pass. The connector
+  # author opted not to constrain this arg.
+  defp validate_value_provenance(_value, %{kind: :literal_default}), do: :ok
+  defp validate_value_provenance(_value, %{kind: kind}) when kind == nil, do: :ok
+
+  # `:from_user` — value MUST be a `{{T.<x>}}` trigger-input binding.
+  # Literals are forbidden because they freeze the workflow at one
+  # invented value; the user should supply this at each invocation.
+  defp validate_value_provenance(value, %{kind: :from_user}) when is_binary(value) do
+    if String.starts_with?(value, "{{T.") and String.ends_with?(value, "}}"),
+      do: :ok,
+      else: :error
   end
 
-  defp looks_like_placeholder?(arg, 0) do
-    String.match?(arg, @quantity_arg_pattern)
+  defp validate_value_provenance(_value, %{kind: :from_user}), do: :error
+
+  # `:lookup` — value MUST come from an upstream emit (`{{<N>.<field>}}`).
+  # Trigger inputs are forbidden because the user typically doesn't know
+  # vendor-internal ids (HubSpot's `contact_id`, Outlook's `event_id`);
+  # they know emails, names, URLs. Forcing the upstream-step path means
+  # the workflow ALWAYS resolves ids from human-friendly input via the
+  # declared `source` finder verb. The upstream step's own provenance is
+  # enforced recursively when we visit that node.
+  defp validate_value_provenance(value, %{kind: :lookup}) when is_binary(value) do
+    if String.match?(value, ~r/^\{\{\d+\..+\}\}$/), do: :ok, else: :error
   end
 
-  defp looks_like_placeholder?(_arg, nil), do: true
+  defp validate_value_provenance(_value, %{kind: :lookup}), do: :error
 
-  defp looks_like_placeholder?(_arg, _v), do: false
+  # `:built_in` — value MUST equal the named binding.
+  defp validate_value_provenance(value, %{kind: :built_in, binding: binding}),
+    do: if(value == binding, do: :ok, else: :error)
+
+  defp validate_value_provenance(_value, _), do: :ok
+
+  defp provenance_advice(%{kind: :from_user}),
+    do: "This arg holds user-supplied data — declare a matching trigger input " <>
+        "(`inputs: [{name: \"<arg>\", type: ...}]`) on the trigger node and bind " <>
+        "the step's arg to `{{T.<arg>}}`. The user supplies the value at each " <>
+        "invocation. If the value is genuinely fixed for every run, ask the user " <>
+        "whether to bake it as a literal — and tell the connector author to annotate " <>
+        "the arg as `provenance: %{kind: :literal_default}`."
+
+  defp provenance_advice(%{kind: :lookup, source: source}),
+    do: "This arg is the id of a vendor object the user doesn't know directly. " <>
+        "Add an upstream step calling `#{source}` (driven by a human-friendly " <>
+        "input like email/name/URL via its `query` arg) and bind this arg to " <>
+        "`{{<that_node_id>.<field>}}`. A trigger input `{{T.<x>}}` is NOT a " <>
+        "valid shortcut — the user typically doesn't know vendor-internal ids."
+
+  defp provenance_advice(%{kind: :lookup}),
+    do: "This arg must come from an upstream step's emit (`{{<N>.<field>}}`), " <>
+        "not from a trigger input or a literal — the user doesn't know vendor " <>
+        "ids directly."
+
+  defp provenance_advice(%{kind: :built_in, binding: binding}),
+    do: "This arg must be the built-in binding `#{binding}`."
+
+  defp provenance_advice(_),
+    do: "Pick a binding that matches the arg's declared provenance."
+
+  # ─── Branch predicate grammar ─────────────────────────────────────────
+  #
+  # Every `branch.cases[].when` must parse as a single comparison
+  # expression under the `DmhAi.Workflows.Expression` grammar:
+  #     <operand> <op> <operand>
+  # where `<op> ∈ { ==  !=  <  >  <=  >= }` and operands are
+  # bindings (`{{T.x}}`, `{{1.field}}`), literals (numbers, quoted
+  # strings, booleans), or `null`.
+  #
+  # The validator parses every `when:` and rejects malformed entries
+  # with the parser's own error sentence — which already includes
+  # examples. Catches the failure mode where the model writes
+  # natural-language predicates (`"no contacts found"`) or bare
+  # bindings (`"{{1.contacts.length}}"`) and expects the executor to
+  # interpret them.
+
+  defp check_branch_predicates(nodes) do
+    nodes
+    |> Enum.filter(fn n -> n["kind"] == "branch" end)
+    |> Enum.reduce_while(:ok, fn node, _acc ->
+      case scan_branch_predicates(node) do
+        :ok -> {:cont, :ok}
+        {:error, _} = err -> {:halt, err}
+      end
+    end)
+  end
+
+  defp scan_branch_predicates(node) do
+    cases = Map.get(node, "cases", []) || []
+
+    cases
+    |> Enum.with_index()
+    |> Enum.reduce_while(:ok, fn {kase, idx}, _acc ->
+      pred = Map.get(kase, "when")
+
+      case DmhAi.Workflows.Expression.parse(pred) do
+        {:ok, _ast} ->
+          {:cont, :ok}
+
+        {:error, why} ->
+          {:halt,
+           {:error,
+            "upsert_workflow: node #{node["id"]} branch case[#{idx}] " <>
+              "has an invalid `when:` predicate. #{why}"}}
+      end
+    end)
+  end
 
   # ─── L3 — Compile-time scope gate ─────────────────────────────────────
   #
@@ -571,7 +639,7 @@ defmodule DmhAi.Tools.UpsertWorkflow do
       |> Enum.reject(fn n -> n["function"] in @synthetic_functions end)
       |> Enum.reduce(%{}, fn n, acc ->
         case function_spec(n["function"]) do
-          %{scopes: scopes} when is_list(scopes) and scopes != [] ->
+          %{scopes_required: scopes} when is_list(scopes) and scopes != [] ->
             slug = n["function"] |> String.split(".", parts: 2) |> List.first()
             Map.update(acc, slug, MapSet.new(scopes), fn s ->
               MapSet.union(s, MapSet.new(scopes))
@@ -609,10 +677,15 @@ defmodule DmhAi.Tools.UpsertWorkflow do
   defp check_scopes(_ir, _owner), do: :ok
 
   defp granted_scopes_for(owner_id, slug) when is_binary(slug) do
+    # Credential targets are slug-keyed (`oauth:<slug>`) — see the
+    # `finalize_oauth_service` / `finalize_connector_oauth` writers
+    # in `Handlers.Data`. The catalog row is consulted only to
+    # confirm the slug is a known service; `host_match` rides along
+    # in the cred's payload but is no longer a primary key.
     case DmhAi.OAuth.Catalog.get_by_slug(slug) do
-      %{host_match: host} ->
+      %{} ->
         owner_id
-        |> DmhAi.Auth.Credentials.lookup_all("oauth:" <> host)
+        |> DmhAi.Auth.Credentials.lookup_all("oauth:" <> slug)
         |> Enum.flat_map(fn cred ->
           case Map.get(cred, :payload, %{}) do
             %{"scope" => s} when is_binary(s) -> String.split(s, " ", trim: true)
@@ -782,6 +855,22 @@ defmodule DmhAi.Tools.UpsertWorkflow do
     end
   end
 
+  # `:org` accepts org-level facts only (`{{org.name}}`, `{{org.id}}`).
+  # The legacy `{{org.me.<x>}}` alias was an indirection for the
+  # owner's record; it's been replaced by `{{owner.<x>}}` (DMH-AI app
+  # identity) and `{{owner.<slug>.email}}` (per-connector vendor
+  # identity). Reject the legacy form at compile time with explicit
+  # remediation pointing at the current binding.
+  defp validate_ref(%{parsed: %{root: :org, path: [{:key, "me"} | _]}},
+                    _t_keys, _ids, _emits) do
+    {:error,
+     "`{{org.me.<x>}}` is not a valid binding. Use `{{owner.<x>}}` for the " <>
+       "workflow owner's DMH-AI app identity (e.g. `{{owner.email}}`), or " <>
+       "`{{owner.<slug>.email}}` for the owner's vendor identity captured " <>
+       "at OAuth time (e.g. `{{owner.hubspot.email}}` for the HubSpot account " <>
+       "email used to connect)."}
+  end
+
   defp validate_ref(%{parsed: %{root: root}}, _t_keys, _ids, _emits)
        when root in [:owner, :org, :now, :today] do
     :ok
@@ -902,55 +991,27 @@ defmodule DmhAi.Tools.UpsertWorkflow do
 
   defp poll_manifest_field(nil, _key), do: nil
   defp poll_manifest_field(fn_name, key) when is_binary(fn_name) do
-    case String.split(fn_name, ".", parts: 2) do
-      [slug, bare] ->
-        case ConnectorRegistry.module_for_slug(slug) do
-          nil -> nil
-          mod ->
-            try do
-              spec = Map.get(mod.manifest().functions, bare)
-              spec && Map.get(spec, key)
-            rescue
-              _ -> nil
-            end
-        end
-
-      _ ->
-        nil
+    case ConnectorManifest.lookup_fqn(fn_name) do
+      %{} = spec -> Map.get(spec, key)
+      nil        -> nil
     end
   end
 
   defp poll_capable?(fn_name) do
-    case String.split(fn_name, ".", parts: 2) do
-      [slug, bare] ->
-        case ConnectorRegistry.module_for_slug(slug) do
-          nil ->
-            {:error, "unknown connector slug `#{slug}`"}
+    case ConnectorManifest.lookup_fqn(fn_name) do
+      nil ->
+        {:error,
+         "unknown function `#{fn_name}` — name must be `<slug>.<function>` and the " <>
+           "connector must be configured + discovered"}
 
-          mod ->
-            try do
-              spec = Map.get(mod.manifest().functions, bare)
+      %{poll_trigger_capable: true} ->
+        :ok
 
-              cond do
-                is_nil(spec) ->
-                  {:error, "unknown function `#{fn_name}`"}
-
-                not Map.get(spec, :poll_trigger_capable, false) ->
-                  {:error,
-                   "function `#{fn_name}` does not declare `poll_trigger_capable: true` " <>
-                     "(connector functions must declare cursor protocol in their manifest " <>
-                     "to be usable as a poll trigger — see layer-W.md §Cursor semantics)"}
-
-                true ->
-                  :ok
-              end
-            rescue
-              e -> {:error, "manifest lookup raised: #{Exception.message(e)}"}
-            end
-        end
-
-      _ ->
-        {:error, "function name must be namespaced (`<slug>.<fn>`)"}
+      %{} ->
+        {:error,
+         "function `#{fn_name}` does not declare `poll_trigger_capable: true` " <>
+           "(connector functions must declare cursor protocol in their manifest " <>
+           "to be usable as a poll trigger — see layer-W.md §Cursor semantics)"}
     end
   end
 
@@ -963,6 +1024,15 @@ defmodule DmhAi.Tools.UpsertWorkflow do
     cond do
       not is_list(Map.get(ir, "nodes")) ->
         {:error, "upsert_workflow: ir.nodes missing or not an array"}
+
+      is_list(Map.get(ir, "inputs")) ->
+        {:error,
+         "upsert_workflow: IR has a top-level `inputs` array. Trigger inputs " <>
+           "belong on the TRIGGER node, not at the IR root. Move the array " <>
+           "into the trigger node's `inputs` field: " <>
+           "`{id: 0, kind: \"trigger\", trigger_kind: \"manual\", " <>
+           "inputs: [...], next: 1}`. The IR root only accepts `nodes` " <>
+           "(required) and `outputs` (optional, names workflow-level outputs)."}
 
       true ->
         :ok

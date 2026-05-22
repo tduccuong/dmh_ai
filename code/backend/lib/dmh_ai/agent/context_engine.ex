@@ -464,19 +464,22 @@ defmodule DmhAi.Agent.ContextEngine do
   # Used to surface the multi-account ambiguity to the model so it
   # can ask the user which account to bind in a workflow node.
   defp mcp_accounts_for(slug, user_id) do
-    with %{host_match: host} <- DmhAi.OAuth.Catalog.get_by_slug(slug),
-         creds when is_list(creds) <-
-           DmhAi.Auth.Credentials.lookup_all(user_id, "oauth:" <> host) do
-      creds
-      |> Enum.map(fn c ->
-        case Map.get(c, :account, "") do
-          "" -> "default"
-          acc -> acc
-        end
-      end)
-      |> Enum.uniq()
-    else
-      _ -> []
+    # Slug-keyed credential lookup. See `Handlers.Data` finalizers
+    # for the storage convention — `oauth:<slug>` is the primary
+    # key; `host_match` is metadata in the payload.
+    case DmhAi.Auth.Credentials.lookup_all(user_id, "oauth:" <> slug) do
+      creds when is_list(creds) ->
+        creds
+        |> Enum.map(fn c ->
+          case Map.get(c, :account, "") do
+            "" -> "default"
+            acc -> acc
+          end
+        end)
+        |> Enum.uniq()
+
+      _ ->
+        []
     end
   end
 

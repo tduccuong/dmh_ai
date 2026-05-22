@@ -20,8 +20,11 @@ defmodule DmhAi.OAuth.Catalog do
   model.
 
   Per-user OAuth tokens land in `user_credentials` at
-  `target = "oauth:<host_match>"`. The catalog itself never holds
-  user tokens — only the operator-side OAuth-app credentials.
+  `target = "oauth:<slug>"`. The slug is the credential's primary
+  key; `host_match` rides along in the cred's payload (used at
+  refresh time to resolve the token endpoint). The catalog itself
+  never holds user tokens — only the operator-side OAuth-app
+  credentials.
   """
 
   alias DmhAi.Repo

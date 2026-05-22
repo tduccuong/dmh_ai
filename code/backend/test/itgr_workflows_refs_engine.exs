@@ -274,9 +274,11 @@ defmodule DmhAi.WorkflowsRefsEngineTest do
       assert Path.walk(@data, parsed.path) == 22
     end
 
-    test "out-of-range index returns :not_found" do
+    test "out-of-range index returns {:index_miss, i}" do
       {:ok, parsed} = Path.parse("0.matrix[99][0]")
-      assert Path.walk(@data, parsed.path) == :not_found
+      # The executor surfaces this as a `:lookup_miss` step failure
+      # rather than silently passing the empty value downstream.
+      assert Path.walk(@data, parsed.path) == {:index_miss, 99}
     end
 
     test "missing key returns :not_found" do

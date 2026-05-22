@@ -48,7 +48,7 @@ defmodule DmhAi.Workflows.Poller do
   alias DmhAi.Workflows.{Executor, Path}
   alias DmhAi.Tools.Catalog
   alias DmhAi.Agent.Tasks
-  alias DmhAi.Connectors.Registry, as: ConnectorRegistry
+  alias DmhAi.Connectors.Manifest, as: ConnectorManifest
   import Ecto.Adapters.SQL, only: [query!: 3]
 
   @default_tick_ms 60_000
@@ -232,31 +232,19 @@ defmodule DmhAi.Workflows.Poller do
   defp lookup_poll_manifest(fn_name) when is_binary(fn_name) do
     case String.split(fn_name, ".", parts: 2) do
       [slug, bare] ->
-        case ConnectorRegistry.module_for_slug(slug) do
+        case ConnectorManifest.lookup(slug, bare) do
           nil ->
-            {:error, "unknown connector slug `#{slug}`"}
+            {:error, "unknown function `#{fn_name}` in slug `#{slug}`"}
 
-          mod ->
-            try do
-              spec = Map.get(mod.manifest().functions, bare)
+          %{poll_trigger_capable: false} ->
+            {:error, "function `#{fn_name}` is not declared poll-trigger-capable"}
 
-              cond do
-                is_nil(spec) ->
-                  {:error, "unknown function `#{fn_name}` in slug `#{slug}`"}
-
-                not Map.get(spec, :poll_trigger_capable, false) ->
-                  {:error, "function `#{fn_name}` is not declared poll-trigger-capable"}
-
-                true ->
-                  {:ok, %{
-                    cursor_arg:           Map.get(spec, :cursor_arg),
-                    cursor_response_path: Map.get(spec, :cursor_response_path),
-                    items_path:           Map.get(spec, :items_path)
-                  }}
-              end
-            rescue
-              e -> {:error, "manifest lookup raised: #{Exception.message(e)}"}
-            end
+          %{} = spec ->
+            {:ok, %{
+              cursor_arg:           Map.get(spec, :cursor_arg),
+              cursor_response_path: Map.get(spec, :cursor_response_path),
+              items_path:           Map.get(spec, :items_path)
+            }}
         end
 
       _ ->

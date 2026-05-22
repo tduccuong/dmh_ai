@@ -468,41 +468,22 @@ defmodule T do
   def grant_all_scopes(user_id) when is_binary(user_id) do
     DmhAi.Connectors.Registry.universal_modules()
     |> Enum.flat_map(fn mod ->
-      manifest =
-        if function_exported?(mod, :manifest, 0), do: mod.manifest(), else: %{}
+      slug = mod.mcp_slug()
 
-      manifest
-      |> Map.get(:functions, %{})
-      |> Map.values()
-      |> Enum.flat_map(fn fn_spec -> Map.get(fn_spec, :scopes, []) end)
+      DmhAi.Connectors.Manifest.list_for_slug(slug)
+      |> Enum.flat_map(fn spec -> Map.get(spec, :scopes_required, []) end)
       |> case do
-        [] -> []
-        scopes -> [{mod, scopes |> Enum.uniq()}]
+        []     -> []
+        scopes -> [{slug, scopes |> Enum.uniq()}]
       end
     end)
-    |> Enum.each(fn {mod, scopes} ->
-      slug =
-        if function_exported?(mod, :oauth_catalog_descriptor, 0) do
-          d = mod.oauth_catalog_descriptor()
-          Map.get(d, :slug)
-        else
-          nil
-        end
-
-      host =
-        case slug && DmhAi.OAuth.Catalog.get_by_slug(slug) do
-          %{host_match: h} -> h
-          _ -> nil
-        end
-
-      if is_binary(host) do
-        :ok = DmhAi.Auth.Credentials.save(
-          user_id, "oauth:" <> host, "oauth2",
-          %{"access_token" => "test-token-" <> host,
-            "scope"        => Enum.join(scopes, " ")},
-          account: ""
-        )
-      end
+    |> Enum.each(fn {slug, scopes} ->
+      :ok = DmhAi.Auth.Credentials.save(
+        user_id, "oauth:" <> slug, "oauth2",
+        %{"access_token" => "test-token-" <> slug,
+          "scope"        => Enum.join(scopes, " ")},
+        account: ""
+      )
     end)
 
     :ok

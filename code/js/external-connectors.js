@@ -121,6 +121,10 @@ const ExternalConnectors = {
         var pane = document.getElementById('ec-detail');
         if (!pane) return;
 
+        // Stop polling whenever the detail pane re-renders; the next
+        // bind decides whether to resume based on the new selection.
+        this._stopPolling();
+
         if (!this._selected) {
             pane.innerHTML =
                 '<div class="ec-empty"><p>Select a connector on the left to configure it.</p></div>';
@@ -187,6 +191,14 @@ const ExternalConnectors = {
                 entry.manifest_functions.map(function(v) { return '<li>' + escapeHtml(v) + '</li>'; }).join('') +
                 '</ul></div>';
         }
+
+        // Discovery panel — one row per layer the connector module
+        // implements (Layer A functions; B / C land later). Each row
+        // shows the last-run state + a button that triggers a
+        // background refresh. While a layer is running the row shows
+        // a spinner; on settle the row turns green (success) or red
+        // (failed) with the relative timestamp + record count.
+        var discoveryHtml = this._renderDiscoverySection(entry);
 
         // Capability ticker — admin curates which subset of the
         // connector's surface to expose. Each row carries the
@@ -326,6 +338,7 @@ const ExternalConnectors = {
                 '</div>' +
 
                 capabilitiesHtml +
+                discoveryHtml +
                 functionsHtml +
             '</div>' +
 
@@ -339,6 +352,201 @@ const ExternalConnectors = {
         );
     },
 
+    // ─── Discovery panel ──────────────────────────────────────────────
+    //
+    // BE returns:
+    //   entry.discoverable_layers — ["functions", ...]   (callback present)
+    //   entry.discovery_state     — { functions: {status, last_run_at, ...}, ... }
+    //
+    // We render one row per discoverable layer. Layers the connector
+    // module hasn't implemented are simply absent — admins see only
+    // buttons that work.
+    _LAYER_LABELS: {
+        functions: 'Functions',
+        metadata:  'Metadata',
+        docs:      'Docs'
+    },
+
+    _renderDiscoverySection: function(entry) {
+        var layers = entry.discoverable_layers || [];
+        if (!layers.length) return '';
+
+        var self = this;
+        var state = entry.discovery_state || {};
+
+        var rows = layers.map(function(layer) {
+            var s = state[layer] || {};
+            return self._discoveryRowHtml(entry.slug, layer, s);
+        }).join('');
+
+        return (
+            '<div class="ec-section ec-discovery">' +
+                '<h3 class="ec-section-title">Discover</h3>' +
+                '<div class="ec-discovery-help">Refresh this connector\'s catalogue from the live vendor. ' +
+                'The bundled defaults are loaded at first deploy; click Discover to re-pull when the vendor\'s API changes.</div>' +
+                '<ul class="ec-discovery-list" id="ec-discovery-list">' + rows + '</ul>' +
+            '</div>'
+        );
+    },
+
+    _discoveryRowHtml: function(slug, layer, state) {
+        var status = state.status || 'idle';
+        var label  = this._LAYER_LABELS[layer] || layer;
+
+        return (
+            '<li class="ec-discovery-row" data-slug="' + escapeHtml(slug) +
+                '" data-layer="' + escapeHtml(layer) + '" data-status="' + escapeHtml(status) + '">' +
+                '<div class="ec-discovery-label">' + escapeHtml(label) + '</div>' +
+                '<div class="ec-discovery-state">' + this._discoveryStateHtml(state) + '</div>' +
+                '<button class="ec-btn ec-discovery-btn" data-slug="' + escapeHtml(slug) +
+                    '" data-layer="' + escapeHtml(layer) + '"' +
+                    (status === 'running' ? ' disabled' : '') + '>' +
+                    (status === 'running' ? 'Running…' : 'Discover') +
+                '</button>' +
+            '</li>'
+        );
+    },
+
+    _discoveryStateHtml: function(state) {
+        var status = state.status || 'idle';
+        if (status === 'running') {
+            return '<span class="ec-discovery-spinner"></span><span class="ec-discovery-text running">Running…</span>';
+        }
+        if (status === 'success') {
+            var when = this._relativeTs(state.last_run_at);
+            var rec  = state.records_affected;
+            var recText = (typeof rec === 'number') ? ' · ' + rec + ' rec' + (rec === 1 ? '' : 's') : '';
+            var fresh = state.freshness || 'fresh';
+
+            if (fresh === 'stale') {
+                return '<span class="ec-discovery-text stale" title="Last discovered ' +
+                    escapeHtml(when) + ' — vendor surfaces likely drift past this point; click Discover to refresh.">' +
+                    '⚠ ' + escapeHtml(when + recText) + '</span>';
+            }
+            if (fresh === 'warn') {
+                return '<span class="ec-discovery-text warn" title="Consider refreshing — last discovered ' +
+                    escapeHtml(when) + '.">' +
+                    '✓ ' + escapeHtml(when + recText) + '</span>';
+            }
+            return '<span class="ec-discovery-text ok">✓ ' + escapeHtml(when + recText) + '</span>';
+        }
+        if (status === 'failed') {
+            var err  = state.error_text || 'failed';
+            return '<span class="ec-discovery-text err" title="' + escapeHtml(err) + '">✗ Failed</span>';
+        }
+        return '<span class="ec-discovery-text idle">Never run</span>';
+    },
+
+    _relativeTs: function(ms) {
+        if (!ms) return 'never';
+        var now = Date.now();
+        var dt  = Math.max(0, now - ms);
+        if (dt < 5_000)         return 'just now';
+        if (dt < 60_000)        return Math.floor(dt / 1000) + 's ago';
+        if (dt < 3_600_000)     return Math.floor(dt / 60_000) + 'm ago';
+        if (dt < 86_400_000)    return Math.floor(dt / 3_600_000) + 'h ago';
+        return Math.floor(dt / 86_400_000) + 'd ago';
+    },
+
+    _discover: async function(slug, layer) {
+        var row = document.querySelector(
+            '.ec-discovery-row[data-slug="' + slug + '"][data-layer="' + layer + '"]'
+        );
+        if (!row) return;
+
+        var btn = row.querySelector('.ec-discovery-btn');
+        if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; }
+
+        try {
+            var res = await apiFetch(
+                '/admin/connectors/' + encodeURIComponent(slug) +
+                    '/discover/' + encodeURIComponent(layer),
+                { method: 'POST' }
+            );
+
+            if (res.status === 202) {
+                this._updateDiscoveryRow(slug, layer, { status: 'running' });
+                this._startPolling(slug);
+            } else {
+                var d = {};
+                try { d = await res.json(); } catch (_) { /* non-json */ }
+                this._updateDiscoveryRow(slug, layer, {
+                    status: 'failed',
+                    error_text: d.error || ('HTTP ' + res.status)
+                });
+                if (btn) { btn.disabled = false; btn.textContent = 'Discover'; }
+            }
+        } catch (e) {
+            this._updateDiscoveryRow(slug, layer, {
+                status: 'failed',
+                error_text: e.message
+            });
+            if (btn) { btn.disabled = false; btn.textContent = 'Discover'; }
+        }
+    },
+
+    _DISCOVERY_POLL_MS: 1000,
+
+    _startPolling: function(slug) {
+        var self = this;
+        if (this._discoveryPoll && this._discoveryPoll.slug === slug) return;
+        this._stopPolling();
+
+        this._discoveryPoll = {
+            slug: slug,
+            handle: setInterval(function() { self._pollDiscovery(slug); }, this._DISCOVERY_POLL_MS)
+        };
+    },
+
+    _stopPolling: function() {
+        if (this._discoveryPoll && this._discoveryPoll.handle) {
+            clearInterval(this._discoveryPoll.handle);
+        }
+        this._discoveryPoll = null;
+    },
+
+    _pollDiscovery: async function(slug) {
+        var self = this;
+        try {
+            var res = await apiFetch(
+                '/admin/connectors/' + encodeURIComponent(slug) + '/discovery_state',
+                { method: 'GET' }
+            );
+            if (!res.ok) return;
+            var d = await res.json();
+            var layers = d.layers || {};
+
+            var anyRunning = false;
+            Object.keys(layers).forEach(function(layer) {
+                self._updateDiscoveryRow(slug, layer, layers[layer]);
+                if (layers[layer].status === 'running') anyRunning = true;
+            });
+
+            if (!anyRunning) self._stopPolling();
+        } catch (_) {
+            // network blip — keep polling
+        }
+    },
+
+    _updateDiscoveryRow: function(slug, layer, state) {
+        var row = document.querySelector(
+            '.ec-discovery-row[data-slug="' + slug + '"][data-layer="' + layer + '"]'
+        );
+        if (!row) return;
+
+        row.setAttribute('data-status', state.status || 'idle');
+
+        var stateCell = row.querySelector('.ec-discovery-state');
+        if (stateCell) stateCell.innerHTML = this._discoveryStateHtml(state);
+
+        var btn = row.querySelector('.ec-discovery-btn');
+        if (btn) {
+            var running = state.status === 'running';
+            btn.disabled = running;
+            btn.textContent = running ? 'Running…' : 'Discover';
+        }
+    },
+
     _bindDetail: function(entry) {
         var self = this;
         var saveBtn = document.getElementById('ec-save-btn');
@@ -346,6 +554,22 @@ const ExternalConnectors = {
 
         if (saveBtn) saveBtn.addEventListener('click', function() { self._save(entry); });
         if (testBtn) testBtn.addEventListener('click', function() { self._test(entry); });
+
+        // Discover buttons — one per discoverable layer the connector
+        // module implements.
+        var discoverBtns = document.querySelectorAll('.ec-discovery-btn');
+        discoverBtns.forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                self._discover(btn.getAttribute('data-slug'), btn.getAttribute('data-layer'));
+            });
+        });
+
+        // If a Discover run was already in flight when the page
+        // opened (or a different admin tab kicked one off), start
+        // polling immediately so this tab catches the result too.
+        var anyRunning = Array.from(document.querySelectorAll('.ec-discovery-row'))
+            .some(function(row) { return row.getAttribute('data-status') === 'running'; });
+        if (anyRunning) self._startPolling(entry.slug);
 
         // Copy-to-clipboard for the OAuth redirect URI. One generic
         // binder so future read-only copy fields can reuse the same

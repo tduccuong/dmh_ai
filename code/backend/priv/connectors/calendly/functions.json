@@ -1,0 +1,255 @@
+{
+  "connector_slug": "calendly",
+  "functions": [
+    {
+      "args": {
+        "event_uri": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "calendly.event.list"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "reason": {
+          "required": false,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "event.cancel",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "cancelled": "boolean"
+      },
+      "scopes_required": [
+        "scheduled_events:write"
+      ]
+    },
+    {
+      "args": {
+        "event_uri": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "calendly.event.list"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "limit": {
+          "required": false,
+          "type": "integer"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "event.invitees",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "invitees": "list"
+      },
+      "scopes_required": [
+        "scheduled_events:read"
+      ]
+    },
+    {
+      "args": {
+        "limit": {
+          "required": false,
+          "type": "integer"
+        },
+        "max_start_time": {
+          "required": false,
+          "type": "string"
+        },
+        "min_start_time": {
+          "required": false,
+          "type": "string"
+        },
+        "status": {
+          "required": false,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "event.list",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "events": "list"
+      },
+      "scopes_required": [
+        "scheduled_events:read"
+      ]
+    },
+    {
+      "args": {
+        "invitee_uri": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "calendly.event.invitees"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "event.mark_no_show",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "marked": "boolean"
+      },
+      "scopes_required": [
+        "scheduled_events:write"
+      ]
+    },
+    {
+      "args": {
+        "end_time": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "event_type_uri": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "calendly.event_type.list"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "start_time": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "event_type.available_slots",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "slots": "list"
+      },
+      "scopes_required": [
+        "availability:read"
+      ]
+    },
+    {
+      "args": {
+        "active_only": {
+          "required": false,
+          "type": "boolean"
+        },
+        "limit": {
+          "required": false,
+          "type": "integer"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "event_type.list",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "event_types": "list"
+      },
+      "scopes_required": [
+        "event_types:read"
+      ]
+    },
+    {
+      "args": {
+        "event_type_uri": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "calendly.event_type.list"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "max_event_count": {
+          "required": false,
+          "type": "integer"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "rate_limited"
+      ],
+      "function_name": "single_use_link.create",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "booking_url": "string"
+      },
+      "scopes_required": [
+        "scheduling_links:write"
+      ]
+    },
+    {
+      "args": {},
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "user.me",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "user": "map"
+      },
+      "scopes_required": [
+        "users:read"
+      ]
+    }
+  ],
+  "vendor_api_version": "v3"
+}

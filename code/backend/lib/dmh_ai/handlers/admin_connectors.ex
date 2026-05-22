@@ -22,10 +22,13 @@ defmodule DmhAi.Handlers.AdminConnectors do
   """
 
   alias DmhAi.{Repo, Connectors}
+  alias DmhAi.Connectors.{Discoverable, Discovery, Manifest}
   alias DmhAi.Handlers.Proxy
   alias DmhAi.MCP.Transport
   import Ecto.Adapters.SQL, only: [query!: 3]
   require Logger
+
+  @discover_layers ~w(functions metadata docs)a
 
   # Universal Region slice-3 connectors — manifest modules haven't
   # landed yet but the FE External Connectors page lists them as
@@ -95,6 +98,82 @@ defmodule DmhAi.Handlers.AdminConnectors do
       end
     end
   end
+
+  @doc """
+  GET /admin/connectors/:slug/discovery_state — per-layer state of
+  Discover runs for one connector. Returns `{functions: {...},
+  metadata: {...}, docs: {...}}`; FE polls this on a 1s cadence
+  while a run is in-flight.
+  """
+  def discovery_state(conn, user, slug) do
+    if user.role != "admin" do
+      Proxy.json(conn, 403, %{error: "Forbidden"})
+    else
+      Proxy.json(conn, 200, %{
+        slug:   slug,
+        layers: layers_state_json(slug)
+      })
+    end
+  end
+
+  @doc """
+  POST /admin/connectors/:slug/discover/:layer — trigger a background
+  Discover run. Returns 202 on accept, 409 when a prior run for the
+  same `(slug, layer)` is still in flight, 422 when the connector
+  doesn't implement the requested layer's callback.
+  """
+  def discover(conn, user, slug, layer_str) do
+    cond do
+      user.role != "admin" ->
+        Proxy.json(conn, 403, %{error: "Forbidden"})
+
+      true ->
+        triggered_by = "admin:" <> Map.get(user, :id, "unknown")
+
+        case parse_layer(layer_str) do
+          {:ok, layer} ->
+            case Discovery.run_async(slug, layer, triggered_by) do
+              {:ok, :started} ->
+                Proxy.json(conn, 202, %{
+                  ok:    true,
+                  slug:  slug,
+                  layer: to_string(layer)
+                })
+
+              {:error, :already_running} ->
+                Proxy.json(conn, 409, %{
+                  error: "discovery_already_running",
+                  slug:  slug,
+                  layer: to_string(layer)
+                })
+
+              {:error, :unsupported_layer} ->
+                Proxy.json(conn, 422, %{
+                  error: "connector does not implement layer `#{layer}`",
+                  slug:  slug,
+                  layer: to_string(layer)
+                })
+
+              {:error, :unknown_slug} ->
+                Proxy.json(conn, 404, %{
+                  error: "unknown connector slug",
+                  slug:  slug
+                })
+            end
+
+          :error ->
+            Proxy.json(conn, 400, %{
+              error: "invalid layer; must be one of: functions, metadata, docs",
+              got:   layer_str
+            })
+        end
+    end
+  end
+
+  defp parse_layer("functions"), do: {:ok, :functions}
+  defp parse_layer("metadata"),  do: {:ok, :metadata}
+  defp parse_layer("docs"),      do: {:ok, :docs}
+  defp parse_layer(_),           do: :error
 
   defp do_save(conn, user, slug, params) do
     org_id = Map.get(user, :org_id) || DmhAi.Constants.default_org_id()
@@ -203,7 +282,9 @@ defmodule DmhAi.Handlers.AdminConnectors do
           enabled:               Map.get(m, :enabled, false),
           last_probe_status:     Map.get(m, :last_probe_status),
           last_probe_at:         Map.get(m, :last_probe_at),
-          manifest_functions:    manifest_function_names(mod)
+          manifest_functions:    manifest_function_names(slug),
+          discoverable_layers:   discoverable_layers_for(mod),
+          discovery_state:       layers_state_json(slug)
         }
       end)
 
@@ -227,7 +308,9 @@ defmodule DmhAi.Handlers.AdminConnectors do
           enabled:               false,
           last_probe_status:     nil,
           last_probe_at:         nil,
-          manifest_functions:    []
+          manifest_functions:    [],
+          discoverable_layers:   [],
+          discovery_state:       %{}
         }
       end)
 
@@ -302,11 +385,31 @@ defmodule DmhAi.Handlers.AdminConnectors do
     end
   end
 
-  defp manifest_function_names(mod) do
-    case apply_or(mod, :manifest, nil) do
-      %{functions: functions} when is_map(functions) -> Map.keys(functions) |> Enum.sort()
-      _                                  -> []
-    end
+  defp manifest_function_names(slug) when is_binary(slug) do
+    Manifest.list_for_slug(slug)
+    |> Enum.map(& &1.function_name)
+    |> Enum.sort()
+  end
+
+  defp discoverable_layers_for(mod) do
+    @discover_layers
+    |> Enum.filter(fn layer -> Discoverable.implements?(mod, layer) end)
+    |> Enum.map(&to_string/1)
+  end
+
+  defp layers_state_json(slug) do
+    Discovery.state_for(slug)
+    |> Enum.into(%{}, fn {layer, state} ->
+      {to_string(layer),
+       %{
+         status:           to_string(state.status),
+         freshness:        state.freshness && to_string(state.freshness),
+         last_run_at:      state.last_run_at,
+         records_affected: state.records_affected,
+         error_text:       state.error_text,
+         triggered_by:     state.triggered_by
+       }}
+    end)
   end
 
   defp derive_display_name(slug),

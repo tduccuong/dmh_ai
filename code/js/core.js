@@ -15,6 +15,62 @@ marked.use({
     }
 });
 
+// Walk text nodes under `el` and wrap `&<slug>` / `@<handle>` tokens
+// in styled spans so the user (and the model, indirectly via the
+// readback) can see at a glance which substrings the runtime is
+// treating as workflow / mention references. Idempotent — already-
+// wrapped tokens live inside a non-text element and the walker
+// skips them. Safe against KaTeX / code-block content because the
+// walker excludes nodes inside `code`, `pre`, and the KaTeX root.
+function decorateTokens(el) {
+    if (!el) return;
+    var SKIP_TAGS = { CODE: 1, PRE: 1, A: 1, KBD: 1 };
+    var SKIP_CLASSES = { 'token-workflow': 1, 'token-mention': 1, 'katex': 1, 'katex-display': 1 };
+    var TOKEN_RE = /([@&])([a-z0-9_]+)\b/g;
+
+    function shouldSkip(node) {
+        var n = node.parentNode;
+        while (n && n !== el) {
+            if (n.nodeType === 1) {
+                if (SKIP_TAGS[n.tagName]) return true;
+                if (n.classList) {
+                    for (var c in SKIP_CLASSES) {
+                        if (n.classList.contains(c)) return true;
+                    }
+                }
+            }
+            n = n.parentNode;
+        }
+        return false;
+    }
+
+    // Collect text nodes first; mutating the tree mid-walk confuses NodeIterator.
+    var iter = document.createNodeIterator(el, NodeFilter.SHOW_TEXT);
+    var nodes = [];
+    var t;
+    while ((t = iter.nextNode())) {
+        if (!shouldSkip(t) && /[@&][a-z0-9_]+/.test(t.nodeValue)) nodes.push(t);
+    }
+
+    nodes.forEach(function(node) {
+        var s = node.nodeValue;
+        TOKEN_RE.lastIndex = 0;
+        var frag = document.createDocumentFragment();
+        var cursor = 0;
+        var m;
+        while ((m = TOKEN_RE.exec(s))) {
+            if (m.index > cursor) frag.appendChild(document.createTextNode(s.slice(cursor, m.index)));
+            var span = document.createElement('span');
+            span.className = (m[1] === '&') ? 'token-workflow' : 'token-mention';
+            span.textContent = m[0];
+            frag.appendChild(span);
+            cursor = m.index + m[0].length;
+        }
+        if (cursor < s.length) frag.appendChild(document.createTextNode(s.slice(cursor)));
+        node.parentNode.replaceChild(frag, node);
+    });
+}
+
 function renderWithMath(markdown) {
     if (!window.katex) return marked.parse(markdown);
     var blocks = [];
