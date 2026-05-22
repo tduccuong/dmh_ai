@@ -54,6 +54,12 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
     do: DmhAi.OAuth.Identity.OIDC.fetch(token,
           "https://openidconnect.googleapis.com/v1/userinfo", "email")
 
+  # Always-on identity scopes. Capabilities the admin curates supply
+  # API-access scopes (Gmail, Calendar, Drive, …); these two are
+  # what the OIDC userinfo endpoint requires to return the connecting
+  # account's email, regardless of which capabilities are enabled.
+  def base_scopes, do: ["openid", "email"]
+
   @impl DmhAi.Connectors.Discoverable
   def discover_docs do
     {:ok,
@@ -537,6 +543,12 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
       authorization_endpoint: "https://accounts.google.com/o/oauth2/v2/auth",
       token_endpoint:         "https://oauth2.googleapis.com/token",
       scopes: [
+        # OIDC identity scopes — required for `fetch_userinfo/1` to
+        # hit `/v1/userinfo` and capture the connecting account's
+        # email into `user_credentials.account`. Without them the
+        # `{{owner.google_workspace.email}}` binding can't resolve.
+        "openid",
+        "email",
         "https://www.googleapis.com/auth/gmail.readonly",
         "https://www.googleapis.com/auth/gmail.send",
         "https://www.googleapis.com/auth/calendar.readonly",

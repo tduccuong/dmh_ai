@@ -591,6 +591,19 @@ defmodule DmhAi.Auth.OAuth2 do
               expires_at: tokens.expires_at
             )
 
+            # Layer-0.3 connector flows mint TWO rows from one OAuth
+            # exchange: `oauth:<slug>` (kind: oauth2, used by Layer-1
+            # scope-check + lookup_creds) and `mcp:<canonical>` (kind:
+            # oauth2_mcp, used by MCP.Client). Both share the same
+            # access_token / refresh_token; the only difference is
+            # target + kind. On refresh, the row that's refreshing
+            # gets updated — without this partner sync, the sibling
+            # row keeps stale `expires_at` until something else
+            # triggers a refresh on it. Cure: write both atomically
+            # so the operator sees one coherent credential identity
+            # across rows.
+            refresh_partner_row(user_id, target, kind, account, new_payload, tokens.expires_at)
+
             {:ok, Credentials.lookup(user_id, target, account)}
 
           err ->
@@ -604,6 +617,68 @@ defmodule DmhAi.Auth.OAuth2 do
         {:error, {:network, reason}}
     end
   end
+
+  # Sync the partner Layer-0.3 row after a successful refresh. The two
+  # rows are minted together at finalize_connector_oauth time and must
+  # stay in lock-step on the access_token / refresh_token / expires_at
+  # trio. The partner target is derivable from the payload's `alias`
+  # field (= the connector slug).
+  #
+  # Direction mcp:→oauth: is the one we hit in practice — MCP.Client
+  # refreshes on 401, the oauth: row would otherwise stay stale.
+  # Direction oauth:→mcp: is wired symmetrically for future-proofing
+  # even though the current `refresh/3` entry rejects the `oauth2` kind.
+  defp refresh_partner_row(user_id, "mcp:" <> _canonical, "oauth2_mcp",
+                           account, new_payload, expires_at) do
+    case new_payload["alias"] do
+      alias_ when is_binary(alias_) and alias_ != "" ->
+        partner_target = "oauth:" <> alias_
+
+        case Credentials.lookup(user_id, partner_target, account) do
+          %{kind: "oauth2"} ->
+            Credentials.save(user_id, partner_target, "oauth2", new_payload,
+              account:    account,
+              notes:      "refreshed (sibling sync from mcp:)",
+              expires_at: expires_at
+            )
+            :ok
+
+          _ ->
+            :ok
+        end
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp refresh_partner_row(user_id, "oauth:" <> slug, "oauth2",
+                           account, new_payload, expires_at) do
+    case new_payload["canonical_resource"] || new_payload["server_url"] do
+      canonical when is_binary(canonical) and canonical != "" ->
+        partner_target = "mcp:" <> canonical
+
+        case Credentials.lookup(user_id, partner_target, account) do
+          %{kind: "oauth2_mcp"} ->
+            Credentials.save(user_id, partner_target, "oauth2_mcp", new_payload,
+              account:    account,
+              notes:      "refreshed (sibling sync from oauth:)",
+              expires_at: expires_at
+            )
+            :ok
+
+          _ ->
+            :ok
+        end
+
+      _ ->
+        :ok
+    end
+    _ = slug
+    :ok
+  end
+
+  defp refresh_partner_row(_, _, _, _, _, _), do: :ok
 
   # ── private helpers ───────────────────────────────────────────────────
 
