@@ -204,11 +204,151 @@ defmodule DmhAi.Connectors.Discovery do
     end
   end
 
-  # Layers B + C wire here when their callbacks ship — same shape:
-  # call → swap → log. Until then they remain `:unsupported_layer`
-  # at the entry point.
+  defp do_run(slug, :metadata, mod, triggered_by) do
+    started_at = System.os_time(:millisecond)
+    run_id     = insert_run_row(slug, "metadata", "running", started_at, triggered_by)
+    user_id    = extract_user_id(triggered_by)
+
+    case user_id && safe_call(mod, :discover_metadata, [user_id]) do
+      {:ok, rows} when is_list(rows) ->
+        try do
+          n = replace_metadata_rows(slug, user_id, rows)
+          complete_run_row(run_id, "success", started_at, n, nil)
+          Logger.info("[Connectors.Discovery] slug=#{slug} layer=metadata ok rows=#{n} by=#{triggered_by}")
+        rescue
+          e ->
+            msg = Exception.message(e)
+            complete_run_row(run_id, "failed", started_at, 0, "metadata persist crashed: #{msg}")
+            Logger.error("[Connectors.Discovery] slug=#{slug} layer=metadata persist_crash: #{msg}")
+        end
+
+      {:error, reason} ->
+        msg = inspect(reason)
+        complete_run_row(run_id, "failed", started_at, 0, msg)
+        Logger.warning("[Connectors.Discovery] slug=#{slug} layer=metadata failed: #{msg}")
+
+      nil ->
+        msg = "metadata discovery requires an admin user (triggered_by=#{triggered_by})"
+        complete_run_row(run_id, "failed", started_at, 0, msg)
+
+      other ->
+        msg = "discover_metadata/1 returned non-conforming shape: #{inspect(other)}"
+        complete_run_row(run_id, "failed", started_at, 0, msg)
+        Logger.error("[Connectors.Discovery] slug=#{slug} #{msg}")
+    end
+  end
+
+  defp do_run(slug, :docs, mod, triggered_by) do
+    started_at = System.os_time(:millisecond)
+    run_id     = insert_run_row(slug, "docs", "running", started_at, triggered_by)
+
+    case safe_call(mod, :discover_docs, []) do
+      {:ok, sources} when is_list(sources) ->
+        {ok_count, failures} = ingest_doc_sources(slug, sources, triggered_by)
+        status               = if failures == [], do: "success", else: "failed"
+        err_text =
+          case failures do
+            []  -> nil
+            [_ | _] -> "ingest failures: #{inspect(failures)}"
+          end
+
+        complete_run_row(run_id, status, started_at, ok_count, err_text)
+        Logger.info(
+          "[Connectors.Discovery] slug=#{slug} layer=docs ok=#{ok_count} failed=#{length(failures)} by=#{triggered_by}"
+        )
+
+      {:error, reason} ->
+        msg = inspect(reason)
+        complete_run_row(run_id, "failed", started_at, 0, msg)
+        Logger.warning("[Connectors.Discovery] slug=#{slug} layer=docs failed: #{msg}")
+
+      other ->
+        msg = "discover_docs/0 returned non-conforming shape: #{inspect(other)}"
+        complete_run_row(run_id, "failed", started_at, 0, msg)
+        Logger.error("[Connectors.Discovery] slug=#{slug} #{msg}")
+    end
+  end
+
   defp do_run(slug, layer, _mod, _triggered_by) do
     Logger.error("[Connectors.Discovery] slug=#{slug} layer=#{layer} not implemented")
+  end
+
+  # Pull the user_id out of the `triggered_by` string. The admin handler
+  # stamps `"admin:<user_id>"`; the boot-time seeder stamps `"seed"`. Only
+  # the former carries a user so metadata layers (which run against that
+  # user's OAuth creds) can fetch.
+  defp extract_user_id("admin:" <> uid) when byte_size(uid) > 0, do: uid
+  defp extract_user_id(_), do: nil
+
+  # Atomic-swap the metadata rows for (slug, user_id). The connector's
+  # callback owns the choice of which paths to enumerate; we just persist
+  # the result. Returns the row count.
+  defp replace_metadata_rows(slug, user_id, rows) do
+    now = System.os_time(:millisecond)
+
+    Repo.transaction(fn ->
+      query!(Repo,
+        "DELETE FROM connector_vendor_metadata WHERE connector_slug=? AND user_id=?",
+        [slug, user_id])
+
+      Enum.each(rows, fn row ->
+        query!(Repo, """
+        INSERT INTO connector_vendor_metadata
+          (connector_slug, user_id, path, schema_json, discovered_at, expires_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """, [
+          slug,
+          user_id,
+          Map.fetch!(row, :path),
+          Jason.encode!(Map.get(row, :schema, %{})),
+          now,
+          Map.get(row, :expires_at)
+        ])
+      end)
+    end)
+
+    length(rows)
+  end
+
+  # Fetch each URL via the existing KB ingest pipeline (same one the
+  # `/wiki` admin surface uses) and persist as a `source_kind: "url"`
+  # row. Failures are collected but don't abort the run — one bad URL
+  # shouldn't strand the rest.
+  defp ingest_doc_sources(slug, sources, triggered_by) do
+    user_id = extract_user_id(triggered_by)
+    org_id  = DmhAi.Constants.default_org_id()
+
+    Enum.reduce(sources, {0, []}, fn source, {ok, fails} ->
+      url   = Map.fetch!(source, :url)
+      title = Map.get(source, :title) || url
+
+      case DmhAi.Web.Fetcher.fetch(url, extractor: :kb, max_chars: 200_000) do
+        {:ok, %{content: body}} when is_binary(body) and body != "" ->
+          attrs = %{
+            scope:               :knowledge,
+            org_id:              org_id,
+            source_kind:         "url",
+            source_ref:          url,
+            title:               title,
+            created_by_user_id:  user_id,
+            tags:                ["connector:" <> slug, "docs"]
+          }
+
+          case DmhAi.Ingest.upsert_kb_source(attrs, body) do
+            {:ok, _} ->
+              {ok + 1, fails}
+
+            {:error, reason} ->
+              {ok, [{url, {:ingest, reason}} | fails]}
+          end
+
+        {:ok, _} ->
+          {ok, [{url, :empty_body} | fails]}
+
+        {:error, reason} ->
+          {ok, [{url, {:fetch, reason}} | fails]}
+      end
+    end)
   end
 
   defp safe_call(mod, fun, args) do

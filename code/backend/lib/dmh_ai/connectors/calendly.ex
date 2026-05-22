@@ -62,6 +62,17 @@ defmodule DmhAi.Connectors.Calendly do
     do: DmhAi.OAuth.Identity.OIDC.fetch(token,
           "https://api.calendly.com/users/me", "resource.email")
 
+  @impl DmhAi.Connectors.Discoverable
+  def discover_docs do
+    {:ok,
+     [
+       %{url: "https://developers.calendly.com/api-docs",            title: "Calendly API overview"},
+       %{url: "https://developers.calendly.com/api-docs/Z3JvdXA-event-types", title: "Calendly — event types"},
+       %{url: "https://developers.calendly.com/api-docs/Z3JvdXA-scheduled-events", title: "Calendly — scheduled events"},
+       %{url: "https://developers.calendly.com/api-docs/Z3JvdXA-scheduling-links", title: "Calendly — scheduling links"}
+     ]}
+  end
+
   @impl true
   def mcp_slug, do: "calendly"
 

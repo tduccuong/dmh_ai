@@ -85,6 +85,63 @@ defmodule DmhAi.Connectors.HubSpot do
   @impl DmhAi.Connectors.Discoverable
   def discover_functions, do: DmhAi.Connectors.Seed.read_priv_rows(mcp_slug())
 
+  @impl DmhAi.Connectors.Discoverable
+  def discover_docs do
+    {:ok,
+     [
+       %{url: "https://developers.hubspot.com/docs/api/overview", title: "HubSpot API overview"},
+       %{url: "https://developers.hubspot.com/docs/api/crm/contacts", title: "HubSpot CRM — Contacts"},
+       %{url: "https://developers.hubspot.com/docs/api/crm/companies", title: "HubSpot CRM — Companies"},
+       %{url: "https://developers.hubspot.com/docs/api/crm/deals", title: "HubSpot CRM — Deals"},
+       %{url: "https://developers.hubspot.com/docs/api/crm/properties", title: "HubSpot CRM — Properties"},
+       %{url: "https://developers.hubspot.com/docs/api/crm/engagements/tasks", title: "HubSpot CRM — Tasks"},
+       %{url: "https://developers.hubspot.com/docs/api/crm/engagements/notes", title: "HubSpot CRM — Notes"}
+     ]}
+  end
+
+  # Per-user metadata sweep. Hits HubSpot's
+  # `/crm/v3/properties/<object>` endpoint for the three object types
+  # the connector exposes — contacts / companies / deals — and stores
+  # one `connector_vendor_metadata` row per object. The schema is the
+  # raw property list (id, name, type, fieldType, options, …) so the
+  # model can later read `connector_vendor_metadata.schema_json` when
+  # it needs to know whether a custom property exists on this user's
+  # portal.
+  @impl DmhAi.Connectors.Discoverable
+  def discover_metadata(user_id) when is_binary(user_id) do
+    case DmhAi.Auth.Credentials.lookup_all(user_id, "oauth:hubspot") do
+      [%{payload: %{"access_token" => token}} | _] when is_binary(token) ->
+        sweep_property_objects(token)
+
+      _ ->
+        {:error, :no_hubspot_credential}
+    end
+  end
+
+  defp sweep_property_objects(token) do
+    objects = ["contacts", "companies", "deals"]
+    headers = [{"authorization", "Bearer " <> token}, {"accept", "application/json"}]
+
+    Enum.reduce_while(objects, {:ok, []}, fn obj, {:ok, acc} ->
+      url = "https://api.hubapi.com/crm/v3/properties/" <> obj
+
+      case Req.get(url, headers: headers, finch: DmhAi.Finch, receive_timeout: 8_000) do
+        {:ok, %{status: 200, body: %{"results" => results}}} when is_list(results) ->
+          schema = %{
+            "object_type" => obj,
+            "properties"  => Enum.map(results, &Map.take(&1, ~w(name label type fieldType options groupName)))
+          }
+          {:cont, {:ok, acc ++ [%{path: "crm.properties." <> obj, schema: schema, expires_at: nil}]}}
+
+        {:ok, %{status: s, body: body}} ->
+          {:halt, {:error, {:http, s, body}}}
+
+        {:error, reason} ->
+          {:halt, {:error, {:transport, reason}}}
+      end
+    end)
+  end
+
   @impl true
   def manifest do
     %Manifest{

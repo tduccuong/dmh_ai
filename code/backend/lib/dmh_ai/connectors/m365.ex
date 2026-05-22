@@ -55,6 +55,20 @@ defmodule DmhAi.Connectors.M365 do
     do: DmhAi.OAuth.Identity.OIDC.fetch(token,
           "https://graph.microsoft.com/oidc/userinfo", "email")
 
+  @impl DmhAi.Connectors.Discoverable
+  def discover_docs do
+    {:ok,
+     [
+       %{url: "https://learn.microsoft.com/graph/overview",          title: "Microsoft Graph overview"},
+       %{url: "https://learn.microsoft.com/graph/api/resources/mail-api-overview", title: "Outlook Mail (Graph)"},
+       %{url: "https://learn.microsoft.com/graph/api/resources/calendar", title: "Outlook Calendar (Graph)"},
+       %{url: "https://learn.microsoft.com/graph/api/resources/onedrive", title: "OneDrive (Graph)"},
+       %{url: "https://learn.microsoft.com/graph/api/resources/onlinemeeting-api-overview", title: "Teams meetings"},
+       %{url: "https://learn.microsoft.com/graph/api/resources/todo-overview", title: "Microsoft To Do"},
+       %{url: "https://learn.microsoft.com/graph/api/resources/excel", title: "Excel via Graph"}
+     ]}
+  end
+
   @impl true
   def mcp_slug, do: "m365"
 

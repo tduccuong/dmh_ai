@@ -54,6 +54,20 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
     do: DmhAi.OAuth.Identity.OIDC.fetch(token,
           "https://openidconnect.googleapis.com/v1/userinfo", "email")
 
+  @impl DmhAi.Connectors.Discoverable
+  def discover_docs do
+    {:ok,
+     [
+       %{url: "https://developers.google.com/gmail/api/guides",            title: "Gmail API"},
+       %{url: "https://developers.google.com/calendar/api/guides/overview", title: "Google Calendar API"},
+       %{url: "https://developers.google.com/drive/api/guides/about-sdk",   title: "Google Drive API"},
+       %{url: "https://developers.google.com/docs/api/concepts/document",   title: "Google Docs API"},
+       %{url: "https://developers.google.com/sheets/api/guides/concepts",   title: "Google Sheets API"},
+       %{url: "https://developers.google.com/tasks",                        title: "Google Tasks API"},
+       %{url: "https://developers.google.com/people/api/rest",              title: "Google People API"}
+     ]}
+  end
+
   @impl true
   def mcp_slug, do: "google_workspace"
 

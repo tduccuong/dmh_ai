@@ -95,15 +95,14 @@ defmodule DmhAi.ConnectorDiscoveryTest do
       assert result in [:already_running, :first_completed_first]
     end
 
-    test ":unsupported_layer when the connector lacks the callback" do
-      # `:metadata` / `:docs` aren't implemented yet on any connector,
-      # so a request for them rejects without writing a run row.
-      runs_before = run_row_count("hubspot", "metadata")
+    test ":unsupported_layer when a slug lacks the callback for that layer" do
+      # Stripe doesn't implement :metadata (only :functions + :docs).
+      runs_before = run_row_count("stripe", "metadata")
 
       assert {:error, :unsupported_layer} =
-               Discovery.run_async("hubspot", :metadata, "admin:test-user")
+               Discovery.run_async("stripe", :metadata, "admin:test-user")
 
-      assert run_row_count("hubspot", "metadata") == runs_before
+      assert run_row_count("stripe", "metadata") == runs_before
     end
 
     test ":unknown_slug when the slug isn't registered" do
@@ -113,12 +112,20 @@ defmodule DmhAi.ConnectorDiscoveryTest do
   end
 
   describe "Discoverable.implements?" do
-    test "HubSpot implements functions; not metadata/docs (yet)" do
+    test "HubSpot implements all three layers" do
       mod = DmhAi.Connectors.HubSpot
 
       assert Discoverable.implements?(mod, :functions)
+      assert Discoverable.implements?(mod, :metadata)
+      assert Discoverable.implements?(mod, :docs)
+    end
+
+    test "Stripe implements functions + docs, not metadata" do
+      mod = DmhAi.Connectors.Stripe
+
+      assert Discoverable.implements?(mod, :functions)
       refute Discoverable.implements?(mod, :metadata)
-      refute Discoverable.implements?(mod, :docs)
+      assert Discoverable.implements?(mod, :docs)
     end
   end
 

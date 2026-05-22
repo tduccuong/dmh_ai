@@ -39,6 +39,18 @@ defmodule DmhAi.Connectors.Stripe do
   @impl DmhAi.Connectors.Discoverable
   def discover_functions, do: DmhAi.Connectors.Seed.read_priv_rows(mcp_slug())
 
+  @impl DmhAi.Connectors.Discoverable
+  def discover_docs do
+    {:ok,
+     [
+       %{url: "https://stripe.com/docs/api",          title: "Stripe API reference"},
+       %{url: "https://stripe.com/docs/api/customers", title: "Stripe — Customers"},
+       %{url: "https://stripe.com/docs/api/payment_intents", title: "Stripe — Payment Intents"},
+       %{url: "https://stripe.com/docs/api/refunds",  title: "Stripe — Refunds"},
+       %{url: "https://stripe.com/docs/api/subscriptions", title: "Stripe — Subscriptions"}
+     ]}
+  end
+
   @impl true
   def credential_kind, do: :api_key
 
