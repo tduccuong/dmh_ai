@@ -49,12 +49,16 @@ defmodule DmhAi.Connectors.GoogleWorkspace.MCPHandler do
         method:  :post,
         url:     "#{@gmail_base}/messages/send",
         request: &gmail_send_request/2,
+        response: fn 200, body  -> {:ok, %{"message_id" => body["id"], "thread_id" => body["threadId"]}}
+                    s,   _body when s in 200..299 -> {:ok, %{}} end,
         doc:     "Send a plain-text Gmail message."
       },
       "gmail.reply" => %FunctionSpec{
         method:  :post,
         url:     "#{@gmail_base}/messages/send",
         request: &gmail_reply_request/2,
+        response: fn 200, body  -> {:ok, %{"message_id" => body["id"], "thread_id" => body["threadId"]}}
+                    s,   _body when s in 200..299 -> {:ok, %{}} end,
         doc:     "Reply to a Gmail thread (attaches threadId + In-Reply-To header)."
       },
       "gcal.find_free_slots" => %FunctionSpec{
