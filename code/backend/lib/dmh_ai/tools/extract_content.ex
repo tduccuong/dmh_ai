@@ -37,8 +37,21 @@ defmodule DmhAi.Tools.ExtractContent do
   def name, do: "extract_content"
 
   @impl true
-  def description,
-    do: "Extract content from a task attachment. Images/video → description + embedded text; documents → parsed text."
+  def description do
+    """
+    Extract content from a user attachment. Images/video → description + embedded text; documents → parsed text.
+
+    Lines starting with `📎 ` in a user message are uploaded file paths.
+
+    - `📎 [newly attached]` — file attached THIS turn. Always extract: call `extract_content(path: <path>)` on the file. NEVER skip extraction on path recognition.
+    - Bare `📎 <path>` (historical) — evaluate IN ORDER, first match wins:
+      1. File appears in `## Recently-extracted files` → answer from the matching `role: "tool"` message in history. No tool call.
+      2. Re-extract needed (user asks to re-read, or question needs a verbatim detail not in your summary) → call `extract_content` again.
+      3. Gist-level follow-up (elaborate, translate, summarise, "what else") → reply from prior summary in your history. No tool call.
+
+    Extraction errors (no extractable text, scanned PDF) — tell the user truthfully and stop. Do NOT invent contents from filename. Offer concrete next steps (re-attach a text-based version; OCR via `run_script` + `tesseract`).
+    """
+  end
 
   @impl true
   def definition do
@@ -50,7 +63,7 @@ defmodule DmhAi.Tools.ExtractContent do
         properties: %{
           path: %{
             type: "string",
-            description: "Path to the uploaded file. Use 'data/<filename>' for task attachments (user uploads); 'workspace/<filename>' for files produced by previous tool runs in this session."
+            description: "Path to the uploaded file. Use 'data/<filename>' for user uploads; 'workspace/<filename>' for files produced by previous tool runs in this session."
           }
         },
         required: ["path"]
@@ -59,36 +72,19 @@ defmodule DmhAi.Tools.ExtractContent do
   end
 
   @impl true
-  def execute(%{"data" => frames, "has_video" => true}, _ctx) when is_list(frames) and frames != [] do
-    describe_base64_frames(frames)
+  def execute(%{"data" => frames, "has_video" => true}, ctx) when is_list(frames) and frames != [] do
+    describe_base64_frames(frames, ctx)
   end
 
-  def execute(%{"data" => b64}, _ctx) when is_binary(b64) and b64 != "" do
-    describe_base64_image(b64)
+  def execute(%{"data" => b64}, ctx) when is_binary(b64) and b64 != "" do
+    describe_base64_image(b64, ctx)
   end
 
   def execute(%{"path" => path}, ctx) when is_binary(path) do
-    # Dedup: if the path is a historical attachment (not in this turn's
-    # fresh list) and a prior done task in the same session already
-    # extracted it, reuse that task's result instead of running the
-    # pipeline again. Freshly re-attached files (`[newly attached]`)
-    # always take the fresh path — the user re-uploaded for a reason.
-    fresh = Map.get(ctx, :fresh_attachment_paths, []) || []
-    session_id = Map.get(ctx, :session_id)
-
-    if path in fresh or session_id == nil do
-      do_extract(path, ctx)
-    else
-      case find_prior_extraction(session_id, path) do
-        {:ok, prior} -> reuse_prior(prior)
-        :none        -> do_extract(path, ctx)
-      end
-    end
+    do_extract(path, ctx)
   end
 
   def execute(_, _), do: {:error, "Missing required argument: path or data"}
-
-  # ── dedup for historical attachments ─────────────────────────────────────
 
   defp do_extract(path, ctx) do
     with {:ok, abs} <- SafePath.resolve(path, ctx),
@@ -96,8 +92,8 @@ defmodule DmhAi.Tools.ExtractContent do
       ext = abs |> Path.extname() |> String.downcase()
 
       cond do
-        MapSet.member?(@image_exts, ext) -> extract_image(abs)
-        MapSet.member?(@video_exts, ext) -> extract_video(abs)
+        MapSet.member?(@image_exts, ext) -> extract_image(abs, ctx)
+        MapSet.member?(@video_exts, ext) -> extract_video(abs, ctx)
         ext == ".pdf"                    -> parse_pdf(abs, ctx)
         MapSet.member?(@pandoc_exts, ext) -> run_pandoc(abs)
         MapSet.member?(@text_exts, ext)  -> read_text(abs)
@@ -111,57 +107,31 @@ defmodule DmhAi.Tools.ExtractContent do
   defp row_id(ctx) when is_map(ctx), do: Map.get(ctx, :progress_row_id)
   defp row_id(_), do: nil
 
-  # Scan the most recent done tasks for the session and return the first
-  # whose `task_spec` listed this path as an attachment and whose
-  # `task_result` is non-empty. Cap is generous but bounded so we never
-  # scan the whole task history.
-  @prior_scan_limit 50
-  defp find_prior_extraction(session_id, path) do
-    DmhAi.Agent.Tasks.recent_done_for_session(session_id, @prior_scan_limit)
-    |> Enum.find(fn t ->
-      # Primary source: structured attachments column. Fall back to a
-      # regex parse of task_spec when the column is empty — keeps dedup
-      # working for any task row without a populated attachments list.
-      cols =
-        case Map.get(t, :attachments) do
-          list when is_list(list) and list != [] -> list
-          _                                       -> DmhAi.Agent.ContextEngine.extract_attachments(Map.get(t, :task_spec) || "")
-        end
-
-      result = Map.get(t, :task_result) || ""
-      path in cols and String.trim(result) != ""
-    end)
-    |> case do
-      nil  -> :none
-      task -> {:ok, task}
-    end
+  # Build a per-vision-LLM-call trace map seeded with the ExtractContent
+  # tool's role/phase. The session_id / user_id come from ctx so the
+  # vision-tier token counter lands on the right row.
+  defp vision_trace(ctx, role, phase) when is_map(ctx) do
+    %{
+      origin: "assistant",
+      path: "ExtractContent.#{phase}",
+      role: role, phase: phase,
+      session_id: Map.get(ctx, :session_id),
+      user_id:    Map.get(ctx, :user_id),
+      tier:       :vision
+    }
   end
 
-  defp reuse_prior(task) do
-    tid    = Map.get(task, :task_id)
-    title  = Map.get(task, :task_title) || "(untitled)"
-    result = Map.get(task, :task_result) || ""
-
-    Logger.info("[ExtractContent] dedup hit — reusing task=#{tid}")
-
-    body =
-      "This file was already extracted on a prior task in this session. " <>
-        "Reusing the earlier summary rather than re-running the extractor.\n\n" <>
-        "**Prior task:** `#{tid}` — #{title}\n\n" <>
-        "**Prior task_result:**\n\n#{result}\n\n" <>
-        "If this summary isn't enough to answer the user's follow-up, " <>
-        "rely on your own earlier reply in the conversation; only " <>
-        "re-extract if the user explicitly asks you to re-read the file."
-
-    {:ok, body}
+  defp vision_trace(_, role, phase) do
+    %{origin: "assistant", path: "ExtractContent.#{phase}",
+      role: role, phase: phase, session_id: nil, user_id: nil, tier: :vision}
   end
 
   # ── base64 input (Confidant fallback path) ────────────────────────────────
 
-  defp describe_base64_image(b64) do
+  defp describe_base64_image(b64, ctx) do
     messages = [%{role: "user", content: image_prompt(), images: [b64]}]
-    trace = %{origin: "assistant", path: "ExtractContent.describe_image", role: "ImageDescriber", phase: "describe"}
-    case LLM.call(AgentSettings.vision_model(), messages, trace: trace) do
+    case LLM.call(AgentSettings.vision_model(), messages,
+                  trace: vision_trace(ctx, "ImageDescriber", "describe_image")) do
       {:ok, result} when is_binary(result) and result != "" ->
         {:ok, result}
 
@@ -171,10 +141,10 @@ defmodule DmhAi.Tools.ExtractContent do
     end
   end
 
-  defp describe_base64_frames(frames) do
+  defp describe_base64_frames(frames, ctx) do
     messages = [%{role: "user", content: video_prompt(), images: frames}]
-    trace = %{origin: "assistant", path: "ExtractContent.describe_video", role: "VideoDescriber", phase: "describe"}
-    case LLM.call(AgentSettings.vision_model(), messages, trace: trace) do
+    case LLM.call(AgentSettings.vision_model(), messages,
+                  trace: vision_trace(ctx, "VideoDescriber", "describe_video")) do
       {:ok, result} when is_binary(result) and result != "" ->
         {:ok, result}
 
@@ -186,11 +156,11 @@ defmodule DmhAi.Tools.ExtractContent do
 
   # ── image ──────────────────────────────────────────────────────────────────
 
-  defp extract_image(abs) do
+  defp extract_image(abs, ctx) do
     with {:ok, b64} <- scale_and_encode(abs) do
       messages = [%{role: "user", content: image_prompt(), images: [b64]}]
-      trace = %{origin: "assistant", path: "ExtractContent.extract_image", role: "ImageDescriber", phase: "describe"}
-      case LLM.call(AgentSettings.vision_model(), messages, trace: trace) do
+      case LLM.call(AgentSettings.vision_model(), messages,
+                    trace: vision_trace(ctx, "ImageDescriber", "extract_image")) do
         {:ok, result} when is_binary(result) and result != "" ->
           {:ok, result}
 
@@ -241,11 +211,11 @@ defmodule DmhAi.Tools.ExtractContent do
 
   # ── video ──────────────────────────────────────────────────────────────────
 
-  defp extract_video(abs) do
+  defp extract_video(abs, ctx) do
     with {:ok, frames} <- extract_frames(abs) do
       messages = [%{role: "user", content: video_prompt(), images: frames}]
-      trace = %{origin: "assistant", path: "ExtractContent.extract_video", role: "VideoDescriber", phase: "describe"}
-      case LLM.call(AgentSettings.vision_model(), messages, trace: trace) do
+      case LLM.call(AgentSettings.vision_model(), messages,
+                    trace: vision_trace(ctx, "VideoDescriber", "extract_video")) do
         {:ok, result} when is_binary(result) and result != "" ->
           {:ok, result}
 
@@ -432,7 +402,7 @@ defmodule DmhAi.Tools.ExtractContent do
           end_page   = offset + length(chunk)
           DmhAi.Agent.SessionProgress.append_sub_label(
             rid, "OcrPage → pages #{start_page}-#{end_page} of #{n_pages}")
-          case describe_ocr_chunk(chunk, start_page) do
+          case describe_ocr_chunk(chunk, start_page, ctx) do
             {:ok, text} -> {[text | acc], offset + length(chunk)}
             {:error, r} -> throw({:ocr_fail, r})
           end
@@ -448,7 +418,7 @@ defmodule DmhAi.Tools.ExtractContent do
     end
   end
 
-  defp describe_ocr_chunk(frames, start_page) do
+  defp describe_ocr_chunk(frames, start_page, ctx) do
     prompt =
       "These are consecutive pages from a scanned PDF, starting at page #{start_page}. " <>
         "Transcribe every visible character VERBATIM. Prefix each page with a heading " <>
@@ -457,9 +427,9 @@ defmodule DmhAi.Tools.ExtractContent do
         "commentary — only the exact text on the page."
 
     messages = [%{role: "user", content: prompt, images: frames}]
-    trace = %{origin: "assistant", path: "ExtractContent.ocr_pdf", role: "OcrPdf", phase: "ocr"}
 
-    case LLM.call(AgentSettings.vision_model(), messages, trace: trace) do
+    case LLM.call(AgentSettings.vision_model(), messages,
+                  trace: vision_trace(ctx, "OcrPdf", "ocr_pdf")) do
       {:ok, result} when is_binary(result) and result != "" -> {:ok, result}
       other ->
         Logger.warning("[ExtractContent] OCR chunk LLM call failed: #{inspect(other)}")

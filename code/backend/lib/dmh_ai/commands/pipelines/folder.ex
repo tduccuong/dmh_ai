@@ -51,7 +51,8 @@ defmodule DmhAi.Commands.Pipelines.Folder do
 
     # Path arg is a weak language signal; Swift defaults to English
     # for path-shaped commands, which is fine.
-    {:ok, Swift.localize(IndexAck.accepted_ack(root), root)}
+    {:ok, Swift.localize(IndexAck.accepted_ack(root), root,
+                         %{session_id: session_id, user_id: user_id})}
   end
 
   # Public for tests — walks the tree and returns the eligible-files
@@ -89,7 +90,8 @@ defmodule DmhAi.Commands.Pipelines.Folder do
     final_text =
       Swift.localize(
         IndexAck.final_ack(root) <> " (#{indexed} indexed, #{skipped} skipped#{err_summary})",
-        root
+        root,
+        %{session_id: session_id, user_id: user_id}
       )
 
     UserAgentMessages.append(session_id, user_id, %{
@@ -102,7 +104,8 @@ defmodule DmhAi.Commands.Pipelines.Folder do
       Logger.error("[Commands.Folder] crash on #{root}: #{Exception.message(e)}")
       UserAgentMessages.append(session_id, user_id, %{
         role: "assistant",
-        content: Swift.localize("Folder walk failed: #{Exception.message(e)}", root),
+        content: Swift.localize("Folder walk failed: #{Exception.message(e)}", root,
+                                %{session_id: session_id, user_id: user_id}),
         kind: "command_ack"
       })
   end

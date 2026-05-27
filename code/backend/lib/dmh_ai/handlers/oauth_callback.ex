@@ -73,7 +73,6 @@ defmodule DmhAi.Handlers.OAuthCallback do
       {:ok, %{
         user_id:            user_id,
         session_id:         session_id,
-        anchor_task_id:     anchor_task_id,
         alias:              alias_,
         canonical_resource: resource,
         server_url:         server_url,
@@ -91,7 +90,7 @@ defmodule DmhAi.Handlers.OAuthCallback do
             finalize_connector_oauth(user_id, alias_, resource, server_url, asm, tokens)
 
           _ ->
-            finalize_connection(user_id, session_id, anchor_task_id, alias_, resource, server_url, asm, tokens)
+            finalize_connection(user_id, session_id, alias_, resource, server_url, asm, tokens)
         end
 
         case flow_kind do
@@ -122,7 +121,7 @@ defmodule DmhAi.Handlers.OAuthCallback do
 
   # ─── finalize: legacy MCP-direct OAuth ──────────────────────────────
 
-  defp finalize_connection(user_id, session_id, anchor_task_id, alias_, resource, server_url, asm, tokens) do
+  defp finalize_connection(user_id, session_id, alias_, resource, server_url, asm, tokens) do
     cred_payload = %{
       "access_token"        => tokens.access_token,
       "refresh_token"       => tokens.refresh_token,
@@ -180,7 +179,7 @@ defmodule DmhAi.Handlers.OAuthCallback do
 
     DmhAi.MCP.Registry.authorize(user_id, alias_, resource, server_url, asm)
     DmhAi.MCP.Registry.set_authorized_tools(user_id, alias_, tools)
-    DmhAi.MCP.Registry.attach(anchor_task_id, user_id, alias_)
+    DmhAi.MCP.Registry.attach(session_id, user_id, alias_)
 
     append_service_connected_message(session_id, user_id, alias_, length(tools))
 

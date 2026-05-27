@@ -5,7 +5,7 @@
 
 defmodule DmhAi.Handlers.Data do
   import Plug.Conn
-  alias DmhAi.{Repo, Agent.AgentSettings, Agent.LLM, Agent.TokenTracker, Agent.UserAgent}
+  alias DmhAi.{Repo, Agent.AgentSettings, Agent.LLM, Agent.TokenTracker}
   alias DmhAi.Commands.Parser, as: CommandParser
   import Ecto.Adapters.SQL, only: [query!: 3]
   require Logger
@@ -20,6 +20,13 @@ defmodule DmhAi.Handlers.Data do
   # Max size for scaled attachments uploaded to the worker workspace.
   # Scaled videos at 800 kbps: ~6 MB/min → covers clips up to ~30 min.
   @max_workspace_attachment_bytes 200_000_000
+
+  # Default mode for a brand-new user with no persisted preference. Mode is a
+  # top-level FE/BE preference (assistant ↔ confidant) — never inferred from a
+  # session's `mode` column, never seeded from a hardcoded fallback at a
+  # write-site.
+  @default_mode "assistant"
+  @valid_modes ["confidant", "assistant"]
 
   def json(conn, status, data) do
     conn
@@ -78,18 +85,26 @@ defmodule DmhAi.Handlers.Data do
     json(conn, 200, sessions)
   end
 
-  # GET /sessions/current
+  # GET /sessions/current — returns the user's top-level mode preference AND
+  # the last-active session id PER mode. Two modes (confidant / assistant) are
+  # fully separate surfaces: switching modes restores that mode's own last
+  # session, not the other mode's.
   def get_current_session(conn, user) do
-    key = "current_session_#{user.id}"
-    result = query!(Repo, "SELECT value FROM settings WHERE key=?", [key])
+    mode = read_setting("current_mode_#{user.id}") || @default_mode
+    conf = read_setting("current_session_#{user.id}_confidant")
+    asst = read_setting("current_session_#{user.id}_assistant")
+    json(conn, 200, %{mode: mode, sessions: %{confidant: conf, assistant: asst}})
+  end
 
-    id =
-      case result.rows do
-        [[v] | _] -> v
-        _ -> nil
-      end
+  defp read_setting(key) do
+    case query!(Repo, "SELECT value FROM settings WHERE key=?", [key]).rows do
+      [[v] | _] -> v
+      _ -> nil
+    end
+  end
 
-    json(conn, 200, %{id: id})
+  defp write_setting(key, value) do
+    query!(Repo, "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", [key, value])
   end
 
   # GET /sessions/:id
@@ -107,50 +122,20 @@ defmodule DmhAi.Handlers.Data do
   end
 
   @doc """
-  POST /tasks/:task_id/cancel — user clicks the stop button on a task
-  row in the sidebar. Verifies ownership via the task → session → user
-  chain, then `Tasks.mark_cancelled/2` which flips the task to
-  `cancelled` (for periodics: also cancels the armed pickup timer via
-  `TaskRuntime.cancel_pickup`). An in-flight silent turn for this task
-  is NOT interrupted — the model may finish its current pickup and
-  produce one last output; no future pickups fire. Idempotent: a
-  second click on an already-cancelled task is a no-op that still
-  returns 200.
+  POST /sessions/:id/stop — user clicks the stop button on a session.
+  Verifies ownership, then stamps `sessions.cancelled_at` so the
+  chain loop aborts on its next iteration. Idempotent.
   """
-  def cancel_task(conn, user, task_id) do
-    # Ownership check: task must belong to a session owned by this user.
-    owns = query!(Repo, """
-    SELECT t.task_id
-    FROM tasks t
-    JOIN sessions s ON s.id = t.session_id
-    WHERE t.task_id = ? AND s.user_id = ?
-    """, [task_id, user.id])
-
-    if owns.rows == [] do
-      json(conn, 404, %{error: "Not found"})
-    else
-      DmhAi.Agent.Tasks.mark_cancelled(task_id, "Stopped by user")
-      json(conn, 200, %{ok: true})
-    end
-  end
-
-  # GET /sessions/:id/tasks
-  # Returns all tasks for the session, newest first. The FE's task-list
-  # sidebar polls this at ~3s cadence while tasks are active.
-  def get_session_tasks(conn, user, session_id) do
+  def stop_session(conn, user, session_id) do
     owns = query!(Repo, "SELECT id FROM sessions WHERE id=? AND user_id=?", [session_id, user.id])
 
     if owns.rows == [] do
       json(conn, 404, %{error: "Not found"})
     else
-      tasks =
-        session_id
-        |> DmhAi.Agent.Tasks.list_for_session()
-        |> Enum.map(&Map.take(&1, [:task_id, :task_num, :task_title, :task_type, :task_status,
-                                    :intvl_sec, :task_spec, :task_result,
-                                    :time_to_pickup, :language,
-                                    :created_at, :updated_at]))
-      json(conn, 200, %{tasks: tasks})
+      now = System.os_time(:millisecond)
+      query!(Repo, "UPDATE sessions SET cancelled_at=? WHERE id=? AND cancelled_at IS NULL",
+             [now, session_id])
+      json(conn, 200, %{ok: true})
     end
   end
 
@@ -244,7 +229,7 @@ defmodule DmhAi.Handlers.Data do
 
         # `is_working` drives the FE's poll cadence (true → 500 ms,
         # false → 5 s idle) AND the status-bar phrase ("Assistant is
-        # thinking..." / "Assistant is streaming the answer..."). Five
+        # thinking..." / "Assistant is streaming the answer..."). Three
         # conditions feed it:
         #   (1) stream_buffer non-null — assistant mid-turn emitting text.
         #   (2) Last session.messages entry is role="user" — the user's
@@ -258,14 +243,6 @@ defmodule DmhAi.Handlers.Data do
         #       tool-start with status='pending', flipped to 'done' when
         #       the tool returns). Covers multi-turn tool chains where
         #       stream_buffer stays empty across tool-only rounds.
-        #   (4) fetch_next_due hit — a task is due NOW (past pickup).
-        #   (5) Periodic task armed for the FUTURE — a pickup is coming.
-        # Without (5), a long-interval periodic task would give the FE
-        # a quiet window between firings, letting fresh assistant
-        # messages wait up to 5 s before rendering. With (5) the FE
-        # stays on 500 ms while periodic rotation is active.
-        has_due_task       = DmhAi.Agent.Tasks.fetch_next_due(session_id) != nil
-        has_armed_periodic = DmhAi.Agent.Tasks.has_pending_periodic_for_session(session_id)
         has_unanswered_user_msg? = case List.last(all_msgs) do
           %{"role" => "user"} -> true
           _                    -> false
@@ -298,8 +275,6 @@ defmodule DmhAi.Handlers.Data do
         has_pending_progress? = DmhAi.Agent.SessionProgress.has_pending?(session_id)
         is_working =
           is_binary(stream_buffer)
-          or has_due_task
-          or has_armed_periodic
           or has_unanswered_user_msg?
           or has_pending_progress?
 
@@ -321,9 +296,9 @@ defmodule DmhAi.Handlers.Data do
         # per UserAgent — Registry-keyed by user_id, not session_id),
         # so the FE shows the button only on the session that actually
         # owns the in-flight turn. The agent-side session_id wins over
-        # `is_working`, which can be true for ambient reasons (queued
-        # user message about to be picked up, periodic task armed) that
-        # don't yet have a Task to kill.
+        # `is_working`, which can be true for ambient reasons (a queued
+        # user message about to be picked up) that don't yet have a
+        # Task to kill.
         agent_busy_session_id = DmhAi.Agent.UserAgent.current_turn_session_id(user.id)
         agent_busy = agent_busy_session_id == session_id
 
@@ -458,22 +433,29 @@ defmodule DmhAi.Handlers.Data do
     d = Jason.decode!(body || "{}")
     now = :os.system_time(:millisecond)
 
-    mode = if d["mode"] in ["confidant", "assistant"], do: d["mode"], else: "confidant"
+    cond do
+      not (is_binary(d["id"]) and byte_size(d["id"]) > 0) ->
+        json(conn, 400, %{error: "id missing or empty — session id must be a non-empty string"})
 
-    query!(Repo, """
-    INSERT INTO sessions (id, name, messages, created_at, updated_at, user_id, mode)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, [
-      d["id"],
-      d["name"],
-      Jason.encode!(d["messages"] || []),
-      d["createdAt"],
-      now,
-      user.id,
-      mode
-    ])
+      d["mode"] not in @valid_modes ->
+        json(conn, 400, %{error: "invalid mode", valid: @valid_modes})
 
-    json(conn, 200, d)
+      true ->
+        query!(Repo, """
+        INSERT INTO sessions (id, name, messages, created_at, updated_at, user_id, mode)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, [
+          d["id"],
+          d["name"],
+          Jason.encode!(d["messages"] || []),
+          d["createdAt"],
+          now,
+          user.id,
+          d["mode"]
+        ])
+
+        json(conn, 200, d)
+    end
   end
 
   # POST /assets (multipart file upload)
@@ -543,13 +525,23 @@ defmodule DmhAi.Handlers.Data do
     end
   end
 
-  # PUT /sessions/current
+  # PUT /sessions/current — writes BOTH the mode preference and (optionally)
+  # the last-active session id for that mode. Accepts `{mode}` to switch mode
+  # only, or `{mode, id}` to also pin a session as last-active for that mode.
   def put_current_session(conn, user) do
     {:ok, body, conn} = read_body(conn)
     d = Jason.decode!(body || "{}")
-    key = "current_session_#{user.id}"
-    query!(Repo, "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", [key, d["id"]])
-    json(conn, 200, d)
+    mode = d["mode"]
+
+    unless mode in @valid_modes do
+      json(conn, 400, %{error: "invalid mode", valid: @valid_modes})
+    else
+      write_setting("current_mode_#{user.id}", mode)
+      if is_binary(d["id"]) do
+        write_setting("current_session_#{user.id}_#{mode}", d["id"])
+      end
+      json(conn, 200, d)
+    end
   end
 
   # POST /sessions/:id/name — call LLM to generate and persist a session name.
@@ -606,7 +598,11 @@ defmodule DmhAi.Handlers.Data do
             json(conn, 200, %{name: nil})
           else
             messages = [%{role: "user", content: build_namer_prompt(recent_user_msgs, current_name, first_rename?)}]
-            trace = %{origin: "system", path: "Handlers.Data.name_session", role: "SessionNamer", phase: "name"}
+            trace = %{
+              origin: "system", path: "Handlers.Data.name_session",
+              role: "SessionNamer", phase: "name",
+              session_id: session_id, user_id: user.id, tier: :swift
+            }
 
             case LLM.call(AgentSettings.swift_model(), messages, trace: trace) do
               {:ok, name} when is_binary(name) and name != "" ->
@@ -677,7 +673,6 @@ defmodule DmhAi.Handlers.Data do
       WHERE id=? AND user_id=?
       """, [name, "[]", now, session_id, user.id])
       query!(Repo, "DELETE FROM session_token_stats WHERE session_id=?", [session_id])
-      query!(Repo, "DELETE FROM worker_token_stats WHERE session_id=?", [session_id])
     else
       query!(Repo, """
       UPDATE sessions SET name=?, updated_at=?
@@ -690,18 +685,18 @@ defmodule DmhAi.Handlers.Data do
 
   # DELETE /sessions/:id
   def delete_session(conn, user, session_id) do
-    # Stop any in-flight workers for this session before cleaning up
-    UserAgent.cancel_session_tasks(user.id, session_id)
+    # Stamp `cancelled_at` so any in-flight chain aborts on its next
+    # iteration before we cascade-delete the row.
+    now = System.os_time(:millisecond)
+    query!(Repo, "UPDATE sessions SET cancelled_at=? WHERE id=? AND user_id=? AND cancelled_at IS NULL",
+           [now, session_id, user.id])
 
     query!(Repo, "DELETE FROM sessions WHERE id=? AND user_id=?", [session_id, user.id])
     query!(Repo, "DELETE FROM image_descriptions WHERE session_id=?", [session_id])
     query!(Repo, "DELETE FROM video_descriptions WHERE session_id=?", [session_id])
     query!(Repo, "DELETE FROM session_token_stats WHERE session_id=?", [session_id])
-    query!(Repo, "DELETE FROM worker_token_stats WHERE session_id=?", [session_id])
-    # Cascade task + session_progress rows so deleted sessions don't
-    # leave orphans in the sidebar or DB (Tasks.delete_for_session/1
-    # wipes both tables for this session_id).
-    DmhAi.Agent.Tasks.delete_for_session(session_id)
+    query!(Repo, "DELETE FROM session_progress WHERE session_id=?", [session_id])
+    query!(Repo, "DELETE FROM session_services WHERE session_id=?", [session_id])
 
     session_dir = user_asset_dir(user.email, session_id)
     if File.dir?(session_dir) do
@@ -736,15 +731,29 @@ defmodule DmhAi.Handlers.Data do
   end
 
   # GET /sessions/:session_id/token-stats (admin only)
+  #
+  # Returns the per-tier rx/tx breakdown for this session and the
+  # user's global aggregate (summed across every row including the
+  # `_user_global` sentinel that holds session-less calls — see
+  # `DmhAi.Agent.TokenTracker`). The top-level `total` field is the
+  # rx+tx grand total across all five tiers for quick display.
   def get_token_stats(conn, user, session_id) do
     if user.role != "admin" do
       json(conn, 403, %{error: "Forbidden"})
     else
-      stats = TokenTracker.get_session_stats(session_id)
+      stats  = TokenTracker.get_session_stats(session_id)
       global = TokenTracker.get_global_stats(user.id)
+
+      payload = %{
+        session: stats,
+        global:  global,
+        session_total: tier_grand_total(stats),
+        global_total:  tier_grand_total(global)
+      }
+
       conn
       |> put_resp_content_type("application/json")
-      |> send_resp(200, Jason.encode!(%{session: stats, global: global}))
+      |> send_resp(200, Jason.encode!(payload))
     end
   end
 
@@ -1017,7 +1026,7 @@ defmodule DmhAi.Handlers.Data do
 
     {:ok, prog_row} =
       DmhAi.Agent.SessionProgress.append_tool_pending(
-        %{session_id: session_id, user_id: user_id, task_id: nil},
+        %{session_id: session_id, user_id: user_id},
         "Connecting #{alias_}…"
       )
 
@@ -1071,12 +1080,12 @@ defmodule DmhAi.Handlers.Data do
   }
 
   defp finalize_api_key_setup(setup, values, user_id) do
-    alias_         = setup["alias"]
-    server_url     = setup["server_url"]
-    anchor_task_id = setup["anchor_task_id"]
-    canonical      = server_url
-    api_key        = (values["api_key"] || "") |> String.trim()
-    choice         = (values["auth_header"] || "Authorization") |> String.trim()
+    alias_     = setup["alias"]
+    server_url = setup["server_url"]
+    session_id = setup["session_id"]
+    canonical  = server_url
+    api_key    = (values["api_key"] || "") |> String.trim()
+    choice     = (values["auth_header"] || "Authorization") |> String.trim()
 
     cond do
       api_key == "" ->
@@ -1085,8 +1094,8 @@ defmodule DmhAi.Handlers.Data do
       not Map.has_key?(@auth_header_choices, choice) ->
         {:error, "Unknown auth header choice: #{inspect(choice)}"}
 
-      not is_binary(anchor_task_id) ->
-        {:error, "setup payload missing anchor_task_id"}
+      not is_binary(session_id) ->
+        {:error, "setup payload missing session_id"}
 
       true ->
         {header, prefix} = Map.fetch!(@auth_header_choices, choice)
@@ -1124,7 +1133,7 @@ defmodule DmhAi.Handlers.Data do
 
           DmhAi.MCP.Registry.authorize(user_id, alias_, canonical, server_url, nil)
           DmhAi.MCP.Registry.set_authorized_tools(user_id, alias_, tools)
-          DmhAi.MCP.Registry.attach(anchor_task_id, user_id, alias_)
+          DmhAi.MCP.Registry.attach(session_id, user_id, alias_)
           {:ok, %{alias: alias_, tools_count: length(tools)}}
         else
           {:error, reason} ->
@@ -1373,4 +1382,13 @@ defmodule DmhAi.Handlers.Data do
   end
 
   defp log(msg), do: DmhAi.SysLog.log(msg)
+
+  # Sum rx+tx across every tier in a TokenTracker stats map. Used by
+  # the /token-stats endpoint to give the FE a single "grand total"
+  # number per scope without re-implementing the addition client-side.
+  defp tier_grand_total(stats) when is_map(stats) do
+    Enum.reduce(stats, 0, fn {_tier, %{rx: rx, tx: tx}}, acc -> acc + rx + tx end)
+  end
+
+  defp tier_grand_total(_), do: 0
 end

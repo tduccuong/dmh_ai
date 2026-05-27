@@ -32,9 +32,9 @@ defmodule DmhAi.LLM.Adapters.OpenAI do
     # final usage chunk in streaming mode when the client opts in via
     # `stream_options.include_usage=true`. Without it the runtime's
     # `on_tokens` callback never fires for streaming calls and the
-    # session_token_stats / worker_token_stats counters stay at 0.
-    # Non-streaming calls always include `usage` in the response body
-    # so this option is only relevant for stream=true.
+    # session_token_stats counters stay at 0. Non-streaming calls
+    # always include `usage` in the response body so this option is
+    # only relevant for stream=true.
     base =
       if stream do
         Map.put(base, :stream_options, %{include_usage: true})

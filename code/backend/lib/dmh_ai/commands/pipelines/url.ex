@@ -97,7 +97,8 @@ defmodule DmhAi.Commands.Pipelines.URL do
 
     # URL itself carries no language signal — Swift defaults to
     # English here, which is the right behaviour for path-shaped args.
-    {:ok, Swift.localize(IndexAck.accepted_ack(url), url)}
+    {:ok, Swift.localize(IndexAck.accepted_ack(url), url,
+                         %{session_id: session_id, user_id: user_id})}
   end
 
   # Top-level crawl: derive same-prefix scope, BFS until the queue
@@ -141,12 +142,15 @@ defmodule DmhAi.Commands.Pipelines.URL do
 
       summary = compose_summary(final_state, prefix)
       lang_signal = final_state.first_lang_signal || start_url
-      post_ack(session_id, user_id, Swift.localize(summary, lang_signal))
+      post_ack(session_id, user_id,
+               Swift.localize(summary, lang_signal,
+                              %{session_id: session_id, user_id: user_id}))
     rescue
       e ->
         Logger.error("[Commands.URL] crawl crashed on #{start_url}: #{Exception.message(e)}")
         post_ack(session_id, user_id,
-          Swift.localize("Crawl crashed for `#{start_url}`: #{Exception.message(e)}", start_url))
+          Swift.localize("Crawl crashed for `#{start_url}`: #{Exception.message(e)}", start_url,
+                         %{session_id: session_id, user_id: user_id}))
     after
       BackgroundPipelines.unregister(session_id)
     end

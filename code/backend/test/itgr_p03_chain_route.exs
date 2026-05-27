@@ -63,8 +63,8 @@ defmodule DmhAi.P03ChainRouteTest do
   describe "Registry.execute routes connector functions through Dispatcher" do
     test "free-chat write call → write_requires_task envelope", %{admin_id: admin_id} do
       # Free-chat tool_ctx: no :task_id. UserAgent's tool_ctx
-      # builder ALWAYS sets :task_id (anchor_task_id_from_ctx
-      # returns nil when no anchor). Simulate that exact shape here.
+      # builder leaves :task_id nil outside of a workflow run.
+      # Simulate that exact shape here.
       tool_ctx = %{
         user_id:      admin_id,
         session_id:   "s-test",

@@ -100,8 +100,8 @@ defmodule T do
   #   {:error, reason}   — fake an error path
   #   :passthrough       — let the real tool run
   # The :passthrough escape lets a flow fake one tool (e.g. run_script,
-  # whose real path needs Docker) while letting bookkeeping verbs
-  # (create_task / pickup_task / mark_done) hit the real Registry.
+  # whose real path needs Docker) while letting every other tool hit
+  # the real Registry path.
   def stub_tool(fun) when is_function(fun, 3) do
     Application.put_env(:dmh_ai, :__tool_execute_stub__, fun)
     ExUnit.Callbacks.on_exit(fn -> Application.delete_env(:dmh_ai, :__tool_execute_stub__) end)
@@ -141,27 +141,25 @@ defmodule T do
   # observable state and moves to the next user message.
   #
   # Examples of what walks catch that single-turn tests don't:
-  #   * tool_history NOT carrying closed-task data into the next chain
-  #   * FE polling termination on close-verb empty narration
+  #   * tool_history flushing tool results past the retention window
+  #   * FE polling termination on final-text turn
   #   * retry-cap bounding an infinite-rotation loop on single-account pools
   #
   # Walk shape:
   #
   #     T.session_walk(user_id, session_id, [
   #       {"first user msg", [
-  #          fn _msgs, _tools -> {:tool_calls, [T.tool_call("create_task", %{...})]} end,
-  #          fn _msgs, _tools -> {:tool_calls, [T.tool_call("complete_task", %{"task_num" => 1})]} end,
+  #          fn _msgs, _tools -> {:tool_calls, [T.tool_call("web_fetch", %{...})]} end,
   #          fn _msgs, _tools -> {:text, "Done."} end
   #       ]},
   #       {"follow-up", [
-  #          fn _msgs, _tools -> {:text, "Cannot recall — call fetch_task(1)?"} end
+  #          fn _msgs, _tools -> {:text, "Anything else?"} end
   #       ]}
   #     ])
   #
   # Each turn fn receives the live messages list and tools list the
   # runtime is about to send to the LLM, so the test can assert on
-  # what the model "saw" mid-flight (e.g. that closed-task tool
-  # results are absent on the second user message).
+  # what the model "saw" mid-flight.
   #
   # Returns a list of observation maps, one per user message:
   #
@@ -177,12 +175,12 @@ defmodule T do
   @session_walk_chain_timeout_ms 6_000
 
   # Settle window after a chain_end before declaring the system idle.
-  # Auto-pivot follow-ups (close-verb chain ends → GenServer fires
-  # :auto_resume_assistant → silent turn spawns) run AFTER the first
-  # chain_end. Snapshotting before they finish strands the test:
-  # session.messages doesn't yet have what the user would see. Wait
-  # for the GenServer's `current_task` slot to stay empty for this
-  # window before snapshotting — that's "queue truly drained."
+  # Auto-resume follow-ups (mid-chain user msg arrival → GenServer
+  # fires :auto_resume_assistant → fresh chain spawns) run AFTER the
+  # first chain_end. Snapshotting before they finish strands the
+  # test: session.messages doesn't yet have what the user would see.
+  # Wait for the GenServer's `current_task` slot to stay empty for
+  # this window before snapshotting — that's "queue truly drained."
   @session_walk_settle_grace_ms 200
   @session_walk_settle_poll_ms 25
 
@@ -233,12 +231,7 @@ defmodule T do
       # chain. The handler does this in production; without the same
       # step in tests, `last_msgs` in `build_assistant_messages` is
       # empty and the LLM never sees the user's actual input.
-      anchor_num = DmhAi.Agent.Anchor.task_num_for(session_id)
-      user_message =
-        case anchor_num do
-          n when is_integer(n) -> %{role: "user", content: user_msg, task_num: n}
-          _                     -> %{role: "user", content: user_msg}
-        end
+      user_message = %{role: "user", content: user_msg}
 
       {:ok, _user_ts} = DmhAi.Agent.UserAgentMessages.append(session_id, user_id, user_message)
 
@@ -281,16 +274,17 @@ defmodule T do
   #   1. Wait for the first `chain_end` / `chain_aborted` row after
   #      baseline — the user-initiated chain has produced its
   #      termination signal.
-  #   2. Settle. A close-verb chain that auto-pivots queues a silent
-  #      follow-up turn; it spawns AFTER the first chain_end lands.
-  #      Wait until `UserAgent.current_turn_session_id(user_id)`
-  #      stays nil for `@session_walk_settle_grace_ms`. That's the
-  #      same "system idle for this user" view the FE eventually
-  #      converges on after `/poll` notices `ChainInFlight` is clear.
+  #   2. Settle. A chain that auto-resumes (because a mid-chain user
+  #      msg arrived) queues a follow-up turn AFTER the first
+  #      chain_end lands. Wait until
+  #      `UserAgent.current_turn_session_id(user_id)` stays nil for
+  #      `@session_walk_settle_grace_ms`. That's the same "system
+  #      idle for this user" view the FE eventually converges on
+  #      after `/poll` notices `ChainInFlight` is clear.
   #
   # Returns the LATEST chain_end / chain_aborted id seen so the next
   # iteration's `baseline_id` excludes everything the system has
-  # already produced for this user message (including auto-pivot
+  # already produced for this user message (including auto-resume
   # follow-ups).
   defp wait_for_chain_end(session_id, user_id, baseline_id) do
     deadline = System.os_time(:millisecond) + @session_walk_chain_timeout_ms

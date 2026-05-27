@@ -23,18 +23,18 @@ defmodule DmhAi.VectorDB.Tagger do
   @max_tags 10
   @body_excerpt_chars 4_000
 
-  @spec tag(String.t()) :: [String.t()]
-  def tag(body) when is_binary(body) do
+  @spec tag(String.t(), map()) :: [String.t()]
+  def tag(body, meta \\ %{}) when is_binary(body) and is_map(meta) do
     case Application.get_env(:dmh_ai, :__tagger_stub__) do
       stub when is_function(stub, 1) ->
         stub.(body) |> sanitize()
 
       _ ->
-        do_tag(body)
+        do_tag(body, meta)
     end
   end
 
-  defp do_tag(body) do
+  defp do_tag(body, meta) do
     excerpt = String.slice(body, 0, @body_excerpt_chars)
     model   = tagger_model()
 
@@ -43,7 +43,15 @@ defmodule DmhAi.VectorDB.Tagger do
       %{role: "user",   content: excerpt}
     ]
 
-    case LLM.call(model, messages, options: %{temperature: 0.0}) do
+    trace = %{
+      origin: "system", path: "VectorDB.Tagger.tag",
+      role: "KbTagger", phase: "tag",
+      session_id: Map.get(meta, :session_id),
+      user_id:    Map.get(meta, :user_id),
+      tier:       :swift
+    }
+
+    case LLM.call(model, messages, options: %{temperature: 0.0}, trace: trace) do
       {:ok, text} when is_binary(text) ->
         parse_tags(text)
 

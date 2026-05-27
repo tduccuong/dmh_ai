@@ -111,12 +111,11 @@ defmodule DmhAi.Handlers.MeServices do
       {:ok, %{auth_url: auth_url}} =
         DmhAi.Auth.OAuth2.init_flow(%{
           user_id:            user.id,
-          # Sentinel session + anchor — finalize_connector_oauth
-          # doesn't read these (no chat-resume to do; the user is
-          # outside a chat session). The DB columns are NOT NULL
-          # so we supply a stable label.
+          # Sentinel session — finalize_connector_oauth doesn't read
+          # this (no chat-resume to do; the user is outside a chat
+          # session). The DB column is NOT NULL so we supply a stable
+          # label.
           session_id:         "me-services-connect",
-          anchor_task_id:     "me-services-connect",
           alias:              slug,
           canonical_resource: mcp.mcp_url,
           server_url:         mcp.mcp_url,

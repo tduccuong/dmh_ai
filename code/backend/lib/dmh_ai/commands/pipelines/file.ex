@@ -45,7 +45,8 @@ defmodule DmhAi.Commands.Pipelines.File do
             # Localize using the file body as the language signal —
             # it's the strongest signal we have (the path is usually
             # English-ish regardless of the user).
-            {:ok, Swift.localize(IndexAck.final_ack(Path.basename(path)), body)}
+            {:ok, Swift.localize(IndexAck.final_ack(Path.basename(path)), body,
+                                 %{session_id: session_id, user_id: user_id})}
 
           {:error, reason} ->
             {:error, "ingest failed: #{inspect(reason, limit: 80)}"}

@@ -53,7 +53,11 @@ defmodule DmhAi.Handlers.Media do
         file_id  = :crypto.strong_rand_bytes(8) |> Base.url_encode64(padding: false)
         messages = [%{role: "user", content: video_prompt(), images: frames}]
 
-        trace = %{origin: "system", path: "Handlers.Media.describe_video", role: "VideoDescriber", phase: "describe"}
+        trace = %{
+          origin: "system", path: "Handlers.Media.describe_video",
+          role: "VideoDescriber", phase: "describe",
+          session_id: session_id, user_id: user.id, tier: :vision
+        }
         case LLM.call(AgentSettings.vision_model(), messages, trace: trace) do
           {:ok, desc} when is_binary(desc) and desc != "" ->
             store_video_description(session_id, file_id, name, desc)
@@ -86,7 +90,11 @@ defmodule DmhAi.Handlers.Media do
         file_id  = :crypto.strong_rand_bytes(8) |> Base.url_encode64(padding: false)
         messages = [%{role: "user", content: image_prompt(), images: [image]}]
 
-        trace = %{origin: "system", path: "Handlers.Media.describe_image", role: "ImageDescriber", phase: "describe"}
+        trace = %{
+          origin: "system", path: "Handlers.Media.describe_image",
+          role: "ImageDescriber", phase: "describe",
+          session_id: session_id, user_id: user.id, tier: :vision
+        }
         case LLM.call(AgentSettings.vision_model(), messages, trace: trace) do
           {:ok, desc} when is_binary(desc) and desc != "" ->
             store_image_description(session_id, file_id, name, desc)

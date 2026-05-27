@@ -35,31 +35,26 @@ defmodule DmhAi.Agent.SessionProgress do
                               when the user asks for a status check).
     - 'chain_end'           — the explicit FE termination signal.
                               Emitted at every NORMAL chain-end branch
-                              in `UserAgent.session_chain_loop` (close-
-                              verb terminator, final text turn, empty
-                              response, turn cap, form, LLM-call error).
-                              `label` carries a stable cause string
-                              ("close_verb", "final_text",
-                              "empty_response", "turn_cap", "form",
-                              "error"). FE recognises the kind and
-                              terminates polling without painting a
-                              visible row — the close-verb tool row or
-                              final assistant message is the user-
-                              visible artifact. Distinct from
-                              'chain_aborted', which renders a visible
-                              ⏹ row.
+                              in `UserAgent.session_chain_loop` (final
+                              text turn, turn cap, form, aborted run,
+                              LLM-call error). `label` carries a stable
+                              cause string ("final_text", "turn_cap",
+                              "form", "aborted", "error"). FE recognises
+                              the kind and terminates polling without
+                              painting a visible row — the final
+                              assistant message is the user-visible
+                              artifact. Distinct from 'chain_aborted',
+                              which renders a visible ⏹ row.
     - 'chain_aborted'       — the chain ended forcefully: user clicked
-                              Stop, anchor task cancelled mid-flight,
-                              internal Task crash. Renders as a visible
-                              row with ⏹ icon and the `label` text.
-                              Also a termination signal. See
-                              architecture.md §Chain-end signals.
+                              Stop, or an internal Task crash. Renders
+                              as a visible row with ⏹ icon and the
+                              `label` text. Also a termination signal.
+                              See architecture.md §Chain-end signals.
 
   ctx shape:
       %{
         session_id: String.t(),
-        user_id:    String.t(),
-        task_id:    String.t() | nil   # nil for direct-response turns
+        user_id:    String.t()
       }
   """
 
@@ -70,8 +65,8 @@ defmodule DmhAi.Agent.SessionProgress do
 
   @doc """
   Insert a progress row. Returns `{:ok, row}` where `row` is the map the
-  FE would receive over the poll delta (id, kind, status, label, task_id,
-  ts). Callers use `row.id` later with `mark_tool_done/1` to flip a
+  FE would receive over the poll delta (id, kind, status, label, ts).
+  Callers use `row.id` later with `mark_tool_done/1` to flip a
   pending tool row to done.
 
   opts:
@@ -89,23 +84,21 @@ defmodule DmhAi.Agent.SessionProgress do
 
     session_id = ctx[:session_id] || ctx["session_id"]
     user_id    = ctx[:user_id]    || ctx["user_id"]
-    task_id    = ctx[:task_id]    || ctx["task_id"]
     stored_label = truncate(label)
 
     %{rows: [[id]]} =
       query!(Repo, """
       INSERT INTO session_progress
-        (session_id, user_id, task_id, kind, status, label, hidden, ts)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        (session_id, user_id, kind, status, label, hidden, ts)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
       RETURNING id
-      """, [session_id, user_id, task_id, kind, status, stored_label, hidden, now])
+      """, [session_id, user_id, kind, status, stored_label, hidden, now])
 
     {:ok,
      %{
        id: id,
        session_id: session_id,
        user_id: user_id,
-       task_id: task_id,
        kind: kind,
        status: status,
        label: stored_label,
@@ -123,12 +116,12 @@ defmodule DmhAi.Agent.SessionProgress do
   Append a `chain_end` progress row — the explicit FE termination
   signal for normal chain-end branches. `cause` is a stable
   identifier the FE ignores for rendering but is preserved for
-  diagnostics. Use one of: `"close_verb"`, `"final_text"`,
-  `"empty_response"`, `"turn_cap"`, `"form"`, `"error"`.
+  diagnostics. Use one of: `"final_text"`, `"turn_cap"`, `"form"`,
+  `"aborted"`, `"error"`.
 
   Distinct from `chain_aborted`, which is reserved for chains that
-  ended forcefully (user-stop / anchor-cancelled-mid-flight /
-  internal crash) and renders a visible ⏹ row.
+  ended forcefully (user-stop / internal crash) and renders a
+  visible ⏹ row.
   """
   @spec append_chain_end(map(), String.t()) :: {:ok, map()}
   def append_chain_end(ctx, cause) when is_binary(cause),
@@ -242,22 +235,6 @@ defmodule DmhAi.Agent.SessionProgress do
   def append_summary(ctx, label), do: append(ctx, "summary", label)
 
   @doc """
-  Fetch all rows for a task, ordered by id ASC. Used by the on-demand
-  summariser to read the task's activity log.
-  """
-  @spec fetch_for_task(String.t()) :: [map()]
-  def fetch_for_task(task_id) do
-    r = query!(Repo, """
-    SELECT id, session_id, user_id, task_id, kind, status, label, sub_labels, duration_ms, ts
-    FROM session_progress
-    WHERE task_id=?
-    ORDER BY id ASC
-    """, [task_id])
-
-    Enum.map(r.rows, &row_to_map/1)
-  end
-
-  @doc """
   FE cursor: fetch all progress rows for a session after a given integer id.
   Client polls with `since` = id of the last row it rendered.
 
@@ -276,7 +253,7 @@ defmodule DmhAi.Agent.SessionProgress do
     # The FE upserts by id, so re-returning a pending row is harmless —
     # it just refreshes sub_labels on the existing cached entry.
     r = query!(Repo, """
-    SELECT id, session_id, user_id, task_id, kind, status, label, sub_labels, duration_ms, ts
+    SELECT id, session_id, user_id, kind, status, label, sub_labels, duration_ms, ts
     FROM session_progress
     WHERE session_id=? AND hidden = 0
       AND (id > ? OR status='pending')
@@ -350,7 +327,7 @@ defmodule DmhAi.Agent.SessionProgress do
   end
   defp truncate(other), do: inspect(other)
 
-  defp row_to_map([id, session_id, user_id, task_id, kind, status, label, sub_labels_json, duration_ms, ts]) do
+  defp row_to_map([id, session_id, user_id, kind, status, label, sub_labels_json, duration_ms, ts]) do
     sub_labels =
       case sub_labels_json do
         nil  -> []
@@ -366,7 +343,6 @@ defmodule DmhAi.Agent.SessionProgress do
       id: id,
       session_id: session_id,
       user_id: user_id,
-      task_id: task_id,
       kind: kind,
       status: status,
       label: label,

@@ -179,14 +179,6 @@ defmodule DmhAi.Handlers.AgentChat do
           message = %{role: "user", content: stored_content}
           message = if client_msg_id, do: Map.put(message, :client_msg_id, client_msg_id), else: message
 
-          # Tag the incoming user message with the current anchor's
-          # task_num (if any). See architecture.md §Per-message task tag.
-          message =
-            case DmhAi.Agent.Anchor.task_num_for(session_id) do
-              n when is_integer(n) -> Map.put(message, :task_num, n)
-              _                     -> message
-            end
-
           {tz, local_date} = client_tz(conn)
           case DmhAi.Agent.UserAgentMessages.append(session_id, user.id, message) do
             {:ok, user_ts} ->

@@ -537,35 +537,6 @@ defmodule DmhAi.Handlers.Auth do
     end
   end
 
-  # GET /me/preferences — return current per-user preferences blob,
-  # FE-serialised with defaults filled in. Visible to every
-  # authenticated user.
-  def get_my_preferences(conn, user) do
-    json(conn, 200, DmhAi.Auth.UserPreferences.serialize(user.id))
-  end
-
-  # PUT /me/preferences — replace one or more preference keys. Body
-  # shape: `{"conservativeTokenSaving": true|false, ...}`. Unknown
-  # keys are rejected with 400; type-mismatches are rejected so the
-  # JSON blob stays canonical.
-  def put_my_preferences(conn, user) do
-    {:ok, body, conn} = read_body(conn)
-
-    case Jason.decode(body || "{}") do
-      {:ok, payload} when is_map(payload) ->
-        case validate_and_apply_preferences(user.id, payload) do
-          :ok ->
-            json(conn, 200, DmhAi.Auth.UserPreferences.serialize(user.id))
-
-          {:error, reason} ->
-            json(conn, 400, %{error: reason})
-        end
-
-      _ ->
-        json(conn, 400, %{error: "Body must be a JSON object"})
-    end
-  end
-
   # GET /me/credentials — list-only view of the caller's saved
   # credential rows. Metadata only — never payload — so accidental
   # console / FE leaks can't expose tokens. Surface fields the
@@ -598,20 +569,6 @@ defmodule DmhAi.Handlers.Auth do
       _ ->
         json(conn, 400, %{error: "id must be an integer"})
     end
-  end
-
-  defp validate_and_apply_preferences(user_id, payload) do
-    Enum.reduce_while(payload, :ok, fn
-      {"conservativeTokenSaving", v}, :ok when is_boolean(v) ->
-        :ok = DmhAi.Auth.UserPreferences.put_conservative_token_saving(user_id, v)
-        {:cont, :ok}
-
-      {"conservativeTokenSaving", _}, :ok ->
-        {:halt, {:error, "conservativeTokenSaving must be boolean"}}
-
-      {key, _}, :ok ->
-        {:halt, {:error, "unknown preference key: #{key}"}}
-    end)
   end
 
   # PUT /users/:id (admin: update user)

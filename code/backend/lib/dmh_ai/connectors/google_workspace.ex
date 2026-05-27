@@ -58,7 +58,16 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
   # API-access scopes (Gmail, Calendar, Drive, …); these two are
   # what the OIDC userinfo endpoint requires to return the connecting
   # account's email, regardless of which capabilities are enabled.
-  def base_scopes, do: ["openid", "email"]
+  #
+  # Google accepts both `"email"` and the full URI form in the OAuth
+  # request, but the TOKEN response normalises to the URI form
+  # (`https://www.googleapis.com/auth/userinfo.email`). The runtime's
+  # scope-cover check is a literal string subset, so this list must
+  # use the form Google actually returns in the grant — otherwise the
+  # short `"email"` is never matched against the granted URI string
+  # and `connect_mcp` stays stuck on `needs_reauth` even after a
+  # fresh consent.
+  def base_scopes, do: ["openid", "https://www.googleapis.com/auth/userinfo.email"]
 
   @impl DmhAi.Connectors.Discoverable
   def discover_docs do

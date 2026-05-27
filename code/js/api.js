@@ -13,10 +13,13 @@ const SessionStore = {
         return res.json();
     },
     createSession: async function(name, mode) {
+        if (mode !== 'confidant' && mode !== 'assistant') {
+            throw new Error('SessionStore.createSession: mode must be "confidant" or "assistant", got: ' + mode);
+        }
         const session = {
             id: Date.now().toString(),
             name: name || 'New Session',
-            mode: mode || 'confidant',
+            mode: mode,
             messages: [],
             context: { summary: null, summaryUpToIndex: -1, needsNaming: true },
             createdAt: Date.now()
@@ -43,25 +46,6 @@ const SessionStore = {
         if (!res.ok) return { progress: [] };
         return res.json();
     },
-    // Task list for a session — returns all tasks newest-first. The FE's
-    // task-list sidebar polls this endpoint at ~3 s cadence while tasks
-    // are active, 15 s when idle.
-    getSessionTasks: async function(id) {
-        const res = await apiFetch(this.BASE + '/' + id + '/tasks');
-        if (!res.ok) return { tasks: [] };
-        return res.json();
-    },
-    // Cancel a single task — fires from the sidebar's stop button on an
-    // ongoing row. BE flips the task to `cancelled` and cancels any
-    // armed periodic pickup timer. The session-level interrupt path
-    // was removed in Phase 2; users redirect the assistant by sending a
-    // new chat message instead.
-    cancelTask: async function(taskId) {
-        const res = await apiFetch('/tasks/' + encodeURIComponent(taskId) + '/cancel', {
-            method: 'POST'
-        });
-        return res.ok;
-    },
     updateSession: async function(session) {
         await apiFetch(this.BASE + '/' + session.id, {
             method: 'PUT',
@@ -72,17 +56,26 @@ const SessionStore = {
     deleteSession: async function(id) {
         await apiFetch(this.BASE + '/' + id, { method: 'DELETE' });
     },
-    getCurrentSessionId: async function() {
+    // Two modes (confidant / assistant) are fully separate surfaces, each
+    // with its own last-active session. The BE persists both per-mode IDs
+    // plus the user's top-level mode preference; returns them all in one
+    // shot so the FE can hydrate `_currentMode` + the right session id
+    // BEFORE the empty-state branch decides what to render.
+    getCurrentState: async function() {
         const res = await apiFetch(this.BASE + '/current');
-        if (!res.ok) return null;
-        const data = await res.json();
-        return data.id;
+        if (!res.ok) return { mode: null, sessions: { confidant: null, assistant: null } };
+        return res.json();
     },
-    setCurrentSessionId: async function(id) {
+    // Persists the user's mode preference and (optionally) pins a session
+    // as last-active for that mode. Pass `id` whenever the FE switches to
+    // a session; pass just `{mode}` when switching modes without picking a
+    // specific session yet.
+    setCurrentState: async function(mode, id) {
+        const body = id ? { mode: mode, id: id } : { mode: mode };
         await apiFetch(this.BASE + '/current', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ id: id })
+            body: JSON.stringify(body)
         });
     }
 };

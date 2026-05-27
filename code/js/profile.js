@@ -181,35 +181,6 @@ const ConnectedAccounts = {
     }
 };
 
-// Per-user UI preferences (distinct from `Settings`, which handles the
-// admin-only `admin_cloud_settings` blob). Backed by `users.preferences`
-// JSON column; reads via GET /me/preferences, writes via PUT
-// /me/preferences. The PUT validates schema server-side so unknown
-// keys / bad types are 400'd loudly rather than silently dropped.
-const UserPreferences = {
-    load: async function() {
-        try {
-            const res = await apiFetch('/me/preferences');
-            if (res && res.ok) return await res.json();
-        } catch (e) { syslog('[PREFS] load error: ' + e); }
-        return {};
-    },
-
-    save: async function(patch) {
-        const res = await apiFetch('/me/preferences', {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(patch || {})
-        });
-        if (!res || !res.ok) {
-            const detail = res ? await res.text().catch(function() { return ''; }) : '';
-            syslog('[PREFS] save failed: ' + detail);
-            throw new Error('preferences save failed');
-        }
-        return await res.json();
-    }
-};
-
 const UserFactTracker = {
     // Receive candidate topic labels from LLM; backend handles normalization, threshold, and profile merge.
     track: async function(candidates) {
@@ -300,18 +271,9 @@ const SettingsModal = {
         // Per-section admin gate. Sections inside `page-conversation`
         // tagged `data-admin-only="true"` (Chat / Multimedia / Companion
         // Memory) tweak the global `admin_cloud_settings` blob and stay
-        // hidden from non-admins. The Token Saving section above them
-        // reads/writes per-user `users.preferences` and is always shown.
+        // hidden from non-admins.
         document.querySelectorAll('[data-admin-only="true"]').forEach(function(el) {
             el.style.display = isAdmin ? '' : 'none';
-        });
-
-        // Per-user toggle: load the current value and reflect into the
-        // checkbox. Failures are silent — the checkbox stays at its
-        // last-rendered state, no worse than the pre-feature default.
-        UserPreferences.load().then(function(prefs) {
-            var cb = document.getElementById('settings-conservative-token');
-            if (cb) cb.checked = !!(prefs && prefs.conservativeTokenSaving);
         });
 
         // Connected accounts panel: load + render. Visible to all
@@ -573,20 +535,6 @@ const SettingsModal = {
             Settings._persist();
         });
 
-        // Per-user "Conservative token saving" toggle. Persists via
-        // PUT /me/preferences (no admin gate); failure rolls the
-        // checkbox back so the FE state never lies about the server.
-        var consvCb = document.getElementById('settings-conservative-token');
-        if (consvCb) {
-            consvCb.addEventListener('change', async function() {
-                var desired = this.checked;
-                try {
-                    await UserPreferences.save({ conservativeTokenSaving: desired });
-                } catch (_e) {
-                    consvCb.checked = !desired;
-                }
-            });
-        }
         document.getElementById('settings-profile-clear-btn').addEventListener('click', async function() {
             var ok = await Modal.confirm(t('profileClearTitle') || 'Clear profile', t('profileClearConfirm'), t('clear') || 'Clear');
             if (!ok) return;

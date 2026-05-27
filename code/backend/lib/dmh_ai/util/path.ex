@@ -5,18 +5,18 @@
 
 defmodule DmhAi.Util.Path do
   @moduledoc """
-  Path resolution + safety for worker-facing tools.
+  Path resolution + safety for tools that read from / write to the
+  filesystem.
 
-  Layout under each session_root:
-      <session_root>/
-        ├── data/                           ← user uploads
-        ├── assistant/tasks/<task_id>/        ← assistant-origin scratch
-        └── confidant/tasks/<task_id>/        ← confidant-origin scratch
+  Two physical roots per session — see `specs/permissions.md`:
+      session_root  — user_assets tree (RO from sandbox). User uploads
+                       live under `data/`.
+      workspace_dir — user_workspaces tree (RW from sandbox). Model
+                       scratch + tool outputs.
 
-  The tool root is `session_root` — tools may read any file anywhere below
-  it. Escaping the session_root is rejected. Workspace = task's own scratch
-  dir; used by default for relative writes and bash cwd. Deletion is only
-  permitted within the workspace.
+  Tools may read any file anywhere below either root. Escaping both
+  roots is rejected. Workspace is the default cwd for relative writes
+  and bash; deletion is only permitted within the workspace.
 
   ## Usage
 
@@ -101,7 +101,7 @@ defmodule DmhAi.Util.Path do
     end
   end
 
-  @doc "Check whether an absolute path is inside the task's workspace directory."
+  @doc "Check whether an absolute path is inside the session's workspace directory."
   @spec within_workspace?(String.t(), ctx()) :: boolean()
   def within_workspace?(abs_path, ctx) do
     case Map.get(ctx, :workspace_dir) do

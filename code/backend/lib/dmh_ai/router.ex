@@ -445,22 +445,6 @@ defmodule DmhAi.Router do
     end
   end
 
-  get "/sessions/:session_id/tasks" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      Data.get_session_tasks(conn, user, session_id)
-    end
-  end
-
-  # POST /tasks/:task_id/cancel — sidebar cancel for a single task.
-  # Session-level interrupts go through mid-chain user-message splice
-  # (the user sends a new chat message to redirect the assistant); this
-  # endpoint is for explicit per-task cancellation from the sidebar.
-  post "/tasks/:task_id/cancel" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      Data.cancel_task(conn, user, task_id)
-    end
-  end
-
   # Poll endpoint — unified delta fetch for messages, progress rows,
   # streaming-buffer text, and the `is_working` flag. FE hits this at
   # 500 ms when the agent is active, 5 s when idle.
@@ -645,25 +629,6 @@ defmodule DmhAi.Router do
     end
   end
 
-  # GET /me/preferences — return the per-user preferences blob (FE-
-  # serialised, defaults applied). Visible to every authenticated
-  # user, NOT admin-gated — these are personal toggles, not global
-  # runtime config (which lives in /admin/settings).
-  get "/me/preferences" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      Auth.get_my_preferences(conn, user)
-    end
-  end
-
-  # PUT /me/preferences — replace one or more preference keys. Body
-  # is a JSON map of `{key: value}`; keys not in the schema are
-  # rejected, types are validated. Same all-users gate as the GET.
-  put "/me/preferences" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      Auth.put_my_preferences(conn, user)
-    end
-  end
-
   # GET /me/credentials — list the caller's saved credentials,
   # metadata-only (no payloads). Used by the Conversation Settings
   # "Connected accounts" panel. Visible to every authenticated user.
@@ -717,14 +682,6 @@ defmodule DmhAi.Router do
   delete "/sessions/:session_id" do
     with {:ok, conn, user} <- check_auth(conn) do
       Data.delete_session(conn, user, session_id)
-    end
-  end
-
-  # Cancel all running tasks for a session (used by "Clear session")
-  post "/sessions/:session_id/cancel-workers" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      UserAgent.cancel_session_tasks(user.id, session_id)
-      send_resp(conn, 200, Jason.encode!(%{ok: true}))
     end
   end
 

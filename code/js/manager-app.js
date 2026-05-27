@@ -45,22 +45,35 @@ UIManager.initializeApp = async function() {
     this.initModeSelector();
 
     try {
+        // Hydrate top-level mode preference + per-mode last-active session
+        // ids from the BE BEFORE any empty-state branch decides what to
+        // render. Without this, `_currentMode` would still be its seed
+        // default ('assistant') and an empty-DB cold-load would auto-spawn
+        // a session in whichever mode happened to win the race — the bug
+        // that produced rogue confidant ghosts.
+        var self = this;
+        const state = await SessionStore.getCurrentState();
+        this._currentMode = state.mode || this._currentMode;
+        this._modeSessionIds = (state.sessions || { confidant: null, assistant: null });
+
         const sessions = await SessionStore.getSessions();
-        if (sessions.length === 0) {
+        const filtered = sessions.filter(function(s) {
+            return s.mode === self._currentMode;
+        });
+        const lastForMode = this._modeSessionIds[this._currentMode];
+        if (filtered.length === 0) {
             const defaultSession = await SessionStore.createSession(t('newChat'), this._currentMode);
-            await SessionStore.setCurrentSessionId(defaultSession.id);
+            await SessionStore.setCurrentState(this._currentMode, defaultSession.id);
+            this._modeSessionIds[this._currentMode] = defaultSession.id;
             this.currentSession = defaultSession;
         } else {
-            const currentId = await SessionStore.getCurrentSessionId();
-            this.currentSession = currentId ? sessions.find(function(s) { return s.id === currentId; }) : sessions[0];
-            if (!this.currentSession) this.currentSession = sessions[0];
-            await SessionStore.setCurrentSessionId(this.currentSession.id);
+            this.currentSession =
+                (lastForMode && filtered.find(function(s) { return s.id === lastForMode; }))
+                || filtered[0];
+            await SessionStore.setCurrentState(this._currentMode, this.currentSession.id);
+            this._modeSessionIds[this._currentMode] = this.currentSession.id;
         }
-        // Set mode from current session
-        if (this.currentSession) {
-            this._currentMode = this.currentSession.mode || 'confidant';
-            this._updateModeLabel();
-        }
+        this._updateModeLabel();
         await this.refreshSessionProgress();
         await this.renderSessions();
         this.renderChat();
@@ -70,13 +83,6 @@ UIManager.initializeApp = async function() {
         // Non-empty landing → mode-hint toast; empty landing → splash
         // already explains the mode, no toast needed.
         this.showModeHint();
-
-        // Mirror switchSession's sidebar behaviour on first load / refresh.
-        if ((this.currentSession.mode || 'confidant') === 'assistant') {
-            if (this.startTaskListPolling) this.startTaskListPolling();
-        } else if (this.renderTaskList) {
-            this.renderTaskList();
-        }
 
         // NotificationPoller is DORMANT — the BE's router does not
         // implement `/notifications`, so every poll would 404 and spam
@@ -94,7 +100,12 @@ UIManager.initializeApp = async function() {
 
 // ─── Mode Selector ──────────────────────────────────────────────────────
 
-UIManager._currentMode = 'confidant';
+// Brief pre-hydration window only: `init()` overwrites this from the BE's
+// stored mode preference within the first turn. The seed exists so any code
+// path that reads `_currentMode` before init completes (defensive — should
+// not happen in practice) gets a sensible value rather than `undefined`.
+UIManager._currentMode = 'assistant';
+UIManager._modeSessionIds = { confidant: null, assistant: null };
 
 var MODE_ICONS = {
     confidant: '<svg width="15" height="15" viewBox="0 0 24 24" fill="#e09040" stroke="none"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>',
@@ -136,26 +147,25 @@ UIManager.initModeSelector = function() {
 UIManager.switchMode = async function(mode) {
     this._currentMode = mode;
     this._updateModeLabel();
-    // Re-render sessions filtered by mode
     await this.renderSessions();
-    // Switch to first session of this mode, or create one
+    // Prefer THIS mode's last-active session (so the user lands where they
+    // were last working in that mode), falling back to its first session,
+    // and finally creating an empty session if the mode has none.
     var sessions = await SessionStore.getSessions();
-    var filtered = sessions.filter(function(s) { return (s.mode || 'confidant') === mode; });
-    if (filtered.length > 0) {
-        await this.switchSession(filtered[0].id);
+    var filtered = sessions.filter(function(s) { return s.mode === mode; });
+    var lastForMode = this._modeSessionIds[mode];
+    var target = (lastForMode && filtered.find(function(s) { return s.id === lastForMode; }))
+                 || filtered[0];
+    if (target) {
+        await this.switchSession(target.id);
     } else {
         var newSession = await SessionStore.createSession(t('newChat'), mode);
-        await SessionStore.setCurrentSessionId(newSession.id);
+        await SessionStore.setCurrentState(mode, newSession.id);
+        this._modeSessionIds[mode] = newSession.id;
         this.currentSession = newSession;
         await this.renderSessions();
-        this.clearTaskStatusArea();
         this.renderChat();
         this.startProgressPolling();
-        if (mode === 'assistant') {
-            if (this.startTaskListPolling) this.startTaskListPolling();
-        } else if (this.renderTaskList) {
-            this.renderTaskList();
-        }
     }
 };
 
@@ -168,11 +178,12 @@ UIManager.switchMode = async function(mode) {
 UIManager.splashSwitchToMode = async function(mode) {
     var sessions = await SessionStore.getSessions();
     var target = sessions.find(function(s) {
-        return (s.mode || 'confidant') === mode &&
+        return s.mode === mode &&
                (!s.messages || s.messages.length === 0);
     });
     if (!target) {
         target = await SessionStore.createSession(t('newChat'), mode);
+        this._modeSessionIds[mode] = target.id;
     }
     this._currentMode = mode;
     this._updateModeLabel();
@@ -194,6 +205,13 @@ UIManager._updateModeLabel = function() {
             el.classList.toggle('selected', el.dataset.value === UIManager._currentMode);
         });
     }
+    // Topbar action buttons. Clear-session is always available — a fresh
+    // start is useful in both modes. Workflow picker is assistant-only (the
+    // surface where workflows live).
+    var wfBtn = document.getElementById('workflow-modal-btn');
+    var clearBtn = document.getElementById('clear-session-btn');
+    if (wfBtn) wfBtn.style.display = isAssistant ? '' : 'none';
+    if (clearBtn) clearBtn.style.display = '';
 };
 
 UIManager.renderSessions = async function() {
@@ -202,7 +220,7 @@ UIManager.renderSessions = async function() {
     container.innerHTML = '';
     const allSessions = await SessionStore.getSessions();
     var currentMode = this._currentMode || 'confidant';
-    const sessions = allSessions.filter(function(s) { return (s.mode || 'confidant') === currentMode; });
+    const sessions = allSessions.filter(function(s) { return s.mode === currentMode; });
     sessions.forEach(function(s) {
         const item = document.createElement('div');
         item.className = 'session-item' + (self.currentSession && s.id === self.currentSession.id ? ' active' : '');
@@ -237,9 +255,9 @@ UIManager.renderSessions = async function() {
             const ok = await Modal.confirm(t('deleteSession'), t('deleteConfirm1') + s.name + t('deleteConfirm2'), t('delete_'));
             if (!ok) return;
             await SessionStore.deleteSession(s.id);
-            var currentMode = self._currentMode || 'confidant';
+            var currentMode = self._currentMode;
             var remaining = (await SessionStore.getSessions()).filter(function(r) {
-                return (r.mode || 'confidant') === currentMode;
+                return r.mode === currentMode;
             });
             var currentStillValid = remaining.some(function(r) {
                 return self.currentSession && r.id === self.currentSession.id;
@@ -271,15 +289,16 @@ UIManager.createNewSession = async function() {
         return;
     }
     // Reuse an existing empty session of the same mode if one exists
-    var currentMode = this._currentMode || 'confidant';
+    var currentMode = this._currentMode;
     const sessions = await SessionStore.getSessions();
     var empty = sessions.find(function(s) {
-        return (!s.messages || s.messages.length === 0) && (s.mode || 'confidant') === currentMode;
+        return (!s.messages || s.messages.length === 0) && s.mode === currentMode;
     });
     if (!empty) {
         empty = await SessionStore.createSession(t('newChat'), currentMode);
     }
-    await SessionStore.setCurrentSessionId(empty.id);
+    await SessionStore.setCurrentState(currentMode, empty.id);
+    this._modeSessionIds[currentMode] = empty.id;
     this.currentSession = empty;
     await this.renderSessions();
     this.renderChat();
@@ -289,21 +308,10 @@ UIManager.createNewSession = async function() {
     // line `this.currentSession = empty;` above triggers the old
     // polling loop's session-mismatch bail on its next tick
     // (`self.currentSession.id !== sid` → `_progressPoll = null`), and
-    // nothing ever arms a new loop for `empty.id`. Result: all
-    // background deliveries (periodic-task firings, any assistant
-    // message landing without a user-initiated turn) silently never
-    // reach the FE, because the delta-polling that would fetch them is
-    // dead. This was the "periodic jokes don't show up on FE" symptom.
+    // nothing ever arms a new loop for `empty.id`. Result: any assistant
+    // message landing without a user-initiated turn would silently never
+    // reach the FE, because the delta-polling that would fetch it is dead.
     this.startProgressPolling();
-    // Mirror switchSession's Tasks-sidebar housekeeping so the sidebar
-    // actually reflects the newly-focused session. Otherwise the old
-    // session's tasks stay rendered until something else retriggers it.
-    if (currentMode === 'assistant') {
-        if (this.startTaskListPolling) this.startTaskListPolling();
-    } else {
-        if (this._taskPoll) { clearInterval(this._taskPoll); this._taskPoll = null; }
-        if (this.renderTaskList) this.renderTaskList();
-    }
     // New session is empty by definition → splash, no hint toast.
     document.getElementById('message-input').focus();
 };
@@ -328,7 +336,15 @@ UIManager.switchSession = async function(id) {
         el.classList.toggle('active', el.dataset.id === id);
     });
     this.currentSession = await SessionStore.getSession(id);
-    await SessionStore.setCurrentSessionId(id);
+    // Adopt the loaded session's mode as the current top-level mode (the
+    // user just navigated into that mode's surface by clicking the session)
+    // and pin this session as last-active for that mode.
+    if (this.currentSession && this.currentSession.mode) {
+        this._currentMode = this.currentSession.mode;
+        this._modeSessionIds[this._currentMode] = id;
+        this._updateModeLabel();
+    }
+    await SessionStore.setCurrentState(this._currentMode, id);
 
     // If the session we just switched into still has an in-flight chain
     // (its `_streamMap` entry survived the away-and-back), restore an
@@ -356,7 +372,6 @@ UIManager.switchSession = async function(id) {
         }
     }
 
-    this.clearTaskStatusArea();
     // Reset Stop button — the new session's first /poll will re-source
     // the truth. Without this reset, the button would stick visible
     // briefly after switching from a busy session to an idle one.
@@ -374,13 +389,6 @@ UIManager.switchSession = async function(id) {
         if (input) input.focus();
     } else {
         this.showModeHint();
-    }
-    if ((this.currentSession.mode || 'confidant') === 'assistant') {
-        if (this.startTaskListPolling) this.startTaskListPolling();
-    } else {
-        // Confidant: stop any prior polling and hide the sidebar section.
-        if (this._taskPoll) { clearInterval(this._taskPoll); this._taskPoll = null; }
-        if (this.renderTaskList) this.renderTaskList();
     }
 };
 
@@ -549,11 +557,11 @@ UIManager.startProgressPolling = function() {
         } catch (e) {}
 
         // Wrap renderChat so a render error doesn't kill the poll loop
-        // forever. Before this guard, a single throw (e.g. null container
-        // during a teardown, KaTeX failure on bad markdown) would prevent
-        // the trailing setTimeout from running and polling would silently
-        // stop — exactly the failure mode where periodic-task jokes
-        // landed in the DB but never reached the FE.
+        // forever. A single throw (e.g. null container during a teardown,
+        // KaTeX failure on bad markdown) would otherwise prevent the
+        // trailing setTimeout from running and polling would silently
+        // stop — any BE-side row that lands afterwards would never
+        // reach the FE.
         if (changed) {
             try { self.renderChat(); } catch (e) {
                 if (typeof console !== 'undefined') console.error('[startProgressPolling] renderChat threw', e);
@@ -571,12 +579,11 @@ UIManager.startProgressPolling = function() {
         //   - !chain_in_flight                  → clear
         //
         // The phrase gate is `chain_in_flight`, NOT `is_working`. The
-        // latter stays true for "soft" reasons (periodic task armed,
-        // unanswered user msg from a dead chain, orphaned pending
-        // progress rows) — surfacing those as "thinking..." misleads
-        // the user when nothing is actually thinking. Polling cadence
-        // still uses `is_working` (we keep tracking it for the
-        // setTimeout below).
+        // latter stays true for "soft" reasons (unanswered user msg
+        // from a dead chain, orphaned pending progress rows) — surfacing
+        // those as "thinking..." misleads the user when nothing is
+        // actually thinking. Polling cadence still uses `is_working`
+        // (we keep tracking it for the setTimeout below).
         var hasPendingProgress =
             (self.currentSession.progress || []).some(function(p) { return p && p.status === 'pending'; });
         self._syncAutoStatus(chainInFlight, streamBuffer, thinkingBuffer, runningToolCall, hasPendingProgress);
@@ -611,7 +618,6 @@ UIManager.clearSession = async function() {
     if (!ok) return;
     var oldSessionId = this.currentSession.id;
     var currentMode = this._currentMode || 'confidant';
-    apiFetch('/sessions/' + oldSessionId + '/cancel-workers', { method: 'POST' }).catch(function() {});
     await SessionStore.deleteSession(oldSessionId);
     // Invariant: at most ONE empty "New chat" per mode. Reuse is
     // scoped to the SAME mode — never cross modes (reusing a stashed
@@ -623,12 +629,13 @@ UIManager.clearSession = async function() {
     var newSession = sessions.find(function(s) {
         return s.id !== oldSessionId
             && (!s.messages || s.messages.length === 0)
-            && (s.mode || 'confidant') === currentMode;
+            && s.mode === currentMode;
     });
     if (!newSession) {
         newSession = await SessionStore.createSession(t('newChat'), currentMode);
     }
-    await SessionStore.setCurrentSessionId(newSession.id);
+    await SessionStore.setCurrentState(currentMode, newSession.id);
+    this._modeSessionIds[currentMode] = newSession.id;
     this.currentSession = newSession;
     this._imageDescriptions = {};
     this._videoDescriptions = {};
@@ -640,22 +647,9 @@ UIManager.clearSession = async function() {
     this.renderChat();
     this._pinChatToBottom();
     // Arm the idle progress-poller for the new session id — without
-    // this, any later background delivery into this session (periodic
-    // task fires, mid-chain BE message) silently never reaches the FE.
+    // this, any later background delivery into this session (a mid-chain
+    // BE message) silently never reaches the FE.
     this.startProgressPolling();
-    // Task-sidebar housekeeping — mirror createNewSession. Previously
-    // the sidebar kept showing the old session's task rows because
-    // nothing re-rendered it. For assistant mode, startTaskListPolling
-    // calls renderTaskList immediately so the rows clear right away
-    // (currentSession.tasks is undefined → renders empty / "No tasks
-    // yet"); for confidant mode we tear down any running poll + hide
-    // the section.
-    if (currentMode === 'assistant') {
-        if (this.startTaskListPolling) this.startTaskListPolling();
-    } else {
-        if (this._taskPoll) { clearInterval(this._taskPoll); this._taskPoll = null; }
-        if (this.renderTaskList) this.renderTaskList();
-    }
     // Cleared session is empty by definition → splash, no hint toast.
     var clearedInput = document.getElementById('message-input');
     if (clearedInput) clearedInput.focus();
@@ -666,32 +660,54 @@ UIManager.showTokenStats = async function(sessionId, sessionName) {
         const res = await apiFetch('/sessions/' + sessionId + '/token-stats');
         if (!res.ok) return;
         const data = await res.json();
-        const s = data.session;
-        const g = data.global;
+        const s = data.session || {};
+        const g = data.global  || {};
 
-        const masterTotal = (s.master.rx || 0) + (s.master.tx || 0);
-        const workerTotal = s.workers.reduce(function(a, w) { return a + (w.rx || 0) + (w.tx || 0); }, 0);
-        const sessionTotal = masterTotal + workerTotal;
-        const globalTotal = (g.master.rx || 0) + (g.master.tx || 0) + (g.worker.rx || 0) + (g.worker.tx || 0);
+        // Tier order matches the BE atom list \u2014 master first (most
+        // relevant), then the support tiers in the order the user is
+        // likely to think about them.
+        const TIERS = ['master', 'swift', 'oracle', 'vision', 'embedding'];
 
-        function fmt(n) { return n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n); }
-
-        var workerRows = '';
-        if (s.workers.length > 0) {
-            workerRows = s.workers.map(function(w) {
-                var desc = w.description ? w.description.slice(0, 50) : w.task_id;
-                return '<tr><td style="padding:4px 8px 4px 0;color:#d0d0d0;">' + desc + '</td>' +
-                       '<td style="padding:4px 0;text-align:right;white-space:nowrap;">' + fmt(w.tx) + ' / ' + fmt(w.rx) + '</td></tr>';
-            }).join('');
+        function fmt(n) {
+            n = n || 0;
+            return n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
         }
+
+        function rxOf(map, tier) { return (map[tier] && map[tier].rx) || 0; }
+        function txOf(map, tier) { return (map[tier] && map[tier].tx) || 0; }
+
+        // Hide tiers with zero traffic in BOTH session and global to
+        // keep the table compact. Master always shows so a fresh
+        // session has at least one row.
+        const visibleTiers = TIERS.filter(function(t) {
+            if (t === 'master') return true;
+            return rxOf(s, t) + txOf(s, t) + rxOf(g, t) + txOf(g, t) > 0;
+        });
+
+        const sessionTotal = data.session_total || 0;
+        const globalTotal  = data.global_total  || 0;
+
+        var rows =
+            '<tr><td style="padding:4px 8px 4px 0;color:#d0d0d0;">Global total</td>' +
+            '<td colspan="2" style="text-align:right;font-weight:600;">' + fmt(globalTotal) + '</td></tr>' +
+            '<tr><td style="padding:4px 8px 4px 0;color:#d0d0d0;">This session total</td>' +
+            '<td colspan="2" style="text-align:right;font-weight:600;">' + fmt(sessionTotal) + '</td></tr>' +
+            '<tr><td colspan="3" style="padding:6px 0 2px 0;border-bottom:1px solid rgba(255,255,255,0.12);"></td></tr>' +
+            '<tr><td style="padding:4px 8px 4px 0;color:#888;font-size:11px;">Tier</td>' +
+            '<td style="text-align:right;color:#888;font-size:11px;">Tx</td>' +
+            '<td style="text-align:right;color:#888;font-size:11px;">Rx</td></tr>';
+
+        visibleTiers.forEach(function(tier) {
+            rows +=
+                '<tr><td style="padding:3px 8px 3px 0;color:#d0d0d0;">' + tier + '</td>' +
+                '<td style="text-align:right;">' + fmt(txOf(s, tier)) + '</td>' +
+                '<td style="text-align:right;">' + fmt(rxOf(s, tier)) + '</td></tr>';
+        });
 
         var body =
             '<div style="font-size:13px;line-height:1.7;">' +
             '<table style="width:100%;border-collapse:collapse;">' +
-            '<tr><td style="padding:4px 8px 4px 0;color:#d0d0d0;">Global total</td><td style="text-align:right;font-weight:600;">' + fmt(globalTotal) + '</td></tr>' +
-            '<tr><td style="padding:4px 8px 4px 0;color:#d0d0d0;">This session total</td><td style="text-align:right;font-weight:600;">' + fmt(sessionTotal) + '</td></tr>' +
-            '<tr><td style="padding:4px 8px 4px 0;color:#d0d0d0;">Master (tx / rx)</td><td style="text-align:right;">' + fmt(s.master.tx) + ' / ' + fmt(s.master.rx) + '</td></tr>' +
-            (workerRows ? '<tr><td colspan="2" style="padding:8px 0 2px;font-weight:600;border-top:1px solid #333;margin-top:4px;">Background tasks (tx / rx)</td></tr>' + workerRows : '') +
+            rows +
             '</table></div>';
 
         Modal.alertHtml('Statistics \u2014 ' + sessionName, body);
@@ -782,36 +798,6 @@ UIManager._syncAutoStatus = function(chainInFlight, streamBuffer, thinkingBuffer
     }
 };
 
-UIManager.showTaskStatusArea = function() {
-    var area = document.getElementById('task-status-area');
-    if (!area) return;
-    area.innerHTML = '';
-    var item = document.createElement('div');
-    item.className = 'task-status-item task-status-waiting';
-    item.textContent = 'Waiting for update from Assistant...';
-    area.appendChild(item);
-    area.style.display = 'block';
-};
-
-UIManager.appendTaskStatusUpdate = function(text) {
-    var area = document.getElementById('task-status-area');
-    if (!area) return;
-    var waiting = area.querySelector('.task-status-waiting');
-    if (waiting) waiting.remove();
-    var item = document.createElement('div');
-    item.className = 'task-status-item';
-    item.textContent = text;
-    area.appendChild(item);
-    area.style.display = 'block';
-};
-
-UIManager.clearTaskStatusArea = function() {
-    var area = document.getElementById('task-status-area');
-    if (!area) return;
-    area.innerHTML = '';
-    area.style.display = 'none';
-};
-
 // Generic toast helper that drives the same `#mode-hint` element
 // used by the mode-hint banner. Caller picks the variant via
 // `kind` ("info" reuses the default warm-yellow palette; "success"
@@ -848,7 +834,7 @@ UIManager.showModeHint = function() {
         el.style.display = 'none';
         return;
     }
-    var key = (this.currentSession.mode || 'confidant') === 'assistant' ? 'hintAssistant' : 'hintConfidant';
+    var key = this.currentSession.mode === 'assistant' ? 'hintAssistant' : 'hintConfidant';
     el.innerHTML = t(key);
     el.classList.remove('fade-out');
     el.style.display = 'block';

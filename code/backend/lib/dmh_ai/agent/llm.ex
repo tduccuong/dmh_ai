@@ -32,6 +32,7 @@ defmodule DmhAi.Agent.LLM do
 
   alias DmhAi.Agent.AgentSettings
   alias DmhAi.Agent.LogTrace
+  alias DmhAi.Agent.TokenTracker
   alias DmhAi.LLM.{Pools, AccountRotation}
   require Logger
 
@@ -79,8 +80,8 @@ defmodule DmhAi.Agent.LLM do
     else
       tools       = Keyword.get(opts, :tools, [])
       llm_options = Keyword.get(opts, :options, %{})
-      on_tokens   = Keyword.get(opts, :on_tokens, nil)
       trace       = Keyword.get(opts, :trace)
+      on_tokens   = Keyword.get(opts, :on_tokens) || auto_token_tracker(trace)
       Logger.info("[LLM] stream #{model_str} msgs=#{length(messages)} tools=#{length(tools)}")
       DmhAi.SysLog.log("[LLM] stream model=#{model_str} msgs=#{length(messages)} tools=#{length(tools)}\n  #{log_messages(messages)}")
 
@@ -122,8 +123,8 @@ defmodule DmhAi.Agent.LLM do
     else
       tools       = Keyword.get(opts, :tools, [])
       llm_options = Keyword.get(opts, :options, %{})
-      on_tokens   = Keyword.get(opts, :on_tokens, nil)
       trace       = Keyword.get(opts, :trace)
+      on_tokens   = Keyword.get(opts, :on_tokens) || auto_token_tracker(trace)
       Logger.info("[LLM] call #{model_str} msgs=#{length(messages)} tools=#{length(tools)}")
       DmhAi.SysLog.log("[LLM] call model=#{model_str} msgs=#{length(messages)} tools=#{length(tools)}\n  #{log_messages(messages)}")
 
@@ -985,5 +986,18 @@ defmodule DmhAi.Agent.LLM do
       LogTrace.write(meta, model_str, messages, tools, result)
     end
   end
+
+  # Derive a TokenTracker callback from the trace meta when the caller
+  # didn't pass an explicit `:on_tokens`. Auto-wire fires only when
+  # the trace carries `tier`, `user_id`, and `session_id` (session_id
+  # may be `nil` for user-global calls like ProfileExtractor — the
+  # tracker writes the sentinel row in that case). Anything else
+  # → no callback (the adapter sees a nil and skips the credit).
+  defp auto_token_tracker(%{tier: tier, user_id: user_id, session_id: session_id})
+       when is_atom(tier) and is_binary(user_id) do
+    fn rx, tx -> TokenTracker.add(session_id, user_id, tier, rx, tx) end
+  end
+
+  defp auto_token_tracker(_), do: nil
 
 end

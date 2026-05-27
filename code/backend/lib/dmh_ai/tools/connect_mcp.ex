@@ -6,7 +6,7 @@
 defmodule DmhAi.Tools.ConnectMcp do
   @moduledoc """
   Single user-facing tool for attaching an MCP server to the current
-  task. The only argument is `slug` — a row in the admin's connector
+  session. The only argument is `slug` — a row in the admin's connector
   catalog. Two code paths under one tool, both dispatched off the slug:
 
     * **In-process** — slug whose connector module exports
@@ -26,9 +26,9 @@ defmodule DmhAi.Tools.ConnectMcp do
   transparently via `OAuthRefresh.refresh!/1` before forwarding.
   This keeps "is the cred fresh?" out of the attach path entirely.
 
-  Authorization is per-user (persists across sessions and tasks); the
-  resulting tool catalog is per-task (visible only while the
-  originating task is active).
+  Authorization is per-user (persists across sessions); the
+  resulting tool catalog is per-session (visible while the
+  session is active).
   """
 
   @behaviour DmhAi.Tools.Behaviour
@@ -42,7 +42,7 @@ defmodule DmhAi.Tools.ConnectMcp do
   @impl true
   def description do
     """
-    Attach an MCP server (JSON-RPC `initialize`/`tools/list`/`tools/call`) to the current task. Pass a `slug` from the admin-curated catalog (visible in `<authorized_services>` + the org's `<authorized_services_catalog>` block).
+    Attach an MCP server (JSON-RPC `initialize`/`tools/list`/`tools/call`) to the current session. Pass a `slug` from the admin-curated catalog (visible in `<authorized_services>` + the org's `<authorized_services_catalog>` block).
 
     The runtime detects auth automatically by probing the server — you do NOT pick an auth method. The probe outcome routes the flow:
     - server is open → connected immediately.
@@ -51,7 +51,25 @@ defmodule DmhAi.Tools.ConnectMcp do
 
     Returns: `{status: "connected", alias, tools}` | `{status: "needs_auth", alias, auth_url}` | `{status: "needs_setup", alias, form}` | `{:error, reason}`. The first three are chain-terminating.
 
-    Tools detach on `complete_task` / `cancel_task`; a new task re-calls `connect_mcp` (re-attach is fast).
+    `connect_mcp(slug: "<slug>")` attaches an admin-curated MCP server. `slug` is the ONLY argument and is REQUIRED — it identifies a row in the admin's connector catalog. After a successful attach, the connector's typed functions appear in your tools catalog as `<slug>.<function_name>`.
+
+    Where slugs come from: read the `<authorized_services>` block — every MCP row there names a slug + a one-line scope. When the user's request falls within a slug's scope, call `connect_mcp(slug: "<slug>")` directly. The slug is a literal string copied verbatim from that block; never invent one.
+
+    When to call it: only before YOU are about to invoke a `<slug>.<function>` tool from the connector's catalog. `connect_mcp` is what brings those tools INTO your catalog for the current chain. Workflow-meta tools (`invoke_workflow`, `read_workflow`, `arm_workflow`, `upsert_workflow`) do NOT need it — invoking a saved workflow runs through the autonomous runtime which establishes its own per-step credentials. Calling `connect_mcp` before `invoke_workflow` is wasted work.
+
+    No URL form: this tool does NOT accept a `url` argument. The admin owns the catalog; users authorize per-slug via the My Services page. If the user names a service that isn't in `<authorized_services>` and isn't in `<pending_services>`, the deployment has no connector for it — say so honestly and offer alternatives (`web_search`, `web_fetch`, an OAuth-protected REST API via `authorize_service` if one is wired).
+
+    `connect_mcp` returns one of:
+    - `{status: "connected", tools}` → tools are live this chain as `<slug>.<tool_name>`.
+    - `{status: "needs_auth", auth_url}` → relay `auth_url` as a clickable link, end chain. OAuth callback auto-resumes.
+    - `{status: "needs_setup", form}` → relay the inline form (single-field API-key prompt).
+    - `{:error, reason}` — auto-discovery failed or the slug isn't enabled. Tell the user honestly what happened (the reason explains it); don't retry the same slug.
+
+    Don't pair `connect_mcp` with other tool calls — every non-`connected` shape is chain-terminating.
+
+    `[needs_auth]` next to a slug in the `## Your authorized services` block — stale MCP creds. Tools are NOT in your catalog. Call `connect_mcp(slug: "<slug>")` to redo OAuth. Don't try to invoke `<slug>.<tool>` for a `[needs_auth]` row.
+
+    Tools stay attached for the lifetime of the session. Re-attach is fast if needed.
     """
   end
 
@@ -81,14 +99,12 @@ defmodule DmhAi.Tools.ConnectMcp do
   def execute(args, ctx) do
     user_id    = Map.get(ctx, :user_id)
     session_id = Map.get(ctx, :session_id)
-    anchor_n   = Map.get(ctx, :anchor_task_num)
     slug       = Map.get(args, "slug")
     alias_in   = Map.get(args, "alias")
 
-    with :ok                    <- require_ctx(user_id, session_id),
-         {:ok, anchor_task_id}  <- resolve_anchor(session_id, anchor_n),
-         {:ok, route}           <- classify_route(slug) do
-      dispatch(route, user_id, session_id, anchor_task_id, alias_in)
+    with :ok            <- require_ctx(user_id, session_id),
+         {:ok, route}   <- classify_route(slug) do
+      dispatch(route, user_id, session_id, alias_in)
     end
   end
 
@@ -117,15 +133,14 @@ defmodule DmhAi.Tools.ConnectMcp do
   defp classify_route(_),
     do: {:error, "connect_mcp requires a non-empty `slug` from the admin's connector catalog"}
 
-  defp dispatch({:in_process, slug}, user_id, _session_id, anchor_task_id, _alias_in) do
-    InProcess.attach(user_id, anchor_task_id, slug)
+  defp dispatch({:in_process, slug}, user_id, session_id, _alias_in) do
+    InProcess.attach(user_id, session_id, slug)
   end
 
-  defp dispatch({:vendor_slug, slug, url, auth_kind}, user_id, session_id, anchor_task_id, alias_in) do
+  defp dispatch({:vendor_slug, slug, url, auth_kind}, user_id, session_id, alias_in) do
     Vendor.connect(%{
       user_id:           user_id,
       session_id:        session_id,
-      anchor_task_id:    anchor_task_id,
       url:               url,
       alias_:            alias_in || slug,
       catalog_auth_kind: auth_kind
@@ -137,14 +152,4 @@ defmodule DmhAi.Tools.ConnectMcp do
   defp require_ctx(nil, _), do: {:error, "connect_mcp called without user_id in context"}
   defp require_ctx(_, nil), do: {:error, "connect_mcp called without session_id in context"}
   defp require_ctx(_, _),    do: :ok
-
-  defp resolve_anchor(session_id, n) when is_binary(session_id) and is_integer(n) do
-    case DmhAi.Agent.Tasks.resolve_num(session_id, n) do
-      {:ok, task_id}       -> {:ok, task_id}
-      {:error, :not_found} -> {:error, "anchor task (#{n}) not found in this session"}
-    end
-  end
-
-  defp resolve_anchor(_, _),
-    do: {:error, "connect_mcp requires an anchor task — call create_task or pickup_task first"}
 end

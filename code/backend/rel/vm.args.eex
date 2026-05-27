@@ -1,0 +1,17 @@
+## VM flags for the dmh_ai release.
+## `-mode/-name/-sname/-setcookie` are configured by `mix release`'s default
+## env scripts (and via env vars at boot) — do NOT set them here.
+
+## Cap the port table. Docker ships LimitNOFILE=infinity (~1B fds), so BEAM's
+## auto-pick of port_limit = 2^27 − 1 (134_217_727) pre-allocates a flat
+## ~1.5 GB port-slot table at startup even though we only ever open a handful
+## of ports. The OTP-internal default for Linux when ulimit is sane is 65536.
++Q 65536
+
+## Same idea for processes — cap to a reasonable ceiling rather than letting
+## BEAM auto-pick something huge from the unbounded ulimit.
++P 131072
+
+## Run a fullsweep GC every 10 minor GCs so long-lived heaps don't drift
+## upward over time on persistent processes.
+-env ERL_FULLSWEEP_AFTER 10

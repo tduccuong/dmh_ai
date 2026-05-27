@@ -209,12 +209,12 @@ defmodule DmhAi.Tools.Catalog do
   end
 
   def list(%{user_id: user_id} = ctx) when is_binary(user_id) do
-    task_id = Map.get(ctx, :task_id)
+    session_id = Map.get(ctx, :session_id)
 
     internal_manifests() ++
       Enum.map(@synthetic_names, &synthetic_manifest/1) ++
       connector_manifests() ++
-      mcp_attached_manifests(user_id, task_id)
+      mcp_attached_manifests(user_id, session_id)
   end
 
   def list(_), do: list(nil)
@@ -401,9 +401,9 @@ defmodule DmhAi.Tools.Catalog do
 
   # ── MCP tools attached to the caller's task ───────────────────────────
 
-  defp mcp_attached_manifests(user_id, task_id) do
+  defp mcp_attached_manifests(user_id, session_id) do
     user_id
-    |> DmhAi.MCP.Registry.tools_for_task(task_id)
+    |> DmhAi.MCP.Registry.tools_for_session(session_id)
     |> Enum.map(fn t ->
       %{
         name:                 t.name,

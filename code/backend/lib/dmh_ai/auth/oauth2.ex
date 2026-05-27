@@ -145,8 +145,7 @@ defmodule DmhAi.Auth.OAuth2 do
 
   Required keys in `params`:
     * `:user_id`, `:session_id` — bind the callback to the right place.
-    * `:anchor_task_id` — the task that initiated this connect. The
-      callback handler attaches the resulting service to this task.
+      The callback handler attaches the resulting service to this session.
     * `:alias`, `:canonical_resource`, `:server_url` — connection metadata.
     * `:asm` — the full ASM map from `Auth.Discovery.fetch_asm/1`.
     * `:client_id` — from `acquire_client_id/3`.
@@ -165,7 +164,6 @@ defmodule DmhAi.Auth.OAuth2 do
   def init_flow(params) when is_map(params) do
     user_id           = fetch!(params, :user_id)
     session_id        = fetch!(params, :session_id)
-    anchor_task_id    = fetch!(params, :anchor_task_id)
     alias_            = fetch!(params, :alias)
     canonical         = fetch!(params, :canonical_resource)
     server_url        = fetch!(params, :server_url)
@@ -185,12 +183,12 @@ defmodule DmhAi.Auth.OAuth2 do
 
     query!(Repo, """
     INSERT INTO pending_oauth_states
-      (state, user_id, session_id, anchor_task_id, alias, canonical_resource,
+      (state, user_id, session_id, alias, canonical_resource,
        server_url, pkce_verifier, client_id, client_secret, asm_json, scopes,
        redirect_uri, flow_kind, created_at, expires_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, [
-      state, user_id, session_id, anchor_task_id, alias_, canonical, server_url,
+      state, user_id, session_id, alias_, canonical, server_url,
       verifier, client_id, client_secret, Jason.encode!(asm), Jason.encode!(scopes),
       redirect_uri, flow_kind, now, now + ttl_secs * 1_000
     ])
@@ -268,7 +266,6 @@ defmodule DmhAi.Auth.OAuth2 do
           {:ok, %{
             user_id:            String.t(),
             session_id:         String.t(),
-            anchor_task_id:     String.t(),
             alias:              String.t(),
             canonical_resource: String.t(),
             server_url:         String.t(),
@@ -292,7 +289,6 @@ defmodule DmhAi.Auth.OAuth2 do
               {:ok, %{
                 user_id:            pending.user_id,
                 session_id:         pending.session_id,
-                anchor_task_id:     pending.anchor_task_id,
                 alias:              pending.alias,
                 canonical_resource: pending.canonical_resource,
                 server_url:         pending.server_url,
@@ -699,16 +695,15 @@ defmodule DmhAi.Auth.OAuth2 do
 
   defp fetch_pending(state) do
     case query!(Repo, """
-         SELECT user_id, session_id, anchor_task_id, alias, canonical_resource,
+         SELECT user_id, session_id, alias, canonical_resource,
                 server_url, pkce_verifier, client_id, client_secret, asm_json,
                 scopes, redirect_uri, flow_kind, created_at, expires_at
          FROM pending_oauth_states WHERE state=?
          """, [state]) do
-      %{rows: [[uid, sid, atid, al, cres, surl, pv, cid, csec, asm_j, sc, ruri, fk, cat, eat]]} ->
+      %{rows: [[uid, sid, al, cres, surl, pv, cid, csec, asm_j, sc, ruri, fk, cat, eat]]} ->
         {:ok, %{
           user_id:            uid,
           session_id:         sid,
-          anchor_task_id:     atid,
           alias:              al,
           canonical_resource: cres,
           server_url:         surl,

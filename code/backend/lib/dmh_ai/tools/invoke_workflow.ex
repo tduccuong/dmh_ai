@@ -28,7 +28,6 @@ defmodule DmhAi.Tools.InvokeWorkflow do
 
   alias DmhAi.{Workflows, Constants}
   alias DmhAi.Workflows.Executor
-  alias DmhAi.Agent.Tasks
   require Logger
 
   @impl true
@@ -36,9 +35,19 @@ defmodule DmhAi.Tools.InvokeWorkflow do
 
   @impl true
   def description do
-    "Run a saved workflow once with supplied inputs. " <>
-      "Args: name (slug), inputs (map matching the trigger's inputs). " <>
-      "Always uses the workflow's latest saved version."
+    """
+    Run a saved workflow once with supplied inputs. Args: name (slug), inputs (map matching the trigger's inputs). Always uses the workflow's latest saved version.
+
+    Report the ACTUAL result, not optimism. `invoke_workflow` returns `{executor_status, run_id, run_url, workflow_url, emits, ...}`. After every invocation, your final reply MUST:
+    1. State the `executor_status` verbatim ("Status: completed" / "Status: failed" / etc.). Do not paraphrase to "successful" if it isn't `"completed"`.
+    2. Show the actual emit VALUES from the `emits` map (the executor's output, indexed by node_id). This is what the user came for — surface it inline, formatted as a short list or key/value pairs.
+    3. Render the `run_url` (NOT `workflow_url`) as the primary markdown link. Format: `[<workflow display_name> run · <status>](<run_url>)`. The run viewer shows the actual output; the workflow viewer shows the static IR — they are different surfaces. `workflow_url` is a secondary link you may include only if the user explicitly asks to see the definition.
+    4. If `executor_status == "completed"` but the emit map is empty or contains placeholder strings ("", null, "unknown", etc.) — say so honestly. Don't claim a successful outcome you can't see.
+
+    Required-input validation: if `invoke_workflow` returns `"missing required trigger inputs … Declared schema: …"`, reply to the user with the missing field names, the schema, and one example of prose that would supply them. Wait for the user to clarify.
+
+    Run failures end the chain. When `invoke_workflow` returns `executor_status: "failed"`, report the structured error to the user and wait. The IR is the operator's contract; only they decide how to reconcile a world that doesn't match it.
+    """
   end
 
   @impl true
@@ -82,24 +91,16 @@ defmodule DmhAi.Tools.InvokeWorkflow do
          :ok        <- require_manual_trigger(name_arg, v.ir),
          :ok        <- validate_trigger_inputs(name_arg, v.ir, inputs) do
 
-      task_id = Tasks.insert(
-        user_id:    user_id,
-        session_id: session_id,
-        task_type:   "one_off",
-        intvl_sec:  0,
-        task_title:  "Run #{wf.display_name} v#{ver}",
-        task_spec:   "Run workflow `#{name_arg}` v#{ver} (deterministic executor)",
-        attachments: [],
-        task_status: "running",
-        language:   "en"
-      )
+      # Synthetic run label so the executor's run_state has a stable
+      # `task_id` column entry for logs / dashboards. No bind to any
+      # task table — workflow runs are tracked in `workflow_runs`.
+      task_id = "invoke-#{System.os_time(:millisecond)}-#{:erlang.phash2({user_id, session_id, name_arg})}"
 
-      Logger.info("[InvokeWorkflow] task=#{task_id} workflow=#{name_arg} v#{ver} session=#{session_id}")
+      Logger.info("[InvokeWorkflow] workflow=#{name_arg} v#{ver} session=#{session_id}")
 
       # The deterministic executor takes over. The LLM is no longer
       # in the workflow run loop (except for explicit llm.compose
-      # steps). caller_ctx.user_id is the workflow's owner; the
-      # LLM-driven task spec is just provenance.
+      # steps). caller_ctx.user_id is the workflow's owner.
       exec_ctx = %{org_id: org_id, task_id: task_id}
 
       case Executor.start_run(name_arg, ver, inputs, exec_ctx) do

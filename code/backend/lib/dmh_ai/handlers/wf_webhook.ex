@@ -38,7 +38,7 @@ defmodule DmhAi.Handlers.WfWebhook do
 
   alias DmhAi.{Workflows, Constants}
   alias DmhAi.Workflows.Executor
-  alias DmhAi.Agent.{AgentSettings, Tasks}
+  alias DmhAi.Agent.AgentSettings
   alias DmhAi.Handlers.Proxy
   require Logger
 
@@ -186,19 +186,9 @@ defmodule DmhAi.Handlers.WfWebhook do
 
   defp spawn_instance(org_id, workflow_id, version, body) do
     owner_id = Workflows.get_workflow(org_id, workflow_id).created_by
-    session_id = pick_session(owner_id)
+    _session_id = pick_session(owner_id)
 
-    task_id = Tasks.insert(
-      user_id:    owner_id,
-      session_id: session_id || owner_id,
-      task_type:   "one_off",
-      intvl_sec:  0,
-      task_title:  "#{workflow_id} webhook run",
-      task_spec:   "Workflow `#{workflow_id}` v#{version.version} (webhook ingress)",
-      attachments: [],
-      task_status: "running",
-      language:   "en"
-    )
+    task_id = "webhook-#{System.os_time(:millisecond)}-#{workflow_id}"
 
     exec_ctx = %{org_id: org_id, task_id: task_id}
 

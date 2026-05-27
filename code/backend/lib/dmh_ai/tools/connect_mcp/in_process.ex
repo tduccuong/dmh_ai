@@ -41,7 +41,7 @@ defmodule DmhAi.Tools.ConnectMcp.InProcess do
   require Logger
 
   @doc """
-  Attach an in-process connector slug to the active task. Returns
+  Attach an in-process connector slug to the active session. Returns
   `{:ok, %{status: "connected", alias, tools}}` when authorized and
   scopes cover policy; `{:ok, %{status: "needs_reauth", auth_url, ...}}`
   when scopes are stale relative to admin's current capability set;
@@ -49,8 +49,8 @@ defmodule DmhAi.Tools.ConnectMcp.InProcess do
   """
   @spec attach(String.t(), String.t(), String.t()) ::
           {:ok, map()} | {:error, String.t()}
-  def attach(user_id, anchor_task_id, slug)
-      when is_binary(user_id) and is_binary(anchor_task_id) and is_binary(slug) do
+  def attach(user_id, session_id, slug)
+      when is_binary(user_id) and is_binary(session_id) and is_binary(slug) do
     org_id = DmhAi.Orgs.for_user(user_id)
 
     with {:ok, handler} <- resolve_handler(slug),
@@ -64,8 +64,8 @@ defmodule DmhAi.Tools.ConnectMcp.InProcess do
       tools         = MCPServer.tools_list_for(handler, enabled_funcs)
 
       MCPRegistry.set_authorized_tools(user_id, slug, tools)
-      MCPRegistry.attach(anchor_task_id, user_id, slug)
-      Logger.info("[ConnectMcp.InProcess] attached slug=#{slug} user=#{user_id} task=#{anchor_task_id} tools=#{length(tools)}")
+      MCPRegistry.attach(session_id, user_id, slug)
+      Logger.info("[ConnectMcp.InProcess] attached slug=#{slug} user=#{user_id} session=#{session_id} tools=#{length(tools)}")
       {:ok, %{status: "connected", alias: slug, tools: tools}}
     else
       {:needs_reauth, payload} -> {:ok, payload}

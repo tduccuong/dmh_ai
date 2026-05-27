@@ -104,37 +104,81 @@ defmodule DmhAi.Tools.RunScript do
   #     node`, `#!/usr/bin/env perl`, and any shebang whose
   #     interpreter is not `sh` / `bash` / `dash` / `ash` /
   #     `ksh` / `zsh`. See `shebang_kind/1`.
-  @safety_prelude """
-  set -o pipefail
-  curl() {
-    __dmh_body=$(mktemp 2>/dev/null || echo "/tmp/_dmh_curl_$$")
-    command curl --fail-with-body --silent --show-error "$@" >"$__dmh_body"
-    __dmh_rc=$?
-    if [ "$__dmh_rc" -ne 0 ]; then
-      echo "[curl exit $__dmh_rc — response body below]" >&2
-      cat "$__dmh_body" >&2 2>/dev/null
+  # Compose the safety prelude for a given user's keystore. The prelude
+  # is prepended to every shell-shebang script before docker exec runs
+  # it; it sets `set -o pipefail` and installs three shell-function
+  # wrappers:
+  #
+  #   - `curl()` / `wget()` — make HTTP 4xx/5xx fail loudly with the
+  #     response body on STDERR (otherwise a `curl | jq .field` quietly
+  #     yields `null`).
+  #   - `ssh()` — when the user has provisioned an identity for the
+  #     `<user>@<host>` target via `provision_ssh_identity`, auto-inject
+  #     `-i <path>` so the model can write plain `ssh ct@host …` and
+  #     have it use the existing key without first calling the
+  #     `provision_ssh_identity` tool to learn the path. Wrapper is a
+  #     no-op when the user explicitly passes `-i`, or when no matching
+  #     key file exists under the keystore.
+  #
+  # `keystore_dir` is the per-user `_keystore` mount path on the
+  # sandbox side — same path as on master per Rule 17 unified mounts.
+  defp safety_prelude(keystore_dir) when is_binary(keystore_dir) do
+    """
+    set -o pipefail
+    __DMH_KEYSTORE='#{shell_escape(keystore_dir)}'
+    curl() {
+      __dmh_body=$(mktemp 2>/dev/null || echo "/tmp/_dmh_curl_$$")
+      command curl --fail-with-body --silent --show-error "$@" >"$__dmh_body"
+      __dmh_rc=$?
+      if [ "$__dmh_rc" -ne 0 ]; then
+        echo "[curl exit $__dmh_rc — response body below]" >&2
+        cat "$__dmh_body" >&2 2>/dev/null
+        rm -f "$__dmh_body"
+        return $__dmh_rc
+      fi
+      cat "$__dmh_body"
       rm -f "$__dmh_body"
-      return $__dmh_rc
-    fi
-    cat "$__dmh_body"
-    rm -f "$__dmh_body"
-    return 0
-  }
-  wget() {
-    __dmh_body=$(mktemp 2>/dev/null || echo "/tmp/_dmh_wget_$$")
-    command wget --content-on-error --tries=1 "$@" >"$__dmh_body"
-    __dmh_rc=$?
-    if [ "$__dmh_rc" -ne 0 ]; then
-      echo "[wget exit $__dmh_rc — response body below]" >&2
-      cat "$__dmh_body" >&2 2>/dev/null
+      return 0
+    }
+    wget() {
+      __dmh_body=$(mktemp 2>/dev/null || echo "/tmp/_dmh_wget_$$")
+      command wget --content-on-error --tries=1 "$@" >"$__dmh_body"
+      __dmh_rc=$?
+      if [ "$__dmh_rc" -ne 0 ]; then
+        echo "[wget exit $__dmh_rc — response body below]" >&2
+        cat "$__dmh_body" >&2 2>/dev/null
+        rm -f "$__dmh_body"
+        return $__dmh_rc
+      fi
+      cat "$__dmh_body"
       rm -f "$__dmh_body"
-      return $__dmh_rc
-    fi
-    cat "$__dmh_body"
-    rm -f "$__dmh_body"
-    return 0
-  }
-  """
+      return 0
+    }
+    ssh() {
+      __dmh_has_i=0
+      __dmh_target=
+      for __dmh_arg in "$@"; do
+        case "$__dmh_arg" in
+          -i|-i=*) __dmh_has_i=1 ;;
+          -*) : ;;
+          *@*) [ -z "$__dmh_target" ] && __dmh_target="$__dmh_arg" ;;
+        esac
+      done
+      if [ "$__dmh_has_i" = 0 ] && [ -n "$__dmh_target" ] && [ -n "$__DMH_KEYSTORE" ]; then
+        __dmh_user="${__dmh_target%%@*}"
+        __dmh_host="${__dmh_target#*@}"
+        __dmh_user_san=$(printf '%s' "$__dmh_user" | sed 's/[^a-zA-Z0-9._-]/_/g')
+        __dmh_host_san=$(printf '%s' "$__dmh_host" | sed 's/[^a-zA-Z0-9._-]/_/g')
+        __dmh_key="$__DMH_KEYSTORE/.ssh/${__dmh_user_san}_${__dmh_host_san}"
+        if [ -r "$__dmh_key" ]; then
+          command ssh -i "$__dmh_key" "$@"
+          return $?
+        fi
+      fi
+      command ssh "$@"
+    }
+    """
+  end
 
   # Absolute hang guard. Whatever max_runtime the operator set, we
   # will NEVER stay in the poll loop past `max_runtime + this`. The
@@ -162,9 +206,35 @@ defmodule DmhAi.Tools.RunScript do
 
     Sandbox: Alpine Linux (musl libc, BusyBox userland), Python 3, Node.js. Output cap 50 KB. Pre-installed: #{pre_installed}. Package manager is `apk` (NOT apt / yum / dnf). Non-admin scripts run under a LAN fence — outbound to RFC1918 / loopback / link-local (127.x, 10.x, 172.16-31.x, 192.168.x, 169.254.x) is REJECTed; public internet works, so `apk add` / `pip install` from public mirrors WILL succeed but cost a turn — prefer the preinstalled deliverable libs (`fpdf2`, `openpyxl`, `python-docx`, `Pillow`, `matplotlib`, `markdown`, `pyyaml`, `requests`, `httpx`) when one fits.
 
-    Remote SSH: commands BEFORE `ssh` run in the Alpine sandbox (use `apk`); commands INSIDE `ssh "<cmd>"` run on the remote (use that distro's manager).
+    Remote SSH: commands BEFORE `ssh` run in the Alpine sandbox (use `apk`); commands INSIDE `ssh "<cmd>"` run on the remote (use that distro's manager). Just write `ssh <user>@<host> "<cmd>"`; if the remote rejects auth (`Permission denied`), call `provision_ssh_identity` to either install a fresh key OR surface install-instructions to the user.
 
     HTTP-error visibility: shell scripts run with `set -o pipefail`. `curl` and `wget` are shell-function-wrapped so 4xx/5xx exits non-zero (curl: 22, wget: 8) with the response body replayed on STDERR. A failing pipeline surfaces to you as `exit N` — never extract a field with `jq` and assume `null` means "no records" without first seeing a successful response shape. Opt-outs: `command curl …` / `/usr/bin/curl …` bypass the wrapper for one call (use when a 4xx is the expected probe outcome); `set +o pipefail` at the top of your script restores default pipe semantics (use only if your script needs `cmd | head -N` style early-close pipelines, which would otherwise SIGPIPE-141 under `pipefail`). Language clients (Python `requests`, Node `fetch`, …) are NOT wrapped — call `r.raise_for_status()` or its equivalent before extracting fields.
+
+    Sandbox capabilities: when the user asks for a format outside the preinstalled list (e.g. `.epub`, `.midi`, scientific formats, niche image codecs):
+    1. Try the preinstalled set once for an adjacent shape (e.g. PDF instead of `.epub`, PNG chart instead of `.svg`-only library).
+    2. If that doesn't fit, stop and tell the user truthfully: the sandbox doesn't have a library for the requested format, name what CAN be produced from the preinstalled set, and ask whether to proceed with an adjacent shape or have them process it on their end. Don't fabricate a hand-rolled file structure to pretend you succeeded — a malformed file the user "downloads" is worse than an honest "can't do that here".
+
+    External APIs — order: use, ask, or search. If the user gave you the entry point (URL / endpoint / command), use it directly. If not, ask for the one concrete piece you need. Only if the user doesn't know either: `web_search` for *how to start*.
+
+    Study before probe (HARD): when method names / parameter shapes / scope model are unknown, READ DOCS FIRST — `web_fetch` the canonical docs page. Don't curl the user's instance to discover the API by trial-and-error: each failed call burns a probe slot, and "method not found" / "parameter mismatch" tells you only that *your* call was wrong, not what's correct.
+
+    Probe, then execute in ONE script: the first `run_script` may be a probe-batch (multiple curls in parallel). Once probes confirm what works, the NEXT `run_script` composes the full multi-step operation as a single script — bash variables chain values across steps:
+    ```
+    RESULT=$(curl ...); ID=$(echo "$RESULT" | jq ...); curl ... -d "${ID}"
+    ```
+    Aim for probe-then-execute as 2 turns total, not 5+. Each separate `run_script` is a full LLM round-trip.
+
+    Compose end-to-end logic in one call as far as the objective extends; reduce intermediate data inside the script so the emit is the answer, around #{AgentSettings.tool_result_target_chars()} chars. Probe first only when you don't yet know the data shape.
+
+    Five probe-batches max: after five against an unknown surface, either commit and execute using what you've confirmed works, OR stop and ask the user the specific question probes can't answer.
+
+    Probe failure → research, not substitute: on `404` / `401` / `403` / "method not found" / "endpoint missing" / "ACCESS_DENIED" / auth errors: (1) `fetch_index` first; if it returns nothing useful, `web_fetch` the canonical docs (or `web_search` for the method name + API), (2) retry once with the corrected call shape or auth model, (3) then decide — working alternative → use it; feature genuinely unavailable in this auth context → surface the specific limitation to the user. Auth failures aren't a definitive "no" — they're often "wrong auth surface for this method" and need the same look-up-then-retry loop.
+
+    "Alternative" = different API call, never different scope. Running the workflow once instead of creating a permanent trigger reframes the ask — don't substitute.
+
+    Research inconclusive → ASK, don't improvise. Sparse results, ambiguous docs, an alternative that almost-works but isn't clearly confirmed → STOP and ask the user one specific question. Asking is not failure; substituting a smaller scope IS.
+
+    Verify after mutate: after any state-changing call (create / update / delete), READ the resource back and inspect the field you intended to change. `{"result":true}` is acknowledgement, not proof.
     """
   end
 
@@ -281,9 +351,10 @@ defmodule DmhAi.Tools.RunScript do
         with {:ok, uid} <- SandboxUser.uid_for(%{role: "admin", email: email}) do
           {:ok,
            %{
-             uid:         uid,
-             username:    SandboxUser.master_username(),
-             sandbox_cwd: sandbox_cwd_for(email, session_id)
+             uid:           uid,
+             username:      SandboxUser.master_username(),
+             sandbox_cwd:   sandbox_cwd_for(email, session_id),
+             keystore_dir:  ctx[:keystore_dir] || Constants.user_keystore_dir(email)
            }}
         end
 
@@ -294,9 +365,10 @@ defmodule DmhAi.Tools.RunScript do
         with {:ok, uid} <- SandboxUser.ensure_provisioned(%{id: user_id, email: email}) do
           {:ok,
            %{
-             uid:         uid,
-             username:    SandboxUser.username_for(uid),
-             sandbox_cwd: sandbox_cwd_for(email, session_id)
+             uid:           uid,
+             username:      SandboxUser.username_for(uid),
+             sandbox_cwd:   sandbox_cwd_for(email, session_id),
+             keystore_dir:  ctx[:keystore_dir] || Constants.user_keystore_dir(email)
            }}
         end
     end
@@ -319,7 +391,7 @@ defmodule DmhAi.Tools.RunScript do
 
   # ─── private ──────────────────────────────────────────────────────────────
 
-  # Workdir preference: task workspace → session_root → /tmp fallback.
+  # Workdir preference: session workspace → session_root → /tmp fallback.
   defp resolve_workdir(ctx) do
     cond do
       is_binary(Map.get(ctx, :workspace_dir)) -> ctx.workspace_dir
@@ -339,7 +411,7 @@ defmodule DmhAi.Tools.RunScript do
   # `user_workspaces` bind mount; everything outside is RO or
   # blocked by the per-user 0700 fence.
   defp launch(command, run_ctx) do
-    b64 = Base.encode64(harden(command))
+    b64 = Base.encode64(harden(command, run_ctx.keystore_dir))
     run_id = :crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)
     rd = run_dir(run_ctx)
 
@@ -404,10 +476,12 @@ defmodule DmhAi.Tools.RunScript do
   #     perl, …) — the script is shell-only and the prelude is
   #     skipped entirely. Python/Node parsers would crash on the
   #     shell function definitions.
-  defp harden(script) when is_binary(script) do
+  defp harden(script, keystore_dir) when is_binary(script) and is_binary(keystore_dir) do
+    prelude = safety_prelude(keystore_dir)
+
     case shebang_kind(script) do
       :none ->
-        "#!/bin/bash\n" <> @safety_prelude <> script
+        "#!/bin/bash\n" <> prelude <> script
 
       :shell ->
         rest =
@@ -416,7 +490,7 @@ defmodule DmhAi.Tools.RunScript do
             [_shebang]    -> ""
           end
 
-        "#!/bin/bash\n" <> @safety_prelude <> rest
+        "#!/bin/bash\n" <> prelude <> rest
 
       :other ->
         script

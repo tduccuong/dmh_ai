@@ -8,21 +8,20 @@ defmodule DmhAi.Agent.TextSanitizer do
   Scrubs pseudo-tool-call annotations some models tack onto their text
   output — things like:
 
-      [used: complete_task({"task_id":"...","task_result":"..."})]
+      [used: web_fetch({"url":"..."})]
       [via: web_search]
       [called: extract_content]
-      [tool: create_task]
+      [tool: run_script]
       — via web_fetch(url)
-      (used complete_task)
+      (used web_search)
 
-  The prompt forbids these (§No task bookkeeping in user-facing text)
-  and Police rejects them at stream-end. This module is the belt-and-
-  braces: it keeps the leak out of the user's view both during
-  streaming and at persistence.
+  The system prompt's `NO BOOKKEEPING IN FINAL TEXT` rule forbids these.
+  This module is the belt-and-braces fallback: it keeps the leak out of
+  the user's view both during streaming and at persistence.
 
   Two entry points:
 
-    * `strip_task_bookkeeping/1` — for final text at persistence time.
+    * `strip_tool_bookkeeping/1` — for final text at persistence time.
       Balanced-bracket scanner finds each `[TAG: ... ]` block (handles
       nested JSON brackets inside) and removes it, keeping surrounding
       text intact. Also strips trailing `— via <tool>(…)` / `(used …)`.
@@ -38,14 +37,14 @@ defmodule DmhAi.Agent.TextSanitizer do
 
   @bookkeeping_tag_regex ~r/\[(used|via|called|tool)\s*:/u
 
-  @spec strip_task_bookkeeping(String.t() | any()) :: String.t() | any()
-  def strip_task_bookkeeping(text) when is_binary(text) do
+  @spec strip_tool_bookkeeping(String.t() | any()) :: String.t() | any()
+  def strip_tool_bookkeeping(text) when is_binary(text) do
     text
     |> strip_bracket_annotations()
     |> strip_trailing_annotations()
     |> String.trim()
   end
-  def strip_task_bookkeeping(other), do: other
+  def strip_tool_bookkeeping(other), do: other
 
   @spec truncate_at_bookkeeping(String.t() | any()) :: String.t() | any()
   def truncate_at_bookkeeping(text) when is_binary(text) do

@@ -348,6 +348,9 @@ const UIManager = {
         document.getElementById('workflow-modal-btn').addEventListener('click', function() {
             if (typeof WorkflowModal !== 'undefined') WorkflowModal.open();
         });
+        document.getElementById('clear-session-btn').addEventListener('click', function() {
+            UIManager.clearSession();
+        });
         document.getElementById('user-change-pw-btn').addEventListener('click', function() {
             userDropdown.classList.remove('open');
             self.showChangePassword();

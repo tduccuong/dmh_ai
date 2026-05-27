@@ -12,24 +12,21 @@ defmodule DmhAi.Tools.Dispatcher do
 
     1. Resolve `function` (namespace.path → connector + function name).
     2. Load the connector manifest (validated at registration time).
-    3. **Rule 1 — Permission.** `Permissions.can?(user, action, ...)`;
-       deny → audit + typed `permission_denied` envelope.
-    4. **Rule 2 — Write-requires-task.** `permission: :write` functions
-       refuse with `write_requires_task` envelope when
-       `caller_ctx.task_id` is nil.
-    5. **Rule 3 — Idempotency.** For writes, compute
-       `sha256(task_id ‖ step_seq ‖ function)` and pass to the adapter.
-    6. **Rule 4 — Credentials.** Look up the calling user's
-       `user_credentials` for the connector; missing → typed
-       `missing_credentials` envelope.
-    7. Forward to `MCPAdapter.<Connector>.call/3` (or in-process
+    3. **Capability.** The connector's capability for this function
+       must be enabled for the caller's org; otherwise typed
+       `capability_disabled` envelope.
+    4. **Permission.** `Permissions.can?(user, action, ...)`;
+       deny → typed `permission_denied` envelope.
+    5. **Idempotency.** For writes that mark `idempotency_key: :required`,
+       compute `sha256(session_id ‖ step_seq ‖ function)` and pass it
+       to the adapter as `__idempotency_key`.
+    6. Forward to `MCPAdapter.<Connector>.call/3` (or in-process
        Elixir route, when we add internal connectors).
-    8. Normalise the response via the adapter shim.
+    7. Normalise the response via the adapter shim.
 
-  Internal functions (`*_task`, `fetch_index`, `run_script`, …) are
-  out-of-scope for the dispatcher's rules — they're not in any
-  manifest. They keep their existing dispatch path through
-  `DmhAi.Tools.Registry`.
+  Internal tools (`fetch_index`, `run_script`, …) are out-of-scope for
+  the dispatcher's rules — they're not in any manifest. They keep their
+  existing dispatch path through `DmhAi.Tools.Registry`.
 
   ## Connector registration
 
@@ -119,9 +116,9 @@ defmodule DmhAi.Tools.Dispatcher do
   @doc """
   Dispatch a function call. `function` is `"<connector>.<path>"` (e.g.
   `"hubspot.contact.find"`). `args` is the function's argument map.
-  `caller_ctx` carries `:user_id` (required), `:task_id` (optional
-  — active task id, required for write functions), `:step_seq` (when
-  inside a task).
+  `caller_ctx` carries `:user_id` (required), `:session_id` (optional —
+  used by the idempotency-key hash for writes), `:step_seq` (optional —
+  workflow step ordinal for the same hash).
 
   Returns `{:ok, result}` or `{:error, envelope}`.
   """
@@ -136,7 +133,6 @@ defmodule DmhAi.Tools.Dispatcher do
          {:ok, entry}                         <- get_entry(connector_slug),
          {:ok, function}                      <- get_function(entry, function_path, function_name),
          :ok                                  <- check_capability_enabled(connector_slug, function_path, function_name, caller_ctx),
-         :ok                                  <- check_callable_from(function, caller_ctx, function_name),
          :ok                                  <- check_permission(function, caller_ctx, function_name),
          {:ok, args2}                         <- maybe_inject_idempotency(function, args, caller_ctx, function_name) do
       entry.module.call(function_path, args2, caller_ctx)
@@ -184,22 +180,6 @@ defmodule DmhAi.Tools.Dispatcher do
     end
   end
 
-  defp check_callable_from(%Manifest.Function{callable_from: from}, ctx, function) do
-    in_task? = is_binary(ctx[:task_id]) and ctx[:task_id] != ""
-
-    cond do
-      :task in from and in_task? -> :ok
-      :chat in from and not in_task? -> :ok
-      :task in from and not in_task? ->
-        # Rule 2 (HARD): write function attempted outside an active task.
-        {:error, error_envelope(:write_requires_task, function: function,
-                                hint: "open a task first via create_task, then retry")}
-
-      true ->
-        {:error, error_envelope(:write_requires_task, function: function)}
-    end
-  end
-
   defp check_permission(%Manifest.Function{permission: perm}, ctx, function) do
     caller_user_id = ctx[:user_id]
     # The credential-holder is the caller by default; workflow steps
@@ -226,21 +206,17 @@ defmodule DmhAi.Tools.Dispatcher do
 
   defp maybe_inject_idempotency(%Manifest.Function{permission: :write,
                                                idempotency_key: :required}, args, ctx, function) do
-    task_id  = ctx[:task_id]
+    # Idempotency key scoped to the chain that emitted the call. With no
+    # task abstraction, the (session_id, step_seq, function) tuple is the
+    # natural collision window — replays inside the same chain hash to
+    # the same key.
+    session_id = ctx[:session_id] || ""
     step_seq = ctx[:step_seq] || 0
-    key = :crypto.hash(:sha256, "#{task_id}\0#{step_seq}\0#{function}") |> Base.encode16(case: :lower)
+    key = :crypto.hash(:sha256, "#{session_id}\0#{step_seq}\0#{function}") |> Base.encode16(case: :lower)
     {:ok, Map.put(args, "__idempotency_key", key)}
   end
 
   defp maybe_inject_idempotency(_function, args, _ctx, _function_name), do: {:ok, args}
-
-  defp error_envelope(:write_requires_task, opts) do
-    %{
-      error: "write_requires_task",
-      function:  opts[:function],
-      hint:  opts[:hint] || "this function is only callable inside an active task"
-    }
-  end
 
   defp error_envelope(:permission_denied, opts) do
     base = %{

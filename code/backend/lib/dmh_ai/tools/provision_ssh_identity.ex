@@ -62,7 +62,11 @@ defmodule DmhAi.Tools.ProvisionSshIdentity do
   @impl true
   def description do
     """
-    Provision a sandbox-owned SSH identity for `host` = `<remote_user>@<hostname>` (e.g. `root@example.com`) OR `<hostname>` alone (defaults to sandbox SSH config user). The harness keys the credential by `(host_part, remote_user)`, so different users on the same host are independent identities. Pass the hostname or IP exactly the way the user does; no DNS resolution. First call returns `{status: "needs_setup", public_key, private_key_path, ...}`. Subsequent calls return `{status: "ready", private_key_path}` — use `ssh -i <path> <remote_user>@<host_part>`.
+    Provision a sandbox-owned SSH identity for `host` = `<remote_user>@<hostname>` (e.g. `root@example.com`) OR `<hostname>` alone (defaults to sandbox SSH config user). The harness keys the credential by `(host_part, remote_user)` and never asks for the user's private key.
+
+    Call this when `ssh` fails on the remote — typically `Permission denied (publickey,password)` — to either (a) generate a fresh keypair the user installs on the remote, or (b) re-emit install instructions if a prior key was never installed / has been rotated. First call returns `{status: "needs_setup", public_key, private_key_path, ...}` plus install options (password-via-`request_input` + `ssh-copy-id`, OR relay the public key + `mkdir`/`echo`/`chmod` snippet for the user to run on the remote). Subsequent calls return `{status: "ready", private_key_path}`.
+
+    A "ready" status means the harness has a local key file — it does NOT prove the key is currently installed on the remote. When `ssh` returns `Permission denied` after a "ready" status, re-invoke this tool to re-emit the install hint, AND probe with `ssh -v` to see which auth method was rejected, before classifying the task as blocked.
     """
   end
 

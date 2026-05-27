@@ -8,9 +8,12 @@ defmodule DmhAi.Web.Search do
   Shared web search implementation for Confidant and Assistant pipelines.
 
   Exposes:
-    generate_search_queries/3  — one LLM call: decides whether to search, picks the
+    generate_search_queries/5  — one LLM call: decides whether to search, picks the
                                  SearXNG category, and generates optimised keyword queries.
                                  Returns `{:no_search} | {:search, category, queries}`.
+                                 The trailing `meta` map (session_id + user_id) threads
+                                 through to the LLM trace so the swift-tier call lands
+                                 on the right token-stats row.
     call_search_engine/3       — SearXNG search + page fetching via Web.Fetcher.
     search/4                   — generate_search_queries |> call_search_engine.
   """
@@ -145,13 +148,19 @@ defmodule DmhAi.Web.Search do
     * `{:search, category, queries}`      — `category` is "news"|"it"|"news,general";
                                             `queries` is `[%{text, lang}]`
   """
-  @spec generate_search_queries(String.t(), [String.t()], :confidant | :assistant, [map()]) ::
+  @spec generate_search_queries(String.t(), [String.t()], :confidant | :assistant, [map()], map()) ::
           {:no_search} | {:search, String.t(), [%{text: String.t(), lang: String.t()}]}
-  def generate_search_queries(content, recent_msgs \\ [], pipeline \\ :confidant, memo_hits \\ []) do
+  def generate_search_queries(content, recent_msgs \\ [], pipeline \\ :confidant, memo_hits \\ [], meta \\ %{}) do
     model  = AgentSettings.swift_model()
     prompt = build_prompt(content, recent_msgs, pipeline, memo_hits)
 
-    trace = %{origin: "system", path: "Web.Search.generate_queries", role: "WebQueryPlanner", phase: "plan"}
+    trace = %{
+      origin: "system", path: "Web.Search.generate_queries",
+      role: "WebQueryPlanner", phase: "plan",
+      session_id: Map.get(meta, :session_id),
+      user_id:    Map.get(meta, :user_id),
+      tier:       :swift
+    }
     case LLM.call(model, [%{role: "user", content: prompt}], options: %{temperature: 0}, trace: trace) do
       {:ok, response} ->
         parse_response(response, pipeline, content)
@@ -308,7 +317,12 @@ defmodule DmhAi.Web.Search do
     reply_pid = Keyword.get(opts, :reply_pid)
     if reply_pid, do: send(reply_pid, {:chunk, ""})
 
-    case generate_search_queries(content, recent_msgs, pipeline) do
+    meta = %{
+      session_id: Keyword.get(opts, :session_id),
+      user_id:    Keyword.get(opts, :user_id)
+    }
+
+    case generate_search_queries(content, recent_msgs, pipeline, [], meta) do
       {:no_search} ->
         Logger.info("[Web.Search] no search needed")
         :no_search

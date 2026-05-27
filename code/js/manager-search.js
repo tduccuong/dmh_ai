@@ -700,8 +700,7 @@ UIManager.pollTurnToCompletion = function(sessionAtSend, onComplete, onError, ab
             //   `chain_end`     — natural end (close-verb, final text,
             //                     empty response, turn cap, form, error).
             //                     Signal-only, FE skips visual render.
-            //   `chain_aborted` — forceful end (user-stop, anchor task
-            //                     cancelled mid-flight, internal crash).
+            //   `chain_aborted` — forceful end (user-stop, internal crash).
             //                     Renders "Stopped by user." / similar.
             //
             // Either kind terminates polling. Without this branch, a
@@ -735,14 +734,13 @@ UIManager.pollTurnToCompletion = function(sessionAtSend, onComplete, onError, ab
             // delivery).
             //
             // Intentionally NOT gating on `!data.is_working`: that flag
-            // also means "a periodic task is armed in this session"
-            // (kept FE on 500 ms cadence so periodic deliveries render
-            // within ~500 ms instead of up to 5 s), so a periodic
-            // rescheduled at the end of this turn would pin
-            // `is_working=true` forever and `onComplete` would never
-            // fire — leaving `isStreaming=true`, send button disabled,
-            // user locked out. `chain_in_flight` is the strict subset:
-            // true ONLY while the chain loop is actively iterating.
+            // is broader (it stays true for unanswered user messages from
+            // a dead chain and orphaned pending progress rows), so it
+            // could pin `is_working=true` past the end of this turn and
+            // `onComplete` would never fire — leaving `isStreaming=true`,
+            // send button disabled, user locked out. `chain_in_flight` is
+            // the strict subset: true ONLY while the chain loop is
+            // actively iterating.
             if (sawAssistantMessage && !data.stream_buffer && !data.chain_in_flight) {
                 finish(onComplete);
                 return;

@@ -278,7 +278,7 @@ defmodule DmhAi.VectorDB do
       true ->
         with {:ok, embeddings} <- Embedder.embed_batch(chunks) do
           centroid = average_embedding(embeddings)
-          tags     = Tagger.tag(body)
+          tags     = Tagger.tag(body, %{user_id: attrs[:user_id]})
 
           # Memo doesn't centroid-merge against KB — different corpus.
           effective_attrs = Map.put(attrs, :tags, tags)

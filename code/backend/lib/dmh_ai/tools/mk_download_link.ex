@@ -33,9 +33,21 @@ defmodule DmhAi.Tools.MkDownloadLink do
 
   @impl true
   def description do
-    "Surface a workspace file as a downloadable link. Use when the user asked for an artifact " <>
-      "(PDF, CSV, screenshot, archive, etc.). `file` is the path under your workspace. Returns the " <>
-      "URL — paste it verbatim into your reply so the user can click to download."
+    """
+    Surface a workspace file as a downloadable link. Use when the user asked for an artifact (PDF, CSV, screenshot, archive, etc.). `file` is the path under your workspace. Returns the URL — paste it verbatim into your reply so the user can click to download.
+
+    `mk_download_link(file)` — surface a workspace file as a downloadable URL.
+
+    Files you produce in your workspace via `run_script` (PDFs, CSVs, archives, screenshots, anything generated) are sandbox scratch — the user can't reach them through any URL by default. Call `mk_download_link({file: "<workspace-relative-path>"})` to publish a single file; the runtime copies it into a served location and returns the URL.
+
+    When to use: the user asked for a deliverable they should be able to download. Examples of the SHAPE — *"export this as PDF"*, *"give me a CSV of the results"*, *"can I have a screenshot of that"*, *"package this up as a zip"*.
+
+    When NOT to use: intermediate files (drafts, temp output, debug dumps) the user didn't ask for. Don't publish your scratch — it clutters their session view.
+
+    Returns `{url, name, link, size}`. Paste the `link` field verbatim into your reply — it's a markdown-formatted clickable link (`[<name>](<url>)`). Example reply: *"Here's your file: [solution.pdf](/assets/...)"*. Don't reformat — the markdown form is what makes the URL clickable in the chat.
+
+    Limits: 50 MB per file (configurable). Files under your workspace only — absolute paths outside it are rejected.
+    """
   end
 
   @impl true

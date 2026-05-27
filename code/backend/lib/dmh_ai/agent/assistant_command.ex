@@ -53,7 +53,7 @@ defmodule DmhAi.Agent.AssistantCommand do
 
     # User's IANA timezone string (e.g. "Europe/Berlin"), reported
     # by the FE via the `X-Timezone` header on each request. nil
-    # for non-HTTP paths (periodic-task scheduler, Telegram adapter)
+    # for non-HTTP paths (Telegram adapter, internal dispatchers)
     # that have no per-request browser context — those fall back to
     # UTC in the system prompt, with a note to the model.
     timezone: nil,

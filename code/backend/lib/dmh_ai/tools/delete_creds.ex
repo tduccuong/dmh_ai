@@ -18,7 +18,7 @@ defmodule DmhAi.Tools.DeleteCreds do
        server-side. Best-effort — a 4xx, 5xx, or transport error
        does not block the local cleanup.
     2. Drop the matching `authorized_services` row and every
-       `task_services` attachment for that alias (`MCP.Registry.deauthorize/2`).
+       per-session attachment for that alias (`MCP.Registry.deauthorize/2`).
     3. Delete the credential row.
 
   For non-`mcp:` targets, only step 3 fires.
@@ -40,7 +40,7 @@ defmodule DmhAi.Tools.DeleteCreds do
   @impl true
   def description do
     """
-    Remove a saved credential by `target`. Only on explicit user request. Pass `account` to revoke a single per-account row; omit it to revoke EVERY account row at the target. For `mcp:<canonical>` targets, also disconnects the service: revokes at the AS (RFC 7009, best-effort), drops the authorized row, detaches every task holding it.
+    Remove a saved credential by `target`. Only on explicit user request. Pass `account` to revoke a single per-account row; omit it to revoke EVERY account row at the target. For `mcp:<canonical>` targets, also disconnects the service: revokes at the AS (RFC 7009, best-effort), drops the authorized row, detaches every session holding it.
     """
   end
 
@@ -102,13 +102,13 @@ defmodule DmhAi.Tools.DeleteCreds do
 
   # If the target is an MCP credential (`mcp:<canonical>`), best-effort
   # revoke at the AS, then drop the authorized_services row and every
-  # task_services attachment. Returns a small map summarising what
+  # per-session attachment. Returns a small map summarising what
   # happened so the model can report it cleanly back to the user.
   defp maybe_mcp_cascade(user_id, "mcp:" <> canonical) do
     case Credentials.lookup(user_id, "mcp:" <> canonical, "") do
       nil ->
         # No credential to revoke; `deauthorize` is still safe to run
-        # (it no-ops on a missing row but also drops orphaned task
+        # (it no-ops on a missing row but also drops orphaned per-session
         # attachments if any).
         Registry.deauthorize(user_id, lookup_alias_or_unknown(user_id, canonical))
         %{disconnected: true, revoked: false, revoke_reason: "no credential row to revoke"}

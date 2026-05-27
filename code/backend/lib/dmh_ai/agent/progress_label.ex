@@ -12,7 +12,7 @@ defmodule DmhAi.Agent.ProgressLabel do
 
       RunScript → #!/bin/bash Scan the local network for devices that might …
       WebFetch → https://vnexpress.net/hai-a-hau-miss-world-vietnam-ve-que-…
-      CreateTask → Research quarterly revenue figures
+      FetchIndex → quarterly revenue figures
 
   Shape:
     - Tool name → PascalCase
@@ -39,13 +39,6 @@ defmodule DmhAi.Agent.ProgressLabel do
     "write_file"        => "path",
     "list_dir"          => "path",
     "extract_content"   => "path",
-    "create_task"       => "task_title",
-    "pickup_task"       => "task_num",
-    "complete_task"     => "task_num",
-    "pause_task"        => "task_num",
-    "cancel_task"       => "task_num",
-    "fetch_task"        => "task_num",
-    "spawn_task"        => "task_id",
     "calculator"        => "expression",
     "save_creds"        => "target",
     "lookup_creds"      => "target",
@@ -75,8 +68,6 @@ defmodule DmhAi.Agent.ProgressLabel do
 
     val =
       cond do
-        # Verb tools take `task_num` (integer). Render as "(N)" for
-        # readability in the activity row (e.g. `PickupTask → (3)`).
         is_binary(key) and is_integer(args[key]) -> "(#{args[key]})"
         is_binary(key) and is_binary(args[key])  -> args[key]
         true                                      -> first_string_value(args)

@@ -80,7 +80,6 @@ defmodule DmhAi.Tools.AuthorizeService do
   def execute(args, ctx) do
     user_id        = Map.get(ctx, :user_id)
     session_id     = Map.get(ctx, :session_id)
-    anchor_n       = Map.get(ctx, :anchor_task_num)
     target_in      = Map.get(args, "target")
     force_new      = Map.get(args, "force_new") == true
 
@@ -97,7 +96,7 @@ defmodule DmhAi.Tools.AuthorizeService do
       true ->
         case Catalog.resolve(target_in) do
           {:ok, %{} = entry} ->
-            already_authorized_or_init(user_id, session_id, anchor_n, entry, force_new)
+            already_authorized_or_init(user_id, session_id, entry, force_new)
 
           {:ambiguous, candidates} ->
             {:error, ambiguous_message(target_in, candidates)}
@@ -150,11 +149,11 @@ defmodule DmhAi.Tools.AuthorizeService do
   # by the email it discovers, so an additional account at the same
   # service coexists with prior rows under
   # UNIQUE(user_id, target, account).
-  defp already_authorized_or_init(user_id, session_id, anchor_n, entry, true = _force_new) do
-    init_oauth_flow(user_id, session_id, anchor_n, entry, true)
+  defp already_authorized_or_init(user_id, session_id, entry, true = _force_new) do
+    init_oauth_flow(user_id, session_id, entry, true)
   end
 
-  defp already_authorized_or_init(user_id, session_id, anchor_n, %{host_match: host} = entry, false) do
+  defp already_authorized_or_init(user_id, session_id, %{host_match: host} = entry, false) do
     target = "oauth:" <> entry.slug
 
     # Multi-account: if ANY account already has a credential for this
@@ -172,57 +171,47 @@ defmodule DmhAi.Tools.AuthorizeService do
         }}
 
       [] ->
-        init_oauth_flow(user_id, session_id, anchor_n, entry, false)
+        init_oauth_flow(user_id, session_id, entry, false)
     end
   end
 
   # ── kick off the OAuth flow ──────────────────────────────────────────────
 
-  defp init_oauth_flow(user_id, session_id, anchor_n, entry, force_new?) do
-    # We need an anchor task for parity with connect_mcp's contract —
-    # OAuth flows tie to the active task so the post-callback
-    # auto_resume re-enters the right anchor.
-    case resolve_anchor(session_id, anchor_n) do
-      {:error, msg} ->
-        {:error, msg}
+  defp init_oauth_flow(user_id, session_id, entry, force_new?) do
+    asm = %{
+      authorization_endpoint: entry.authorization_endpoint,
+      token_endpoint:         entry.token_endpoint,
+      scopes_supported:       entry.scopes_default,
+      issuer:                 entry.authorization_endpoint
+    }
 
-      {:ok, anchor_task_id} ->
-        asm = %{
-          authorization_endpoint: entry.authorization_endpoint,
-          token_endpoint:         entry.token_endpoint,
-          scopes_supported:       entry.scopes_default,
-          issuer:                 entry.authorization_endpoint
-        }
+    redirect_uri = build_redirect_uri()
 
-        redirect_uri = build_redirect_uri()
+    # init_flow either returns {:ok, %{auth_url, ...}} or raises
+    # (DB writes go through query!). Exceptions land in the
+    # caller's outer rescue path; no error tuple to handle here.
+    {:ok, %{auth_url: auth_url}} =
+      OAuth2.init_flow(%{
+        user_id:            user_id,
+        session_id:         session_id,
+        alias:              entry.slug,
+        canonical_resource: entry.host_match,
+        server_url:         "https://" <> entry.host_match,
+        asm:                asm,
+        client_id:          entry.client_id,
+        client_secret:      entry.client_secret,
+        redirect_uri:       redirect_uri,
+        scopes:             entry.scopes_default,
+        flow_kind:          "oauth_service",
+        extra_auth_params:  entry.extra_auth_params
+      })
 
-        # init_flow either returns {:ok, %{auth_url, ...}} or raises
-        # (DB writes go through query!). Exceptions land in the
-        # caller's outer rescue path; no error tuple to handle here.
-        {:ok, %{auth_url: auth_url}} =
-          OAuth2.init_flow(%{
-            user_id:            user_id,
-            session_id:         session_id,
-            anchor_task_id:     anchor_task_id,
-            alias:              entry.slug,
-            canonical_resource: entry.host_match,
-            server_url:         "https://" <> entry.host_match,
-            asm:                asm,
-            client_id:          entry.client_id,
-            client_secret:      entry.client_secret,
-            redirect_uri:       redirect_uri,
-            scopes:             entry.scopes_default,
-            flow_kind:          "oauth_service",
-            extra_auth_params:  entry.extra_auth_params
-          })
-
-        {:ok, %{
-          status:   "needs_auth",
-          alias:    entry.slug,
-          auth_url: auth_url,
-          message:  needs_auth_message(entry, auth_url, force_new?)
-        }}
-    end
+    {:ok, %{
+      status:   "needs_auth",
+      alias:    entry.slug,
+      auth_url: auth_url,
+      message:  needs_auth_message(entry, auth_url, force_new?)
+    }}
   end
 
   defp needs_auth_message(entry, auth_url, false) do
@@ -239,16 +228,6 @@ defmodule DmhAi.Tools.AuthorizeService do
       "of #{entry.display_name} first or open the link in a private window so you can pick " <>
       "the right one.\" End your turn here — do not pair this with other tool calls."
   end
-
-  defp resolve_anchor(session_id, n) when is_binary(session_id) and is_integer(n) do
-    case DmhAi.Agent.Tasks.resolve_num(session_id, n) do
-      {:ok, task_id}       -> {:ok, task_id}
-      {:error, :not_found} -> {:error, "anchor task (#{n}) not found in this session"}
-    end
-  end
-
-  defp resolve_anchor(_, _),
-    do: {:error, "authorize_service requires an anchor task — call create_task or pickup_task first"}
 
   defp build_redirect_uri do
     base = DmhAi.Agent.AgentSettings.oauth_redirect_base_url()

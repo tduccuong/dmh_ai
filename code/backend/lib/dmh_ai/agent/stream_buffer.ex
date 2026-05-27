@@ -113,7 +113,7 @@ defmodule DmhAi.Agent.StreamBuffer do
 
   defp do_write(session_id, text, ts) do
     # Sanitize before every flush so the FE never polls a partial
-    # pseudo-tool-call annotation (e.g. `[used: complete_task({...`).
+    # pseudo-tool-call annotation (e.g. `[used: web_fetch({...`).
     # Truncates at the first tag opener. The in-memory accumulator
     # keeps the raw text intact — Police still sees the full bad
     # output at stream-end to reject / nudge on.

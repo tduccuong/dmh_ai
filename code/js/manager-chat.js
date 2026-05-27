@@ -71,7 +71,7 @@ function buildSessionTimeline(session) {
             // User message — flush any progress rows with ts < this user
             // msg as FLAT entries first. They belong to a prior chain
             // that ended without an assistant reply (Stop button →
-            // chain_aborted, or task crash). Without this flush, the
+            // chain_aborted, or chain crash). Without this flush, the
             // NEXT assistant message would claim them via the
             // `ts ≤ assistant.ts` rule above and render them inside its
             // bubble — visually attaching another chain's failure to an
@@ -134,9 +134,8 @@ var _subLabelOffsets = new Map();
 // the redacted text on `title=` too so the hover tooltip never reveals
 // secrets that the visible textContent hides.
 //
-// Redaction is FE-only — the BE persists the raw label so `fetch_task`
-// can return full-fidelity activity to the LLM. See `redactProgressLabel`
-// in core.js for the patterns.
+// Redaction is FE-only — the BE persists the raw label. See
+// `redactProgressLabel` in core.js for the patterns.
 function writeProgressLabel(label, raw, _kind) {
     var safe = redactProgressLabel(raw || '');
     label.textContent = safe;
@@ -1034,7 +1033,7 @@ UIManager.renderChat = function() {
     var msgCount = (this.currentSession.messages || []).length;
     if (msgCount === 0) {
         container.innerHTML = '';
-        var splash = this._buildSplashEl(this.currentSession.mode || 'confidant');
+        var splash = this._buildSplashEl(this.currentSession.mode);
         if (splash) container.appendChild(splash);
         if (streamingMessage) container.appendChild(streamingMessage);
         this.updateScrollFab && this.updateScrollFab();
@@ -1868,8 +1867,8 @@ UIManager._applyAgentBusy = function(sessionId, busy) {
     this._updateStopBtn();
 };
 
-// Stop button click — hits POST /sessions/:id/stop. The BE kills the
-// inline Task, clears stream/thinking buffers, and writes a
+// Stop button click — hits POST /sessions/:id/stop. The BE interrupts
+// the in-flight chain, clears stream/thinking buffers, and writes a
 // `chain_aborted` SessionProgress row that the next poll renders.
 // FE-side we just hide the button optimistically; `_applyAgentBusy`
 // will reconcile from BE truth on the next poll tick anyway.

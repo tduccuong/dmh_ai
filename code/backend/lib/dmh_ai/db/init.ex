@@ -42,19 +42,19 @@ defmodule DmhAi.DB.Init do
 
     query!(Repo, """
     CREATE TABLE IF NOT EXISTS sessions (
-      id TEXT PRIMARY KEY,
+      id TEXT PRIMARY KEY NOT NULL,
       name TEXT,
       model TEXT,
       messages TEXT DEFAULT '[]',
       context TEXT,
       user_id TEXT DEFAULT '',
-      mode TEXT DEFAULT 'confidant',
+      mode TEXT DEFAULT 'assistant',
       -- Streaming state (partial final-answer + chain-of-thought
       -- tokens during a turn) lives in DmhAi.Agent.EphemeralCache
       -- ETS, NOT this table. See architecture.md §Streaming state
       -- lives in ETS, not the DB. Per-token DB writes monopolised
       -- SQLite's single-writer slot in WAL mode.
-      tool_history TEXT DEFAULT NULL,       -- JSON: last-N-turn tool_call / tool_result messages for context retention
+      cancelled_at INTEGER,                  -- Stop-button stamp; chain loop aborts on its next iteration
       created_at INTEGER,
       updated_at INTEGER DEFAULT 0
     )
@@ -151,69 +151,38 @@ defmodule DmhAi.DB.Init do
 
     query!(Repo, "CREATE UNIQUE INDEX IF NOT EXISTS idx_video_descriptions_name ON video_descriptions (session_id, name)")
 
+    # Per-tier token accounting. One row per (session_id, user_id) pair,
+    # plus one synthetic per-user row keyed by the sentinel session_id
+    # `_user_global` for LLM calls made outside a session (ProfileExtractor,
+    # KB ingest tagger). `get_global_stats/1` sums across ALL rows for the
+    # user — including the sentinel — to give a complete user-global total.
+    # Tier names are the atoms `:master | :swift | :oracle | :vision |
+    # :embedding`; TokenTracker.add/5 picks the column pair by atom.
     query!(Repo, """
     CREATE TABLE IF NOT EXISTS session_token_stats (
       session_id TEXT PRIMARY KEY,
       user_id TEXT,
-      master_rx_tokens INTEGER DEFAULT 0,
-      master_tx_tokens INTEGER DEFAULT 0,
+      master_rx_tokens    INTEGER DEFAULT 0,
+      master_tx_tokens    INTEGER DEFAULT 0,
+      swift_rx_tokens     INTEGER DEFAULT 0,
+      swift_tx_tokens     INTEGER DEFAULT 0,
+      oracle_rx_tokens    INTEGER DEFAULT 0,
+      oracle_tx_tokens    INTEGER DEFAULT 0,
+      vision_rx_tokens    INTEGER DEFAULT 0,
+      vision_tx_tokens    INTEGER DEFAULT 0,
+      embedding_rx_tokens INTEGER DEFAULT 0,
+      embedding_tx_tokens INTEGER DEFAULT 0,
       updated_at INTEGER
     )
     """)
 
-    query!(Repo, """
-    CREATE TABLE IF NOT EXISTS worker_token_stats (
-      session_id TEXT NOT NULL,
-      task_id     TEXT NOT NULL DEFAULT '',
-      worker_id  TEXT NOT NULL,
-      user_id    TEXT,
-      description TEXT,
-      rx_tokens  INTEGER DEFAULT 0,
-      tx_tokens  INTEGER DEFAULT 0,
-      updated_at INTEGER,
-      PRIMARY KEY (session_id, task_id, worker_id)
-    )
-    """)
-
-    query!(Repo, """
-    CREATE TABLE IF NOT EXISTS tasks (
-      task_id TEXT PRIMARY KEY,
-      user_id TEXT NOT NULL,
-      session_id TEXT NOT NULL,
-      task_num INTEGER,                        -- per-session monotonic from 1; display label (1), (2), …
-      task_type TEXT NOT NULL,                 -- 'one_off' | 'periodic'
-      intvl_sec INTEGER NOT NULL DEFAULT 0,
-      task_title TEXT,
-      task_spec TEXT NOT NULL,
-      task_status TEXT NOT NULL DEFAULT 'pending',
-                                               -- 'pending' | 'ongoing' | 'paused'
-                                               -- | 'done' | 'cancelled'
-      task_result TEXT,
-      time_to_pickup INTEGER,                  -- unix ms; when to next pick up this task
-                                               -- (periodic next cycle; one_off future-dated)
-      language TEXT NOT NULL DEFAULT 'en',
-      attachments TEXT DEFAULT NULL,           -- JSON array of workspace/data paths (structured; not parsed from spec)
-      back_to_when_done_task_num INTEGER,      -- Anchor back-reference.
-                                               -- Set at pickup_task time when a DIFFERENT task was the
-                                               -- current anchor; read at complete/cancel/pause time to
-                                               -- restore that prior anchor. Nullable — free mode when nil.
-                                               -- See architecture.md §Anchor mutation via back_to_when_done.
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
-    )
-    """)
-
-    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_tasks_session ON tasks (session_id, task_status)")
-    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks (user_id, task_status)")
-    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_tasks_pickup ON tasks (task_status, time_to_pickup)")
 
     query!(Repo, """
     CREATE TABLE IF NOT EXISTS session_progress (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       session_id TEXT NOT NULL,
       user_id TEXT NOT NULL,
-      task_id TEXT,                           -- nullable: direct-response turns have no task
-      kind TEXT NOT NULL,                     -- 'tool' | 'thinking' | 'summary' | 'chain_aborted'
+      kind TEXT NOT NULL,                     -- 'tool' | 'thinking' | 'summary' | 'chain_aborted' | 'chain_end'
       status TEXT,                            -- 'pending' | 'done' (tool only — mutated in place)
       label TEXT,                             -- human-readable one-liner for FE rendering
       sub_labels TEXT DEFAULT NULL,           -- JSON array of sub-activity labels (for tools with parallel internals)
@@ -223,7 +192,6 @@ defmodule DmhAi.DB.Init do
     )
     """)
 
-    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_session_progress_task ON session_progress (task_id, id)")
     query!(Repo, "CREATE INDEX IF NOT EXISTS idx_session_progress_session ON session_progress (session_id, ts)")
 
     query!(Repo, """
@@ -270,18 +238,17 @@ defmodule DmhAi.DB.Init do
     # Pending OAuth2 state tokens for the connect_mcp flow. One
     # row per in-flight authorization. Carries everything needed to
     # exchange the code and attach the service to the originating
-    # task without re-doing discovery: PKCE verifier, client_id (and
+    # session without re-doing discovery: PKCE verifier, client_id (and
     # optional client_secret), the cached ASM doc, the canonical
-    # resource id, and the (user_id, session_id, anchor_task_id,
-    # alias) the connection is being established for. Single-use —
-    # the callback handler deletes the row on success. TTL via
-    # `expires_at` (default `oauthStateTtlSecs`, 600 s).
+    # resource id, and the (user_id, session_id, alias) the connection
+    # is being established for. Single-use — the callback handler
+    # deletes the row on success. TTL via `expires_at` (default
+    # `oauthStateTtlSecs`, 600 s).
     query!(Repo, """
     CREATE TABLE IF NOT EXISTS pending_oauth_states (
       state              TEXT PRIMARY KEY,
       user_id            TEXT NOT NULL,
       session_id         TEXT NOT NULL,
-      anchor_task_id     TEXT NOT NULL,
       alias              TEXT NOT NULL,
       canonical_resource TEXT NOT NULL,
       server_url         TEXT NOT NULL,
@@ -336,11 +303,11 @@ defmodule DmhAi.DB.Init do
     query!(Repo, "CREATE INDEX IF NOT EXISTS idx_oauth_catalog_host ON oauth_catalog (host_match)")
 
     # Per-user authorized external services. One row per service the
-    # user has ever authorized. Survives sessions, restarts, task
-    # lifecycles. Authorization here is necessary but not sufficient
-    # for the LLM to see the service's tools — task_services must
-    # also bind the service to the active task. `server_tools_json`
-    # is the last-known tools/list result; `asm_json` caches the
+    # user has ever authorized. Survives sessions, restarts.
+    # Authorization here is necessary but not sufficient for the LLM
+    # to see the service's tools — `session_services` must also bind
+    # the service to the active session. `server_tools_json` is the
+    # last-known tools/list result; `asm_json` caches the
     # authorization-server metadata for the refresh hook.
     query!(Repo, """
     CREATE TABLE IF NOT EXISTS authorized_services (
@@ -353,11 +320,11 @@ defmodule DmhAi.DB.Init do
       server_tools_cached_at INTEGER,
       -- Lifecycle: 'authorized' (token works) | 'needs_auth' (token
       -- refresh failed AS-side; model must call connect_mcp to
-      -- recover). `tools_for_task/2` filters out needs_auth services
-      -- so the LLM doesn't emit names it can no longer invoke; the
-      -- §Authorized MCP services context block surfaces them with a
-      -- `[needs re-auth]` annotation so the model knows to act.
-      -- `authorize/5` resets to 'authorized' on re-auth.
+      -- recover). `tools_for_session/2` filters out needs_auth
+      -- services so the LLM doesn't emit names it can no longer
+      -- invoke; the §Authorized MCP services context block surfaces
+      -- them with a `[needs re-auth]` annotation so the model knows
+      -- to act. `authorize/5` resets to 'authorized' on re-auth.
       status                 TEXT NOT NULL DEFAULT 'authorized',
       created_ts             INTEGER NOT NULL,
       PRIMARY KEY (user_id, alias)
@@ -366,20 +333,19 @@ defmodule DmhAi.DB.Init do
     query!(Repo, "CREATE INDEX IF NOT EXISTS idx_authorized_services_user ON authorized_services (user_id)")
     query!(Repo, "CREATE INDEX IF NOT EXISTS idx_authorized_services_resource ON authorized_services (canonical_resource)")
 
-    # Task ↔ authorized-service junction. One row per service
-    # attached to a task. Per-turn tool catalog filters to services
-    # in this table for the current anchor task; complete_task /
-    # cancel_task drop every row for that task.
+    # Session ↔ authorized-service junction. One row per service
+    # attached to a chat session. Per-turn tool catalog filters to
+    # services in this table for the current session.
     query!(Repo, """
-    CREATE TABLE IF NOT EXISTS task_services (
-      task_id     TEXT NOT NULL,
+    CREATE TABLE IF NOT EXISTS session_services (
+      session_id  TEXT NOT NULL,
       user_id     TEXT NOT NULL,
       alias       TEXT NOT NULL,
       attached_ts INTEGER NOT NULL,
-      PRIMARY KEY (task_id, alias)
+      PRIMARY KEY (session_id, alias)
     )
     """)
-    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_task_services_user ON task_services (user_id, alias)")
+    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_session_services_user ON session_services (user_id, alias)")
 
     # Admin-curated MCP catalog. Each row is a blessed service —
     # admin sets up name + URL + optional metadata, clicks Enable to
@@ -492,8 +458,8 @@ defmodule DmhAi.DB.Init do
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       role          TEXT NOT NULL,              -- 'assistant' | 'confidant' | 'web_search' | 'compactor' | …
       model         TEXT NOT NULL,              -- routed string, e.g. 'ollama::cloud::gpt-oss:120b-cloud'
-      issue_type    TEXT NOT NULL,              -- 'tool_call_schema' | 'task_discipline' | …
-      tool_name     TEXT NOT NULL DEFAULT '',   -- tool involved (e.g. 'create_task'); '' for non-tool issues
+      issue_type    TEXT NOT NULL,              -- 'tool_call_schema' | 'arguments_decode' | …
+      tool_name     TEXT NOT NULL DEFAULT '',   -- tool involved (e.g. 'run_script'); '' for non-tool issues
       count         INTEGER NOT NULL DEFAULT 0,
       first_seen_at INTEGER NOT NULL,
       last_seen_at  INTEGER NOT NULL,
@@ -504,28 +470,6 @@ defmodule DmhAi.DB.Init do
     query!(Repo,
       "CREATE INDEX IF NOT EXISTS idx_model_behavior_stats_model ON model_behavior_stats (model, count DESC)")
 
-    # Per-task raw message archive. Compaction + tool_history flush
-    # write chain-produced messages here, keyed by task, so
-    # `fetch_task(N)` can replay a task's history verbatim even after
-    # the master session has been compacted and the rolling
-    # tool_history window evicted them. See architecture.md §Task
-    # state continuity across chains.
-    query!(Repo, """
-    CREATE TABLE IF NOT EXISTS task_chain_archive (
-      id            INTEGER PRIMARY KEY AUTOINCREMENT,
-      task_id       TEXT NOT NULL,               -- cryptic BE id (FK to tasks.task_id)
-      session_id    TEXT NOT NULL,
-      original_ts   INTEGER NOT NULL,            -- the message's own ts when originally written
-      role          TEXT NOT NULL,               -- 'user' | 'assistant' | 'tool'
-      content       TEXT,                        -- nullable: tool_calls-only assistant msgs
-      tool_calls    TEXT,                        -- JSON string, present on assistant with tool_calls
-      tool_call_id  TEXT,                        -- present on role='tool'
-      archived_at   INTEGER NOT NULL             -- unix ms when compaction wrote this row
-    )
-    """)
-
-    query!(Repo,
-      "CREATE INDEX IF NOT EXISTS idx_task_chain_archive_task_ts ON task_chain_archive (task_id, original_ts)")
 
     # Workflow store — per arch_wiki/dmh_ai/sme/layer-W.md.
     #

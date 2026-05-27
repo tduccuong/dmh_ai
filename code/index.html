@@ -38,13 +38,6 @@
         </div>
         <button class="new-session-btn" id="new-session-btn">+ New Session</button>
         <div class="sessions-list" id="sessions-list"></div>
-        <div class="task-list-section" id="task-list-section" style="display:none;">
-            <div class="task-list-header">
-                <span class="task-list-title">Tasks</span>
-                <span class="task-count-badge" id="task-count-badge" style="display:none;"></span>
-            </div>
-            <div class="task-list" id="task-list"></div>
-        </div>
     </div>
     <div class="main">
         <div class="pw-warning-banner" id="pw-warning-banner">
@@ -64,6 +57,7 @@
                 <div class="lang-dropdown" id="lang-dropdown"></div>
             </div>
             <button class="workflow-modal-btn" id="workflow-modal-btn" title="Run a workflow"><span class="wf-icon" aria-hidden="true"></span></button>
+            <button class="workflow-modal-btn" id="clear-session-btn" title="Clear current session" style="display:none"><span style="font-size:18px;line-height:1;" aria-hidden="true">🧹</span></button>
             <div class="model-dropdown-wrap" id="mode-dropdown-wrap">
                 <button class="model-dropdown-trigger" id="mode-dropdown-trigger">
                     <span id="mode-icon"></span>
@@ -138,7 +132,6 @@
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
             </button>
         </div>
-        <div id="task-status-area"></div>
         <div class="voice-bar" id="voice-bar"><span class="voice-dot"></span><span id="voice-bar-text"></span></div>
         <div class="attachments-bar" id="attachments-bar"></div>
         <div class="input-area">
@@ -307,7 +300,6 @@
 <script src="/js/manager-app.js" defer></script>
 <script src="/js/manager-chat.js" defer></script>
 <script src="/js/manager-search.js" defer></script>
-<script src="/js/manager-tasks.js" defer></script>
 <script src="/js/import-dialog.js" defer></script>
 <script src="/js/router.js" defer></script>
 <script src="/js/external-connectors.js" defer></script>
@@ -392,7 +384,7 @@
                             Oracle — long, dense content
                         </div>
                         <div class="settings-subsection settings-subsection-help">
-                            Used for: context compaction, task progress summaries, web-result synthesis, profile extraction + condensation. Strong general model.
+                            Used for: context compaction, web-result synthesis, profile extraction + condensation. Strong general model.
                         </div>
                         <div class="settings-subsection">
                             <div class="role-picker-current" id="oracle-model-current"></div>
@@ -451,22 +443,6 @@
                 </div>
                 <!-- Page: Conversation -->
                 <div class="settings-page" id="page-conversation">
-                    <!-- Section: Token Saving (visible to ALL users; toggles
-                         personal preferences stored on `users.preferences`).
-                         Other sections in this page tweak the global
-                         `admin_cloud_settings` blob and stay admin-only. -->
-                    <div class="settings-section">
-                        <div class="settings-section-title">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M16 8h-6a2 2 0 1 0 0 4h4a2 2 0 1 1 0 4H8"/><path d="M12 6v2m0 8v2"/></svg>
-                            <span id="settings-token-saving-section-title">Token Saving</span>
-                        </div>
-                        <div class="settings-subsection">
-                            <div class="settings-add-row">
-                                <label class="settings-row-label" id="settings-conservative-token-label" for="settings-conservative-token">Conservative token saving — flush closed tasks from chat context. The model still sees the Task List and can fetch_task(N) for details on demand.</label>
-                                <input id="settings-conservative-token" class="settings-checkbox" type="checkbox">
-                            </div>
-                        </div>
-                    </div>
                     <!-- Section: Connected accounts (visible to ALL users).
                          Lists user_credentials rows with per-row revoke. -->
                     <div class="settings-section">

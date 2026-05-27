@@ -52,7 +52,12 @@ defmodule DmhAi.Tools.WebSearch do
 
   @impl true
   def execute(%{"query" => query}, context) do
-    opts = [progress_row_id: Map.get(context || %{}, :progress_row_id)]
+    ctx = context || %{}
+    opts = [
+      progress_row_id: Map.get(ctx, :progress_row_id),
+      session_id:      Map.get(ctx, :session_id),
+      user_id:         Map.get(ctx, :user_id)
+    ]
     {:ok, format_result(WebSearchEngine.search(query, [], :assistant, opts))}
   end
 

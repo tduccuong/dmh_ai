@@ -27,7 +27,6 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
 .mode-item-label { font-size: 13px; font-weight: 500; }
 .msg-header { display: flex; align-items: center; gap: 5px; }
 .msg-header-icon { display: flex; align-items: center; flex-shrink: 0; }
-.msg-header-task-tag { color: #ffb030; font-weight: 700; text-shadow: 0 0 6px rgba(255, 176, 48, 0.35); }
 
 /* request_input inline form (rendered inside an assistant message bubble). */
 .request-input-form { margin-top: 10px; padding: 10px 12px; background: #1a1428; border: 1px solid #2c2238; border-radius: 6px; display: flex; flex-direction: column; gap: 8px; }
@@ -60,10 +59,8 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
 .model-dropdown-item.selected { color: #e0c8ff; background: #241a34; }
 .model-dropdown-item.disabled { color: #4a3860; cursor: default; font-style: italic; }
 .model-dropdown-item.disabled:hover { background: none; }
-/* flex: 1 1 0 (not plain `flex: 1`) so that when the task-list section
-   is also displayed it can claim equal height — both buckets share the
-   available sidebar space 50/50. min-height: 0 lets overflow-y kick in
-   instead of the list stretching the whole sidebar. */
+/* min-height: 0 lets overflow-y kick in instead of the list stretching
+   the whole sidebar. */
 .sessions-list { flex: 1 1 0; min-height: 0; overflow-y: auto; margin-top: 20px; }
 .session-item { padding: 8px 10px; margin-bottom: 2px; border-radius: 6px; cursor: pointer; background: transparent; transition: background 0.15s; display: flex; align-items: center; gap: 6px; border-left: 3px solid transparent; }
 .session-item:hover { background: rgba(255,255,255,0.05); }
@@ -157,10 +154,6 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
 .spinner { width: 14px; height: 14px; border: 2px solid #f4ecf8; border-top-color: #c87830; border-radius: 50%; flex-shrink: 0;
     animation: spin 0.8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
-#task-status-area { display: none; padding: 3px 14px 4px; flex-shrink: 0; border-top: 1px solid #1e1530; background: #0c081a; }
-.task-status-item { padding: 2px 10px; color: #ece0f0; font-size: 12px; line-height: 1.5; border-left: 2px solid #4a2e78; margin-bottom: 2px; }
-.task-status-item:last-child { margin-bottom: 0; }
-.task-status-waiting { color: #f4ecf8; border-left-color: #2e1e50; font-style: italic; }
 .mode-hint { display: none; padding: 5px 18px; background: #2a1f00; color: #f0c040; font-size: 14px; text-align: center; border-bottom: 1px solid #5a4000; flex-shrink: 0; opacity: 1; transition: opacity 0.4s ease; }
 .mode-hint strong { color: #ffd966; font-weight: 700; }
 .mode-hint.fade-out { opacity: 0; }
@@ -524,7 +517,7 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
 .img-thumb-clickable:hover { opacity: 0.85; }
 
 /* ── Progress rows (Assistant Loop tool activity) ──────────────────────
-   Emitted by the backend during task execution — one row per tool call
+   Emitted by the backend during a chain — one row per tool call
    (tool kind, pending→done), plus optional thinking excerpts and on-
    demand summaries. Rendered inline with messages but NEVER sent to the
    LLM; see session_progress table + ContextEngine filter. */
@@ -646,211 +639,6 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
     border-bottom: 1px solid rgba(200, 184, 232, 0.10);
 }
 
-/* ── Task-list sidebar (#102) ─────────────────────────────────────────
-   Lives under #sessions-list in the left sidebar. Scoped to the current
-   session. Visible only in Assistant mode (Confidant hides via JS).
-
-   Layout: `flex: 1 1 0` mirrors the sessions-list above it so the two
-   sections share the sidebar's remaining vertical space 50/50. The
-   section itself is a flex column — the header stays pinned at the top
-   while the `.task-list` child handles overflow, so 1000 tasks just
-   scroll locally rather than pushing the settings button off-screen. */
-.task-list-section {
-    flex: 1 1 0;
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
-    margin-top: 14px;
-    padding-top: 12px;
-    border-top: 1px solid #22192f;
-}
-.task-list-header {
-    flex: 0 0 auto;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 0 10px 6px 10px;
-    font-size: 11px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-}
-/* Section title matches the DMH-AI brand orange (same hue as the logo-
-   adjacent <h2>DMH-AI</h2> heading in the sidebar) so the user's eye
-   catches it the same way as the product name. */
-.task-list-title { flex: 1; color: #e09040; }
-.task-count-badge {
-    background: #c87830;
-    color: #070510;
-    font-weight: 700;
-    font-size: 10px;
-    padding: 1px 7px;
-    border-radius: 10px;
-    min-width: 18px;
-    text-align: center;
-}
-.task-list {
-    flex: 1 1 auto;
-    min-height: 0;
-    overflow-y: auto;
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-}
-.task-bucket-header {
-    font-size: 10px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: #cabae0;
-    padding: 6px 10px 2px 10px;
-    margin-top: 2px;
-}
-.task-bucket-ongoing { color: #c87830; }
-.task-bucket-pending { color: #dccaec; }
-.task-bucket-paused  { color: #cabae0; }
-.task-bucket-recent {
-    margin-top: 4px;
-    padding: 0;
-}
-.task-bucket-recent > summary {
-    cursor: pointer;
-    list-style: none;
-    font-size: 10px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: #cabae0;
-    padding: 6px 10px 4px 10px;
-    user-select: none;
-}
-.task-bucket-recent > summary::-webkit-details-marker { display: none; }
-.task-bucket-recent > summary::before {
-    content: "\25B8";
-    display: inline-block;
-    width: 10px;
-    transition: transform 150ms;
-}
-.task-bucket-recent[open] > summary::before { transform: rotate(90deg); }
-.task-recent-count { color: #cabae0; font-weight: 400; font-size: 10px; }
-
-.task-row {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 5px 10px;
-    cursor: pointer;
-    font-size: 12.5px;
-    /* Brighter title text — previous #c8b8e8 blended too far into the
-       sidebar background; this sits closer to the DMH-AI header so the
-       user's eye registers the row at a glance. */
-    color: #ebe3ff;
-    border-left: 2px solid transparent;
-    transition: background 100ms;
-}
-.task-row:hover {
-    background: #19111f;
-    border-left-color: #c87830;
-}
-.task-row.task-status-ongoing {
-    background: linear-gradient(to right, rgba(200, 120, 48, 0.08), transparent);
-    border-left-color: #c87830;
-}
-.task-row.task-status-paused {
-    opacity: 0.6;
-}
-/* Phase 3: active-task anchor marker. A thicker, brighter left border
-   + subtle background tint distinguishes "the task the assistant is
-   currently focused on" from merely "any non-terminal task". Applies
-   on top of the status-ongoing treatment — an ongoing anchor task
-   gets BOTH the ongoing gradient AND the anchor border. */
-.task-row.task-row-anchor {
-    border-left-width: 4px;
-    border-left-color: #d890ff;
-    background: linear-gradient(to right, rgba(180, 120, 220, 0.14), transparent);
-}
-.task-row.task-row-anchor.task-status-paused { opacity: 1; }
-.task-bucket-recent .task-row {
-    opacity: 0.7;
-    font-size: 11.5px;
-}
-.task-bucket-recent .task-row:hover { opacity: 1; }
-
-/* Status icon on the left of every task row — the SINGLE source of
-   status communication in the sidebar. No right-side status text.
-   Brightest-possible colors per state so the bucket is scannable at a
-   glance: pause (held) / glowing dot (running) / red ban (aborted) /
-   clock (waiting) / green tick (complete). */
-.task-status-icon {
-    flex-shrink: 0;
-    width: 14px;
-    font-size: 14px;
-    text-align: center;
-    line-height: 1;
-    font-weight: bold;
-}
-.task-status-icon-ongoing {
-    color: #ffb030;   /* brightest amber — "hot / running" */
-    animation: task-ongoing-pulse 1.2s ease-in-out infinite;
-    text-shadow: 0 0 6px rgba(255, 176, 48, 0.7);
-}
-@keyframes task-ongoing-pulse {
-    0%, 100% { opacity: 1;    transform: scale(1);    }
-    50%      { opacity: 0.55; transform: scale(0.88); }
-}
-.task-status-icon-pending   { color: #40c8ff; }  /* brightest cyan — clock, "waiting" */
-.task-status-icon-paused    { color: #ffd840; }  /* brightest yellow — pause, "held" */
-.task-status-icon-done      { color: #40e080; }  /* brightest green — tick, "complete" */
-.task-status-icon-cancelled { color: #ff5050; }  /* brightest red — ban, "aborted" */
-
-/* Red stop button on ongoing rows, so the user can terminate a task
-   without typing "stop task N". Replaces the right-side status-word
-   text. Sized to match the row's visual weight; brighter on hover so
-   the intent-to-click is obvious. */
-.task-stop-btn {
-    flex-shrink: 0;
-    width: 22px;
-    height: 22px;
-    padding: 0;
-    border: none;
-    border-radius: 4px;
-    background: transparent;
-    color: #e04848;
-    font-size: 14px;
-    line-height: 1;
-    cursor: pointer;
-    transition: background 100ms, color 100ms, transform 100ms;
-}
-.task-stop-btn:hover {
-    background: rgba(224, 72, 72, 0.18);
-    color: #ff6060;
-    transform: scale(1.05);
-}
-.task-stop-btn:disabled {
-    opacity: 0.4;
-    cursor: wait;
-}
-.task-num {
-    flex-shrink: 0;
-    font-size: 11px;
-    color: #c090e0;
-    font-family: ui-monospace, Menlo, Consolas, monospace;
-    font-weight: 600;
-}
-.task-title {
-    flex: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.task-empty {
-    padding: 8px 10px;
-    font-size: 12px;
-    color: #cabae0;
-    font-style: italic;
-}
-
 /* ─── API Pools admin UI ────────────────────────────────────────────────── */
 .pools-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 10px; }
 .pool-card { background: #0a0612; border: 1px solid #1c1430; border-radius: 8px; overflow: hidden; }
@@ -933,8 +721,8 @@ body.view-external-connectors #external-connectors-view {
 }
 
 /* "External Connectors" label below the logo header — matches the
- * compact section labels used elsewhere in the sidebar (tasks /
- * sessions headers). */
+ * compact section labels used elsewhere in the sidebar (sessions
+ * header). */
 .ec-section-label {
     padding: 12px 4px 8px 4px;
     font-size: 11px;

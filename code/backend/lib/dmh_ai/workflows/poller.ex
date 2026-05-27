@@ -47,7 +47,6 @@ defmodule DmhAi.Workflows.Poller do
   alias DmhAi.{Workflows, Repo}
   alias DmhAi.Workflows.{Executor, Path}
   alias DmhAi.Tools.Catalog
-  alias DmhAi.Agent.Tasks
   alias DmhAi.Connectors.Manifest, as: ConnectorManifest
   import Ecto.Adapters.SQL, only: [query!: 3]
 
@@ -310,18 +309,8 @@ defmodule DmhAi.Workflows.Poller do
       nil ->
         Logger.warning("[Workflows.Poller] no session for owner=#{owner_id}; can't spawn instance for #{wf.id}")
 
-      sid ->
-        task_id = Tasks.insert(
-          user_id:    owner_id,
-          session_id: sid,
-          task_type:   "one_off",
-          intvl_sec:  0,
-          task_title:  "#{wf.display_name} run",
-          task_spec:   "Workflow `#{wf.id}` v#{version.version} (autonomous poll item)",
-          attachments: [],
-          task_status: "running",
-          language:   "en"
-        )
+      _sid ->
+        task_id = "poller-item-#{System.os_time(:millisecond)}-#{wf.id}"
 
         exec_ctx = %{org_id: wf.org_id, task_id: task_id}
 
@@ -370,19 +359,8 @@ defmodule DmhAi.Workflows.Poller do
             Logger.warning("[Workflows.Poller] no session for owner=#{owner_id}; can't fire schedule #{wf.id}")
             0
 
-          sid ->
-            task_id = Tasks.insert(
-              user_id:    owner_id,
-              session_id: sid,
-              task_type:   "one_off",
-              intvl_sec:  0,
-              task_title:  "#{wf.display_name} run",
-              task_spec:   "Workflow `#{wf.id}` v#{version.version} (scheduled fire)",
-              attachments: [],
-              task_status: "running",
-              language:   "en"
-            )
-
+          _sid ->
+            task_id = "schedule-#{System.os_time(:millisecond)}-#{wf.id}"
             exec_ctx = %{org_id: wf.org_id, task_id: task_id}
             payload  = %{
               "fired_at"        => now_ms,

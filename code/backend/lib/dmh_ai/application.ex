@@ -17,13 +17,8 @@ defmodule DmhAi.Application do
     #   2. DmhAi.DB.SchemaInit runs synchronously in its `init/1`,
     #      creating tables (and running Permissions.Migration) before
     #      ANY downstream child can query the DB.
-    #   3. TaskRuntime and other DB-touching children come up against
-    #      a guaranteed-populated schema.
-    #
-    # On a fresh install, without the explicit phasing above, TaskRuntime's
-    # 500-ms-after-boot `:rehydrate` query hits an empty DB, crashes,
-    # exceeds max_restarts, takes Repo down with it, and the entire
-    # supervision tree collapses. See `DmhAi.DB.SchemaInit` moduledoc.
+    #   3. DB-touching children come up against a guaranteed-populated
+    #      schema.
     children = [
       DmhAi.Repo,
       DmhAi.DB.SchemaInit,
@@ -46,7 +41,6 @@ defmodule DmhAi.Application do
       # arch_wiki/dmh_ai/architecture.md §Streaming state lives in
       # ETS, not the DB. Must boot before any process that streams.
       DmhAi.Agent.EphemeralCache,
-      DmhAi.Agent.TaskRuntime,
       # Layer W — workflow trigger poller. Wakes every 60s, dispatches
       # armed schedule/poll triggers to fire as silent tasks. See
       # arch_wiki/dmh_ai/sme/layer-0.md §Primitive 0.8 (Trigger ingress)
@@ -87,7 +81,6 @@ defmodule DmhAi.Application do
       {:ok, pid} ->
         if Application.get_env(:dmh_ai, :run_startup_check, true), do: DmhAi.StartupCheck.run()
         DmhAi.DomainBlocker.load_from_db()
-        DmhAi.Agent.PendingPivots.init()
         DmhAi.Agent.ChainInFlight.init()
         DmhAi.Agent.BackgroundPipelines.init()
         DmhAi.Agent.RunningTools.init()

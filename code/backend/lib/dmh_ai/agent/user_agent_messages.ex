@@ -6,9 +6,9 @@
 defmodule DmhAi.Agent.UserAgentMessages do
   @moduledoc """
   Shared helper for appending an assistant/user message to a session's
-  `messages` JSON column. Extracted so background processes (TaskRuntime,
-  periodic completion flows) can write session messages without going
-  through the per-user GenServer.
+  `messages` JSON column. Extracted so processes outside the per-user
+  GenServer (e.g. HTTP handler tests, OAuth callbacks) can write session
+  messages directly.
   """
 
   alias DmhAi.Repo
@@ -140,38 +140,6 @@ defmodule DmhAi.Agent.UserAgentMessages do
       e ->
         Logger.error("[UserAgentMessages] has_unanswered_user_msg? failed: #{Exception.message(e)}")
         false
-    end
-  end
-
-  @doc """
-  Return messages in `session.messages` tagged with `task_num` whose
-  `ts` is strictly greater than `floor_ts`. Used by `fetch_task` to
-  stitch archive (everything up to `floor_ts`) with live (everything
-  after). Preserves every field on the message so the caller can pass
-  them to the model unchanged.
-  """
-  @spec messages_for_task_num(String.t(), integer(), integer()) :: [map()]
-  def messages_for_task_num(session_id, task_num, floor_ts)
-      when is_binary(session_id) and is_integer(task_num) and is_integer(floor_ts) do
-    try do
-      result = query!(Repo, "SELECT messages FROM sessions WHERE id=?", [session_id])
-
-      case result.rows do
-        [[msgs_json]] ->
-          (msgs_json || "[]")
-          |> Jason.decode!()
-          |> Enum.filter(fn m ->
-            is_map(m) and m["task_num"] == task_num and
-              is_integer(m["ts"]) and m["ts"] > floor_ts
-          end)
-
-        _ ->
-          []
-      end
-    rescue
-      e ->
-        Logger.error("[UserAgentMessages] messages_for_task_num failed: #{Exception.message(e)}")
-        []
     end
   end
 

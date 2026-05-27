@@ -13,28 +13,21 @@ defmodule DmhAi.Tools.Registry do
 
     * **Built-in tools** — the static `@tools` list below. Same set
       for every user, every session, every turn.
-    * **MCP-attached tools** — per-user authorization, **per-task
+    * **MCP-attached tools** — per-user authorization, **per-session
       attachment**. Sourced from
-      `DmhAi.MCP.Registry.tools_for_task/2`: returns the tools of
-      services the current anchor task has bound. Empty when no
-      anchor task or no attachments. Names are namespaced
-      `<alias>.<tool>`; dispatch routes them to
-      `DmhAi.MCP.Client.call_tool/4`.
+      `DmhAi.MCP.Registry.tools_for_session/2`: returns the tools of
+      services the current session has bound. Empty when no
+      attachments. Names are namespaced `<alias>.<tool>`; dispatch
+      routes them to `DmhAi.MCP.Client.call_tool/4`.
 
-  Functions come in task-aware and unaware overloads. The unaware
+  Functions come in session-aware and unaware overloads. The unaware
   ones return only built-ins (used by the static HTTP catalog and
-  by the assistant-text guard, which can't see ctx). The task-aware
-  ones consult the active task's attachments and are used by the
+  by the assistant-text guard, which can't see ctx). The session-aware
+  ones consult the session's attachments and are used by the
   agent's per-turn tool dispatch.
   """
 
   @tools [
-    DmhAi.Tools.CreateTask,
-    DmhAi.Tools.PickupTask,
-    DmhAi.Tools.CompleteTask,
-    DmhAi.Tools.PauseTask,
-    DmhAi.Tools.CancelTask,
-    DmhAi.Tools.FetchTask,
     DmhAi.Tools.WebSearch,
     DmhAi.Tools.WebFetch,
     DmhAi.Tools.WebCrawl,
@@ -43,7 +36,6 @@ defmodule DmhAi.Tools.Registry do
     DmhAi.Tools.WriteFile,
     DmhAi.Tools.Calculator,
     DmhAi.Tools.ExtractContent,
-    DmhAi.Tools.SpawnTask,
     DmhAi.Tools.SaveCreds,
     DmhAi.Tools.LookupCreds,
     DmhAi.Tools.DeleteCreds,
@@ -91,9 +83,8 @@ defmodule DmhAi.Tools.Registry do
 
   @doc """
   Built-in tool definitions plus the MCP tools attached to the
-  current anchor task. `task_id` is the internal task UUID
-  (`DmhAi.Agent.Tasks.resolve_num/2`); `nil` means no anchor task,
-  in which case only built-ins are returned.
+  current session. `session_id` may be nil (no session bound;
+  built-ins only).
 
   `fetch_index` is dropped from the returned list when the global
   index has no chunks yet — saves the model from being tempted to
@@ -102,11 +93,11 @@ defmodule DmhAi.Tools.Registry do
   something.
   """
   @spec all_definitions(String.t() | nil, String.t() | nil) :: [map()]
-  def all_definitions(nil, _task_id), do: all_definitions() |> drop_empty_wiki(default_org_id())
+  def all_definitions(nil, _session_id), do: all_definitions() |> drop_empty_wiki(default_org_id())
 
-  def all_definitions(user_id, task_id) when is_binary(user_id) do
+  def all_definitions(user_id, session_id) when is_binary(user_id) do
     org_id = org_for_user(user_id)
-    (all_definitions() |> drop_empty_wiki(org_id)) ++ mcp_definitions(user_id, task_id)
+    (all_definitions() |> drop_empty_wiki(org_id)) ++ mcp_definitions(user_id, session_id)
   end
 
   defp drop_empty_wiki(defs, org_id) do
@@ -139,9 +130,9 @@ defmodule DmhAi.Tools.Registry do
 
   defp default_org_id, do: DmhAi.Constants.default_org_id()
 
-  defp mcp_definitions(user_id, task_id) do
+  defp mcp_definitions(user_id, session_id) do
     user_id
-    |> DmhAi.MCP.Registry.tools_for_task(task_id)
+    |> DmhAi.MCP.Registry.tools_for_session(session_id)
     |> Enum.map(fn t ->
       %{
         name:        t.name,
@@ -162,13 +153,21 @@ defmodule DmhAi.Tools.Registry do
   # SaveMemo even though they're not in any LLM catalog.
   defp all_local_tools, do: @tools ++ @save_only_tools
 
-  @doc "Built-in plus MCP tool names attached to the given task."
-  @spec names(String.t() | nil, String.t() | nil) :: [String.t()]
-  def names(nil, _task_id), do: names()
+  @doc "Built-in plus MCP tool names attached to the given session."
+  @spec names(String.t() | nil) :: [String.t()]
+  def names(nil), do: names()
 
-  def names(user_id, task_id) when is_binary(user_id) do
+  def names(user_id) when is_binary(user_id) do
+    names() ++ connector_function_names()
+  end
+
+  @doc "Built-in plus MCP tool names attached to the given session."
+  @spec names(String.t() | nil, String.t() | nil) :: [String.t()]
+  def names(nil, _session_id), do: names()
+
+  def names(user_id, session_id) when is_binary(user_id) do
     names() ++
-      Enum.map(DmhAi.MCP.Registry.tools_for_task(user_id, task_id), & &1.name) ++
+      Enum.map(DmhAi.MCP.Registry.tools_for_session(user_id, session_id), & &1.name) ++
       connector_function_names()
   end
 
@@ -210,19 +209,38 @@ defmodule DmhAi.Tools.Registry do
     do: Enum.any?(all_local_tools(), &(&1.name() == name))
   def known?(_), do: false
 
-  @doc "True if `name` is a built-in or attached to the given anchor task."
-  @spec known?(String.t(), String.t() | nil, String.t() | nil) :: boolean()
-  def known?(name, nil, _), do: known?(name)
+  @doc "True if `name` is a built-in or attached to the given session."
+  @spec known?(String.t(), String.t() | nil) :: boolean()
+  def known?(name, nil), do: known?(name)
 
-  def known?(name, user_id, task_id) when is_binary(name) and is_binary(user_id) do
+  def known?(name, user_id) when is_binary(name) and is_binary(user_id) do
     # `known?/1` already checks built-ins + memo tools; this branch
-    # adds MCP tools attached to the current anchor task PLUS
-    # Universal-Region connector functions registered with the Dispatcher.
+    # adds Universal-Region connector functions registered with the
+    # Dispatcher.
     cond do
       known?(name) ->
         true
 
-      Enum.any?(DmhAi.MCP.Registry.tools_for_task(user_id, task_id), &(&1.name == name)) ->
+      connector_function?(name) ->
+        true
+
+      true ->
+        false
+    end
+  end
+
+  def known?(_, _), do: false
+
+  @doc "True if `name` is a built-in or attached to the given session."
+  @spec known?(String.t(), String.t() | nil, String.t() | nil) :: boolean()
+  def known?(name, nil, _), do: known?(name)
+
+  def known?(name, user_id, session_id) when is_binary(name) and is_binary(user_id) do
+    cond do
+      known?(name) ->
+        true
+
+      Enum.any?(DmhAi.MCP.Registry.tools_for_session(user_id, session_id), &(&1.name == name)) ->
         true
 
       connector_function?(name) ->
@@ -252,21 +270,21 @@ defmodule DmhAi.Tools.Registry do
   def definition_for(_), do: nil
 
   @doc """
-  Task-aware variant. When `name` is a namespaced MCP tool attached
-  to the task, returns a definition synthesized from the cached
+  Session-aware variant. When `name` is a namespaced MCP tool attached
+  to the session, returns a definition synthesized from the cached
   catalog so Police can inspect schema fields the same way as for
   built-ins.
   """
   @spec definition_for(String.t(), String.t() | nil, String.t() | nil) :: map() | nil
   def definition_for(name, nil, _), do: definition_for(name)
 
-  def definition_for(name, user_id, task_id) when is_binary(name) and is_binary(user_id) do
+  def definition_for(name, user_id, session_id) when is_binary(name) and is_binary(user_id) do
     case definition_for(name) do
       %{} = def_ ->
         def_
 
       nil ->
-        case Enum.find(DmhAi.MCP.Registry.tools_for_task(user_id, task_id), &(&1.name == name)) do
+        case Enum.find(DmhAi.MCP.Registry.tools_for_session(user_id, session_id), &(&1.name == name)) do
           nil -> nil
           t ->
             %{
@@ -296,8 +314,8 @@ defmodule DmhAi.Tools.Registry do
     # Test hook: Application.put_env(:dmh_ai, :__tool_execute_stub__, fn name, args, ctx -> ... end)
     # Stub must return {:ok, result} | {:error, reason} — same shape as the real path.
     # When a stub returns `:passthrough`, dispatch falls through to the real tool — lets
-    # a test fake just one tool (e.g. run_script) while letting bookkeeping functions
-    # (create_task / pickup_task) hit the real Registry path.
+    # a test fake just one tool (e.g. run_script) while letting every other tool hit
+    # the real Registry path.
     case Application.get_env(:dmh_ai, :__tool_execute_stub__) do
       nil ->
         do_execute(name, args, ctx)

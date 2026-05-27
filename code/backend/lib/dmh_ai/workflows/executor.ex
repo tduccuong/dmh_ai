@@ -63,8 +63,8 @@ defmodule DmhAi.Workflows.Executor do
   Start a new workflow run. `ctx` carries `:org_id`, `:task_id`.
   Returns `{:ok, run_state}` once the executor halts at a terminal
   node (completed / failed) or suspends (waiting). The caller
-  (TaskRuntime / Poller / invoke_workflow) treats `:waiting` as
-  "leave the task suspended, scheduler will resume".
+  (Poller / invoke_workflow / wf_webhook) treats `:waiting` as
+  "leave the run suspended; scheduler will resume on event".
   """
   @spec start_run(String.t(), integer(), map(), map()) ::
           {:ok, map()} | {:error, term()}

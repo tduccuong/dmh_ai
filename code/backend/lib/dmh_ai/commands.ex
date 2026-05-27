@@ -112,7 +112,8 @@ defmodule DmhAi.Commands do
       kind: "command"
     })
 
-    err_msg = Swift.localize("Couldn't process: " <> to_string(reason), original_content)
+    err_msg = Swift.localize("Couldn't process: " <> to_string(reason), original_content,
+                             %{session_id: session_id, user_id: user_id})
 
     {:ok, _ack_ts} = UserAgentMessages.append(session_id, user_id, %{
       role: "assistant",

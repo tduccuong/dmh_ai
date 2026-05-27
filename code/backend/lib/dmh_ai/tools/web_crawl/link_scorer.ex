@@ -35,8 +35,11 @@ defmodule DmhAi.Tools.WebCrawl.LinkScorer do
   picks. On any error returns `candidates` verbatim (capped at
   `top_k`) so the crawl still proceeds.
   """
-  @spec pick([{String.t(), String.t()}], String.t(), pos_integer()) :: [{String.t(), String.t()}]
-  def pick(candidates, question, top_k) when is_list(candidates) and is_binary(question) and is_integer(top_k) do
+  @spec pick([{String.t(), String.t()}], String.t(), pos_integer(), map()) :: [{String.t(), String.t()}]
+  def pick(candidates, question, top_k, meta \\ %{})
+
+  def pick(candidates, question, top_k, meta)
+      when is_list(candidates) and is_binary(question) and is_integer(top_k) and is_map(meta) do
     cond do
       candidates == [] ->
         []
@@ -51,12 +54,12 @@ defmodule DmhAi.Tools.WebCrawl.LinkScorer do
         Enum.take(candidates, top_k)
 
       true ->
-        do_pick(candidates, question, top_k)
+        do_pick(candidates, question, top_k, meta)
     end
   end
-  def pick(_, _, _), do: []
+  def pick(_, _, _, _), do: []
 
-  defp do_pick(candidates, question, top_k) do
+  defp do_pick(candidates, question, top_k, meta) do
     indexed =
       candidates
       |> Enum.with_index(1)
@@ -69,8 +72,13 @@ defmodule DmhAi.Tools.WebCrawl.LinkScorer do
       %{role: "user",   content: user_prompt(question, indexed, top_k)}
     ]
 
-    trace = %{origin: "system", path: "Tools.WebCrawl.LinkScorer.pick",
-              role: "SwiftLinkScorer", phase: "pick"}
+    trace = %{
+      origin: "system", path: "Tools.WebCrawl.LinkScorer.pick",
+      role: "SwiftLinkScorer", phase: "pick",
+      session_id: Map.get(meta, :session_id),
+      user_id:    Map.get(meta, :user_id),
+      tier:       :swift
+    }
 
     case LLM.call(model, messages, options: %{temperature: 0}, trace: trace) do
       {:ok, text} when is_binary(text) ->

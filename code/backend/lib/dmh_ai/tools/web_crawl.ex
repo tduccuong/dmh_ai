@@ -174,7 +174,12 @@ defmodule DmhAi.Tools.WebCrawl do
           # `progress_row_id` is threaded by `user_agent.ex` so every
           # internal fetch + per-depth pruning decision can stream a
           # sub-label into the parent WebCrawl row.
-          progress_row_id:     Map.get(ctx, :progress_row_id)
+          progress_row_id:     Map.get(ctx, :progress_row_id),
+          # `session_id` / `user_id` thread through so the Swift LLM
+          # call inside `LinkScorer.pick/4` is metered against the
+          # right (session, user) row.
+          session_id:          Map.get(ctx, :session_id),
+          user_id:             Map.get(ctx, :user_id)
         }
 
         run_crawl(start_url, opts)
@@ -282,7 +287,9 @@ defmodule DmhAi.Tools.WebCrawl do
           if opts.question == "" do
             Enum.take(candidates, opts.branch_factor)
           else
-            DmhAi.Tools.WebCrawl.LinkScorer.pick(candidates, opts.question, opts.branch_factor)
+            DmhAi.Tools.WebCrawl.LinkScorer.pick(
+              candidates, opts.question, opts.branch_factor,
+              %{session_id: opts.session_id, user_id: opts.user_id})
           end
 
         next_urls = Enum.map(next_frontier_pairs, fn {url, _} -> url end)

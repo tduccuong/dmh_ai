@@ -200,7 +200,13 @@ defmodule DmhAi.Agent.ProfileExtractor do
         "- Write NONE if nothing qualifies.\n\n" <>
         "User messages may be in any language. Always write output in English. Plain text only, no markdown."
 
-    trace = %{origin: "system", path: "ProfileExtractor.extract", role: "ProfileExtractor", phase: "extract"}
+    trace = %{
+      origin: "system", path: "ProfileExtractor.extract",
+      role: "ProfileExtractor", phase: "extract",
+      session_id: nil,
+      user_id:    user_id,
+      tier:       :oracle
+    }
 
     case LLM.call(model, [%{role: "user", content: prompt}],
            options: %{temperature: 0, num_predict: 600},

@@ -9,16 +9,15 @@ defmodule DmhAi.MCP.Registry do
 
   **User-tier (auth, persistent).** `authorized_services` holds one
   row per service the user has authorized. Survives sessions,
-  restarts, and task lifecycles. Carries the cached server tool list
+  restarts. Carries the cached server tool list
   (`server_tools_json`) and authorization-server metadata
   (`asm_json`).
 
-  **Task-tier (catalog, ephemeral).** `task_services` is a junction:
-  one row per service attached to a task. The per-turn tool catalog
-  returned to the LLM is filtered to the services in this table for
-  the current anchor task. New session, no anchor task, or no
-  attachments — empty catalog. `complete_task` / `cancel_task` drop
-  every row for that task.
+  **Session-tier (catalog, ephemeral).** `session_services` is a
+  junction: one row per service attached to a chat session. The
+  per-turn tool catalog returned to the LLM is filtered to the
+  services in this table for the current session. New session, no
+  attachments — empty catalog.
 
   Caching: `:persistent_term` keyed `{__MODULE__, user_id}` holds the
   user's authorized service catalog (alias → tool list). Invalidated
@@ -187,59 +186,45 @@ defmodule DmhAi.MCP.Registry do
   @doc """
   Drop an authorized service. Caller is responsible for revoking
   tokens and removing the matching credential row beforehand. Also
-  drops every `task_services` attachment for this alias so live tasks
-  don't keep referencing it.
+  drops every `session_services` attachment for this alias so live
+  sessions don't keep referencing it.
   """
   @spec deauthorize(String.t(), String.t()) :: :ok
   def deauthorize(user_id, alias_) do
     query!(Repo, "DELETE FROM authorized_services WHERE user_id=? AND alias=?",
            [user_id, alias_])
 
-    query!(Repo, "DELETE FROM task_services WHERE user_id=? AND alias=?",
+    query!(Repo, "DELETE FROM session_services WHERE user_id=? AND alias=?",
            [user_id, alias_])
 
     invalidate_cache(user_id)
     :ok
   end
 
-  # ── task-tier (attachment) ────────────────────────────────────────────
+  # ── session-tier (attachment) ─────────────────────────────────────────
 
-  @doc "Bind an authorized service to a task. Idempotent."
+  @doc "Bind an authorized service to a chat session. Idempotent."
   @spec attach(String.t(), String.t(), String.t()) :: :ok
-  def attach(task_id, user_id, alias_) when is_binary(task_id) do
+  def attach(session_id, user_id, alias_) when is_binary(session_id) do
     now = System.os_time(:millisecond)
 
     query!(Repo, """
-    INSERT INTO task_services (task_id, user_id, alias, attached_ts)
+    INSERT INTO session_services (session_id, user_id, alias, attached_ts)
     VALUES (?, ?, ?, ?)
-    ON CONFLICT(task_id, alias) DO NOTHING
-    """, [task_id, user_id, alias_, now])
+    ON CONFLICT(session_id, alias) DO NOTHING
+    """, [session_id, user_id, alias_, now])
 
     :ok
   end
 
-  @doc """
-  Drop every service attachment for a task. Called from
-  `Tasks.mark_done/2` (one-off → done) and `Tasks.mark_cancelled/2`.
-  Does nothing for periodic tasks since `mark_done` re-arms them
-  rather than terminating.
-  """
-  @spec detach_all_for_task(String.t() | nil) :: :ok
-  def detach_all_for_task(nil), do: :ok
-
-  def detach_all_for_task(task_id) when is_binary(task_id) do
-    query!(Repo, "DELETE FROM task_services WHERE task_id=?", [task_id])
-    :ok
-  end
-
-  @doc "List the aliases attached to a task. Empty list when no attachments or task_id is nil."
+  @doc "List the aliases attached to a session. Empty list when no attachments or session_id is nil."
   @spec attached_aliases(String.t() | nil) :: [String.t()]
   def attached_aliases(nil), do: []
 
-  def attached_aliases(task_id) when is_binary(task_id) do
+  def attached_aliases(session_id) when is_binary(session_id) do
     r = query!(Repo,
-      "SELECT alias FROM task_services WHERE task_id=? ORDER BY attached_ts ASC",
-      [task_id])
+      "SELECT alias FROM session_services WHERE session_id=? ORDER BY attached_ts ASC",
+      [session_id])
 
     Enum.map(r.rows, fn [a] -> a end)
   end
@@ -247,15 +232,15 @@ defmodule DmhAi.MCP.Registry do
   # ── catalog assembly ──────────────────────────────────────────────────
 
   @doc """
-  Flat namespaced tool list for the current anchor task. Empty when
-  `task_id` is nil or no services are attached. Each entry:
+  Flat namespaced tool list for the current session. Empty when
+  `session_id` is nil or no services are attached. Each entry:
   `%{name, description, inputSchema, alias, server_tool_name}`.
   """
-  @spec tools_for_task(String.t(), String.t() | nil) :: [map()]
-  def tools_for_task(_user_id, nil), do: []
+  @spec tools_for_session(String.t(), String.t() | nil) :: [map()]
+  def tools_for_session(_user_id, nil), do: []
 
-  def tools_for_task(user_id, task_id) when is_binary(user_id) and is_binary(task_id) do
-    case attached_aliases(task_id) do
+  def tools_for_session(user_id, session_id) when is_binary(user_id) and is_binary(session_id) do
+    case attached_aliases(session_id) do
       []      -> []
       aliases ->
         catalog = user_catalog(user_id)

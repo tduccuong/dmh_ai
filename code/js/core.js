@@ -102,7 +102,7 @@ const I18n = {
     })(),
     _strings: {
         en: {
-            retry: 'Retry', clear: 'Clear', send: 'Send', cancel: 'Cancel', ok: 'OK', stopGen: 'Stop', onTask: 'on task',
+            retry: 'Retry', clear: 'Clear', send: 'Send', cancel: 'Cancel', ok: 'OK', stopGen: 'Stop',
             browserConsentTitle: 'Browser tools — please read',
             browserConsentAccept: 'I understand and accept',
             browserConsentEnabled: 'Browser tools enabled.',
@@ -118,7 +118,7 @@ const I18n = {
             deleteSession: 'Delete session',
             deleteConfirm1: 'Delete "', deleteConfirm2: '"? This cannot be undone.',
             clearSession: 'Clear session',
-            clearConfirm1: 'Clear all history in "', clearConfirm2: '"? Any active background tasks will be cancelled. This cannot be undone.',
+            clearConfirm1: 'Clear all history in "', clearConfirm2: '"? Any in-flight reply will be interrupted. This cannot be undone.',
             confirm: 'Confirm', updating: 'Updating...',
             unsupported1: 'Unsupported file: ', unsupported2: '. Supported: PDF, DOCX, XLSX, plain text, ',
             noVision1: '⚠ ', noVision2: ' does not support images. Switch to a vision-capable model and send again.',
@@ -188,7 +188,7 @@ const I18n = {
             },
         },
         vi: {
-            retry: 'Thử lại', clear: 'Xóa', send: 'Gửi', cancel: 'Hủy', ok: 'OK', stopGen: 'Dừng', onTask: 'trên task',
+            retry: 'Thử lại', clear: 'Xóa', send: 'Gửi', cancel: 'Hủy', ok: 'OK', stopGen: 'Dừng',
             browserConsentTitle: 'Công cụ trình duyệt — vui lòng đọc',
             browserConsentAccept: 'Tôi đã đọc và đồng ý',
             browserConsentEnabled: 'Đã bật công cụ trình duyệt.',
@@ -204,7 +204,7 @@ const I18n = {
             deleteSession: 'Xóa phiên',
             deleteConfirm1: 'Xóa "', deleteConfirm2: '"? Không thể hoàn tác.',
             clearSession: 'Xóa phiên',
-            clearConfirm1: 'Xóa toàn bộ lịch sử trong "', clearConfirm2: '"? Các tác vụ nền đang chạy sẽ bị hủy. Không thể hoàn tác.',
+            clearConfirm1: 'Xóa toàn bộ lịch sử trong "', clearConfirm2: '"? Mọi phản hồi đang diễn ra sẽ bị ngắt. Không thể hoàn tác.',
             confirm: 'Xác nhận', updating: 'Đang cập nhật...',
             unsupported1: 'Tệp không hỗ trợ: ', unsupported2: '. Hỗ trợ: PDF, DOCX, XLSX, văn bản, ',
             noVision1: '⚠ ', noVision2: ' không hỗ trợ hình ảnh. Hãy chọn mô hình hỗ trợ hình ảnh và gửi lại.',
@@ -274,7 +274,7 @@ const I18n = {
             },
         },
         de: {
-            retry: 'Wiederholen', clear: 'Löschen', send: 'Senden', cancel: 'Abbrechen', ok: 'OK', stopGen: 'Stopp', onTask: 'bei Aufgabe',
+            retry: 'Wiederholen', clear: 'Löschen', send: 'Senden', cancel: 'Abbrechen', ok: 'OK', stopGen: 'Stopp',
             browserConsentTitle: 'Browser-Tools — bitte lesen',
             browserConsentAccept: 'Ich verstehe und akzeptiere',
             browserConsentEnabled: 'Browser-Tools aktiviert.',
@@ -290,7 +290,7 @@ const I18n = {
             deleteSession: 'Sitzung löschen',
             deleteConfirm1: '"', deleteConfirm2: '" löschen? Dies kann nicht rückgängig gemacht werden.',
             clearSession: 'Sitzung leeren',
-            clearConfirm1: 'Gesamten Verlauf in "', clearConfirm2: '" löschen? Aktive Hintergrundaufgaben werden abgebrochen. Dies kann nicht rückgängig gemacht werden.',
+            clearConfirm1: 'Gesamten Verlauf in "', clearConfirm2: '" löschen? Eine laufende Antwort wird unterbrochen. Dies kann nicht rückgängig gemacht werden.',
             confirm: 'Bestätigen', updating: 'Aktualisierung...',
             unsupported1: 'Nicht unterstützte Datei: ', unsupported2: '. Unterstützt: PDF, DOCX, XLSX, Text, ',
             noVision1: '⚠ ', noVision2: ' unterstützt keine Bilder. Wählen Sie ein bildtaugliches Modell und senden Sie erneut.',
@@ -360,7 +360,7 @@ const I18n = {
             },
         },
         es: {
-            retry: 'Reintentar', clear: 'Limpiar', send: 'Enviar', cancel: 'Cancelar', ok: 'OK', stopGen: 'Detener', onTask: 'en la tarea',
+            retry: 'Reintentar', clear: 'Limpiar', send: 'Enviar', cancel: 'Cancelar', ok: 'OK', stopGen: 'Detener',
             browserConsentTitle: 'Herramientas de navegador — léelo',
             browserConsentAccept: 'Lo entiendo y acepto',
             browserConsentEnabled: 'Herramientas de navegador activadas.',
@@ -376,7 +376,7 @@ const I18n = {
             deleteSession: 'Eliminar sesión',
             deleteConfirm1: '¿Eliminar "', deleteConfirm2: '"? Esto no se puede deshacer.',
             clearSession: 'Limpiar sesión',
-            clearConfirm1: '¿Borrar todo el historial en "', clearConfirm2: '"? Las tareas activas en segundo plano serán canceladas. Esto no se puede deshacer.',
+            clearConfirm1: '¿Borrar todo el historial en "', clearConfirm2: '"? Cualquier respuesta en curso será interrumpida. Esto no se puede deshacer.',
             confirm: 'Confirmar', updating: 'Actualizando...',
             unsupported1: 'Archivo no compatible: ', unsupported2: '. Compatible: PDF, DOCX, XLSX, texto, ',
             noVision1: '⚠ ', noVision2: ' no admite imágenes. Seleccione un modelo con visión y envíe de nuevo.',
@@ -446,7 +446,7 @@ const I18n = {
             },
         },
         fr: {
-            retry: 'Réessayer', clear: 'Effacer', send: 'Envoyer', cancel: 'Annuler', ok: 'OK', stopGen: 'Arrêter', onTask: 'sur la tâche',
+            retry: 'Réessayer', clear: 'Effacer', send: 'Envoyer', cancel: 'Annuler', ok: 'OK', stopGen: 'Arrêter',
             browserConsentTitle: 'Outils navigateur — à lire',
             browserConsentAccept: 'J\'ai compris et j\'accepte',
             browserConsentEnabled: 'Outils navigateur activés.',
@@ -462,7 +462,7 @@ const I18n = {
             deleteSession: 'Supprimer la session',
             deleteConfirm1: 'Supprimer "', deleteConfirm2: '" ? Cette action est irréversible.',
             clearSession: 'Effacer la session',
-            clearConfirm1: 'Effacer tout l\'historique de "', clearConfirm2: '" ? Les tâches actives en arrière-plan seront annulées. Cette action est irréversible.',
+            clearConfirm1: 'Effacer tout l\'historique de "', clearConfirm2: '" ? Toute réponse en cours sera interrompue. Cette action est irréversible.',
             confirm: 'Confirmer', updating: 'Mise à jour...',
             unsupported1: 'Fichier non pris en charge : ', unsupported2: '. Pris en charge : PDF, DOCX, XLSX, texte, ',
             noVision1: '⚠ ', noVision2: ' ne prend pas en charge les images. Sélectionnez un modèle compatible et réessayez.',
@@ -710,16 +710,16 @@ const NotificationPoller = {
         var isProgress = entry.content && entry.content !== '';
 
         if (isProgress) {
-            // Progress status update — show as stacked status phrase, don't reload session
-            if (isCurrentSession) UIManager.appendTaskStatusUpdate(entry.content);
-            // No toast for other-session progress — too noisy
+            // Progress entries no longer surface as a dedicated stacked area —
+            // the in-flight chain renders activity directly into the chat via
+            // `startProgressPolling`. Kept as a no-op so other-session
+            // notifications still fall through to the toast branch below.
         } else {
-            // Session-updated sentinel — reload session, clear status area
+            // Session-updated sentinel — reload session.
             if (isCurrentSession) {
                 SessionStore.getSession(entry.session_id).then(function(session) {
                     if (session) {
                         UIManager.currentSession = session;
-                        UIManager.clearTaskStatusArea();
                         UIManager.renderChat();
                     }
                 });
@@ -783,8 +783,7 @@ function getModelDisplayName(model) {
 // Redact passwords, keystore paths, and SSH key paths from a
 // progress-row label string. PURE UI VIEW — applied at render-time
 // only. The unredacted text remains in session_progress.label on the
-// BE (so `fetch_task` returns full fidelity to the LLM) and in
-// session.messages tool_call args.
+// BE and in session.messages tool_call args.
 //
 // Patterns covered:
 //   - sshpass -p '<pwd>'      (single/double-quote/bare)

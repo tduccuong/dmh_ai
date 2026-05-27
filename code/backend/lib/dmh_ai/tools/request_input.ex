@@ -25,6 +25,10 @@ defmodule DmhAi.Tools.RequestInput do
   def description do
     """
     Render an inline form to collect structured, named values. Each field: `{name, label, type: "text"|"password", secret?}` — `password` auto-implies `secret: true`. Optional `submit_label` (default "Submit"); narration emitted with the call shows above the form. Chain-terminating.
+
+    For named structured values from the user (multi-field config, paired credentials, anything ≥2 inputs), call `request_input(fields: [{name, label, type, secret?}], submit_label?)`. The FE renders an inline form; the user submits; values arrive on your next chain as a synthesised user message.
+
+    This call ENDS the chain — do NOT pair it with other tool calls in the same turn. Single-field asks (one password, one URL) → plain text; don't bring up a form for one input.
     """
   end
 

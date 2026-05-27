@@ -146,7 +146,7 @@ defmodule DmhAi.Ingest do
     else
       {:ok, embeddings} = Embedder.embed_batch(chunks)
       centroid = average_embedding(embeddings)
-      tags = Tagger.tag(body)
+      tags = Tagger.tag(body, %{user_id: attrs[:created_by_user_id] || attrs[:user_id]})
       extracted_sha = sha256(body)
 
       {:ok, internal_id} =

@@ -10,20 +10,9 @@ defmodule DmhAi.DB.SchemaInit do
   returns `:ignore` so the supervisor moves on to the next child.
 
   Placed in the supervision tree IMMEDIATELY AFTER `DmhAi.Repo` and
-  BEFORE any child that queries the DB (`DmhAi.Agent.TaskRuntime`,
-  etc.), under a `:rest_for_one` strategy so a Repo restart re-runs
-  schema init before downstream children come back.
-
-  Without this, on a fresh install the DB is empty when
-  `TaskRuntime.handle_info(:rehydrate, …)` fires (~500ms after init),
-  the rehydrate query crashes on `no such table: tasks`, the
-  supervisor restarts TaskRuntime, it crashes again the same way,
-  exceeds default `max_restarts` (3 in 5s), tears down the whole
-  supervision tree (Repo with it), and the post-`Supervisor.start_link`
-  call to `DB.Init.run()` fails with `could not lookup Ecto repo
-  DmhAi.Repo because it was not started`. Result: master restart-loops
-  forever on first boot. Existing installs don't see the bug because
-  `chat.db` carries the schema across boots.
+  BEFORE any child that queries the DB, under a `:rest_for_one`
+  strategy so a Repo restart re-runs schema init before downstream
+  children come back.
   """
   use GenServer, restart: :transient
 

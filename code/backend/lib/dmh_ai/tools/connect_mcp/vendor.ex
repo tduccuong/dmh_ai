@@ -47,11 +47,11 @@ defmodule DmhAi.Tools.ConnectMcp.Vendor do
   as `InProcess.attach/3`.
   """
   @spec connect(map()) :: {:ok, map()} | {:error, String.t()}
-  def connect(%{user_id: user_id, session_id: session_id, anchor_task_id: anchor_task_id,
+  def connect(%{user_id: user_id, session_id: session_id,
                 url: url, alias_: alias_, catalog_auth_kind: catalog_auth_kind}) do
-    case already_authorized_and_attach(user_id, anchor_task_id, alias_) do
+    case already_authorized_and_attach(user_id, session_id, alias_) do
       {:ok, payload} -> {:ok, payload}
-      :continue       -> connect_fresh(user_id, session_id, anchor_task_id, url, alias_, catalog_auth_kind)
+      :continue       -> connect_fresh(user_id, session_id, url, alias_, catalog_auth_kind)
     end
   end
 
@@ -63,7 +63,7 @@ defmodule DmhAi.Tools.ConnectMcp.Vendor do
   # tools list and attach. Expired creds fall through to
   # `:continue` — the call-time refresh path (Caller) will mint a
   # fresh access_token when the model actually calls a tool.
-  defp already_authorized_and_attach(user_id, anchor_task_id, alias_) do
+  defp already_authorized_and_attach(user_id, session_id, alias_) do
     with %{canonical_resource: resource} = authz <- MCPRegistry.find_authorized(user_id, alias_),
          cred when is_map(cred) <- Credentials.lookup(user_id, "mcp:" <> resource, ""),
          %{is_expired: false} <- cred,
@@ -71,7 +71,7 @@ defmodule DmhAi.Tools.ConnectMcp.Vendor do
          {:ok, _info, sid}    <- MCPClient.initialize(handshake_ctx),
          {:ok, tools}          <- MCPClient.list_tools(handshake_ctx, sid) do
       MCPRegistry.set_authorized_tools(user_id, alias_, tools)
-      MCPRegistry.attach(anchor_task_id, user_id, alias_)
+      MCPRegistry.attach(session_id, user_id, alias_)
       {:ok, %{status: "connected", alias: alias_, tools: summarize_tools(tools)}}
     else
       _ -> :continue
@@ -131,30 +131,30 @@ defmodule DmhAi.Tools.ConnectMcp.Vendor do
   # catalog row already classified auth_kind once at admin Enable
   # time — we honor it without re-probing.
 
-  defp connect_fresh(user_id, session_id, anchor_task_id, server_url, alias_, catalog_auth_kind)
+  defp connect_fresh(user_id, session_id, server_url, alias_, catalog_auth_kind)
 
-  defp connect_fresh(user_id, _session_id, anchor_task_id, server_url, alias_, "none") do
-    no_auth_connect(user_id, anchor_task_id, alias_, server_url)
+  defp connect_fresh(user_id, session_id, server_url, alias_, "none") do
+    no_auth_connect(user_id, session_id, alias_, server_url)
   end
 
-  defp connect_fresh(user_id, session_id, anchor_task_id, server_url, alias_, "oauth") do
-    gated_oauth_flow(user_id, session_id, anchor_task_id, server_url, alias_, nil)
+  defp connect_fresh(user_id, session_id, server_url, alias_, "oauth") do
+    gated_oauth_flow(user_id, session_id, server_url, alias_, nil)
   end
 
-  defp connect_fresh(_user_id, _session_id, anchor_task_id, server_url, alias_, "api_key") do
-    api_key_setup_form(anchor_task_id, server_url, alias_)
+  defp connect_fresh(_user_id, session_id, server_url, alias_, "api_key") do
+    api_key_setup_form(session_id, server_url, alias_)
   end
 
-  defp connect_fresh(user_id, session_id, anchor_task_id, server_url, alias_, _no_catalog) do
+  defp connect_fresh(user_id, session_id, server_url, alias_, _no_catalog) do
     case DmhAi.MCP.Probe.classify(server_url) do
       :open ->
-        no_auth_connect(user_id, anchor_task_id, alias_, server_url)
+        no_auth_connect(user_id, session_id, alias_, server_url)
 
       {:gated, %{auth_type: :oauth, prm_hint: prm_hint}} ->
-        gated_oauth_flow(user_id, session_id, anchor_task_id, server_url, alias_, prm_hint)
+        gated_oauth_flow(user_id, session_id, server_url, alias_, prm_hint)
 
       {:gated, %{auth_type: :api_key}} ->
-        api_key_setup_form(anchor_task_id, server_url, alias_)
+        api_key_setup_form(session_id, server_url, alias_)
 
       {:gated, %{auth_type: :ambiguous}} ->
         {:error,
@@ -173,13 +173,13 @@ defmodule DmhAi.Tools.ConnectMcp.Vendor do
   # than falling to a manual setup form — admin catalog curation is
   # the proper home for in-house MCP servers that need BYO-OAuth
   # endpoints.
-  defp gated_oauth_flow(user_id, session_id, anchor_task_id, server_url, alias_, prm_hint_url) do
+  defp gated_oauth_flow(user_id, session_id, server_url, alias_, prm_hint_url) do
     with {:ok, prm}    <- fetch_prm_via_hint_or_well_known(server_url, prm_hint_url),
          auth_server    = hd(prm.authorization_servers),
          {:ok, asm}     <- Discovery.fetch_asm(auth_server),
          redirect_uri   = build_redirect_uri(),
          {:ok, client}  <- acquire_or_signal(user_id, asm, redirect_uri, prm.scopes_supported),
-         {:ok, init}    <- start_auth(user_id, session_id, anchor_task_id, alias_, prm, asm, server_url, client, redirect_uri) do
+         {:ok, init}    <- start_auth(user_id, session_id, alias_, prm, asm, server_url, client, redirect_uri) do
       {:ok, %{
         status:   "needs_auth",
         alias:    alias_,
@@ -212,11 +212,10 @@ defmodule DmhAi.Tools.ConnectMcp.Vendor do
     end
   end
 
-  defp start_auth(user_id, session_id, anchor_task_id, alias_, prm, asm, server_url, client, redirect_uri) do
+  defp start_auth(user_id, session_id, alias_, prm, asm, server_url, client, redirect_uri) do
     OAuth2.init_flow(%{
       user_id:            user_id,
       session_id:         session_id,
-      anchor_task_id:     anchor_task_id,
       alias:              alias_,
       canonical_resource: prm.resource,
       server_url:         server_url,
@@ -230,7 +229,7 @@ defmodule DmhAi.Tools.ConnectMcp.Vendor do
 
   # ── api_key form (manual fallback for static-header servers) ──────────
 
-  defp api_key_setup_form(anchor_task_id, url, alias_) do
+  defp api_key_setup_form(session_id, url, alias_) do
     form = build_setup_form(
       [
         %{
@@ -254,10 +253,10 @@ defmodule DmhAi.Tools.ConnectMcp.Vendor do
       ],
       "Connect",
       %{
-        "auth_method"    => "api_key",
-        "alias"          => alias_,
-        "server_url"     => url,
-        "anchor_task_id" => anchor_task_id
+        "auth_method" => "api_key",
+        "alias"       => alias_,
+        "server_url"  => url,
+        "session_id"  => session_id
       }
     )
 
@@ -271,7 +270,7 @@ defmodule DmhAi.Tools.ConnectMcp.Vendor do
 
   # ── no auth path ──────────────────────────────────────────────────────
 
-  defp no_auth_connect(user_id, anchor_task_id, alias_, url) do
+  defp no_auth_connect(user_id, session_id, alias_, url) do
     handshake_ctx = %{
       server_url:         url,
       canonical_resource: url,
@@ -282,7 +281,7 @@ defmodule DmhAi.Tools.ConnectMcp.Vendor do
          {:ok, tools}        <- MCPClient.list_tools(handshake_ctx, sid) do
       MCPRegistry.authorize(user_id, alias_, url, url, nil)
       MCPRegistry.set_authorized_tools(user_id, alias_, tools)
-      MCPRegistry.attach(anchor_task_id, user_id, alias_)
+      MCPRegistry.attach(session_id, user_id, alias_)
 
       Credentials.save(
         user_id,

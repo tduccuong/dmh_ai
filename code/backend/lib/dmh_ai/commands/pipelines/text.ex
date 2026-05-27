@@ -18,7 +18,7 @@ defmodule DmhAi.Commands.Pipelines.Text do
   alias DmhAi.Commands.IndexAck
 
   @spec run(String.t(), String.t(), String.t()) :: {:ok, String.t()} | {:error, String.t()}
-  def run(body, _session_id, user_id) when is_binary(body) do
+  def run(body, session_id, user_id) when is_binary(body) do
     body = String.trim(body)
 
     if body == "" do
@@ -35,7 +35,9 @@ defmodule DmhAi.Commands.Pipelines.Text do
       }
 
       case VectorDB.ingest(attrs, body) do
-        {:ok, _info}     -> {:ok, Swift.localize(IndexAck.final_ack(title), body)}
+        {:ok, _info} ->
+          {:ok, Swift.localize(IndexAck.final_ack(title), body,
+                               %{session_id: session_id, user_id: user_id})}
         {:error, reason} -> {:error, "ingest failed: #{inspect(reason, limit: 80)}"}
       end
     end
