@@ -1,0 +1,276 @@
+{
+  "connector_slug": "asana",
+  "functions": [
+    {
+      "args": {
+        "limit": {
+          "required": false,
+          "type": "integer"
+        },
+        "workspace_id": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": false,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "project.find",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "projects": "list"
+      },
+      "scopes_required": [
+        "default"
+      ]
+    },
+    {
+      "args": {
+        "name": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "workspace_id": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "rate_limited"
+      ],
+      "function_name": "project.create",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "project_id": "string"
+      },
+      "scopes_required": [
+        "default"
+      ]
+    },
+    {
+      "args": {
+        "limit": {
+          "required": false,
+          "type": "integer"
+        },
+        "project_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "asana.project.find"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "task.find",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "tasks": "list"
+      },
+      "scopes_required": [
+        "default"
+      ]
+    },
+    {
+      "args": {
+        "due_on": {
+          "required": false,
+          "type": "string"
+        },
+        "name": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "notes": {
+          "required": false,
+          "type": "string"
+        },
+        "project_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "asana.project.find"
+          },
+          "required": false,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "rate_limited"
+      ],
+      "function_name": "task.create",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "task_id": "string"
+      },
+      "scopes_required": [
+        "default"
+      ]
+    },
+    {
+      "args": {
+        "patch": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "map"
+        },
+        "task_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "asana.task.find"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "task.update",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "task_id": "string"
+      },
+      "scopes_required": [
+        "default"
+      ]
+    },
+    {
+      "args": {
+        "task_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "asana.task.find"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "task.complete",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "task_id": "string"
+      },
+      "scopes_required": [
+        "default"
+      ]
+    },
+    {
+      "args": {
+        "task_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "asana.task.find"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "text": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "story.create",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "story_id": "string"
+      },
+      "scopes_required": [
+        "default"
+      ]
+    },
+    {
+      "args": {
+        "user_id": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": false,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "user.find",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "user": "map"
+      },
+      "scopes_required": [
+        "default"
+      ]
+    }
+  ],
+  "vendor_api_version": "1.0"
+}
