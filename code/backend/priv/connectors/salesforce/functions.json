@@ -1,0 +1,431 @@
+{
+  "connector_slug": "salesforce",
+  "functions": [
+    {
+      "args": {
+        "name": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "website": {
+          "required": false,
+          "type": "string"
+        },
+        "industry": {
+          "required": false,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "duplicate",
+        "rate_limited"
+      ],
+      "function_name": "account.create",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "account_id": "string"
+      },
+      "scopes_required": [
+        "api"
+      ]
+    },
+    {
+      "args": {
+        "limit": {
+          "required": false,
+          "type": "integer"
+        },
+        "query": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "account.find",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "accounts": "list"
+      },
+      "scopes_required": [
+        "api"
+      ]
+    },
+    {
+      "args": {
+        "contact_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "salesforce.contact.find"
+          },
+          "required": false,
+          "type": "string"
+        },
+        "description": {
+          "required": false,
+          "type": "string"
+        },
+        "priority": {
+          "required": false,
+          "type": "string"
+        },
+        "subject": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "rate_limited"
+      ],
+      "function_name": "case.create",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "case_id": "string"
+      },
+      "scopes_required": [
+        "api"
+      ]
+    },
+    {
+      "args": {
+        "account_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "salesforce.account.find"
+          },
+          "required": false,
+          "type": "string"
+        },
+        "email": {
+          "format": "email",
+          "required": false,
+          "type": "string"
+        },
+        "first_name": {
+          "required": false,
+          "type": "string"
+        },
+        "last_name": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "duplicate",
+        "rate_limited"
+      ],
+      "function_name": "contact.create",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "contact_id": "string"
+      },
+      "scopes_required": [
+        "api"
+      ]
+    },
+    {
+      "args": {
+        "limit": {
+          "required": false,
+          "type": "integer"
+        },
+        "query": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "contact.find",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "contacts": "list"
+      },
+      "scopes_required": [
+        "api"
+      ]
+    },
+    {
+      "args": {
+        "company": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "email": {
+          "format": "email",
+          "required": false,
+          "type": "string"
+        },
+        "first_name": {
+          "required": false,
+          "type": "string"
+        },
+        "last_name": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "duplicate",
+        "rate_limited"
+      ],
+      "function_name": "lead.create",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "lead_id": "string"
+      },
+      "scopes_required": [
+        "api"
+      ]
+    },
+    {
+      "args": {
+        "limit": {
+          "required": false,
+          "type": "integer"
+        },
+        "query": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "lead.find",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "leads": "list"
+      },
+      "scopes_required": [
+        "api"
+      ]
+    },
+    {
+      "args": {
+        "account_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "salesforce.account.find"
+          },
+          "required": false,
+          "type": "string"
+        },
+        "amount": {
+          "required": false,
+          "type": "number"
+        },
+        "close_date": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "name": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "stage": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "duplicate",
+        "rate_limited"
+      ],
+      "function_name": "opportunity.create",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "opportunity_id": "string"
+      },
+      "scopes_required": [
+        "api"
+      ]
+    },
+    {
+      "args": {
+        "limit": {
+          "required": false,
+          "type": "integer"
+        },
+        "owner": {
+          "required": false,
+          "type": "string"
+        },
+        "stage": {
+          "required": false,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "opportunity.find",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "opportunities": "list"
+      },
+      "scopes_required": [
+        "api"
+      ]
+    },
+    {
+      "args": {
+        "opportunity_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "salesforce.opportunity.find"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "patch": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "map"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "opportunity.update",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "opportunity_id": "string"
+      },
+      "scopes_required": [
+        "api"
+      ]
+    },
+    {
+      "args": {
+        "contact_id": {
+          "required": false,
+          "type": "string"
+        },
+        "due_date": {
+          "required": false,
+          "type": "string"
+        },
+        "priority": {
+          "required": false,
+          "type": "string"
+        },
+        "subject": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "rate_limited"
+      ],
+      "function_name": "task.create",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "task_id": "string"
+      },
+      "scopes_required": [
+        "api"
+      ]
+    }
+  ],
+  "vendor_api_version": "v60.0"
+}
