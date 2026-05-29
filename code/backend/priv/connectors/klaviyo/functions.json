@@ -1,0 +1,191 @@
+{
+  "connector_slug": "klaviyo",
+  "functions": [
+    {
+      "args": {
+        "email": {
+          "format": "email",
+          "required": false,
+          "type": "string"
+        },
+        "query": {
+          "required": false,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "profile.find",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "profiles": "list"
+      },
+      "scopes_required": []
+    },
+    {
+      "args": {
+        "email": {
+          "format": "email",
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "first_name": {
+          "required": false,
+          "type": "string"
+        },
+        "last_name": {
+          "required": false,
+          "type": "string"
+        },
+        "phone_number": {
+          "required": false,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "duplicate",
+        "rate_limited"
+      ],
+      "function_name": "profile.create",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "profile_id": "string"
+      },
+      "scopes_required": []
+    },
+    {
+      "args": {
+        "patch": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "map"
+        },
+        "profile_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "klaviyo.profile.find"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "profile.update",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "profile_id": "string"
+      },
+      "scopes_required": []
+    },
+    {
+      "args": {
+        "event_name": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "profile_email": {
+          "format": "email",
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "properties": {
+          "required": false,
+          "type": "map"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "rate_limited"
+      ],
+      "function_name": "event.create",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "event_id": "string"
+      },
+      "scopes_required": []
+    },
+    {
+      "args": {
+        "limit": {
+          "required": false,
+          "type": "integer"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "list.find",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "lists": "list"
+      },
+      "scopes_required": []
+    },
+    {
+      "args": {
+        "limit": {
+          "required": false,
+          "type": "integer"
+        },
+        "status": {
+          "required": false,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "campaign.find",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "campaigns": "list"
+      },
+      "scopes_required": []
+    }
+  ],
+  "vendor_api_version": "2024-10-15"
+}
