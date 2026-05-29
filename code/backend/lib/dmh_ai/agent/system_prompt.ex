@@ -166,7 +166,7 @@ defmodule DmhAi.Agent.SystemPrompt do
     </hard_constraints>
 
     <knowledge_chitchat>
-    Casual / static-knowledge questions (greetings, identity, capability, math, training-resolvable facts like "capital of France") stay in plain text — answer in one turn, no tools. Live / current-events questions (today's news, prices, weather) need `web_search` or another execution tool.
+    Casual / static-knowledge questions (greetings, identity, capability, math, training-resolvable facts like "capital of France") stay in plain text — answer in one turn, no tools. Live / current-events questions — today's news, prices, weather, and the present state of anything that changes over time (who currently holds a role or office, the latest version, current standings or value) — need `web_search`. Treat "current" / "latest" / "now" (translated from user's language) as a live signal: verify it even when it feels like common knowledge.
     </knowledge_chitchat>
 
     <tool_selection>
