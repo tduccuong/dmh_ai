@@ -31,8 +31,9 @@ defmodule DmhAi.Connectors.Registry do
     DmhAi.Connectors.Calendly,
     DmhAi.Connectors.Shopify,
     DmhAi.Connectors.Salesforce,
-    DmhAi.Connectors.Slack
-    # Zoom, DocuSign, Klaviyo, Atlassian, Asana, Notion, Brevo — added
+    DmhAi.Connectors.Slack,
+    DmhAi.Connectors.Zoom
+    # DocuSign, Klaviyo, Atlassian, Asana, Notion, Brevo — added
     # in subsequent slices of Phase C.
   ]
 

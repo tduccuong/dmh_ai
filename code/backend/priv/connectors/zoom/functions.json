@@ -1,0 +1,258 @@
+{
+  "connector_slug": "zoom",
+  "functions": [
+    {
+      "args": {
+        "agenda": {
+          "required": false,
+          "type": "string"
+        },
+        "duration": {
+          "required": false,
+          "type": "integer"
+        },
+        "start_time": {
+          "required": false,
+          "type": "string"
+        },
+        "topic": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "rate_limited"
+      ],
+      "function_name": "meeting.create",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "join_url": "string",
+        "meeting_id": "string"
+      },
+      "scopes_required": [
+        "meeting:write"
+      ]
+    },
+    {
+      "args": {
+        "limit": {
+          "required": false,
+          "type": "integer"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "meeting.find",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "meetings": "list"
+      },
+      "scopes_required": [
+        "meeting:read"
+      ]
+    },
+    {
+      "args": {
+        "meeting_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "zoom.meeting.find"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "meeting.get",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "meeting": "map"
+      },
+      "scopes_required": [
+        "meeting:read"
+      ]
+    },
+    {
+      "args": {
+        "meeting_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "zoom.meeting.find"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "patch": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "map"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "meeting.update",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "meeting_id": "string"
+      },
+      "scopes_required": [
+        "meeting:write"
+      ]
+    },
+    {
+      "args": {
+        "meeting_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "zoom.meeting.find"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "meeting.delete",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "ok": "boolean"
+      },
+      "scopes_required": [
+        "meeting:write"
+      ]
+    },
+    {
+      "args": {
+        "from": {
+          "required": false,
+          "type": "string"
+        },
+        "limit": {
+          "required": false,
+          "type": "integer"
+        },
+        "to": {
+          "required": false,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "recording.find",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "recordings": "list"
+      },
+      "scopes_required": [
+        "recording:read"
+      ]
+    },
+    {
+      "args": {
+        "user_id": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": false,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "user.find",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "user": "map"
+      },
+      "scopes_required": [
+        "user:read"
+      ]
+    },
+    {
+      "args": {
+        "duration": {
+          "required": false,
+          "type": "integer"
+        },
+        "start_time": {
+          "required": false,
+          "type": "string"
+        },
+        "topic": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "rate_limited"
+      ],
+      "function_name": "webinar.create",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "registration_url": "string",
+        "webinar_id": "string"
+      },
+      "scopes_required": [
+        "webinar:write"
+      ]
+    }
+  ],
+  "vendor_api_version": "v2"
+}
