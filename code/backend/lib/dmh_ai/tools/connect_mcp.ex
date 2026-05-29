@@ -40,6 +40,15 @@ defmodule DmhAi.Tools.ConnectMcp do
   def name, do: "connect_mcp"
 
   @impl true
+  # `write_class: :write` so repeated connects still count toward the
+  # write-failure budget. `outcome_write: false` keeps a successful
+  # connect OUT of the phantom-outcome tally — establishing a
+  # connection is setup plumbing, never the user-requested outcome, so
+  # it must not mask a chain whose real action (e.g. a failed
+  # `upsert_workflow`) never landed.
+  def catalog_manifest, do: %{write_class: :write, outcome_write: false}
+
+  @impl true
   def description do
     """
     Attach an MCP server (JSON-RPC `initialize`/`tools/list`/`tools/call`) to the current session. Pass a `slug` from the admin-curated catalog (visible in `<authorized_services>` + the org's `<authorized_services_catalog>` block).
@@ -105,8 +114,62 @@ defmodule DmhAi.Tools.ConnectMcp do
     with :ok            <- require_ctx(user_id, session_id),
          {:ok, route}   <- classify_route(slug) do
       dispatch(route, user_id, session_id, alias_in)
+      |> attach_manifest(user_id, session_id)
     end
   end
+
+  # On `status: "connected"`, three things happen in the post-process:
+  #
+  #   1. The verbose `tools` payload is replaced with the compact
+  #      manifest format `activate_profile` also returns — one
+  #      authoritative catalog shape for the model to learn.
+  #
+  #   2. The matching connector profile (`connector:<slug>`) is
+  #      auto-activated on the session. The model doesn't have to
+  #      emit a second `activate_profile` call to make the verbs
+  #      callable — it expressed the intent "I want this surface"
+  #      via `connect_mcp`; the runtime resolves the rest. See
+  #      `arch_wiki/dmh_ai/architecture.md` §Execution tools /
+  #      §Tool profiles / §Hook from connect_mcp success.
+  #
+  #   3. The tool result `note` tells the model the verbs are
+  #      live this turn onward — no further activation needed.
+  #
+  # Other statuses (`needs_auth` / `needs_setup`) pass through
+  # unchanged; nothing to activate when the attachment didn't
+  # actually land.
+  defp attach_manifest({:ok, %{status: "connected", alias: alias_} = res}, user_id, session_id) do
+    manifest_entries =
+      DmhAi.Tools.Profiles.build_manifest([{:connector, alias_}], user_id, session_id)
+      |> Map.get("connector:" <> alias_, [])
+
+    _ = auto_activate_connector_profile(session_id, alias_)
+
+    {:ok,
+     res
+     |> Map.delete(:tools)
+     |> Map.put(:manifest, manifest_entries)
+     |> Map.put(:profile_activated, "connector:" <> alias_)
+     |> Map.put(:note,
+       "Tools exposed by this connector are EXACTLY the entries in `manifest` — name, arg shape, return-key names, read/write kind. Call only these. If the request needs a tool not listed, this connector does not expose that capability — surface that to the user rather than guessing from the vendor's public API names. The matching profile (`connector:#{alias_}`) has been auto-activated on this chain — these tools are callable from the next turn onward; no further `activate_profile` call is needed."
+     )}
+  end
+
+  defp attach_manifest(other, _, _), do: other
+
+  defp auto_activate_connector_profile(session_id, slug)
+       when is_binary(session_id) and is_binary(slug) do
+    existing = DmhAi.Agent.SessionContext.active_profiles(session_id)
+    profile_name = "connector:" <> slug
+
+    if profile_name in existing do
+      :ok
+    else
+      DmhAi.Agent.SessionContext.set_active_profiles(session_id, existing ++ [profile_name])
+    end
+  end
+
+  defp auto_activate_connector_profile(_, _), do: :ok
 
   # ── routing ────────────────────────────────────────────────────────────
 

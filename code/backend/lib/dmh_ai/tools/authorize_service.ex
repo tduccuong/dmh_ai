@@ -39,6 +39,9 @@ defmodule DmhAi.Tools.AuthorizeService do
   def name, do: "authorize_service"
 
   @impl true
+  def catalog_manifest, do: %{write_class: :write}
+
+  @impl true
   def description do
     """
     Authorize the user against an OAuth-protected REST service that the operator has wired into the catalog. Use this when you've discovered (via training, fetch_index, web_search, or a probe response) that a URL needs OAuth before you can call it.
@@ -64,7 +67,7 @@ defmodule DmhAi.Tools.AuthorizeService do
         properties: %{
           target: %{
             type: "string",
-            description: "Slug (e.g. \"google\"), host (\"api.github.com\"), or URL of the service to authorize. The runtime matches against the catalog by host suffix."
+            description: "The service to authorize, given as its catalog slug, its API host, or a full URL. The runtime matches against the catalog by host suffix, so any of those forms resolves."
           },
           force_new: %{
             type: "boolean",

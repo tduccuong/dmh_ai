@@ -198,6 +198,9 @@ defmodule DmhAi.Tools.RunScript do
   def name, do: "run_script"
 
   @impl true
+  def catalog_manifest, do: %{write_class: :write}
+
+  @impl true
   def description do
     pre_installed = Sandbox.installed_tools() |> Enum.join(", ")
 

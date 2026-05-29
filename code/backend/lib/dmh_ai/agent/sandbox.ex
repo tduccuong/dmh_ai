@@ -67,6 +67,53 @@ defmodule DmhAi.Agent.Sandbox do
     :ok
   end
 
+  @doc """
+  Probe whether the materialised SSH keypair at `priv_key_path`
+  currently authenticates against `<remote_user>@<host_part>`.
+  Runs as `username` inside the sandbox (the per-user uid that
+  owns the keystore file). Returns `:ok` on remote-side success
+  (exit 0 of the trivial command `true`), `{:error, reason}` on
+  anything else — `reason` carries the ssh-client's stderr so the
+  caller can surface install-vs-network distinctions in tool
+  results. Hard cap: ~6 seconds total (5-second `ConnectTimeout`
+  + a small docker-exec overhead budget).
+
+  Authoritative for the `provision_ssh_identity` lookup-hit path:
+  no cached "verified" state — every call runs the probe, the
+  probe is the verification. See `integrations.md` §SSH
+  provisioning / §Verification.
+  """
+  @spec probe_ssh(String.t(), String.t(), String.t(), String.t()) ::
+          :ok | {:error, String.t()}
+  def probe_ssh(username, priv_key_path, remote_user, host_part)
+      when is_binary(username) and is_binary(priv_key_path) and
+             is_binary(remote_user) and is_binary(host_part) do
+    user_host =
+      case remote_user do
+        "" -> host_part
+        u  -> u <> "@" <> host_part
+      end
+
+    ssh_args = [
+      "-o", "BatchMode=yes",
+      "-o", "ConnectTimeout=5",
+      "-o", "StrictHostKeyChecking=accept-new",
+      "-i", priv_key_path,
+      user_host,
+      "true"
+    ]
+
+    docker_args =
+      ["exec", "-u", username, container_name(), "ssh"] ++ ssh_args
+
+    case System.cmd("docker", docker_args, stderr_to_stdout: true) do
+      {_out, 0} -> :ok
+      {out, code} -> {:error, "exit #{code}: " <> String.slice(out, 0, 400)}
+    end
+  rescue
+    e -> {:error, Exception.message(e)}
+  end
+
   # ── private ────────────────────────────────────────────────────────────
 
   defp inspect_container do

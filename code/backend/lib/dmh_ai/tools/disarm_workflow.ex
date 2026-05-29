@@ -20,6 +20,9 @@ defmodule DmhAi.Tools.DisarmWorkflow do
   def name, do: "disarm_workflow"
 
   @impl true
+  def catalog_manifest, do: %{write_class: :write}
+
+  @impl true
   def description do
     "Deactivate a workflow — stops its trigger from firing. In-flight tasks finish; no new ones start until re-armed."
   end

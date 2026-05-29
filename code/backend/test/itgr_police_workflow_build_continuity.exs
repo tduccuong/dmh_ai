@@ -74,9 +74,9 @@ defmodule DmhAi.PoliceWorkflowBuildContinuityTest do
           content: "upsert_workflow: rejected (placeholder)"}
       ]
 
-      assert :ok = Police.check_workflow_build_continuity("upsert_workflow",    prior)
-      assert :ok = Police.check_workflow_build_continuity("inspect_function",   prior)
-      assert :ok = Police.check_workflow_build_continuity("request_input",      prior)
+      assert :ok = Police.check_workflow_build_continuity("upsert_workflow",          prior)
+      assert :ok = Police.check_workflow_build_continuity("inspect_function_property", prior)
+      assert :ok = Police.check_workflow_build_continuity("request_input",            prior)
       assert :ok = Police.check_workflow_build_continuity("read_workflow",      prior)
       assert :ok = Police.check_workflow_build_continuity("connect_mcp",        prior)
     end

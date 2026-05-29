@@ -34,6 +34,9 @@ defmodule DmhAi.Tools.InvokeWorkflow do
   def name, do: "invoke_workflow"
 
   @impl true
+  def catalog_manifest, do: %{write_class: :write}
+
+  @impl true
   def description do
     """
     Run a saved workflow once with supplied inputs. Args: name (slug), inputs (map matching the trigger's inputs). Always uses the workflow's latest saved version.

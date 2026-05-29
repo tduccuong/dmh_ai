@@ -10,7 +10,9 @@ defmodule DmhAi.Workflows.Path do
   Grammar (BNF):
 
       ref         = root ("." segment | "[" int "]")*
-      root        = "T" | "owner" | "org" | "now" | "today" | int
+      root        = "T" | "owner" | "org" | time | int
+      time        = ("now" | "today") offset?     ; carries no path
+      offset      = ("+" | "-") int ("m" | "h" | "d" | "w")
       segment     = ident | int
       ident       = [A-Za-z_][A-Za-z0-9_]*
       int         = [0-9]+
@@ -31,6 +33,9 @@ defmodule DmhAi.Workflows.Path do
 
       "now"
       → %{root: :now, path: []}
+
+      "now-7d"   (offset form: seven days before now)
+      → %{root: {:now, -604_800}, path: []}
 
       "0.foo[0][1].bar"  (list-of-lists indexing)
       → %{root: {:node,0}, path: [{:key,"foo"}, {:index,0}, {:index,1}, {:key,"bar"}]}
@@ -62,11 +67,17 @@ defmodule DmhAi.Workflows.Path do
           | :org
           | :now
           | :today
+          | {:now, integer()}
+          | {:today, integer()}
           | :local
           | {:node, non_neg_integer()}
 
   @typedoc "The parsed reference."
   @type ref :: %{root: root(), path: [accessor()]}
+
+  # Offset units for the relative-time forms (`now-7d`, `today+2w`).
+  # Values are physical second-counts per unit — not operator config.
+  @offset_unit_seconds %{"m" => 60, "h" => 3600, "d" => 86_400, "w" => 604_800}
 
   @doc """
   Parse a ref body (the content between `{{` and `}}`, already trimmed).
@@ -118,23 +129,57 @@ defmodule DmhAi.Workflows.Path do
           else: {:error, "unexpected content after `today` at offset #{head_len}"}
 
       other ->
-        case Integer.parse(other) do
-          {n, ""} when n >= 0 ->
-            case rest do
-              ""          -> {:ok, {:node, n}, "", head_len}
-              "." <> tail -> {:ok, {:node, n}, tail, head_len + 1}
-              "[" <> _    -> {:ok, {:node, n}, rest, head_len}
-              _           -> {:error, "expected `.`, `[`, or end after node id `#{other}` at offset #{head_len}"}
-            end
+        case parse_time_offset(other) do
+          {:ok, time_root} ->
+            # `now`/`today` (offset form) are scalar — they take an
+            # offset and nothing else, no `.`/`[` sub-path.
+            if rest == "",
+              do: {:ok, time_root, "", head_len},
+              else:
+                {:error,
+                 "`now`/`today` take a relative offset only (e.g. `now-7d`), " <>
+                   "no `.`/`[` path, at offset #{head_len}"}
 
-          _ ->
-            # Unknown leading token. NOT a grammar error — this is a
-            # template-local placeholder (e.g. `{{name}}` referring to
-            # a key in `llm.compose`'s context map). Push the entire
-            # original string back into `parse_path` so the first
-            # token becomes the first :key accessor.
-            {:ok, :local, s, 0}
+          :error ->
+            parse_node_or_local(other, rest, head_len, s)
         end
+    end
+  end
+
+  defp parse_node_or_local(other, rest, head_len, original) do
+    case Integer.parse(other) do
+      {n, ""} when n >= 0 ->
+        case rest do
+          ""          -> {:ok, {:node, n}, "", head_len}
+          "." <> tail -> {:ok, {:node, n}, tail, head_len + 1}
+          "[" <> _    -> {:ok, {:node, n}, rest, head_len}
+          _           -> {:error, "expected `.`, `[`, or end after node id `#{other}` at offset #{head_len}"}
+        end
+
+      _ ->
+        # Unknown leading token. NOT a grammar error — this is a
+        # template-local placeholder (e.g. `{{name}}` referring to
+        # a key in `llm.compose`'s context map). Push the entire
+        # original string back into `parse_path` so the first
+        # token becomes the first :key accessor.
+        {:ok, :local, original, 0}
+    end
+  end
+
+  # Relative-time offset on `now` / `today` — `now-7d`, `today+2w`.
+  # Returns the root tuple carrying the offset in SECONDS, or `:error`
+  # when `head` isn't an offset form (so the caller falls through to
+  # node-id / local-placeholder parsing). Sign + integer count + unit.
+  defp parse_time_offset(head) do
+    case Regex.run(~r/^(now|today)([+-])(\d+)([mhdw])$/, head) do
+      [_, base, sign, count, unit] ->
+        magnitude = String.to_integer(count) * Map.fetch!(@offset_unit_seconds, unit)
+        seconds   = if sign == "-", do: -magnitude, else: magnitude
+        root      = if base == "now", do: {:now, seconds}, else: {:today, seconds}
+        {:ok, root}
+
+      _ ->
+        :error
     end
   end
 

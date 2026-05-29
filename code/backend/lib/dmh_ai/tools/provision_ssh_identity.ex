@@ -43,15 +43,21 @@ defmodule DmhAi.Tools.ProvisionSshIdentity do
   don't collide.
 
   Idempotent on the `(target, account)` key — re-provisioning the
-  same identity re-materialises the existing keypair and returns
-  `status: "ready"`.
+  same identity re-materialises the existing keypair (without
+  touching the row) and then runs an `ssh BatchMode true` probe
+  inside the sandbox: success ⇒ `status: "ready"`, failure ⇒
+  `status: "needs_setup"` with the EXISTING public key so the
+  user can re-install. The probe is the only source of truth —
+  the tool does NOT cache verification state across calls.
 
-  See `arch_wiki/dmh_ai/integrations.md` §SSH provisioning.
+  See `arch_wiki/dmh_ai/integrations.md` §SSH provisioning /
+  §Verification.
   """
 
   @behaviour DmhAi.Tools.Behaviour
 
   alias DmhAi.Auth.Credentials
+  alias DmhAi.Agent.Sandbox
   alias DmhAi.Permissions.SandboxUser
 
   @default_user_marker "_default_"
@@ -60,13 +66,19 @@ defmodule DmhAi.Tools.ProvisionSshIdentity do
   def name, do: "provision_ssh_identity"
 
   @impl true
+  def catalog_manifest, do: %{write_class: :write}
+
+  @impl true
   def description do
     """
-    Provision a sandbox-owned SSH identity for `host` = `<remote_user>@<hostname>` (e.g. `root@example.com`) OR `<hostname>` alone (defaults to sandbox SSH config user). The harness keys the credential by `(host_part, remote_user)` and never asks for the user's private key.
+    Provision a sandbox-owned SSH identity for `host` = `<remote_user>@<hostname>` (e.g. `root@example.com`) OR `<hostname>` alone (sandbox SSH config picks the default user). The harness keys the credential by `(host_part, remote_user)` and never asks for the user's private key.
 
-    Call this when `ssh` fails on the remote — typically `Permission denied (publickey,password)` — to either (a) generate a fresh keypair the user installs on the remote, or (b) re-emit install instructions if a prior key was never installed / has been rotated. First call returns `{status: "needs_setup", public_key, private_key_path, ...}` plus install options (password-via-`request_input` + `ssh-copy-id`, OR relay the public key + `mkdir`/`echo`/`chmod` snippet for the user to run on the remote). Subsequent calls return `{status: "ready", private_key_path}`.
+    Call this when ssh fails on the remote (`Permission denied (publickey,password)`, host-key change, connection refused). The tool resolves to one of two outcomes:
 
-    A "ready" status means the harness has a local key file — it does NOT prove the key is currently installed on the remote. When `ssh` returns `Permission denied` after a "ready" status, re-invoke this tool to re-emit the install hint, AND probe with `ssh -v` to see which auth method was rejected, before classifying the task as blocked.
+    - `{status: "ready", private_key_path}` — the harness's key is installed AND currently authenticates against the remote. The tool just probed, so this is true RIGHT NOW. Issue the ssh against `private_key_path` and proceed.
+    - `{status: "needs_setup", public_key, options, message}` — either a brand-new identity was minted, or the prior install is no longer accepted. Render the message + the public key + both install option snippets verbatim in the chat reply, then end the turn. The user runs one of the options (typically the `authorized_keys` snippet) and replies when done; your next call to this tool re-probes and returns `ready`.
+
+    The probe is a single non-interactive `ssh … true` with a 5-second timeout that runs every time the credential already exists — no cached "verified" state. Treat the status field as the verdict: it reflects the remote at call time.
     """
   end
 
@@ -112,58 +124,128 @@ defmodule DmhAi.Tools.ProvisionSshIdentity do
 
         case Credentials.lookup(user_id, target, remote_user) do
           %{kind: "ssh_identity", payload: %{"private_key" => priv, "public_key" => pub}} ->
-            with {:ok, path} <- materialize(user, remote_user, host_part, priv, pub) do
-              {:ok, %{
-                status:           "ready",
-                host:             host_part,
-                remote_user:      remote_user,
-                private_key_path: path,
-                public_key:       pub,
-                hint:             ssh_hint(path, remote_user, host_part)
-              }}
-            end
+            existing_credential_outcome(user, remote_user, host_part, priv, pub)
 
           _ ->
-            case generate_keypair(remote_user, host_part) do
-              {:ok, priv, pub} ->
-                Credentials.save(
-                  user_id, target, "ssh_identity",
-                  %{
-                    "host"        => host_part,
-                    "remote_user" => remote_user,
-                    "private_key" => priv,
-                    "public_key"  => pub
-                  },
-                  account: remote_user,
-                  notes:   "DMH-AI sandbox identity for SSH to " <>
-                             format_user_host(remote_user, host_part)
-                )
-
-                with {:ok, path} <- materialize(user, remote_user, host_part, priv, pub) do
-                  user_host = format_user_host(remote_user, host_part)
-
-                  {:ok, %{
-                    status:           "needs_setup",
-                    host:             host_part,
-                    remote_user:      remote_user,
-                    private_key_path: path,
-                    public_key:       pub,
-                    options: %{
-                      password:        "If the remote server allows password authentication, ask the user for the password (use `request_input`). Once received, install this identity's public key on the remote in one shot, e.g.:\n\n  sshpass -p <password> ssh-copy-id -i #{path}.pub -o StrictHostKeyChecking=accept-new #{user_host}\n\nThen subsequent connects use `ssh -i #{path} #{user_host}` and never need the password again.",
-                      authorized_keys: "If the server only allows pubkey auth (no password login), relay this public key to the user and ask them to run, on the remote, ONCE:\n\n  mkdir -p ~/.ssh && chmod 700 ~/.ssh\n  echo '#{pub}' >> ~/.ssh/authorized_keys\n  chmod 600 ~/.ssh/authorized_keys\n\nWhen the user confirms it's done, retry `ssh -i #{path} #{user_host}` to verify connectivity."
-                    },
-                    message: "First-time identity provisioned. Relay the public key and the two setup options to the user as a clear bullet list, then wait for them to either (a) provide a password (use request_input) or (b) confirm they've installed the public key on the remote. Do NOT ask for their personal private key."
-                  }}
-                end
-
-              {:error, reason} ->
-                {:error, "ssh-keygen failed: #{reason}"}
-            end
+            mint_new_identity(user, user_id, target, remote_user, host_part)
         end
     end
   end
 
   def execute(_, _), do: {:error, "host (string) is required"}
+
+  # Lookup-hit branch: the credential row exists, so the keypair is
+  # already minted. Materialise the file pair into the per-user
+  # keystore (idempotent), then probe the remote with a 5-second
+  # `ssh BatchMode true` from inside the sandbox. Probe-success ⇒
+  # `ready`; probe-failure ⇒ `needs_setup` with the existing pubkey
+  # so the user can (re-)install. The probe is the only source of
+  # truth — there is no cached verified state. See
+  # `arch_wiki/dmh_ai/integrations.md` §SSH provisioning /
+  # §Verification.
+  defp existing_credential_outcome(user, remote_user, host_part, priv, pub) do
+    with {:ok, path} <- materialize(user, remote_user, host_part, priv, pub),
+         {:ok, username} <- sandbox_username(user) do
+      case Sandbox.probe_ssh(username, path, remote_user, host_part) do
+        :ok ->
+          {:ok, %{
+            status:           "ready",
+            host:             host_part,
+            remote_user:      remote_user,
+            private_key_path: path,
+            public_key:       pub,
+            hint:             ssh_hint(path, remote_user, host_part)
+          }}
+
+        {:error, probe_reason} ->
+          {:ok, needs_setup_envelope(host_part, remote_user, path, pub, :reinstall, probe_reason)}
+      end
+    end
+  end
+
+  # Lookup-miss branch: no credential yet for this `(user, host,
+  # remote_user)` tuple. Generate an ed25519 keypair, persist it,
+  # materialise the file pair, and return `needs_setup` so the
+  # model relays the install snippets to the user. No probe here —
+  # the install obviously hasn't happened yet.
+  defp mint_new_identity(user, user_id, target, remote_user, host_part) do
+    case generate_keypair(remote_user, host_part) do
+      {:ok, priv, pub} ->
+        Credentials.save(
+          user_id, target, "ssh_identity",
+          %{
+            "host"        => host_part,
+            "remote_user" => remote_user,
+            "private_key" => priv,
+            "public_key"  => pub
+          },
+          account: remote_user,
+          notes:   "DMH-AI sandbox identity for SSH to " <>
+                     format_user_host(remote_user, host_part)
+        )
+
+        with {:ok, path} <- materialize(user, remote_user, host_part, priv, pub) do
+          {:ok, needs_setup_envelope(host_part, remote_user, path, pub, :first_install, nil)}
+        end
+
+      {:error, reason} ->
+        {:error, "ssh-keygen failed: #{reason}"}
+    end
+  end
+
+  # Build the `needs_setup` tool result. `phase` is `:first_install`
+  # (brand-new identity) or `:reinstall` (existing credential, probe
+  # failed) — the `message` field tells the model which situation
+  # it's in so it can phrase the relay to the user accordingly.
+  # `probe_error` is the ssh stderr from a failed probe (nil for
+  # `:first_install`); we surface a short tail of it so the model
+  # can distinguish "key never installed" from "host unreachable"
+  # without re-probing.
+  defp needs_setup_envelope(host_part, remote_user, path, pub, phase, probe_error) do
+    user_host = format_user_host(remote_user, host_part)
+
+    message =
+      case phase do
+        :first_install ->
+          "A fresh identity was minted for this host. Render the `public_key` line and BOTH `options` snippets verbatim in the chat reply, then end the turn. The user will run one snippet on the remote and confirm; the next call to this tool re-probes and flips to `ready`."
+
+        :reinstall ->
+          "The identity exists locally but the remote does not currently accept it (probe failed; see `probe_error`). Render the `public_key` line and BOTH `options` snippets verbatim so the user can re-install; the next call re-probes."
+      end
+
+    base = %{
+      status:           "needs_setup",
+      host:             host_part,
+      remote_user:      remote_user,
+      private_key_path: path,
+      public_key:       pub,
+      options: %{
+        password:        "If the remote allows password auth, request the password (use `request_input`) and install the public key in one shot:\n\n  sshpass -p <password> ssh-copy-id -i #{path}.pub -o StrictHostKeyChecking=accept-new #{user_host}\n\nSubsequent connects use `ssh -i #{path} #{user_host}` and never need the password again.",
+        authorized_keys: "If the remote requires pubkey auth, ask the user to run on the remote, ONCE:\n\n  mkdir -p ~/.ssh && chmod 700 ~/.ssh\n  echo '#{pub}' >> ~/.ssh/authorized_keys\n  chmod 600 ~/.ssh/authorized_keys\n\nThen confirm; the next call to this tool will probe and return `ready`."
+      },
+      message: message
+    }
+
+    if probe_error, do: Map.put(base, :probe_error, probe_error), else: base
+  end
+
+  # The keystore files are owned by the per-user sandbox uid (mode
+  # 0600), so the probe's `ssh` must run as that same uid inside the
+  # container. Admin sessions resolve to the preset `master_username`
+  # (consuming the same uid `uid_for` returns); non-admin sessions
+  # resolve to the per-uid `dmh_ai-u<uid>` account allocated by
+  # `ensure_provisioned`. Mirrors `RunScript.run_ctx_for/3`.
+  defp sandbox_username(%{role: "admin"} = user) do
+    with {:ok, _uid} <- SandboxUser.uid_for(user) do
+      {:ok, SandboxUser.master_username()}
+    end
+  end
+
+  defp sandbox_username(user) do
+    with {:ok, uid} <- SandboxUser.uid_for(user) do
+      {:ok, SandboxUser.username_for(uid)}
+    end
+  end
 
   # ── public helpers ────────────────────────────────────────────────────
 

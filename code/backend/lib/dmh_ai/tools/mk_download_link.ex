@@ -32,6 +32,9 @@ defmodule DmhAi.Tools.MkDownloadLink do
   def name, do: "mk_download_link"
 
   @impl true
+  def catalog_manifest, do: %{write_class: :write}
+
+  @impl true
   def description do
     """
     Surface a workspace file as a downloadable link. Use when the user asked for an artifact (PDF, CSV, screenshot, archive, etc.). `file` is the path under your workspace. Returns the URL — paste it verbatim into your reply so the user can click to download.

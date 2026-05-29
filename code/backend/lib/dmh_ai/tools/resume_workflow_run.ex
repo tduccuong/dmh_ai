@@ -24,6 +24,9 @@ defmodule DmhAi.Tools.ResumeWorkflowRun do
   def name, do: "resume_workflow_run"
 
   @impl true
+  def catalog_manifest, do: %{write_class: :write}
+
+  @impl true
   def description do
     "Resume a paused workflow instance. Clears the `paused` flag; the " <>
       "executor proceeds on its next step boundary. Required arg: run_id."

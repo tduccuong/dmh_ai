@@ -29,6 +29,9 @@ defmodule DmhAi.Tools.ArmWorkflow do
   def name, do: "arm_workflow"
 
   @impl true
+  def catalog_manifest, do: %{write_class: :write}
+
+  @impl true
   def description do
     "Activate a saved workflow so its autonomous trigger starts firing. " <>
       "Required arg: name. Always arms the latest saved version. " <>

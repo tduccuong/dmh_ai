@@ -44,11 +44,10 @@ defmodule DmhAi.Tools.FetchIndex do
             description:
               "Keywords or a short natural-language phrase. Be SPECIFIC: " <>
                 "include the subject domain (which platform / product / " <>
-                "topic), not bare jargon. A generic query like \"workflow " <>
-                "output\" returns hits from every product the org has " <>
-                "ever indexed; \"DMH-AI workflow output node\" or " <>
-                "\"HubSpot workflow output step\" narrows to what you " <>
-                "actually want."
+                "topic), not bare jargon. A bare-jargon query returns hits " <>
+                "from every product the org has ever indexed; adding the " <>
+                "platform or product name alongside the jargon narrows to " <>
+                "what you actually want."
           },
           scope: %{
             type: "object",
@@ -62,10 +61,9 @@ defmodule DmhAi.Tools.FetchIndex do
                 items: %{type: "string"},
                 description:
                   "Whitelist: only hits whose source's `platform` is in " <>
-                    "this list pass. Use the connector slug " <>
-                    "(`google_workspace`, `hubspot`, `m365`, etc.) or " <>
-                    "the special slug `dmh_ai` for the runtime's own " <>
-                    "docs / saved workflows."
+                    "this list pass. Use a connector's slug as it appears " <>
+                    "in `<authorized_services>`, or the reserved slug " <>
+                    "`dmh_ai` for the runtime's own docs / saved workflows."
               },
               platforms_not_in: %{
                 type: "array",

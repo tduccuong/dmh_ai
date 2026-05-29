@@ -26,6 +26,9 @@ defmodule DmhAi.Tools.PauseWorkflowRun do
   def name, do: "pause_workflow_run"
 
   @impl true
+  def catalog_manifest, do: %{write_class: :write}
+
+  @impl true
   def description do
     "Pause a running workflow instance. Halts AFTER the current step " <>
       "completes. Use `resume_workflow_run` to continue. Required arg: run_id."

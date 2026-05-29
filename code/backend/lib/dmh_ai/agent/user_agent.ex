@@ -712,6 +712,16 @@ defmodule DmhAi.Agent.UserAgent do
 
     DmhAi.Agent.ChainInFlight.set(session_id)
 
+    # Chain-start reset of the active tool-profile set. This is the
+    # single guaranteed entry point for an assistant chain, so it
+    # cleans up after ANY prior-chain ending — including the abnormal
+    # ones that bypass `emit_chain_end` (user cancel mid-loop, explicit
+    # stop killing the task, task crash). `emit_chain_end` still resets
+    # on normal completion for prompt cleanup; this guarantees a fresh
+    # chain always starts at core-only regardless. See
+    # `arch_wiki/dmh_ai/architecture.md` §Auto-deactivate at chain end.
+    DmhAi.Agent.SessionContext.set_active_profiles(session_id, [])
+
     result =
       try do
         session_chain_loop(llm_messages, model, ctx, 0)
@@ -755,7 +765,16 @@ defmodule DmhAi.Agent.UserAgent do
   end
 
   defp do_one_turn(messages, model, ctx, turn) do
-    tools = DmhAi.Tools.Registry.all_definitions(ctx.user_id, ctx.session_id)
+    active_profiles = DmhAi.Agent.SessionContext.active_profiles(ctx.session_id)
+    ctx = Map.put(ctx, :active_profiles, active_profiles)
+    tools = DmhAi.Tools.Registry.all_definitions(ctx.user_id, ctx.session_id, active_profiles)
+
+    # Pin the active-profile catalog into the outgoing context (NOT
+    # persisted). The manifest the model needs to compose IR survives
+    # the rolling tool-result flush this way — it's rebuilt every turn
+    # from active_profiles, so it's authoritative and vanishes when the
+    # chain ends (active set resets). See architecture.md §Tool profiles.
+    outgoing = inject_active_catalog(messages, active_profiles, ctx)
 
     trace = %{
       origin: "assistant",
@@ -769,7 +788,7 @@ defmodule DmhAi.Agent.UserAgent do
 
     collector = spawn_assistant_stream_collector(ctx.session_id, ctx.user_id)
     llm_options = %{num_predict: AgentSettings.llm_num_predict_assistant()}
-    result = LLM.stream(model, messages, collector,
+    result = LLM.stream(model, outgoing, collector,
                         tools: tools, options: llm_options,
                         trace: trace)
     stop_stream_collector(collector)
@@ -900,20 +919,44 @@ defmodule DmhAi.Agent.UserAgent do
             end
 
           :ok ->
-            clean_text = DmhAi.Agent.TextSanitizer.strip_tool_bookkeeping(text)
-            DmhAi.SysLog.log("[ASSISTANT] turn=#{turn} text(#{String.length(clean_text)} chars)")
-            thinking_text = ThinkingBuffer.read(ctx.session_id, ctx.user_id)
-            base_msg = %{role: "assistant", content: clean_text}
-            base_msg = if thinking_text != "",
-                          do: Map.put(base_msg, :thinking, thinking_text),
-                          else: base_msg
-            {:ok, _assistant_ts} =
-              append_session_message(ctx.session_id, ctx.user_id, base_msg)
-            StreamBuffer.clear(ctx.session_id, ctx.user_id)
-            ThinkingBuffer.clear(ctx.session_id, ctx.user_id)
+            case DmhAi.Agent.Police.check_no_phantom_outcome(Map.get(ctx, :outcome_attempts, 0), Map.get(ctx, :outcome_failures, 0)) do
+              {:rejected, {issue_atom, reason}} ->
+                DmhAi.SysLog.log("[ASSISTANT] turn=#{turn} rejected phantom_outcome — nudging for retry")
+                StreamBuffer.clear(ctx.session_id, ctx.user_id)
+                ThinkingBuffer.clear(ctx.session_id, ctx.user_id)
+                ctx = record_non_tool_issue(ctx, issue_atom)
 
-            emit_chain_end(ctx, "final_text")
-            {:chain_done, max_user_ts_in_messages(messages)}
+                new_messages =
+                  messages ++ [
+                    %{role: "assistant", content: text},
+                    %{role: "user",      content: wrap_runtime_correction(reason)}
+                  ]
+
+                case maybe_abort_on_model_behavior_issue(ctx, model) do
+                  :continue ->
+                    session_chain_loop(new_messages, model, ctx, turn + 1)
+
+                  :aborted ->
+                    emit_chain_end(ctx, "aborted")
+                    {:chain_done, max_user_ts_in_messages(messages)}
+                end
+
+              :ok ->
+                clean_text = DmhAi.Agent.TextSanitizer.strip_tool_bookkeeping(text)
+                DmhAi.SysLog.log("[ASSISTANT] turn=#{turn} text(#{String.length(clean_text)} chars)")
+                thinking_text = ThinkingBuffer.read(ctx.session_id, ctx.user_id)
+                base_msg = %{role: "assistant", content: clean_text}
+                base_msg = if thinking_text != "",
+                              do: Map.put(base_msg, :thinking, thinking_text),
+                              else: base_msg
+                {:ok, _assistant_ts} =
+                  append_session_message(ctx.session_id, ctx.user_id, base_msg)
+                StreamBuffer.clear(ctx.session_id, ctx.user_id)
+                ThinkingBuffer.clear(ctx.session_id, ctx.user_id)
+
+                emit_chain_end(ctx, "final_text")
+                {:chain_done, max_user_ts_in_messages(messages)}
+            end
         end
     end
   end
@@ -944,7 +987,64 @@ defmodule DmhAi.Agent.UserAgent do
   defp emit_chain_end(ctx, cause) when is_binary(cause) do
     progress_ctx = %{session_id: Map.get(ctx, :session_id), user_id: Map.get(ctx, :user_id)}
     _ = DmhAi.Agent.SessionProgress.append_chain_end(progress_ctx, cause)
+    _ = reset_active_profiles(ctx)
     :ok
+  end
+
+  # Chain-end reset: any profiles the model activated during this
+  # chain are dropped, so the next chain starts at `:core`-only.
+  # See `arch_wiki/dmh_ai/architecture.md` §Execution tools / §Tool
+  # profiles / §Auto-deactivate at chain end.
+  defp reset_active_profiles(%{session_id: session_id}) when is_binary(session_id) do
+    DmhAi.Agent.SessionContext.set_active_profiles(session_id, [])
+  end
+  defp reset_active_profiles(_), do: :ok
+
+  # Insert the active-profile catalog as a system-role message right
+  # after the base system prompt (index 0). Transient — operates on
+  # the OUTGOING message list only; the persisted `session.messages`
+  # never carries it. No active profiles → messages unchanged. The
+  # block is rebuilt each turn from the live active set, so it can't
+  # leak across chains (chain end resets the active set to []).
+  defp inject_active_catalog(messages, active_profiles, _ctx) do
+    case DmhAi.Tools.Profiles.format_catalog_block(active_profiles) do
+      nil ->
+        messages
+
+      block ->
+        catalog_msg = %{role: "system", content: block}
+
+        case messages do
+          [first | rest] -> [first, catalog_msg | rest]
+          [] -> [catalog_msg]
+        end
+    end
+  end
+
+  # Auto-activate the profile that owns `tool_name` when it isn't
+  # already active. Dependency resolution: the model expressing
+  # intent to call a tool IS the signal it needs that tool's
+  # profile, so the runtime loads it rather than rejecting the call.
+  # Persists to session context (so the schema ships next turn) and
+  # returns ctx with `:active_profiles` updated for the rest of THIS
+  # turn's gates. Tools in `:core` (or unknown names) are no-ops.
+  defp resolve_profile_dependency(tool_name, ctx) do
+    active = Map.get(ctx, :active_profiles, [])
+
+    case DmhAi.Tools.Profiles.gate(tool_name, active) do
+      {:needs_profile, profile} ->
+        new_active = Enum.uniq(active ++ [profile])
+
+        if session_id = Map.get(ctx, :session_id) do
+          DmhAi.Agent.SessionContext.set_active_profiles(session_id, new_active)
+        end
+
+        DmhAi.SysLog.log("[ASSISTANT] auto-activated profile=#{profile} for tool=#{tool_name}")
+        Map.put(ctx, :active_profiles, new_active)
+
+      _ ->
+        ctx
+    end
   end
 
   defp session_cancelled?(%{session_id: session_id}) when is_binary(session_id) do
@@ -980,13 +1080,21 @@ defmodule DmhAi.Agent.UserAgent do
 
         progress_ctx = %{session_id: ctx.session_id, user_id: ctx.user_id}
 
+        # Dependency resolution: a tool call naming a tool from a
+        # known-but-inactive profile auto-activates that profile and
+        # proceeds — no reject, no wasted turn. The activation persists
+        # to session context so the schema ships next turn. See
+        # `arch_wiki/dmh_ai/architecture.md` §Tool profiles.
+        ctx = resolve_profile_dependency(name, ctx)
+
         {tool_msg, exec_result} =
           with :ok <- DmhAi.Agent.Police.check_tool_name_validity(name, ctx.user_id),
                :ok <- DmhAi.Agent.Police.check_tool_call_schema(name, args),
                :ok <- DmhAi.Agent.Police.check_no_duplicate_tool_call(name, args, prior_acc),
                :ok <- DmhAi.Agent.Police.check_workflow_build_continuity(name, prior_acc),
                :ok <- DmhAi.Agent.Police.check_no_consecutive_web_search(name, args, prior_acc),
-               :ok <- DmhAi.Agent.Police.check_run_script_probe_budget(name, args, prior_acc) do
+               :ok <- DmhAi.Agent.Police.check_run_script_probe_budget(name, args, prior_acc),
+               :ok <- DmhAi.Agent.Police.check_write_failure_budget(name, Map.get(ctx, :write_failures, 0), AgentSettings.write_failure_budget_per_chain()) do
             progress_label = DmhAi.Agent.ProgressLabel.format(name, args)
             {:ok, row} = DmhAi.Agent.SessionProgress.append(progress_ctx, "tool", progress_label,
                                                             status: "pending")
@@ -1056,6 +1164,37 @@ defmodule DmhAi.Agent.UserAgent do
         rejected? = match?({:rejected, _}, exec_result)
         tagged_call = if rejected?, do: Map.put(call, "_rejected", true), else: call
 
+        # Tally write-class outcomes into ctx counters. These are what
+        # the write-failure-budget + phantom-outcome checks read — NOT
+        # message text, because the rolling tool-result flush rewrites
+        # old result bodies to a success-looking placeholder and would
+        # erase the failure signal. Only tools that ACTUALLY RAN count
+        # (a Police rejection never executed → neither attempt nor
+        # failure).
+        ctx =
+          if not rejected? and DmhAi.Agent.Police.write_class?(name) do
+            failed_inc = if match?({:error, _}, exec_result), do: 1, else: 0
+
+            ctx =
+              ctx
+              |> Map.update(:write_attempts, 1, &(&1 + 1))
+              |> Map.update(:write_failures, failed_inc, &(&1 + failed_inc))
+
+            # Outcome tally is the subset the phantom-outcome guard
+            # reads: setup/connection writes (`outcome_write: false`,
+            # e.g. connect_mcp) are excluded so an incidental success
+            # can't mask a chain whose real action never landed.
+            if DmhAi.Agent.Police.outcome_write?(name) do
+              ctx
+              |> Map.update(:outcome_attempts, 1, &(&1 + 1))
+              |> Map.update(:outcome_failures, failed_inc, &(&1 + failed_inc))
+            else
+              ctx
+            end
+          else
+            ctx
+          end
+
         pseudo = %{"role" => "assistant", "tool_calls" => [tagged_call]}
 
         {[{tool_msg, tagged_call, exec_result}], {prior_acc ++ [pseudo], ctx}}
@@ -1103,18 +1242,20 @@ defmodule DmhAi.Agent.UserAgent do
   # spinning on a failed assumption rather than pivoting strategy, so we
   # don't give it three chances. Other classes inherit the default.
   @per_issue_nudge_limit %{
-    duplicate_tool_call_in_chain: 1
+    duplicate_tool_call_in_chain: 1,
+    write_failure_budget:         1
   }
 
   defp bump_nudge_counters(ctx, tool_result_msgs) do
-    existing = Map.get(ctx, :nudges, %{})
+    existing  = Map.get(ctx, :nudges, %{})
+    prior_err = Map.get(ctx, :last_substantive_error)
     marker_re = ~r/^\[\[ISSUE:([a-z_]+):([^\]]*)\]\]\n?/u
 
     role  = Map.get(ctx, :role, "assistant")
     model = Map.get(ctx, :model, "unknown")
 
-    {nudges_after, clean_msgs} =
-      Enum.map_reduce(tool_result_msgs, existing, fn msg, acc ->
+    {clean_msgs, {nudges_after, last_err}} =
+      Enum.map_reduce(tool_result_msgs, {existing, prior_err}, fn msg, {acc, last} ->
         raw = msg[:content] || msg["content"] || ""
 
         case Regex.run(marker_re, raw) do
@@ -1123,16 +1264,32 @@ defmodule DmhAi.Agent.UserAgent do
             new_acc = Map.update(acc, key, 1, &(&1 + 1))
             DmhAi.Agent.ModelBehaviorStats.record(role, model, atom_name, tool_name)
             cleaned = String.replace_prefix(raw, full, "")
-            {Map.put(msg, :content, cleaned), new_acc}
+            {Map.put(msg, :content, cleaned), {new_acc, last}}
 
           _ ->
-            {msg, acc}
+            # A tool result with no ISSUE marker is a real tool/validator
+            # outcome, not a Police meta-rejection. Remember the most
+            # recent ERROR among them so an eventual circuit-break can
+            # tell the user what actually blocked the chain. It rides on
+            # ctx (not the message list) so the rolling tool-result flush
+            # can't erase it before the abort message is built.
+            {msg, {acc, latest_tool_error(raw, last)}}
         end
       end)
-      |> then(fn {msgs, acc} -> {acc, msgs} end)
 
-    {Map.put(ctx, :nudges, nudges_after), clean_msgs}
+    ctx =
+      ctx
+      |> Map.put(:nudges, nudges_after)
+      |> Map.put(:last_substantive_error, last_err)
+
+    {ctx, clean_msgs}
   end
+
+  defp latest_tool_error(content, last) when is_binary(content) do
+    if String.starts_with?(content, "Error:"), do: String.trim(content), else: last
+  end
+
+  defp latest_tool_error(_content, last), do: last
 
   defp wrap_runtime_correction(reason) do
     "[ Runtime correction - Apply the below and continue your current chain ]\n\n" <> reason
@@ -1175,7 +1332,7 @@ defmodule DmhAi.Agent.UserAgent do
         )
         DmhAi.Agent.ModelBehaviorStats.record(role, model, "escalated_#{issue}", "")
 
-        user_msg = circuit_breaker_message(issue)
+        user_msg = circuit_breaker_message(issue, error_gist(Map.get(ctx, :last_substantive_error)))
         StreamBuffer.clear(ctx.session_id, ctx.user_id)
         ThinkingBuffer.clear(ctx.session_id, ctx.user_id)
         {:ok, _} = append_session_message(ctx.session_id, ctx.user_id,
@@ -1184,26 +1341,55 @@ defmodule DmhAi.Agent.UserAgent do
     end
   end
 
-  defp circuit_breaker_message(:duplicate_tool_call_in_chain),
-    do: "I caught myself repeating the same tool call instead of pivoting. Please rephrase the request or add a detail I can act on differently."
+  # Cap on how much of the underlying error we splice into the
+  # user-facing circuit-breaker message — the gist, not the whole
+  # remediation paragraph.
+  @abort_error_excerpt_chars 200
 
-  defp circuit_breaker_message(:run_script_probe_budget),
+  # Error/repeat classes fold in the actual blocker (the last real
+  # tool error, captured on ctx) so the user learns WHY the chain
+  # stopped instead of a generic "rephrase". Budget/empty classes
+  # have no underlying tool error worth surfacing.
+  defp circuit_breaker_message(:duplicate_tool_call_in_chain, gist),
+    do: with_blocker("I couldn't finish this — I kept repeating the same step instead of correcting it", gist)
+
+  defp circuit_breaker_message(:repeated_tool_error, gist),
+    do: with_blocker("I kept hitting the same error and couldn't make progress", gist)
+
+  defp circuit_breaker_message(:tool_call_schema, gist),
+    do: with_blocker("I kept calling one of my tools with the wrong arguments", gist)
+
+  defp circuit_breaker_message(:run_script_probe_budget, _gist),
     do: "I ran out of tool-call budget. Please split this into smaller steps."
 
-  defp circuit_breaker_message(:no_consecutive_web_search),
+  defp circuit_breaker_message(:no_consecutive_web_search, _gist),
     do: "I ran out of search budget. Please narrow down what you're looking for."
 
-  defp circuit_breaker_message(:empty_response),
+  defp circuit_breaker_message(:empty_response, _gist),
     do: "I tried to reply and produced nothing several times in a row. Please retry."
 
-  defp circuit_breaker_message(:repeated_tool_error),
-    do: "I kept hitting the same tool error and couldn't make progress. Please rephrase or share more information."
-
-  defp circuit_breaker_message(:tool_call_schema),
-    do: "I kept calling one of my tools with the wrong arguments. Please try again — rephrasing usually helps."
-
-  defp circuit_breaker_message(_other),
+  defp circuit_breaker_message(_other, _gist),
     do: "I hit an internal safety limit on this task. Please rephrase or try again."
+
+  defp error_gist(nil), do: nil
+
+  defp error_gist(err) when is_binary(err) do
+    err
+    |> String.replace_prefix("Error: ", "")
+    |> String.split(~r/\.\s/, parts: 2)
+    |> List.first()
+    |> String.slice(0, @abort_error_excerpt_chars)
+    |> String.trim()
+  end
+
+  defp with_blocker(lead, nil),
+    do: lead <> ". Please rephrase the request or add a detail I can act on differently."
+
+  defp with_blocker(lead, gist),
+    do:
+      lead <>
+        ". The blocker was: " <>
+        gist <> ". You can confirm those details or rephrase it, and I'll try a different approach."
 
   # ── splice + tool-result flush ──────────────────────────────────────────
 

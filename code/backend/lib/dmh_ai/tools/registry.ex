@@ -11,52 +11,37 @@ defmodule DmhAi.Tools.Registry do
 
   The catalog has two layers:
 
-    * **Built-in tools** — the static `@tools` list below. Same set
-      for every user, every session, every turn.
+    * **Built-in tools** — sourced from `DmhAi.Tools.Profiles`,
+      partitioned into `:core` / `:auth` / `:workflows`. Each LLM
+      turn ships only `:core` plus whatever profiles the chain has
+      activated; the static HTTP catalog ships every built-in flat
+      for FE display.
     * **MCP-attached tools** — per-user authorization, **per-session
       attachment**. Sourced from
       `DmhAi.MCP.Registry.tools_for_session/2`: returns the tools of
       services the current session has bound. Empty when no
       attachments. Names are namespaced `<alias>.<tool>`; dispatch
-      routes them to `DmhAi.MCP.Client.call_tool/4`.
+      routes them to `DmhAi.MCP.Client.call_tool/4`. Grouped into
+      `:connector:<slug>` synthetic profiles by the runtime.
 
-  Functions come in session-aware and unaware overloads. The unaware
-  ones return only built-ins (used by the static HTTP catalog and
-  by the assistant-text guard, which can't see ctx). The session-aware
-  ones consult the session's attachments and are used by the
-  agent's per-turn tool dispatch.
+  Functions come in three shapes:
+    - `/0` — flat list of every built-in (static HTTP catalog).
+    - `/3` taking `(user_id, session_id, active_profiles)` — what
+      the per-turn LLM call ships; the active set is read from
+      `session.context.active_profiles` by the caller.
+
+  See `arch_wiki/dmh_ai/architecture.md` §Execution tools / §Tool
+  profiles.
   """
 
-  @tools [
-    DmhAi.Tools.WebSearch,
-    DmhAi.Tools.WebFetch,
-    DmhAi.Tools.WebCrawl,
-    DmhAi.Tools.RunScript,
-    DmhAi.Tools.ReadFile,
-    DmhAi.Tools.WriteFile,
-    DmhAi.Tools.Calculator,
-    DmhAi.Tools.ExtractContent,
-    DmhAi.Tools.SaveCreds,
-    DmhAi.Tools.LookupCreds,
-    DmhAi.Tools.DeleteCreds,
-    DmhAi.Tools.RequestInput,
-    DmhAi.Tools.ConnectMcp,
-    DmhAi.Tools.ProvisionSshIdentity,
-    DmhAi.Tools.FetchIndex,
-    DmhAi.Tools.FetchMemo,
-    DmhAi.Tools.AuthorizeService,
-    DmhAi.Tools.MkDownloadLink,
-    DmhAi.Tools.InspectFunction,
-    DmhAi.Tools.InspectFunctionProperty,
-    DmhAi.Tools.UpsertWorkflow,
-    DmhAi.Tools.ReadWorkflow,
-    DmhAi.Tools.ArmWorkflow,
-    DmhAi.Tools.DisarmWorkflow,
-    DmhAi.Tools.InvokeWorkflow,
-    DmhAi.Tools.PauseWorkflowRun,
-    DmhAi.Tools.ResumeWorkflowRun,
-    DmhAi.Tools.CancelWorkflowRun
-  ]
+  alias DmhAi.Tools.Profiles
+
+  # Flat list of every built-in tool module, composed from the
+  # profile registry at compile time. This is the catalog the
+  # static HTTP endpoint + `known?` / `execute` / `definition_for`
+  # paths use; per-turn LLM calls filter further through the
+  # active profile set.
+  @tools Profiles.all_built_in_modules()
 
   # Save tools — runtime-only (invoked by `/index` and `/memo` commands
   # via VectorDB.ingest, NOT by the LLM). They're known to the
@@ -82,9 +67,14 @@ defmodule DmhAi.Tools.Registry do
   def all_definitions, do: Enum.map(@tools, & &1.definition())
 
   @doc """
-  Built-in tool definitions plus the MCP tools attached to the
-  current session. `session_id` may be nil (no session bound;
-  built-ins only).
+  Tool definitions visible on the current LLM turn: `:core` plus
+  every profile in `active_profiles`, plus the MCP verbs scoped to
+  whichever `connector:<slug>` entries the active set includes.
+
+  `active_profiles` is the list of profile-name strings read from
+  `session.context.active_profiles` — the caller (`Agent.UserAgent`)
+  resolves it once per turn and passes it in. `:core` is implicit;
+  passing it explicitly is harmless.
 
   `fetch_index` is dropped from the returned list when the global
   index has no chunks yet — saves the model from being tempted to
@@ -92,12 +82,52 @@ defmodule DmhAi.Tools.Registry do
   worth of tokens on every turn until the operator `/index`s
   something.
   """
-  @spec all_definitions(String.t() | nil, String.t() | nil) :: [map()]
-  def all_definitions(nil, _session_id), do: all_definitions() |> drop_empty_wiki(default_org_id())
+  @spec all_definitions(String.t() | nil, String.t() | nil, [String.t()]) :: [map()]
+  def all_definitions(nil, _session_id, _active_profiles) do
+    Enum.map(Profiles.core_modules(), & &1.definition())
+    |> drop_empty_wiki(default_org_id())
+  end
 
-  def all_definitions(user_id, session_id) when is_binary(user_id) do
+  def all_definitions(user_id, session_id, active_profiles)
+      when is_binary(user_id) and is_list(active_profiles) do
     org_id = org_for_user(user_id)
-    (all_definitions() |> drop_empty_wiki(org_id)) ++ mcp_definitions(user_id, session_id)
+
+    built_in =
+      core_and_profile_modules(active_profiles)
+      |> Enum.map(& &1.definition())
+      |> drop_empty_wiki(org_id)
+
+    built_in ++ connector_definitions(active_profiles, user_id, session_id)
+  end
+
+  # Modules from :core plus every named built-in profile in
+  # `active_profiles`. Unknown / connector entries are filtered
+  # out — connector profiles contribute via
+  # `connector_definitions/3`, not built-ins.
+  defp core_and_profile_modules(active_profiles) do
+    extras =
+      active_profiles
+      |> Enum.flat_map(fn
+        "auth"      -> Profiles.built_in_modules_for(:auth)
+        "workflows" -> Profiles.built_in_modules_for(:workflows)
+        _           -> []
+      end)
+
+    Enum.uniq(Profiles.core_modules() ++ extras)
+  end
+
+  # Connector verbs to include for every `connector:<slug>` in the
+  # active set. Pulls from both the per-session MCP attachment
+  # (`MCP.Registry.tools_for_session`) and the Universal-Region
+  # Dispatcher manifest, via `Profiles.connector_definitions_for`.
+  defp connector_definitions(active_profiles, user_id, session_id) do
+    Enum.flat_map(active_profiles, fn
+      "connector:" <> slug ->
+        Profiles.connector_definitions_for(slug, user_id, session_id)
+
+      _ ->
+        []
+    end)
   end
 
   defp drop_empty_wiki(defs, org_id) do
@@ -129,18 +159,6 @@ defmodule DmhAi.Tools.Registry do
   end
 
   defp default_org_id, do: DmhAi.Constants.default_org_id()
-
-  defp mcp_definitions(user_id, session_id) do
-    user_id
-    |> DmhAi.MCP.Registry.tools_for_session(session_id)
-    |> Enum.map(fn t ->
-      %{
-        name:        t.name,
-        description: t.description,
-        parameters:  t.inputSchema || %{type: "object", properties: %{}}
-      }
-    end)
-  end
 
   # ── names ─────────────────────────────────────────────────────────────
 

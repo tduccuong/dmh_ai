@@ -124,6 +124,18 @@ defmodule DmhAi.WorkflowsRefsEngineTest do
       assert {:ok, %{root: :today, path: []}} = Path.parse("today")
     end
 
+    test "now / today offset → {root, seconds} tuple, empty path" do
+      assert {:ok, %{root: {:now, -604_800}, path: []}} = Path.parse("now-7d")
+      assert {:ok, %{root: {:now, 3_600},     path: []}} = Path.parse("now+1h")
+      assert {:ok, %{root: {:today, 604_800},  path: []}} = Path.parse("today+1w")
+      assert {:ok, %{root: {:today, -86_400},  path: []}} = Path.parse("today-1d")
+    end
+
+    test "offset form rejects a trailing path (now/today are scalar)" do
+      assert {:error, msg} = Path.parse("now-7d.foo")
+      assert msg =~ "offset only"
+    end
+
     test "bare integer → node root, empty path" do
       assert {:ok, %{root: {:node, 7}, path: []}} = Path.parse("7")
     end

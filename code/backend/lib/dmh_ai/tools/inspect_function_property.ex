@@ -63,9 +63,9 @@ defmodule DmhAi.Tools.InspectFunctionProperty do
           path: %{
             type: "string",
             description:
-              "Dotted path into the property you want to inspect — e.g. `dealstage`, " <>
-                "`recurrence.frequency`. Use the literal property name the vendor's API " <>
-                "documents; do not invent."
+              "Dotted path into the property you want to inspect (a top-level arg name, or " <>
+                "`<arg>.<subfield>` for a nested one). Use the literal property name the " <>
+                "function's manifest declares; do not invent."
           }
         },
         required: ["name", "path"]

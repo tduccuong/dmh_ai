@@ -88,6 +88,18 @@ defmodule DmhAi.Agent.AgentSettings do
   # to the user fast. See architecture.md §Police gate #11.
   @run_script_probe_budget_default 5
 
+  # Total state-changing tool failures allowed in one assistant
+  # chain before the dispatcher refuses any further write attempts.
+  # Catches the runaway shape where the model emits
+  # `upsert_workflow` / `*.send` / `*.create` over and over with
+  # varying-but-broken args (different errors each time, so the
+  # identical-error check doesn't trip). Hitting this budget forces
+  # the model into a final-text turn that the phantom-outcome
+  # auditor then gates. Read-class tools have no equivalent budget
+  # because they don't mutate anything and the model self-correcting
+  # by exploring is cheap.
+  @write_failure_budget_per_chain_default 5
+
   # Long-running tool execution (see architecture.md
   # §Long-running tool execution). Every `run_script` invocation is
   # wrapped in nohup, registered in `DmhAi.Agent.RunningTools`, and
@@ -392,6 +404,10 @@ defmodule DmhAi.Agent.AgentSettings do
 
   @spec run_script_probe_budget() :: pos_integer()
   def run_script_probe_budget, do: int_setting("runScriptProbeBudget", @run_script_probe_budget_default)
+
+  @spec write_failure_budget_per_chain() :: pos_integer()
+  def write_failure_budget_per_chain,
+    do: int_setting("writeFailureBudgetPerChain", @write_failure_budget_per_chain_default)
 
   @doc "Number of unprocessed user messages required before ProfileExtractor fires one LLM call."
   @spec profile_extract_batch_size() :: pos_integer()

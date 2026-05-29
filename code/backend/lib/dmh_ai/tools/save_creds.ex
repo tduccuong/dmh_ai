@@ -12,6 +12,9 @@ defmodule DmhAi.Tools.SaveCreds do
   def name, do: "save_creds"
 
   @impl true
+  def catalog_manifest, do: %{write_class: :write}
+
+  @impl true
   def description do
     """
     Persist a credential. `target` = stable, specific label (host+user, service name). `kind` describes `payload`'s shape (e.g. "ssh_key", "user_pass", "api_key", "oauth2"). `expires_at` (unix ms) for time-bounded creds; omit for static.

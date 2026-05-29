@@ -12,6 +12,9 @@ defmodule DmhAi.Tools.WriteFile do
   def name, do: "write_file"
 
   @impl true
+  def catalog_manifest, do: %{write_class: :write}
+
+  @impl true
   def description,
     do:
       "Write a file in the session workspace. Creates parent dirs. " <>

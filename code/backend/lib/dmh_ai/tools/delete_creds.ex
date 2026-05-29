@@ -38,6 +38,9 @@ defmodule DmhAi.Tools.DeleteCreds do
   def name, do: "delete_creds"
 
   @impl true
+  def catalog_manifest, do: %{write_class: :write}
+
+  @impl true
   def description do
     """
     Remove a saved credential by `target`. Only on explicit user request. Pass `account` to revoke a single per-account row; omit it to revoke EVERY account row at the target. For `mcp:<canonical>` targets, also disconnects the service: revokes at the AS (RFC 7009, best-effort), drops the authorized row, detaches every session holding it.

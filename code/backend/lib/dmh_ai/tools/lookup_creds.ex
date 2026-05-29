@@ -14,43 +14,15 @@ defmodule DmhAi.Tools.LookupCreds do
   @impl true
   def description do
     """
-    Fetch saved credential(s) for a target. Returns an ARRAY shape:
-    `{found, target, credentials: [{account, kind, payload, expires_at, is_expired, notes, auth_target?}, ...]}`. Multiple entries mean the user has authorized this service from multiple accounts.
+    Fetch saved credential(s) by target. Returns `{found, target, credentials: [{account, kind, payload, expires_at, is_expired, notes, auth_target?}, ...]}` — `credentials` is ALWAYS an array.
 
-    When `credentials` has more than one entry AND the user did not name a specific account in their ask, perform the requested action against EACH account in parallel and merge the results in your final reply, attributing each section to its account. Use the optional `account` arg to filter to a single entry once the user picks one (or for follow-up turns where the user named an account).
+    Multi-account fan-out: when the array has more than one entry and the user did not name a specific account, run the requested action against EACH credential in parallel and attribute each section in the final reply. When the user names an account, pass `account: "<name>"` to filter to that one entry.
 
-    Each entry may carry `auth_target` — the stable handle to pass to the credential's lifecycle tool when re-auth is needed (e.g. a stored OAuth token gets HTTP 401 mid-call). Copy `auth_target` verbatim into `authorize_service(target: <auth_target>)`; do NOT re-derive the auth identifier from the credential `target` string (it carries a vault namespace prefix the catalog doesn't recognise).
+    `auth_target` (when present) is the stable handle to copy into `authorize_service(target: <auth_target>, force_new: true)` for re-auth on HTTP 401 / scope-insufficient errors. The cred's own `target` carries a vault prefix — use `auth_target` for lifecycle calls, never the bare target.
 
-    Without `target`: returns the metadata list of every saved credential — one row per (target, account) tuple — so you can choose which to fetch in detail.
+    Targets are slug-keyed for OAuth (`oauth:<slug>`) and free-form for `save_creds`-stored secrets. Omit `target` to list every saved (target, account) pair without payloads.
 
-    Credentials workflow (three primitives — `save_creds(target, kind, payload, notes?, expires_at?)`, `lookup_creds(target?)`, `delete_creds(target)`). `target` is a stable specific label (host+user, service name) — reuse across saves + lookups. Never generic (`"ssh"`, `"password"`).
-
-    When you need auth:
-    1. In-context first — visible in this chain's messages? Use directly.
-    2. Else `lookup_creds(target: "<label>")` — user may have saved it earlier. Result has `is_expired`; refresh via provider helper if available, else ask.
-    3. `found: false` → ask. Single-field → plain text. Multi-field (≥2 inputs) → `request_input`.
-    4. Save immediately via `save_creds(target, kind, payload)` so future chains don't re-ask.
-
-    `delete_creds` only on explicit user request.
-
-    Failure at use-time — any access failure on a previously-working credential (`Permission denied`, HTTP 401/403, "token expired", "key rejected", "method not found", "scope insufficient"): a setup helper reporting `ready`/`authorized`/`connected` proves the LOCAL credential is intact; it does NOT prove the REMOTE side still accepts it. The remote may have rotated keys, revoked the grant, narrowed scope, or never received the install in the first place. Diagnose before declaring the resource blocked:
-      - Re-invoke the setup helper (`provision_ssh_identity`, `authorize_service`, `connect_mcp`) to re-emit install / consent hints — the helper's setup output is the most authoritative way to restore access.
-      - Probe the access in verbose / diagnostic mode (`ssh -v`, `curl -v`, a parallel call with an alternate auth header) to see WHAT was rejected and WHY.
-      - Try an alternate auth method when the tool exposes one (`-o PreferredAuthentications=publickey,keyboard-interactive`, `Authorization: Bearer` vs query-param token).
-    Only after these diagnostic probes is "the credential is broken on the remote side" an earned conclusion. Then surface the concrete step-by-step setup the user needs to perform (the same shape `needs_setup` produces).
-
-    Authenticated REST APIs (OAuth-protected services that aren't MCP — the common case for popular services with native APIs the operator has wired up):
-
-    1. Resolve the API URL. Cascade: training → `fetch_index` → `web_search` → ask. Never invent URLs from service names.
-    2. Try `lookup_creds(target: "oauth:<slug>")` first. Credential targets are slug-keyed (`oauth:google_workspace`, `oauth:hubspot`). When fresh token(s) exist, use them directly: `run_script` with curl + `Authorization: Bearer $access_token`.
-    3. No token in lookup_creds → call `authorize_service(target: <slug>)`. The runtime resolves the input against the catalog (slug, host, full URL, partial name — all accepted). If matched, you get `{status: "needs_auth", auth_url}` — relay the auth_url as a clickable link, end the chain. The OAuth callback auto-resumes the chain after the user authorizes; on the next turn `lookup_creds` returns a fresh token.
-    4. `authorize_service` returns `{:error, ...}` when the input is ambiguous OR not configured. The error names the closest configured services. Tell the USER what the runtime suggested and ask them to pick a slug OR give a URL — do NOT guess and retry. If nothing close fits, the service isn't wired up here; offer fallbacks (`web_search`, honest decline). Never ask the user for OAuth endpoints or client secrets — operators set those up, not users.
-    5. 401 mid-call — copy the credential's `auth_target` into `authorize_service(target: <auth_target>, force_new: true)`, then `lookup_creds` again and retry. The cred's own `target` field is the vault key (`oauth:<slug>`), not the catalog handle.
-    6. User asks to ADD a new account ("add my new X account", "connect another X account") — `authorize_service(target: <auth_target-or-slug>, force_new: true)`. Without `force_new` the tool short-circuits to `authorized` on the first existing row.
-
-    Never invent OAuth endpoints from a service's brand name. The catalog is the only source of truth for which services this deployment can authorize.
-
-    Multi-account fan-out: `lookup_creds` returns `credentials: [...]` — an array, ALWAYS. When the array has more than one entry, the user has authorized this service from multiple accounts; unless the user named one specifically in their ask, perform the requested action against EACH account in parallel and merge the results in your final reply. Attribute each section to its account so the user can tell which row produced which output. When the user does name an account, pass `account: "<account>"` on the next `lookup_creds` to filter to that single entry. Single-entry arrays use the one credential — no fan-out logic needed.
+    Auth flow when a chain needs a credential: try `lookup_creds(target: "<label>")` → if `found: false` (or `is_expired` and no refresh helper succeeds) call `authorize_service(target: <slug>)` or ask the user for the missing field via `request_input`. After saving via `save_creds`, never repeat the ask in future chains.
     """
   end
 
@@ -64,7 +36,7 @@ defmodule DmhAi.Tools.LookupCreds do
         properties: %{
           target: %{
             type: "string",
-            description: "Exact target label (e.g. `oauth:google_workspace`, `oauth:hubspot`, `mcp:<canonical>`, or a free-form label previously used with save_creds). OAuth targets are slug-keyed — see `<authorized_services>` for the valid slugs. Omit to list every saved (target, account) pair without payloads."
+            description: "Exact target label. OAuth targets are slug-keyed as `oauth:<slug>` (the slug from `<authorized_services>`); MCP targets as `mcp:<canonical>`; or a free-form label previously used with `save_creds`. Omit to list every saved (target, account) pair without payloads."
           },
           account: %{
             type: "string",

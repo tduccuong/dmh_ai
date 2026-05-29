@@ -471,6 +471,99 @@ defmodule DmhAi.Agent.Police do
   def check_assistant_text(_), do: :ok
 
   @doc """
+  Structural guard against PHANTOM OUTCOMES. No language semantics
+  — works for any final-text language.
+
+  Reads the chain's OUTCOME tally — `outcome_write?/1` tools that
+  actually ran, counted into ctx as they execute. A chain that
+  attempted one or more outcome-writes AND saw EVERY one of them
+  error is not allowed to end with a final-text turn: the prose
+  would imply success while no requested side effect landed. The
+  model must retry the failing call or surface the blocker via
+  `request_input` / explicit failure.
+
+  Setup/connection writes (`outcome_write: false`, e.g. connect_mcp)
+  are NOT in this tally — an incidental connection success must not
+  count as "real work happened" and mask a failed `upsert_workflow`.
+
+  Read-only chains (`attempts == 0`) and chains where at least one
+  outcome-write landed (`failures < attempts`) pass through. Every
+  outcome-write errored → `{:rejected, {:phantom_outcome, reason}}`.
+  """
+  @spec check_no_phantom_outcome(non_neg_integer(), non_neg_integer()) ::
+          :ok | {:rejected, {:phantom_outcome, String.t()}}
+  def check_no_phantom_outcome(outcome_attempts, outcome_failures)
+      when is_integer(outcome_attempts) and is_integer(outcome_failures) do
+    cond do
+      outcome_attempts == 0 ->
+        # no outcome-write attempted — nothing to falsely claim
+        :ok
+
+      outcome_failures < outcome_attempts ->
+        # at least one outcome-write landed — real work happened
+        :ok
+
+      true ->
+        # every attempted outcome-write errored
+        reason = phantom_outcome_reason(outcome_attempts)
+        Logger.warning("[Police] REJECTED phantom_outcome: attempts=#{outcome_attempts} all errored")
+        DmhAi.SysLog.log("[POLICE] REJECTED phantom_outcome: #{outcome_attempts} outcome-writes, all errored")
+        {:rejected, {:phantom_outcome, reason}}
+    end
+  end
+
+  def check_no_phantom_outcome(_, _), do: :ok
+
+  @doc """
+  True if `tool_name`'s manifest declares `write_class: :write`.
+  Public so the chain loop can tally write attempts / failures into
+  ctx counters as they happen — these feed the write-failure BUDGET
+  (instead of re-scanning message bodies, which the rolling
+  tool-result flush rewrites to a success-looking placeholder).
+  """
+  @spec write_class?(String.t() | nil) :: boolean()
+  def write_class?(nil), do: false
+
+  def write_class?(tool_name) when is_binary(tool_name) do
+    case DmhAi.Tools.Catalog.lookup(tool_name) do
+      {:ok, %{write_class: :write}} -> true
+      _                              -> false
+    end
+  end
+
+  @doc """
+  True if a successful call to `tool_name` represents a user-requested
+  OUTCOME — the side effect the chain's eventual prose would claim
+  happened. This is the subset of write-class tools that the
+  phantom-outcome guard tallies.
+
+  A write-class tool opts OUT by declaring `outcome_write: false` in
+  its manifest (e.g. `connect_mcp` — establishing a connection is
+  setup plumbing, not the outcome). Excluding such tools stops an
+  incidental success (a connection landing) from masking a chain
+  whose real action (a failed `upsert_workflow`) never succeeded.
+  """
+  @spec outcome_write?(String.t() | nil) :: boolean()
+  def outcome_write?(nil), do: false
+
+  def outcome_write?(tool_name) when is_binary(tool_name) do
+    case DmhAi.Tools.Catalog.lookup(tool_name) do
+      {:ok, %{write_class: :write} = m} -> Map.get(m, :outcome_write, true)
+      _                                  -> false
+    end
+  end
+
+  defp phantom_outcome_reason(attempted) do
+    "This chain attempted #{attempted} state-changing call(s) and every one errored. " <>
+      "A final-text turn now would imply success, but nothing landed. Pick the remedy that matches WHY they failed: " <>
+      "(1) a fixable mistake in the call — a bad or missing argument, a malformed shape, the error names it: correct it and re-emit. " <>
+      "(2) a value only the user can supply is missing: `request_input` for THAT specific value. " <>
+      "(3) no available tool or function can perform the action at all: reply in plain text that names the missing capability and the concrete options — a different connector, a manual route, or proceeding without that part. " <>
+      "`request_input` fits case 2 only; a form cannot supply a capability the deployment lacks, so for case 3 state what is missing rather than asking the user how to proceed. " <>
+      "Success-implying prose while every call failed is not allowed."
+  end
+
+  @doc """
   Enforce that every `📎 ` path in the current turn's user message was
   passed to `extract_content` during this turn. Catches the model-
   compliance failure where the model acknowledges an attachment in
@@ -722,6 +815,56 @@ defmodule DmhAi.Agent.Police do
 
   def check_repeated_tool_error(_, _, _), do: :ok
 
+  @doc """
+  Cap on consecutive write-class failures in one chain. Counts
+  every prior write attempt in `chain_tail` whose result was an
+  error; when that count reaches the per-chain budget the
+  dispatcher REJECTS the next write attempt — forcing the model
+  to either escalate to the user (via `request_input` / explicit
+  blocker text) or end the chain.
+
+  Only gates write-class tool calls; read-only probes always pass.
+  The check uses `Tools.Catalog.lookup/1` to read each prior
+  tool's `write_class`, so the budget is language-agnostic and
+  applies uniformly across built-ins + connector verbs.
+
+  Catches the runaway shape where the model keeps emitting
+  upsert_workflow / arm_workflow / *.send / *.create with
+  varying-but-broken args, each rejected with a DIFFERENT error
+  (so the IDENTICAL-error check doesn't fire). The budget is the
+  structural backstop.
+  """
+  @spec check_write_failure_budget(String.t(), non_neg_integer(), pos_integer()) ::
+          :ok | {:rejected, {:write_failure_budget, String.t()}}
+  def check_write_failure_budget(tool_name, failures_so_far, budget)
+      when is_binary(tool_name) and is_integer(failures_so_far) and is_integer(budget) and budget > 0 do
+    if write_class?(tool_name) and failures_so_far >= budget do
+      reason = write_failure_budget_reason(failures_so_far, budget)
+
+      Logger.warning(
+        "[Police] REJECTED write_failure_budget: tool=#{tool_name} failed=#{failures_so_far} budget=#{budget}"
+      )
+
+      DmhAi.SysLog.log(
+        "[POLICE] REJECTED write_failure_budget: failed=#{failures_so_far} budget=#{budget}"
+      )
+
+      {:rejected, {:write_failure_budget, reason}}
+    else
+      :ok
+    end
+  end
+
+  def check_write_failure_budget(_, _, _), do: :ok
+
+  defp write_failure_budget_reason(failed, budget) do
+    "This chain has accumulated #{failed} failed write-tool attempt(s) (budget per chain is #{budget}). " <>
+      "Stop calling write tools. Reply to the user now with: (1) a plain-language summary of what " <>
+      "failed and why, (2) the specific input you'd need from them to unblock, and (3) two or three " <>
+      "concrete options. If the connector simply does not expose what the user wants, say so plainly — " <>
+      "the user can re-route rather than have you keep guessing."
+  end
+
   # Walk `prior_messages` newest-first; return the trimmed content of
   # the most recent role="tool" message attributed to `tool_name`, or
   # nil if no prior tool-error from this tool exists in this chain.
@@ -787,12 +930,42 @@ defmodule DmhAi.Agent.Police do
     end
   end
 
+  # Tools where legitimate same-arg repetition is the norm and a
+  # dedupe block would be a bug. `request_input` re-prompts the user
+  # whenever the prior answer was empty / cancelled; `mk_download_link`
+  # republishes the same artifact when the user asks again. Everything
+  # else falls through to the generic JSON hash so that repeat tool
+  # calls with identical args are caught by default.
+  @duplicate_check_whitelist ~w(request_input mk_download_link)
+
+  defp significant_key(name, _args) when name in @duplicate_check_whitelist, do: nil
+
+  # Generic fallback: hash the JSON-encoded args. Any two calls with
+  # the same (name, args) pair collide; varied args produce different
+  # keys. Catches the runaway `connect_mcp(slug: X) × 3`, repeated
+  # identical `inspect_function`, repeated `activate_profile(...)`,
+  # repeated `upsert_workflow(<same IR>)`, etc. — without us having
+  # to maintain a hand-curated per-tool list.
+  defp significant_key(_name, args) when is_map(args) do
+    case Jason.encode(args) do
+      {:ok, json} ->
+        case String.trim(json) do
+          "" -> nil
+          "{}" -> nil
+          j -> :crypto.hash(:sha256, j) |> Base.encode16(case: :lower) |> binary_part(0, 16)
+        end
+
+      _ ->
+        nil
+    end
+  end
+
   defp significant_key(_, _), do: nil
 
   defp describe_key("extract_content"), do: "path"
   defp describe_key("web_search"),      do: "query"
   defp describe_key("run_script"),      do: "normalized script"
-  defp describe_key(_),                 do: "arg"
+  defp describe_key(_),                 do: "args"
 
   # Walk the prior messages, extract every assistant-role tool_call's
   # (name, significant_key), return true if any match the current pair.

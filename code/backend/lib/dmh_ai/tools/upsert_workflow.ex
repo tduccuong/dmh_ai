@@ -46,155 +46,73 @@ defmodule DmhAi.Tools.UpsertWorkflow do
   # Synthetic functions the compiler may emit even though they aren't
   # connector-backed. Validation passes them through; the runtime will
   # resolve them at execution time.
-  @synthetic_functions ~w(llm.compose llm.summarise builtin.compute builtin.coalesce workflow.invoke)
+  @synthetic_functions ~w(llm.compose llm.summarise builtin.coalesce workflow.invoke)
 
   @impl true
   def name, do: "upsert_workflow"
 
   @impl true
+  def catalog_manifest, do: %{write_class: :write}
+
+  @impl true
   def description do
     """
-    Save a compiled workflow as a new version under the current org. Bumps the version on every save; the first save lands at v0. Returns `{name, version, url, display_name}`; render the URL as a clickable markdown link in the chat reply so the user can open the workflow viewer modal.
+    Save a compiled workflow as a new version under the current org. Bumps the version on every save; first save lands at v0. Returns `{name, version, url, display_name}` — render `[<display_name> · v<version>](<url>)` as a markdown link in the chat reply (the URL is a relative path the FE viewer intercepts; never prefix a hostname).
 
-    When the user describes an AUTOMATION they want to repeat — *"every Monday do X"*, *"when a HubSpot deal closes do Y"*, *"if an email arrives matching Z then…"*, *"build me a workflow that…"* — COMPILE the description into a structured workflow IR and persist it via `upsert_workflow`.
+    Trigger this tool when the user describes a repeatable AUTOMATION ("every Monday do X", "when a deal closes do Y", "build me a workflow that …"). Compile the prose into the IR and persist.
 
-    Inputs to read before emitting the IR:
-    - Connector function catalog: every `<slug>.<function>` listed in your tools catalog (post `connect_mcp`) is a valid step. Use the literal manifest argument names (e.g. `event_type_uri`, NOT `event_type`).
-    - `inspect_function` BEFORE writing each step: this tool returns the function's full contract — args (with type, required, and optional `provenance` telling you HOW to source each value), return shape, error classes, OAuth scopes. Use it on every step you're about to write; never compose an IR from memory of the function's args. Provenance kinds:
-      - `"lookup"` — add an upstream step calling `provenance.source` and bind the result.
-      - `"from_user"` — bind to a trigger input (`{{T.<x>}}`); literals forbidden.
-      - `"built_in"` — use the named binding directly.
-      - `"literal_default"` with a concrete `value` field — bake that literal; do NOT add a trigger input. The connector author endorses this default; only override if the user explicitly named this field in their prose. Adding trigger inputs for fields the user never mentioned is over-asking — the workflow ends up requiring data the user doesn't have to supply.
-      - `"literal_default"` WITHOUT a `value` field — pick a sensible literal from context, OR bind to a trigger input if the field clearly varies per invocation (the user mentioned it in their prose). Both are valid.
-    - `inspect_function_property` for vendor-managed enums: when an arg holds a value the vendor defines (a stage id, pipeline id, calendar id, label name), call `inspect_function_property(name, path)` to read its valid values for THIS user's account. Skip if the literal is the user's own free-text. The tool returns `source: "not_supported"` for connectors that haven't wired deep introspection yet — trust the literal in that case.
-    - Existing workflows in this org (surfaced in `<augmented_facts type="indexed">` under the `workflow` class): if one already matches the user's intent, OFFER to run it OR refine it into a new variant — never silently re-create.
-    - Org SOPs / policies in the KB: bias the IR toward the org's vocabulary and approval thresholds when relevant.
+    Each connector tool's contract is already in its tool definition — arg types + `required` in `parameters`, plus a `Contract —` line giving per-arg provenance, the return-key shape, and OAuth scopes. Read it there; don't probe. Only for vendor-managed enums whose values depend on THIS user's account (stage/calendar ids, label names) call `inspect_function_property(name, path)` for the live values; trust the literal on `source: "not_supported"`.
 
-    Workflows run autonomously — the IR must be self-sufficient at run time. Every required arg of every step must trace to (a) a declared trigger input, (b) a prior node's emit, (c) a built-in binding, (d) the manifest's `provenance.value` when one is declared, or (e) a literal the user explicitly stated. If `inspect_function` shows a required arg with NO declared default AND no source you can bind it to, STOP and ASK the user — don't invent placeholder tokens like `"TBD"` / `"<email>"` / `"placeholder"` to fill a gap; the validator rejects those. Concrete literals (`0`, `"NOTE"`, `"EUR"`, `30`) are fine when the manifest documents them as defaults. The save also fails if the workflow's OAuth scopes aren't already granted; the error names the slug and asks the user to reconnect, then retry the save.
-
-    HARD RULES the validator enforces — get these right on the first save:
-
-    1. Function names are ALWAYS namespaced. Every `step.function` is `<slug>.<function>` — e.g. `google_workspace.gmail.search`, `calendly.single_use_link.create`, `hubspot.contact.find`. NEVER the bare form (`gmail.search`). The slug is the connector's `mcp_slug` (visible in `<authorized_services>`); the function part is what appears after the dot in `tools/list`.
-
-    2. `emits` is OPTIONAL when you reference a manifest-declared return key directly. Every connector function's manifest declares its top-level response keys under `returns:`; the runtime makes those keys reference-able as `{{<id>.<key>}}` automatically. Declare an explicit `emits` MAP only when you need to alias a deep JSONPath into a short name — `emits: {<short_name>: "$.<jsonpath>"}`. Lists are never valid; the field is always a map. If a reference fails validation, either the connector doesn't declare that key in `returns:` (pick a different key, or alias via `emits`) or the path was a typo.
-
-    3. Mustache syntax is strict. ONLY these forms are recognised:
-       - `{{T.<path>}}` — trigger inputs (literal `T`, then a dotted path matching an `inputs[].name`).
-       - `{{<id>.<field>}}` — emit from node `<id>` (an integer matching a prior node's id; `<field>` matches a key in that node's `emits` map).
-       - `{{now}}`, `{{today}}`, `{{owner.email}}`, `{{owner.<slug>.email}}`, `{{org.name}}` — built-in helpers (whole namespaces `now` / `today` / `owner` / `org`).
-
-       NO Jinja-style filters (`{{x | upper}}` is invalid). NO function calls (`{{date_add(...)}}` is invalid — express dates as ISO strings the connector function will parse). NO arithmetic (`{{1+1}}` is invalid — use a `builtin.compute` step if you need math).
-
-    4. Owner identity bindings. Two distinct facts about the workflow owner:
-       - `{{owner.email}}` — the workflow owner's app email (what they used to sign in). Use for product-internal addressing (digest emails to the operator, owner attribution in audit logs).
-       - `{{owner.<slug>.email}}` — the email captured at OAuth time AT THAT VENDOR. Use when the workflow needs to find the operator's own record on a vendor surface. Example: `hubspot.contact.find(query: "{{owner.hubspot.email}}")` looks up the OPERATOR's HubSpot contact card — which is almost certainly NOT the same address as their app email. If the connector's `account` is empty at run time (vendor doesn't expose an email or the OAuth flow predates this wiring), the binding resolves to `""` and the downstream lookup will likely produce a `lookup_miss` — surface that error rather than guessing.
-
-    5. Labels are full English rephrasings of the technical call, not summaries. Every `node.label` must preserve every argument value that matters to a human reader. The Label-view tab of the viewer is the non-technical reading surface; if you drop an arg, the user can't tell what the workflow actually does without flipping to Technical view. Mustache references can be paraphrased into prose ("from step 2", "from the trigger", "to me"), but never dropped silently. If you find yourself writing a one-word label like "Search Gmail" or "Send email", that label is too terse — add the argument context until a non-technical reader understands what the call actually does.
-
-    IR shape (per layer-W.md):
-    - `nodes[]`: a list of nodes. Every node has an integer `id`, a `kind`, and a human `label`. Exactly one node has `kind: "trigger"`; it's the workflow's entry point.
-    - `outputs[]`: declarative list of `{name, source}` describing what the workflow returns on completion. Optional — output nodes already carry the emit map; `outputs[]` is just for FE / KB indexing display.
-
-    Node kinds and the field set EACH kind requires (do not mix fields across kinds):
+    IR shape (the only required top-level key is `nodes`; `outputs` is optional):
 
     ```
-    trigger:    { id, kind:"trigger", label, trigger_kind, inputs:[], next, ...kind-specific }
-                  trigger_kind ∈ "manual" | "schedule" | "poll" | "webhook"
-                  schedule:  + every_seconds (or cron + timezone, v2)
-                  poll:      + every_seconds, connector_function, connector_args, filter
-                  webhook:   + event, match
-                  manual:    no extras (run via invoke_workflow)
-    step:       { id, kind:"step", label, function:"<slug>.<fn>"|"<synthetic>", args:{...}, [act_as_user_id], next }
-                  exactly one tool call per step node (or steps:[] mini-DAG for multi-call probes)
-    branch:     { id, kind:"branch", label, cases:[{when, next}], else:{next} }
-                  pure data predicate; no tool call; immediate route
-    gate:       { id, kind:"gate", label, approver:{role}, [auto_approve_when], on_approve, on_reject }
-                  SUSPENDS until a human approver decides
-    wait:       { id, kind:"wait", label, trigger:{kind, event, match}, timeout_seconds, on_fire, on_timeout }
-                  SUSPENDS until a matching external event arrives, or timeout
-    output:     { id, kind:"output", label, emit:{<name>: <literal-or-{{binding}}>} }
-                  TERMINAL. NO function, NO args. emit is a plain map of {name: value}.
-                  Use this to return values — including a fixed string.
+    trigger:  { id, kind:"trigger", label, trigger_kind, inputs:[], next, …kind-specific }
+                trigger_kind ∈ manual | schedule | poll | webhook
+                schedule + every_seconds   poll + every_seconds, connector_function, connector_args, filter
+                webhook  + event, match    manual has no extras
+    step:     { id, kind:"step", label, function:"<slug>.<fn>"|"<synthetic>", args:{…}, next }
+    branch:   { id, kind:"branch", label, cases:[{when, next}], else:{next} }
+    gate:     { id, kind:"gate", label, approver:{role}, on_approve, on_reject }   # suspends for human approval
+    wait:     { id, kind:"wait", label, trigger:{kind, event, match}, timeout_seconds, on_fire, on_timeout }
+    output:   { id, kind:"output", label, emit:{<name>: <literal|{{binding}}>} }   # terminal, no function/args
     ```
 
-    Choosing `trigger_kind` — the single load-bearing question:
-    *"Does the user want ONE INSTANCE PER EVENT, or ONE INSTANCE PER TIME?"*
+    Minimal shape — every IR opens with exactly one `kind:"trigger"` node; node ids are INTEGERS; `next` chains them; a step binds to a prior node by its integer id (`{{1.<field>}}`):
 
-    - TIME is the trigger → `schedule`. User names a clock-time or recurrence ("every morning at 9", "weekly", "daily", "every 30 minutes"). The workflow fires on schedule regardless of external changes; its STEPS can still query external data — but the trigger is a time, not an event.
-    - EVENT is the trigger → `poll` (or `webhook`). User names a change in an external system ("when a new email arrives", "for every deal that closes"). One instance per change, with that change as the payload.
-    - Both phrases present ("every morning, summarise emails since yesterday" / "every Monday, look at last week's closed deals") → ALWAYS `schedule`. Rule: if the user names a TIME or INTERVAL coarser than the event rate, they want batching — the "new"/"since" phrasing belongs in the workflow's STEPS, not in its trigger.
-    - `webhook` vs `poll` for the same event: default to `poll`. Pick `webhook` only when the user explicitly asks OR latency must be immediate AND the connector cleanly supports the webhook.
-    - Genuinely ambiguous: ask ONE question — *"Should this run every time a new `<thing>` happens (event), or on a recurring schedule like `<interval>` (time window)?"* — then proceed.
-
-    Cadence (`every_seconds`) — required on both `poll` and `schedule` v1.
-
-    - For `poll`: each pollable connector function declares `min_poll_seconds` (hard floor) and `default_poll_seconds` (recommended cadence) in its manifest. Pick a value from the user's prose:
-        - "real-time" / "as soon as" → the manifest's `min_poll_seconds`
-        - "every few minutes" → 300
-        - "hourly" → 3600
-        - no cadence hint → emit `default_poll_seconds` literally
-      The validator rejects values below the floor with a precise message; pick at-or-above.
-    - For `schedule` v1: pick `every_seconds` directly from the user prose ("daily" = 86400, "weekly" = 604800, etc.). Cron strings are accepted in the IR for forward compatibility but not yet executed.
-
-    The smallest valid IR is one trigger + one output:
-
-    ```yaml
+    ```
     nodes:
-      - id: 0
-        kind: trigger
-        trigger_kind: manual
-        inputs: []
-        next: 1
-      - id: 1
-        kind: output
-        label: "Emit Hello, world!"
-        emit:
-          message: "Hello, world!"
-    outputs:
-      - { name: "message", source: "{{1.message}}" }
+      - { id: 0, kind: trigger, trigger_kind: manual, inputs: [], next: 1 }
+      - { id: 1, kind: step,    function: "<slug>.<fn>", args: { … }, next: 2 }
+      - { id: 2, kind: output,  emit: { result: "{{1.<field>}}" } }
     ```
 
-    Recurring shape mistakes the validator will reject:
-    - Trigger inputs go on the trigger node, NOT at IR top-level. Write `{id: 0, kind: "trigger", trigger_kind: "manual", inputs: [{name: ..., type: ...}, ...], next: 1}`. The IR root accepts only `nodes` (required) and `outputs` (optional). A top-level `inputs` array is rejected.
-    - Output nodes are NOT step nodes. They have no `function` and no `args`. To "emit a fixed string", use `kind: "output"` with `emit: {<name>: "<your string>"}`. Do not invent a function like `builtin.emit` / `builtin.return` / `builtin.set_result` — these don't exist.
-    - Your function catalog is the source of truth. If you find a function name in external SaaS documentation (any third-party platform's API), that function is NOT a primitive unless a registered connector exposes it. Your `tools/list` is the only thing that defines what's callable.
-    - Branch `when:` is an expression, not English. Each `cases[].when` must be a single comparison: `<operand> <op> <operand>` where `<op>` is one of `==`, `!=`, `<`, `>`, `<=`, `>=`, and operands are bindings (`{{T.x}}`, `{{N.field}}`), number / quoted-string / boolean literals, or `null`. Examples: `{{1.contacts[0].id}} != null`, `{{2.amount}} > 1000`, `{{T.country}} == "DE"`, `{{1.found}} == true`. Phrases like `"no contacts found"` or a bare binding `{{1.contacts.length}}` are rejected.
-    - Branch convergence needs `builtin.coalesce`, not a missing-emit binding. When two branch arms write the same field (e.g. `contact.find` emits `contact_id` on the happy path, `contact.create` emits `contact_id` on the recovery path), downstream nodes CANNOT bind to `{{<find_id>.contact_id}}` alone — that's nil whenever the find branch didn't run. Add a `builtin.coalesce` synthetic node at the join point: `args: {values: ["{{<find_id>.contact_id}}", "{{<create_id>.contact_id}}"]}`. It emits `{value: <first_non_nil>}`; downstream binds to `{{<coalesce_id>.value}}`. This is the IR's join primitive.
+    Valid `function:` values are EXACTLY: (1) the `<slug>.<tool>` connector tools in your CURRENT tool defs — match each step to one that's actually listed; no match → the capability is absent, follow `<tool_catalog_contract>`. (2) These runtime synthetics (the executor resolves them; they never appear in your tool defs — use the names + shapes verbatim, don't invent variants):
+    - `llm.compose(template, context)` → `{subject, body, rendered}` — fill text from a template + a context map of bindings.
+    - `llm.summarise(text, max_words?)` → `{summary}` — compress a string.
+    - `builtin.coalesce(values)` → `{value}` — first non-nil; the branch-convergence join.
+    - `workflow.invoke(name, inputs)` → runs another saved workflow.
 
-    Synthetic primitive call shape: synthetic functions (`llm.compose`, `llm.summarise`, `builtin.compute`, …) take args in the shape their `tools/list` description says — read that description before constructing `args`. The pattern recurs: a synthetic that takes a TEMPLATE plus a CONTEXT MAP expects the template's `{{X}}` placeholders to match KEYS in the context map. The placeholders are NOT bindings the executor resolves — `context.X` is. So you must explicitly include every placeholder's value in `context`, typically as `{{T.X}}` / `{{<node>.<field>}}` / a literal. EVERY `{{key}}` in the template must have a corresponding `key` in `context`, otherwise the placeholder renders to empty.
+    Mustache binding grammar (the only forms the runtime resolves):
+    - `{{T.<path>}}` — trigger input declared in the trigger node's `inputs[]`.
+    - `{{<id>.<field>}}` — emit from a prior node id; `<field>` is a key the function's manifest declares in `returns:` (or an alias you defined via `emits: {<short>: "$.<jsonpath>"}` on that node).
+    - `{{now}}` / `{{today}}` — current UTC datetime / date. Append an offset for relative ranges: `{{now-<N><unit>}}` / `{{today-<N><unit>}}`, sign `+` or `-`, units `m`/`h`/`d`/`w` (minutes/hours/days/weeks). For a window that ends now and starts one period earlier, set its start to `{{now-<N><unit>}}`. No other arithmetic exists.
+    - `{{owner.email}}` / `{{owner.<slug>.email}}` / `{{org.name}}` — `owner.email` is the app identity; `owner.<slug>.email` the per-connector vendor identity captured at OAuth time.
 
-    *Wrong:* args at the top level — `{template: "...{{x}}...", x: "{{T.x}}"}` — the synthetic ignores `x` because its only declared args are `template` + `context`; the placeholder renders empty.
-    *Right:* keys nested inside `context` — `{template: "...{{x}}...", context: {x: "{{T.x}}"}}` — the synthetic substitutes `{{x}}` from `context.x`.
+    Branch `cases[].when` is a single comparison `<operand> <op> <operand>`, `<op> ∈ {==,!=,<,>,<=,>=}`, operands are bindings / quoted strings / numbers / booleans / `null`. Express English predicates as comparisons ("nothing found" → `{{1.items[0]}} == null`). Convergence: when arms write the same field, join via `builtin.coalesce(values:[…])` and bind downstream to `{{<coalesce-id>.value}}`.
 
-    Bind to the synthetic's actual emit field name, not an invented one. Read its `emits_schema` in the catalog. Common shape: `llm.compose` emits `{subject, body, rendered}` — downstream nodes bind `{{<compose-node-id>.body}}`, NOT `{{<id>.result}}` (no such field).
+    Trigger-kind: ONE INSTANCE PER EVENT or PER TIME? Time-phrased ("every morning", "weekly") → `schedule`. Event-phrased ("when a new <thing> arrives") → `poll`. Both present ("every Monday, over last week's closed deals") → `schedule`; the "new/since" phrase lives in the STEPS, not the trigger. `webhook` only when the connector supports it and latency must be immediate.
 
-    Save with `upsert_workflow(display_name, description, ir, change_note)`. `description` is REQUIRED — one or two operator-readable sentences (10-280 chars) describing WHAT the workflow does and when to use it, for an SME staff user who doesn't know the IR. Avoid implementation details (function names, node ids). This text is what the picker shows in the workflow list. The tool returns `{name, version, url, display_name}` — emit the URL VERBATIM as a markdown link in your final reply: `[<display_name> · v<version>](<url>)`. The URL is a RELATIVE PATH (`/workflows/<slug>/<version>`) the FE viewer intercepts. Do NOT prefix it with a hostname — the FE has no such URL. NEVER fabricate a hostname; the tool's `url` field IS the URL.
+    Cadence: every poll/schedule needs `every_seconds`. Poll: at or above the function's `min_poll_seconds` (the validator names the floor). Map "real-time" → floor, "every few minutes" → 300, "hourly" → 3600, no hint → the manifest's `default_poll_seconds`.
 
-    Per-version semantics:
-    - First save → v0 (can be a single node; sparse first drafts are fine).
-    - Every refinement turn → call `upsert_workflow` again to land a new version. Reply with the new link. The user clicks back through versions to compare.
-    - Only `current_version` (the latest saved) is runnable. Non-latest versions are historical — visible in the viewer's version-history breadcrumb, but neither `invoke_workflow` nor `arm_workflow` accepts a version arg. To roll back, refine in chat to land a new latest with the desired shape.
-    - Running once vs. arming: a manual `invoke_workflow(name, inputs)` is a ONE-OFF run targeting the latest version; no arming required. Arming is ONLY for autonomous triggers (schedule / poll / webhook); it registers the workflow to fire by itself, and always pins to the current_version (auto-bumped on upsert). When the user says *"run it"* / *"test it"* / *"execute once"* → invoke_workflow. When they say *"schedule"* / *"arm"* / *"start firing"* → arm_workflow.
+    Self-sufficiency: every required arg must trace to a trigger input, a prior emit, a built-in, the manifest's default, or a literal the user stated. Missing source → ask via `request_input` (the answer becomes a literal in the IR or a new trigger input); never fill a gap with placeholders like `"TBD"`/`"<x>"` — the validator rejects them. The save also fails when the workflow needs OAuth scopes the user hasn't granted — the error names the slug to reconnect.
 
-    Multi-account check: before saving, if `<authorized_services>` lists more than one account on a slug any node uses, ask the user which account to bind. Only labels visible in `<authorized_services>` are valid choices.
+    `node.label` is a full English rephrasing of the call that keeps every meaningful argument value (paraphrase mustache refs as "from step 2" / "from the trigger", never drop them). The viewer's Label tab is the non-technical reading surface.
 
-    `request_input` during a workflow build is a COMPILE pause. The user's answer is a value to bake into the IR — as a literal on a step, or as a new trigger input declared in the trigger node. Your next tool call is `upsert_workflow` with the updated IR.
+    Per-version: every save bumps the version; only the latest is runnable (`invoke_workflow` / `arm_workflow` take no version arg). Refinement turn → save again → reply with the new link. `invoke_workflow(name, inputs)` is the one-off run for `trigger_kind: manual`; for poll/schedule/webhook triggers "run it" is ambiguous — ask whether to run once now (`invoke_workflow`) or arm the autonomous trigger (`arm_workflow`).
 
-    `&<slug>` references: when the user's message contains `&<slug>`, a `<workflow_references>` block at the top carries the workflow's authoritative `id`, `display_name`, `description`, `current_version`, `trigger_kind`, and `trigger_inputs` schema. The slug is a resolved database key, not a search term — read intent from the user's prose and act on the workflow directly via `read_workflow` / `invoke_workflow` / `arm_workflow` / `upsert_workflow`.
+    `&<slug>` from the user loads a `<workflow_references>` block (the workflow's authoritative metadata + trigger_inputs schema) — route via `read_workflow` / `invoke_workflow` / `arm_workflow` / `upsert_workflow`. Workflows surfaced in `<augmented_facts type="indexed">` under the `workflow` class: when one matches the user's intent, offer to run or refine it rather than silently recreate.
 
-    Intent map:
-
-    - Run ("run X", "execute X", "test X", "fire X with …"):
-        - `trigger_kind: manual` → `invoke_workflow(name, inputs)`. Translate the user's prose into an `inputs` map matching the schema.
-        - `trigger_kind: poll` / `schedule` / `webhook` → "run" is ambiguous. Ask: *"This runs on a `<trigger_kind>` trigger. (a) run once now against current data, or (b) activate the autonomous trigger?"* (a) → `invoke_workflow`; (b) → `arm_workflow`.
-    - Edit ("edit X to …", "change X at node N") → `read_workflow(name)`, validate refs against the closed root set (`T`, `owner`, `org`, `now`, `today`, `<int>`), mutate, `upsert_workflow`.
-    - Inspect ("what does X do", "describe X") → answer from the block's `description`. Fetch the IR only on request for the technical shape.
-
-    Unresolved `&<slug>`: a slug in an `<unresolved_workflow_references>` block doesn't exist in this org. Tell the user the slug is unknown and ask them to pick from the picker or check spelling.
-
-    No `&<slug>` + build intent ("build a workflow that …") → compile + `upsert_workflow` per the rules above.
-
-    `upsert_workflow` surfaces specific errors (`unknown_function`, `missing_required_args`, `unbound_reference`). Read the error, fix the IR, retry.
+    The validator returns precise errors (`unknown_function`, `missing_required_args`, `unbound_reference`, branch-predicate parse errors with examples, scope errors naming the slug). Read the error, fix the IR, retry — the message is the teacher.
     """
   end
 
@@ -516,22 +434,65 @@ defmodule DmhAi.Tools.UpsertWorkflow do
 
         true ->
           {:halt,
-           {:error,
-            "upsert_workflow: node #{node["id"]} references unknown function " <>
-              "`#{function_name}` — not in any connector manifest, not a " <>
-              "synthetic primitive. The DMH-AI primitives available to your " <>
-              "workflow are EXACTLY the ones in your tool catalog; nothing " <>
-              "else. Two common confusions to avoid: " <>
-              "(a) if this node should EMIT a literal value with no API " <>
-              "call, use a node with `kind: 'output'` and an `emit: {<name>: " <>
-              "<value>}` map — output nodes have no `function`/`args` field. " <>
-              "(b) if you saw this function name in third-party platform " <>
-              "documentation (Bitrix24, Salesforce, custom REST API, …), " <>
-              "that platform's API is NOT a DMH-AI primitive unless a " <>
-              "registered connector exposes it — your tool catalog is the " <>
-              "only source of truth for what's callable here."}}
+           {:error, unknown_function_error(node["id"], function_name)}}
       end
     end)
+  end
+
+  # Build the unknown-function error with a per-slug shortlist of
+  # the actual functions registered for the connector — sorted by
+  # Jaro distance to the model's typo so the closest matches are
+  # surfaced first. Catches the common failure mode where the model
+  # invents a function name from the vendor's public REST docs
+  # (`gmail.messages.send`, `calendar.events.list`) instead of the
+  # connector's manifest verbs (`gmail.send`, `gcal.create_event`).
+  defp unknown_function_error(node_id, function_name) do
+    [slug | _] = String.split(function_name, ".", parts: 2)
+    suggestions = closest_functions_for_slug(slug, function_name, 10)
+
+    "upsert_workflow: node #{node_id} references unknown function `#{function_name}` — " <>
+      "not in any connector manifest, not a synthetic primitive. The DMH-AI primitives " <>
+      "available to your workflow are EXACTLY the ones in your tool catalog. " <>
+      suggestions_clause(slug, suggestions) <>
+      "Two common confusions to avoid: " <>
+      "(a) if this node should EMIT a literal value with no API call, use a node with " <>
+      "`kind: 'output'` and an `emit: {<name>: <value>}` map — output nodes have no " <>
+      "`function`/`args` field. " <>
+      "(b) if you saw this function name in third-party platform documentation " <>
+      "(vendor REST API path, public docs), that path is NOT a DMH-AI primitive unless a " <>
+      "registered connector exposes it — your tool catalog is the only source of truth."
+  end
+
+  defp suggestions_clause(_slug, []), do: ""
+
+  defp suggestions_clause(slug, names) do
+    "Functions actually registered for `#{slug}` (closest matches first): " <>
+      Enum.map_join(names, ", ", &("`" <> &1 <> "`")) <>
+      ". Pick the one that performs this step's action. If NONE of them fits, this " <>
+      "connector cannot do it — tell the user the capability is missing (suggest an " <>
+      "alternative connector, a manual route, or proceeding without that part). These " <>
+      "names are internal and complete: the real name lives ONLY in this list, so " <>
+      "`web_search` / `fetch_index` (which index the public web) cannot surface one — " <>
+      "resolve the step from the list above. "
+  end
+
+  # Pull every `<slug>.<function>` available for a slug from BOTH the
+  # Universal-Region Dispatcher's manifest AND any MCP attachment
+  # surfacing tools by the same slug, dedupe, and sort by Jaro
+  # distance to the model's typo. Returns up to `limit` names.
+  defp closest_functions_for_slug(slug, target, limit) do
+    dispatcher_names =
+      case DmhAi.Tools.Dispatcher.lookup(slug) do
+        {:ok, %{manifest: %{functions: functions}}} when is_map(functions) ->
+          Enum.map(functions, fn {path, _} -> slug <> "." <> path end)
+
+        _ ->
+          []
+      end
+
+    Enum.uniq(dispatcher_names)
+    |> Enum.sort_by(&String.jaro_distance(&1, target), :desc)
+    |> Enum.take(limit)
   end
 
   defp is_step_node?(node) do
@@ -1004,13 +965,19 @@ defmodule DmhAi.Tools.UpsertWorkflow do
     {:error,
      "`{{org.me.<x>}}` is not a valid binding. Use `{{owner.<x>}}` for the " <>
        "workflow owner's DMH-AI app identity (e.g. `{{owner.email}}`), or " <>
-       "`{{owner.<slug>.email}}` for the owner's vendor identity captured " <>
-       "at OAuth time (e.g. `{{owner.hubspot.email}}` for the HubSpot account " <>
-       "email used to connect)."}
+       "`{{owner.<slug>.email}}` (substituting the connector's slug) for the " <>
+       "owner's vendor identity captured at OAuth time."}
   end
 
   defp validate_ref(%{parsed: %{root: root}}, _t_keys, _ids, _emits)
        when root in [:owner, :org, :now, :today] do
+    :ok
+  end
+
+  # Relative-time roots (`{{now-7d}}`, `{{today+1w}}`) — the offset is
+  # already validated by the grammar; nothing to resolve against here.
+  defp validate_ref(%{parsed: %{root: {base, _offset}}}, _t_keys, _ids, _emits)
+       when base in [:now, :today] do
     :ok
   end
 

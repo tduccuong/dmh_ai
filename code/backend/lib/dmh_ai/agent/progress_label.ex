@@ -42,7 +42,8 @@ defmodule DmhAi.Agent.ProgressLabel do
     "calculator"        => "expression",
     "save_creds"        => "target",
     "lookup_creds"      => "target",
-    "delete_creds"      => "target"
+    "delete_creds"      => "target",
+    "activate_profile"  => "profiles"
   }
 
   @doc """
@@ -70,6 +71,7 @@ defmodule DmhAi.Agent.ProgressLabel do
       cond do
         is_binary(key) and is_integer(args[key]) -> "(#{args[key]})"
         is_binary(key) and is_binary(args[key])  -> args[key]
+        is_binary(key) and is_list(args[key])    -> args[key] |> Enum.filter(&is_binary/1) |> Enum.join(", ")
         true                                      -> first_string_value(args)
       end
 

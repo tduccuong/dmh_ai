@@ -55,7 +55,11 @@ defmodule DmhAi.Workflows.Executor do
   # and wait nodes always suspend) and unbounded fan-out.
   @max_steps 200
 
-  @synthetic_names ~w(llm.compose llm.summarise builtin.compute builtin.coalesce)
+  # Seconds per day — converts a `{{today±N…}}` offset (carried in
+  # seconds by `Workflows.Path`) back to whole days for `Date.add/2`.
+  @seconds_per_day 86_400
+
+  @synthetic_names ~w(llm.compose llm.summarise builtin.coalesce)
 
   # ─── Public API ────────────────────────────────────────────────────────
 
@@ -679,11 +683,6 @@ defmodule DmhAi.Workflows.Executor do
     {:ok, %{"summary" => String.slice(text, 0, 400)}}
   end
 
-  defp run_llm_synthetic("builtin.compute", args, _state) do
-    expr = Map.get(args, "expr") || Map.get(args, :expr) || ""
-    {:ok, %{"result" => expr}}    # v1 placeholder; arithmetic eval not yet implemented
-  end
-
   # `builtin.coalesce` — null-coalescing primitive for the join /
   # merge problem. Branches that converge on a downstream step's
   # arg (typical pattern: `contact.find` succeeds OR `contact.create`
@@ -900,6 +899,12 @@ defmodule DmhAi.Workflows.Executor do
 
       {:ok, %{root: :today, path: []}} ->
         Date.utc_today() |> Date.to_iso8601()
+
+      {:ok, %{root: {:now, secs}, path: []}} ->
+        DateTime.utc_now() |> DateTime.add(secs, :second) |> DateTime.to_iso8601()
+
+      {:ok, %{root: {:today, secs}, path: []}} ->
+        Date.utc_today() |> Date.add(div(secs, @seconds_per_day)) |> Date.to_iso8601()
 
       {:ok, %{root: :trigger, path: path}} ->
         data = state.bindings["trigger"] || state.bindings[:trigger] || %{}

@@ -24,6 +24,9 @@ defmodule DmhAi.Tools.CancelWorkflowRun do
   def name, do: "cancel_workflow_run"
 
   @impl true
+  def catalog_manifest, do: %{write_class: :write}
+
+  @impl true
   def description do
     "Cancel a workflow instance. Terminal. The current step finishes " <>
       "naturally; no further steps run. Required arg: run_id."

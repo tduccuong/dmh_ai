@@ -277,10 +277,10 @@ defmodule DmhAi.WorkflowsTest do
       assert msg =~ "nonsense"
     end
 
-    test "synthetic functions (llm.compose, builtin.compute) pass through", %{ctx: ctx} do
+    test "synthetic functions (llm.compose, builtin.coalesce) pass through", %{ctx: ctx} do
       ir = ir_with_trigger([
-        %{"id" => 1, "kind" => "step", "function" => "llm.compose",      "args" => %{"template" => "x"}, "label" => "compose"},
-        %{"id" => 2, "kind" => "step", "function" => "builtin.compute",  "args" => %{"formula" => "1+1"}, "label" => "math"}
+        %{"id" => 1, "kind" => "step", "function" => "llm.compose",     "args" => %{"template" => "x"}, "label" => "compose"},
+        %{"id" => 2, "kind" => "step", "function" => "builtin.coalesce", "args" => %{"values" => ["a", "b"]}, "label" => "pick first"}
       ])
 
       assert {:ok, %{"version" => 0}} =
