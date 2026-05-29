@@ -37,8 +37,8 @@ defmodule DmhAi.Connectors.Registry do
     DmhAi.Connectors.Notion,
     DmhAi.Connectors.Klaviyo,
     DmhAi.Connectors.Brevo,
-    DmhAi.Connectors.Atlassian
-    # DocuSign — added in subsequent slices of Phase C.
+    DmhAi.Connectors.Atlassian,
+    DmhAi.Connectors.DocuSign
   ]
 
   @doc """

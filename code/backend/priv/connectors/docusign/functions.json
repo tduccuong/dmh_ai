@@ -1,0 +1,241 @@
+{
+  "connector_slug": "docusign",
+  "functions": [
+    {
+      "args": {
+        "from_date": {
+          "required": false,
+          "type": "string"
+        },
+        "limit": {
+          "required": false,
+          "type": "integer"
+        },
+        "status": {
+          "required": false,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "envelope.find",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "envelopes": "list"
+      },
+      "scopes_required": [
+        "signature"
+      ]
+    },
+    {
+      "args": {
+        "documents": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "list"
+        },
+        "recipients": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "list"
+        },
+        "status": {
+          "provenance": {
+            "kind": "literal_default",
+            "value": "sent"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "subject": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "rate_limited"
+      ],
+      "function_name": "envelope.create",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "envelope_id": "string"
+      },
+      "scopes_required": [
+        "signature"
+      ]
+    },
+    {
+      "args": {
+        "envelope_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "docusign.envelope.find"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "envelope.get",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "envelope": "map"
+      },
+      "scopes_required": [
+        "signature"
+      ]
+    },
+    {
+      "args": {
+        "envelope_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "docusign.envelope.find"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "envelope.send",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "ok": "boolean"
+      },
+      "scopes_required": [
+        "signature"
+      ]
+    },
+    {
+      "args": {
+        "envelope_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "docusign.envelope.find"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "voided_reason": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "envelope.void",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "ok": "boolean"
+      },
+      "scopes_required": [
+        "signature"
+      ]
+    },
+    {
+      "args": {
+        "envelope_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "docusign.envelope.find"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "recipients": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "list"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "recipient.add",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "recipient_id_added": "string"
+      },
+      "scopes_required": [
+        "signature"
+      ]
+    },
+    {
+      "args": {
+        "limit": {
+          "required": false,
+          "type": "integer"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "template.find",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "templates": "list"
+      },
+      "scopes_required": [
+        "signature"
+      ]
+    }
+  ],
+  "vendor_api_version": "v2.1"
+}
