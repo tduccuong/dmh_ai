@@ -1,0 +1,345 @@
+{
+  "connector_slug": "atlassian",
+  "functions": [
+    {
+      "args": {
+        "limit": {
+          "required": false,
+          "type": "integer"
+        },
+        "project_key": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "atlassian.project.find"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "status": {
+          "required": false,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "issue.find",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "issues": "list"
+      },
+      "scopes_required": [
+        "read:jira-work"
+      ]
+    },
+    {
+      "args": {
+        "description": {
+          "required": false,
+          "type": "string"
+        },
+        "issue_type": {
+          "provenance": {
+            "kind": "literal_default",
+            "value": "Task"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "project_key": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "atlassian.project.find"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "summary": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "rate_limited"
+      ],
+      "function_name": "issue.create",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "issue_id": "string",
+        "key": "string"
+      },
+      "scopes_required": [
+        "write:jira-work"
+      ]
+    },
+    {
+      "args": {
+        "issue_key": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "atlassian.issue.find"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "patch": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "map"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "issue.update",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "issue_id": "string"
+      },
+      "scopes_required": [
+        "write:jira-work"
+      ]
+    },
+    {
+      "args": {
+        "issue_key": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "atlassian.issue.find"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "transition_id": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "issue.transition",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "ok": "boolean"
+      },
+      "scopes_required": [
+        "write:jira-work"
+      ]
+    },
+    {
+      "args": {
+        "body": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "issue_key": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "atlassian.issue.find"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "issue.comment",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "comment_id": "string"
+      },
+      "scopes_required": [
+        "write:jira-work"
+      ]
+    },
+    {
+      "args": {
+        "limit": {
+          "required": false,
+          "type": "integer"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "project.find",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "projects": "list"
+      },
+      "scopes_required": [
+        "read:jira-work"
+      ]
+    },
+    {
+      "args": {
+        "limit": {
+          "required": false,
+          "type": "integer"
+        },
+        "space_key": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "title": {
+          "required": false,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "page.find",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "pages": "list"
+      },
+      "scopes_required": [
+        "read:confluence-content.summary"
+      ]
+    },
+    {
+      "args": {
+        "body_storage": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "space_key": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "title": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "rate_limited"
+      ],
+      "function_name": "page.create",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "page_id": "string"
+      },
+      "scopes_required": [
+        "write:confluence-content"
+      ]
+    },
+    {
+      "args": {
+        "body_storage": {
+          "required": false,
+          "type": "string"
+        },
+        "page_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "atlassian.page.find"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "title": {
+          "required": false,
+          "type": "string"
+        },
+        "version_number": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "integer"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "page.update",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "page_id": "string"
+      },
+      "scopes_required": [
+        "write:confluence-content"
+      ]
+    }
+  ],
+  "vendor_api_version": "v3"
+}
