@@ -3,6 +3,31 @@
   "functions": [
     {
       "args": {
+        "customer_id": {
+          "required": false,
+          "type": "string"
+        },
+        "limit": {
+          "required": false,
+          "type": "integer"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "charge.find",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "charges": "list"
+      },
+      "scopes_required": []
+    },
+    {
+      "args": {
         "email": {
           "format": "email",
           "provenance": {
@@ -61,6 +86,163 @@
     },
     {
       "args": {
+        "customer_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "stripe.customer.find"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "email": {
+          "format": "email",
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": false,
+          "type": "string"
+        },
+        "metadata": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": false,
+          "type": "map"
+        },
+        "name": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": false,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited",
+        "duplicate"
+      ],
+      "function_name": "customer.update",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "customer_id": "string"
+      },
+      "scopes_required": []
+    },
+    {
+      "args": {
+        "auto_advance": {
+          "provenance": {
+            "kind": "literal_default",
+            "value": true
+          },
+          "required": false,
+          "type": "boolean"
+        },
+        "customer_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "stripe.customer.find"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "description": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": false,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited",
+        "duplicate"
+      ],
+      "function_name": "invoice.create",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "invoice_id": "string"
+      },
+      "scopes_required": []
+    },
+    {
+      "args": {
+        "customer_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "stripe.customer.find"
+          },
+          "required": false,
+          "type": "string"
+        },
+        "limit": {
+          "required": false,
+          "type": "integer"
+        },
+        "status": {
+          "required": false,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "invoice.find",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "invoices": "list"
+      },
+      "scopes_required": []
+    },
+    {
+      "args": {
+        "invoice_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "stripe.invoice.find"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "invoice.send",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "invoice_id": "string",
+        "status": "string"
+      },
+      "scopes_required": []
+    },
+    {
+      "args": {
         "amount": {
           "provenance": {
             "kind": "literal_default"
@@ -105,6 +287,39 @@
           "required": false,
           "type": "boolean"
         },
+        "limit": {
+          "required": false,
+          "type": "integer"
+        },
+        "product_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "stripe.product.find"
+          },
+          "required": false,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "price.find",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "prices": "list"
+      },
+      "scopes_required": []
+    },
+    {
+      "args": {
+        "active": {
+          "required": false,
+          "type": "boolean"
+        },
         "query": {
           "required": false,
           "type": "string"
@@ -132,7 +347,8 @@
         },
         "charge_id": {
           "provenance": {
-            "kind": "from_user"
+            "kind": "lookup",
+            "source": "stripe.charge.find"
           },
           "required": true,
           "type": "string"
@@ -156,6 +372,80 @@
       "poll_trigger_capable": false,
       "returns": {
         "refund_id": "string"
+      },
+      "scopes_required": []
+    },
+    {
+      "args": {
+        "subscription_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "stripe.subscription.find"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "subscription.cancel",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "status": "string",
+        "subscription_id": "string"
+      },
+      "scopes_required": []
+    },
+    {
+      "args": {
+        "customer_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "stripe.customer.find"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "price_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "stripe.price.find"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "quantity": {
+          "provenance": {
+            "kind": "literal_default",
+            "value": 1
+          },
+          "required": false,
+          "type": "integer"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited",
+        "duplicate"
+      ],
+      "function_name": "subscription.create",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "subscription_id": "string"
       },
       "scopes_required": []
     },

@@ -31,7 +31,7 @@ defmodule DmhAi.P03StripeTest do
        @org_id, "admin", :os.system_time(:second)])
 
     # api_key credential — built at runtime from short literals so no
-    # single string in source looks like a real secret (CLAUDE rule 13).
+    # single string in source looks like a real secret.
     fake_key = "sk_" <> "test_" <> "FAKEKEYFORTESTING1234567890"
 
     query!(Repo,
@@ -54,14 +54,28 @@ defmodule DmhAi.P03StripeTest do
   describe "manifest" do
     test "validates clean", do: assert :ok = Manifest.validate(StripeConn.manifest())
 
-    test "declares 6 functions across customer/payment_intent/refund/subscription/product" do
+    test "declares 14 functions across customer/payment_intent/refund/charge/subscription/product/price/invoice" do
       functions = StripeConn.manifest().functions
+
+      # Original 6
       assert Map.has_key?(functions, "customer.find")
       assert Map.has_key?(functions, "customer.create")
       assert Map.has_key?(functions, "payment_intent.create")
       assert Map.has_key?(functions, "refund.create")
       assert Map.has_key?(functions, "subscription.find")
       assert Map.has_key?(functions, "product.find")
+
+      # +8 from the Stripe expansion
+      assert Map.has_key?(functions, "charge.find")
+      assert Map.has_key?(functions, "invoice.find")
+      assert Map.has_key?(functions, "price.find")
+      assert Map.has_key?(functions, "customer.update")
+      assert Map.has_key?(functions, "subscription.create")
+      assert Map.has_key?(functions, "subscription.cancel")
+      assert Map.has_key?(functions, "invoice.create")
+      assert Map.has_key?(functions, "invoice.send")
+
+      assert map_size(functions) == 14
     end
 
     test "every write is callable_from: [:task] with idempotency_key required" do
@@ -141,6 +155,46 @@ defmodule DmhAi.P03StripeTest do
                Dispatcher.call("stripe.payment_intent.create",
                                %{"amount" => 2000, "currency" => "eur"},
                                %{user_id: admin_id, task_id: "t-1", step_seq: "tc-1"})
+    end
+
+    test "read function (invoice.find) from free chat returns the inner invoices list",
+         %{admin_id: admin_id, fake_key: fake_key} do
+      Application.put_env(:dmh_ai, :__mcp_caller_stub__,
+        fn "stripe", "invoice.find", args, creds ->
+          assert creds["api_key"] == fake_key
+          assert args["customer_id"] == "cus_001"
+          assert args["status"] == "open"
+
+          {:ok,
+           %{"invoices" => [%{"id" => "in_001",
+                              "customer" => "cus_001",
+                              "status" => "open",
+                              "amount_due" => 4200}]}}
+        end)
+
+      assert {:ok, %{"invoices" => [%{"id" => "in_001", "status" => "open"}]}} =
+               Dispatcher.call("stripe.invoice.find",
+                               %{"customer_id" => "cus_001", "status" => "open"},
+                               %{user_id: admin_id})
+    end
+
+    test "write function (subscription.cancel) in-task carries injected idempotency_key",
+         %{admin_id: admin_id} do
+      Application.put_env(:dmh_ai, :__mcp_caller_stub__,
+        fn "stripe", "subscription.cancel", args, _creds ->
+          assert is_binary(args["__idempotency_key"]),
+                 "writes must carry idempotency_key injected by Dispatcher"
+          assert args["subscription_id"] == "sub_001"
+
+          {:ok, %{"subscription_id" => "sub_001", "status" => "canceled"}}
+        end)
+
+      ctx = %{user_id: admin_id, task_id: "t-cancel-sub", step_seq: 0}
+
+      assert {:ok, %{"subscription_id" => "sub_001", "status" => "canceled"}} =
+               Dispatcher.call("stripe.subscription.cancel",
+                               %{"subscription_id" => "sub_001"},
+                               ctx)
     end
   end
 end
