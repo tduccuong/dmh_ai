@@ -30,11 +30,19 @@ defmodule DmhAi.Connectors.Mock.Fixtures.Slack do
     %{
       "message.send"       => &message_send/1,
       "message.update"     => &message_update/1,
+      "message.schedule"   => &message_schedule/1,
+      "message.delete"     => &message_delete/1,
       "channel.find"       => &channel_find/1,
       "channel.history"    => &channel_history/1,
+      "channel.create"     => &channel_create/1,
+      "channel.invite"     => &channel_invite/1,
+      "channel.archive"    => &channel_archive/1,
       "message.find"       => &message_find/1,
       "user.find_by_email" => &user_find_by_email/1,
       "user.list"          => &user_list/1,
+      "user.set_status"    => &user_set_status/1,
+      "file.upload"        => &file_upload/1,
+      "pin.add"            => &pin_add/1,
       "reaction.add"       => &reaction_add/1
     }
   end
@@ -44,12 +52,15 @@ defmodule DmhAi.Connectors.Mock.Fixtures.Slack do
   """
   def sentinels do
     %{
-      channel_id:   "C0MOCKCHAN001",
-      channel_name: "beispiel-team-demo",
-      message_ts:   "1700000000.000100",
-      user_id:      "U0MOCKUSER001",
-      user_name:    "klara.beispiel",
-      user_email:   "klara.beispiel@beispiel-team-demo.example"
+      channel_id:           "C0MOCKCHAN001",
+      channel_id_new:       "C0NEWMOCK001",
+      channel_name:         "beispiel-team-demo",
+      message_ts:           "1700000000.000100",
+      scheduled_message_id: "Q0MOCKSCH0001",
+      file_id:              "F0MOCKFILE001",
+      user_id:              "U0MOCKUSER001",
+      user_name:            "klara.beispiel",
+      user_email:           "klara.beispiel@beispiel-team-demo.example"
     }
   end
 
@@ -139,6 +150,49 @@ defmodule DmhAi.Connectors.Mock.Fixtures.Slack do
   end
 
   defp reaction_add(_args) do
+    %{"ok" => true}
+  end
+
+  defp channel_create(_args) do
+    %{channel_id_new: id} = sentinels()
+
+    %{"channel_id" => id}
+  end
+
+  defp channel_invite(args) do
+    %{
+      "channel_id" => Map.get(args, "channel_id", sentinels().channel_id)
+    }
+  end
+
+  defp channel_archive(_args) do
+    %{"ok" => true}
+  end
+
+  defp message_schedule(args) do
+    %{scheduled_message_id: sid} = sentinels()
+
+    %{
+      "scheduled_message_id" => sid,
+      "post_at"              => Map.get(args, "post_at_epoch", 0)
+    }
+  end
+
+  defp message_delete(_args) do
+    %{"ok" => true}
+  end
+
+  defp file_upload(_args) do
+    %{file_id: fid} = sentinels()
+
+    %{"file_id" => fid}
+  end
+
+  defp pin_add(_args) do
+    %{"ok" => true}
+  end
+
+  defp user_set_status(_args) do
     %{"ok" => true}
   end
 end

@@ -52,9 +52,10 @@ defmodule DmhAi.P03SlackTest do
       assert :ok = Manifest.validate(Slack.manifest())
     end
 
-    test "declares 8 functions at the Primitive 0.3 surface" do
+    test "declares 16 functions at the Primitive 0.3 surface" do
       functions = Slack.manifest().functions
 
+      # Original 8
       assert Map.has_key?(functions, "message.send")
       assert Map.has_key?(functions, "message.update")
       assert Map.has_key?(functions, "channel.find")
@@ -64,7 +65,17 @@ defmodule DmhAi.P03SlackTest do
       assert Map.has_key?(functions, "user.list")
       assert Map.has_key?(functions, "reaction.add")
 
-      assert map_size(functions) == 8
+      # +8 from the Slack expansion
+      assert Map.has_key?(functions, "channel.create")
+      assert Map.has_key?(functions, "channel.invite")
+      assert Map.has_key?(functions, "channel.archive")
+      assert Map.has_key?(functions, "message.schedule")
+      assert Map.has_key?(functions, "message.delete")
+      assert Map.has_key?(functions, "file.upload")
+      assert Map.has_key?(functions, "pin.add")
+      assert Map.has_key?(functions, "user.set_status")
+
+      assert map_size(functions) == 16
     end
 
     test "every write function is `callable_from: [:task]` (HARD Rule 2)" do
@@ -243,6 +254,24 @@ defmodule DmhAi.P03SlackTest do
       assert {:error, %{error: "unauthorised"}} =
                Dispatcher.call("slack.message.send",
                                %{"channel" => "C0MOCKCHAN001", "text" => "hallo"},
+                               ctx)
+    end
+
+    test "write function (channel.create) in-task carries injected idempotency_key",
+         %{admin_id: admin_id} do
+      Application.put_env(:dmh_ai, :__mcp_caller_stub__,
+        fn "slack", "channel.create", args, _creds ->
+          assert is_binary(args["__idempotency_key"]),
+                 "writes must carry idempotency_key injected by Dispatcher"
+          assert args["name"] == "neuer-demo-kanal"
+          {:ok, %{"channel_id" => "C0NEWMOCK001"}}
+        end)
+
+      ctx = %{user_id: admin_id, task_id: "t-create-chan", step_seq: 0}
+
+      assert {:ok, %{"channel_id" => "C0NEWMOCK001"}} =
+               Dispatcher.call("slack.channel.create",
+                               %{"name" => "neuer-demo-kanal"},
                                ctx)
     end
   end

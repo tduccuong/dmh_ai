@@ -273,6 +273,313 @@
       "scopes_required": [
         "users:read"
       ]
+    },
+    {
+      "args": {
+        "is_private": {
+          "required": false,
+          "type": "boolean"
+        },
+        "name": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "duplicate",
+        "rate_limited"
+      ],
+      "function_name": "channel.create",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "channel_id": "string"
+      },
+      "scopes_required": [
+        "channels:manage",
+        "groups:write"
+      ]
+    },
+    {
+      "args": {
+        "channel_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "slack.channel.find"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "user_ids": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "list"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "channel.invite",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "channel_id": "string"
+      },
+      "scopes_required": [
+        "channels:manage",
+        "groups:write"
+      ]
+    },
+    {
+      "args": {
+        "channel_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "slack.channel.find"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "channel.archive",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "ok": "boolean"
+      },
+      "scopes_required": [
+        "channels:manage",
+        "groups:write"
+      ]
+    },
+    {
+      "args": {
+        "channel_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "slack.channel.find"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "post_at_epoch": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "integer"
+        },
+        "text": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "rate_limited"
+      ],
+      "function_name": "message.schedule",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "post_at": "integer",
+        "scheduled_message_id": "string"
+      },
+      "scopes_required": [
+        "chat:write"
+      ]
+    },
+    {
+      "args": {
+        "channel_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "slack.channel.find"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "ts": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "slack.message.find"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "message.delete",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "ok": "boolean"
+      },
+      "scopes_required": [
+        "chat:write"
+      ]
+    },
+    {
+      "args": {
+        "channel_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "slack.channel.find"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "content": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "filename": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "title": {
+          "required": false,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "rate_limited"
+      ],
+      "function_name": "file.upload",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "file_id": "string"
+      },
+      "scopes_required": [
+        "files:write"
+      ]
+    },
+    {
+      "args": {
+        "channel_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "slack.channel.find"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "ts": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "slack.message.find"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "duplicate",
+        "rate_limited"
+      ],
+      "function_name": "pin.add",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "ok": "boolean"
+      },
+      "scopes_required": [
+        "pins:write"
+      ]
+    },
+    {
+      "args": {
+        "status_emoji": {
+          "required": false,
+          "type": "string"
+        },
+        "status_expiration": {
+          "required": false,
+          "type": "integer"
+        },
+        "status_text": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "rate_limited"
+      ],
+      "function_name": "user.set_status",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "ok": "boolean"
+      },
+      "scopes_required": [
+        "users.profile:write"
+      ]
     }
   ],
   "vendor_api_version": "web"
