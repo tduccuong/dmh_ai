@@ -37,6 +37,33 @@
     },
     {
       "args": {
+        "event_uuid": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "calendly.event.list"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "event.get",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "event": "map"
+      },
+      "scopes_required": [
+        "scheduled_events:read"
+      ]
+    },
+    {
+      "args": {
         "event_uri": {
           "provenance": {
             "kind": "lookup",
@@ -174,6 +201,33 @@
     },
     {
       "args": {
+        "event_type_uuid": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "calendly.event_type.list"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "event_type.get",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "event_type": "map"
+      },
+      "scopes_required": [
+        "event_types:read"
+      ]
+    },
+    {
+      "args": {
         "active_only": {
           "required": false,
           "type": "boolean"
@@ -197,6 +251,116 @@
       },
       "scopes_required": [
         "event_types:read"
+      ]
+    },
+    {
+      "args": {
+        "event_uuid": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "calendly.event.list"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "invitee_uuid": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "calendly.event.invitees"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "invitee.get",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "invitee": "map"
+      },
+      "scopes_required": [
+        "scheduled_events:read"
+      ]
+    },
+    {
+      "args": {
+        "email": {
+          "format": "email",
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "organization_uuid": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "calendly.user.me"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "rate_limited",
+        "duplicate",
+        "validation"
+      ],
+      "function_name": "organization.invite",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "invitation_uri": "string"
+      },
+      "scopes_required": [
+        "organizations:write"
+      ]
+    },
+    {
+      "args": {
+        "count": {
+          "required": false,
+          "type": "integer"
+        },
+        "email": {
+          "format": "email",
+          "required": false,
+          "type": "string"
+        },
+        "organization_uri": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "calendly.user.me"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "organization.members",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "members": "list"
+      },
+      "scopes_required": [
+        "organizations:read"
       ]
     },
     {
@@ -233,6 +397,49 @@
       ]
     },
     {
+      "args": {
+        "end_time": {
+          "format": "datetime",
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "start_time": {
+          "format": "datetime",
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "user_uri": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "calendly.user.me"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "user.busy_times",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "busy_times": "list"
+      },
+      "scopes_required": [
+        "availability:read"
+      ]
+    },
+    {
       "args": {},
       "callable_from": [
         "chat",
@@ -248,6 +455,107 @@
       },
       "scopes_required": [
         "users:read"
+      ]
+    },
+    {
+      "args": {
+        "events": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "list"
+        },
+        "organization_uri": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "calendly.user.me"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "scope": {
+          "provenance": {
+            "kind": "literal_default",
+            "value": "organization"
+          },
+          "required": false,
+          "type": "string"
+        },
+        "url": {
+          "format": "url",
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "user_uri": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "calendly.user.me"
+          },
+          "required": false,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "rate_limited",
+        "duplicate",
+        "validation"
+      ],
+      "function_name": "webhook.create",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "webhook_uri": "string"
+      },
+      "scopes_required": [
+        "webhooks:write"
+      ]
+    },
+    {
+      "args": {
+        "count": {
+          "required": false,
+          "type": "integer"
+        },
+        "organization_uri": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "calendly.user.me"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "scope": {
+          "provenance": {
+            "kind": "literal_default",
+            "value": "organization"
+          },
+          "required": false,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "webhook.list",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "webhooks": "list"
+      },
+      "scopes_required": [
+        "webhooks:read"
       ]
     }
   ],

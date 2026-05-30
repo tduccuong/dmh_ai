@@ -51,9 +51,10 @@ defmodule DmhAi.P03CalendlyTest do
       assert :ok = Manifest.validate(Calendly.manifest())
     end
 
-    test "declares 8 functions at the Primitive 0.3 surface" do
+    test "declares 16 functions at the Primitive 0.3 surface" do
       functions = Calendly.manifest().functions
 
+      # Original 8
       assert Map.has_key?(functions, "user.me")
       assert Map.has_key?(functions, "event_type.list")
       assert Map.has_key?(functions, "event_type.available_slots")
@@ -62,6 +63,18 @@ defmodule DmhAi.P03CalendlyTest do
       assert Map.has_key?(functions, "single_use_link.create")
       assert Map.has_key?(functions, "event.cancel")
       assert Map.has_key?(functions, "event.mark_no_show")
+
+      # +8 from the Calendly expansion (6 read + 2 write)
+      assert Map.has_key?(functions, "event.get")
+      assert Map.has_key?(functions, "event_type.get")
+      assert Map.has_key?(functions, "invitee.get")
+      assert Map.has_key?(functions, "user.busy_times")
+      assert Map.has_key?(functions, "organization.members")
+      assert Map.has_key?(functions, "webhook.list")
+      assert Map.has_key?(functions, "organization.invite")
+      assert Map.has_key?(functions, "webhook.create")
+
+      assert map_size(functions) == 16
     end
 
     test "every write function is `callable_from: [:task]` (HARD Rule 2)" do
@@ -92,17 +105,17 @@ defmodule DmhAi.P03CalendlyTest do
   end
 
   describe "capabilities" do
-    test "three groups go live (available), eight visible as planned" do
+    test "five groups go live (available), six visible as planned" do
       caps = Calendly.capabilities()
 
       live = Enum.filter(caps, fn c -> Map.get(c, :status, :available) == :available end)
       planned = Enum.filter(caps, fn c -> Map.get(c, :status) == :planned end)
 
-      assert length(live) == 3
-      assert length(planned) == 8
+      assert length(live) == 5
+      assert length(planned) == 6
 
       live_ids = Enum.map(live, & &1.id) |> Enum.sort()
-      assert live_ids == ["meetings", "scheduling_links", "user"]
+      assert live_ids == ["event_types", "events", "organization", "users", "webhooks"]
     end
 
     test "every available capability lists at least one function" do
@@ -234,6 +247,54 @@ defmodule DmhAi.P03CalendlyTest do
                Dispatcher.call("calendly.event.cancel",
                                %{"event_uri" => "https://api.calendly.com/scheduled_events/deleted"},
                                ctx)
+    end
+
+    test "read function (event.get) from free chat returns the inner event map",
+         %{admin_id: admin_id} do
+      Application.put_env(:dmh_ai, :__mcp_caller_stub__,
+        fn "calendly", "event.get", args, _creds ->
+          assert args["event_uuid"] == "MOCKEVENT001"
+
+          {:ok,
+           %{"event" => %{"uri"        => "https://api.calendly.com/scheduled_events/MOCKEVENT001",
+                          "name"       => "Discovery Call (30 min)",
+                          "status"     => "active",
+                          "start_time" => "2026-05-20T09:00:00.000000Z",
+                          "end_time"   => "2026-05-20T09:30:00.000000Z"}}}
+        end)
+
+      assert {:ok, %{"event" => %{"uri" => uri, "status" => "active"}}} =
+               Dispatcher.call("calendly.event.get",
+                               %{"event_uuid" => "MOCKEVENT001"},
+                               %{user_id: admin_id})
+
+      assert uri =~ "scheduled_events/MOCKEVENT001"
+    end
+
+    test "write function (organization.invite) in-task carries injected idempotency_key",
+         %{admin_id: admin_id} do
+      Application.put_env(:dmh_ai, :__mcp_caller_stub__,
+        fn "calendly", "organization.invite", args, _creds ->
+          assert is_binary(args["__idempotency_key"]),
+                 "writes must carry idempotency_key injected by Dispatcher"
+          assert args["organization_uuid"] == "MOCK"
+          assert args["email"] == "neuer-mitarbeiter@dmh-calendly-demo.example"
+
+          {:ok,
+           %{"invitation_uri" => "https://api.calendly.com/organizations/MOCK/invitations/MOCKINV1",
+             "email"          => args["email"],
+             "status"         => "pending"}}
+        end)
+
+      ctx = %{user_id: admin_id, task_id: "t-org-invite", step_seq: 0}
+
+      assert {:ok, %{"invitation_uri" => uri, "status" => "pending"}} =
+               Dispatcher.call("calendly.organization.invite",
+                               %{"organization_uuid" => "MOCK",
+                                 "email"             => "neuer-mitarbeiter@dmh-calendly-demo.example"},
+                               ctx)
+
+      assert uri =~ "organizations/MOCK/invitations"
     end
   end
 end

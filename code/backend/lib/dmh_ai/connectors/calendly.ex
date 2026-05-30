@@ -10,24 +10,44 @@ defmodule DmhAi.Connectors.Calendly do
   speak to Calendly's REST API v2 via the shared
   `Connectors.MCPServer` + `RestBridge` translator).
 
-  Eight functions at the SME-relevant slice of Calendly's API
-  (developers.calendly.com) — three available capability groups
-  shipping read + write across the scheduling workflow:
+  Sixteen functions at the SME-relevant slice of Calendly's API
+  (developers.calendly.com) — five available capability groups
+  spanning identity, scheduling, organization admin, and webhooks:
 
     user.me                      [read]   identity of the connected account
+    user.busy_times              [read]   user's busy intervals in a window
     event_type.list              [read]   list user's scheduling links
+    event_type.get               [read]   read one event type by uuid
     event_type.available_slots   [read]   open booking slots for an event type
     event.list                   [read]   list scheduled meetings (date window)
+    event.get                    [read]   read one scheduled event by uuid
     event.invitees               [read]   list invitees on a scheduled event
+    invitee.get                  [read]   read one invitee (custom Q answers + tracking)
+    organization.members         [read]   list org members (optionally by email)
+    webhook.list                 [read]   list webhook subscriptions in scope
     single_use_link.create       [write]  one-time link to send a contact
     event.cancel                 [write]  cancel a scheduled meeting
     event.mark_no_show           [write]  mark an invitee as no-show
+    organization.invite          [write]  invite a new member by email
+    webhook.create               [write]  subscribe to vendor push events
 
-  Three capability groups go live (scheduling_links, meetings,
-  user). Eight more (organization, workspaces, groups,
-  routing_forms, webhooks, activity_log, shares, data_compliance)
-  are exposed in the External Connectors ticker as `:planned` so
-  admins see the full Calendly surface and know what's coming.
+  ## URI vs UUID in the wire shape
+
+  Calendly's API is URI-centric for QUERY params (e.g.
+  `?user=https://api.calendly.com/users/{uuid}`) and UUID-only for
+  PATH params (e.g. `GET /scheduled_events/{uuid}`). Arguments
+  follow the same duality: `*_uri` args carry the full URL from a
+  previous read, `*_uuid` args carry only the trailing identifier.
+  When the agent has a URI from `user.me.current_organization` and
+  needs a UUID for a path param, it strips the prefix client-side
+  and passes the bare UUID; the handler then routes it through
+  `safe_path_id/1` before interpolation.
+
+  Five capability groups go live (event_types, events, users,
+  organization, webhooks). Six more (workspaces, groups,
+  routing_forms, activity_log, shares, data_compliance) are exposed
+  in the External Connectors ticker as `:planned` so admins see the
+  full Calendly surface and know what's coming.
 
   ## Vendor quirks (`remap_error/1`)
 
@@ -46,8 +66,16 @@ defmodule DmhAi.Connectors.Calendly do
   scopes therefore use the canonical vendor names (`users:read`,
   `event_types:read`, `scheduling_links:write`,
   `scheduled_events:read`, `scheduled_events:write`,
-  `availability:read`), so the dispatcher's scope-subset check sees
-  exactly what the user's `user_credentials.payload.scope` contains.
+  `availability:read`, `organizations:read`, `organizations:write`,
+  `webhooks:read`, `webhooks:write`), so the dispatcher's
+  scope-subset check sees exactly what the user's
+  `user_credentials.payload.scope` contains. Organization +
+  webhook endpoints additionally require an org-admin token at
+  the vendor level; member tokens get 401 on those endpoints and
+  the connector remaps to `:unauthorised`. The OAuth install URL
+  scopes (in `oauth_catalog_descriptor/0`) are unchanged — Calendly
+  bundles the org + webhook surface under the user-level
+  authorization granted at install time.
   """
 
   use DmhAi.Connectors.MCPAdapter
@@ -66,10 +94,13 @@ defmodule DmhAi.Connectors.Calendly do
   def discover_docs do
     {:ok,
      [
-       %{url: "https://developers.calendly.com/api-docs",            title: "Calendly API overview"},
-       %{url: "https://developers.calendly.com/api-docs/Z3JvdXA-event-types", title: "Calendly — event types"},
-       %{url: "https://developers.calendly.com/api-docs/Z3JvdXA-scheduled-events", title: "Calendly — scheduled events"},
-       %{url: "https://developers.calendly.com/api-docs/Z3JvdXA-scheduling-links", title: "Calendly — scheduling links"}
+       %{url: "https://developers.calendly.com/api-docs",                          title: "Calendly API overview"},
+       %{url: "https://developers.calendly.com/api-docs/Z3JvdXA-event-types",      title: "Calendly - event types"},
+       %{url: "https://developers.calendly.com/api-docs/Z3JvdXA-scheduled-events", title: "Calendly - scheduled events"},
+       %{url: "https://developers.calendly.com/api-docs/Z3JvdXA-scheduling-links", title: "Calendly - scheduling links"},
+       %{url: "https://developers.calendly.com/api-docs/Z3JvdXA-organizations",    title: "Calendly - organizations"},
+       %{url: "https://developers.calendly.com/api-docs/Z3JvdXA-webhook-subscriptions", title: "Calendly - webhook subscriptions"},
+       %{url: "https://developers.calendly.com/api-docs/Z3JvdXA-availability",     title: "Calendly - availability + busy times"}
      ]}
   end
 
@@ -209,6 +240,165 @@ defmodule DmhAi.Connectors.Calendly do
           returns: %{marked: :boolean},
           errors:  [:unauthorised, :not_found, :rate_limited],
           scopes:  ["scheduled_events:write"]
+        },
+
+        # vendor: GET /scheduled_events/{event_uuid}
+        # docs:   https://developers.calendly.com/api-docs/c1ec9b8a0ff14-get-event
+        # `event_uuid` is the trailing segment of an event URI; the
+        # handler whitelists it via `safe_path_id/1` before
+        # interpolating into the path.
+        "event.get" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "event_uuid" => %{type: :string, required: true,
+                              provenance: %{kind: :lookup,
+                                            source: "calendly.event.list"}}
+          },
+          returns: %{event: :map},
+          scopes:  ["scheduled_events:read"]
+        },
+
+        # vendor: GET /event_types/{event_type_uuid}
+        # docs:   https://developers.calendly.com/api-docs/8c2bd02a76247-get-event-type
+        "event_type.get" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "event_type_uuid" => %{type: :string, required: true,
+                                   provenance: %{kind: :lookup,
+                                                 source: "calendly.event_type.list"}}
+          },
+          returns: %{event_type: :map},
+          scopes:  ["event_types:read"]
+        },
+
+        # vendor: GET /scheduled_events/{event_uuid}/invitees/{invitee_uuid}
+        # docs:   https://developers.calendly.com/api-docs/580d278d0c873-get-event-invitee
+        # Carries custom question/answer payload + UTM/tracking data
+        # not present in the bulk `event.invitees` list.
+        "invitee.get" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "event_uuid"   => %{type: :string, required: true,
+                                provenance: %{kind: :lookup,
+                                              source: "calendly.event.list"}},
+            "invitee_uuid" => %{type: :string, required: true,
+                                provenance: %{kind: :lookup,
+                                              source: "calendly.event.invitees"}}
+          },
+          returns: %{invitee: :map},
+          scopes:  ["scheduled_events:read"]
+        },
+
+        # vendor: GET /user_busy_times?user={user_uri}&start_time=...&end_time=...
+        # docs:   https://developers.calendly.com/api-docs/6e51c40d28b97-list-user-busy-times
+        # `user_uri` is the FULL URI from `user.me.uri`; Req
+        # URL-encodes it via the `:params` mechanism.
+        "user.busy_times" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "user_uri"   => %{type: :string, required: true,
+                              provenance: %{kind: :lookup,
+                                            source: "calendly.user.me"}},
+            "start_time" => %{type: :string, required: true, format: :datetime,
+                              provenance: %{kind: :literal_default}},
+            "end_time"   => %{type: :string, required: true, format: :datetime,
+                              provenance: %{kind: :literal_default}}
+          },
+          returns: %{busy_times: :list},
+          scopes:  ["availability:read"]
+        },
+
+        # vendor: GET /organization_memberships?organization={uri}&email=&count=
+        # docs:   https://developers.calendly.com/api-docs/2ec96a4a32d6a-list-organization-memberships
+        # `organization_uri` is the FULL URI of the connected user's
+        # current organization (`user.me.current_organization`). The
+        # optional `email` filter narrows to one member; otherwise the
+        # full membership list is returned (capped by `count`).
+        "organization.members" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "organization_uri" => %{type: :string,  required: true,
+                                    provenance: %{kind: :lookup,
+                                                  source: "calendly.user.me"}},
+            "email"            => %{type: :string,  required: false, format: :email},
+            "count"            => %{type: :integer, required: false}
+          },
+          returns: %{members: :list},
+          scopes:  ["organizations:read"]
+        },
+
+        # vendor: POST /organizations/{organization_uuid}/invitations
+        # docs:   https://developers.calendly.com/api-docs/1d5f60bda73b5-invite-user-to-organization
+        # `organization_uuid` is the trailing segment of
+        # `user.me.current_organization` — the agent strips the URI
+        # prefix and supplies the bare UUID for the path param.
+        "organization.invite" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "organization_uuid" => %{type: :string, required: true,
+                                     provenance: %{kind: :lookup,
+                                                   source: "calendly.user.me"}},
+            "email"             => %{type: :string, required: true, format: :email,
+                                     provenance: %{kind: :from_user}}
+          },
+          returns: %{invitation_uri: :string},
+          errors:  [:unauthorised, :rate_limited, :duplicate, :validation],
+          scopes:  ["organizations:write"]
+        },
+
+        # vendor: POST /webhook_subscriptions
+        # docs:   https://developers.calendly.com/api-docs/c1ddc06ce1f1b-create-webhook-subscription
+        # `scope` defaults to "organization" (org-wide subscription);
+        # `user_uri` is only required when `scope == "user"`. `events`
+        # is a list of vendor literals (e.g.
+        # ["invitee.created","invitee.canceled"]).
+        "webhook.create" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "url"              => %{type: :string, required: true, format: :url,
+                                    provenance: %{kind: :from_user}},
+            "events"           => %{type: :list,   required: true,
+                                    provenance: %{kind: :literal_default}},
+            "organization_uri" => %{type: :string, required: true,
+                                    provenance: %{kind: :lookup,
+                                                  source: "calendly.user.me"}},
+            "user_uri"         => %{type: :string, required: false,
+                                    provenance: %{kind: :lookup,
+                                                  source: "calendly.user.me"}},
+            "scope"            => %{type: :string, required: false,
+                                    provenance: %{kind: :literal_default,
+                                                  value: "organization"}}
+          },
+          returns: %{webhook_uri: :string},
+          errors:  [:unauthorised, :rate_limited, :duplicate, :validation],
+          scopes:  ["webhooks:write"]
+        },
+
+        # vendor: GET /webhook_subscriptions?organization={uri}&scope=&count=
+        # docs:   https://developers.calendly.com/api-docs/d52ddd8caeb37-list-webhook-subscriptions
+        "webhook.list" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "organization_uri" => %{type: :string,  required: true,
+                                    provenance: %{kind: :lookup,
+                                                  source: "calendly.user.me"}},
+            "scope"            => %{type: :string,  required: false,
+                                    provenance: %{kind: :literal_default,
+                                                  value: "organization"}},
+            "count"            => %{type: :integer, required: false}
+          },
+          returns: %{webhooks: :list},
+          scopes:  ["webhooks:read"]
         }
       }
     }
@@ -316,61 +506,73 @@ defmodule DmhAi.Connectors.Calendly do
   def mcp_handler_module, do: DmhAi.Connectors.Calendly.MCPHandler
 
   @doc """
-  Capability groups admin curates via External Connectors. Three
-  groups go live (scheduling_links, meetings, user); eight more
-  ship as `:planned` so the ticker reflects the full Calendly
-  surface — admin sees what's coming and can plan vendor-side
-  scope grants accordingly. The three enforcement layers (OAuth
-  scope filter, tool catalog filter, dispatcher gate) all read
-  from `enabled_capabilities`.
+  Capability groups admin curates via External Connectors. Five
+  groups go live (event_types, events, users, organization,
+  webhooks); six more ship as `:planned` so the ticker reflects
+  the full Calendly surface — admin sees what's coming and can
+  plan vendor-side scope grants accordingly. The three enforcement
+  layers (OAuth scope filter, tool catalog filter, dispatcher
+  gate) all read from `enabled_capabilities`.
   """
   @spec capabilities() :: [map()]
   def capabilities do
     [
       %{
-        id:           "scheduling_links",
-        display_name: "Scheduling links",
-        description:  "List a user's event types, query open booking slots, and create one-time scheduling links to send to contacts.",
+        id:           "event_types",
+        display_name: "Event types",
+        description:  "List a user's event types, read one event type by id, query open booking slots, and create one-time scheduling links to send to contacts.",
         scopes:       ["event_types:read", "availability:read", "scheduling_links:write"],
-        functions:    ["event_type.list", "event_type.available_slots", "single_use_link.create"],
+        functions:    ["event_type.list", "event_type.get", "event_type.available_slots", "single_use_link.create"],
         vendor_prereq: %{
           label:      "Calendly OAuth app — `event_types:read` + `availability:read` + `scheduling_links:write`",
           enable_url: "https://developer.calendly.com/api-docs/eb45fa1c5e0a3-list-event-types"
         }
       },
       %{
-        id:           "meetings",
-        display_name: "Meetings",
-        description:  "Read scheduled events, list their invitees, cancel events, and record no-shows.",
+        id:           "events",
+        display_name: "Events",
+        description:  "Read scheduled events, list their invitees, fetch one event or one invitee in detail, cancel events, and record no-shows.",
         scopes:       ["scheduled_events:read", "scheduled_events:write"],
-        functions:    ["event.list", "event.invitees", "event.cancel", "event.mark_no_show"],
+        functions:    ["event.list", "event.get", "event.invitees", "invitee.get", "event.cancel", "event.mark_no_show"],
         vendor_prereq: %{
           label:      "Calendly OAuth app — `scheduled_events:read` + `scheduled_events:write`",
           enable_url: "https://developer.calendly.com/api-docs/64fa4d63cb567-list-events"
         }
       },
       %{
-        id:           "user",
-        display_name: "User identity",
-        description:  "Read the connected Calendly account's identity (used to scope per-user queries).",
-        scopes:       ["users:read"],
-        functions:    ["user.me"],
+        id:           "users",
+        display_name: "Users",
+        description:  "Read the connected Calendly account's identity (used to scope per-user queries) and that user's busy intervals in a window.",
+        scopes:       ["users:read", "availability:read"],
+        functions:    ["user.me", "user.busy_times"],
         vendor_prereq: %{
-          label:      "Calendly OAuth app — `users:read`",
+          label:      "Calendly OAuth app — `users:read` + `availability:read`",
           enable_url: "https://developer.calendly.com/api-docs/ff48c8ba8d5f1-get-current-user"
         }
       },
-      # ── Planned (full vendor surface visible to admins) ──
       %{
         id:           "organization",
         display_name: "Organization",
-        description:  "Read organization members, send/revoke invitations.",
-        status:       :planned,
+        description:  "List organization members (optionally filtered by email) and invite new members.",
         scopes:       ["organizations:read", "organizations:write"],
-        functions:    [],
-        vendor_prereq: %{label: "Calendly OAuth app — `organizations:read|write` (org-admin token)",
-                         enable_url: "https://developer.calendly.com/api-docs/2ec96a4a32d6a-list-organization-memberships"}
+        functions:    ["organization.members", "organization.invite"],
+        vendor_prereq: %{
+          label:      "Calendly OAuth app — `organizations:read|write` (org-admin token)",
+          enable_url: "https://developer.calendly.com/api-docs/2ec96a4a32d6a-list-organization-memberships"
+        }
       },
+      %{
+        id:           "webhooks",
+        display_name: "Webhooks",
+        description:  "List + create webhook subscriptions at organization or user scope. Vendor pushes are wired in once the agent's webhook ingress lands.",
+        scopes:       ["webhooks:read", "webhooks:write"],
+        functions:    ["webhook.list", "webhook.create"],
+        vendor_prereq: %{
+          label:      "Calendly OAuth app — `webhooks:read|write`",
+          enable_url: "https://developer.calendly.com/api-docs/c1ddc06ce1f1b-create-webhook-subscription"
+        }
+      },
+      # ── Planned (full vendor surface visible to admins) ──
       %{
         id:           "workspaces",
         display_name: "Workspaces",
@@ -400,16 +602,6 @@ defmodule DmhAi.Connectors.Calendly do
         functions:    [],
         vendor_prereq: %{label: "Calendly OAuth app — `routing_forms:read`",
                          enable_url: "https://developer.calendly.com/api-docs/14523c2cc44ce-list-routing-forms"}
-      },
-      %{
-        id:           "webhooks",
-        display_name: "Webhooks",
-        description:  "Subscribe to event-created / event-canceled / invitee.no_show pushes from Calendly. Layer-D primitive (needs the agent's webhook ingress to land first).",
-        status:       :planned,
-        scopes:       ["webhooks:read", "webhooks:write"],
-        functions:    [],
-        vendor_prereq: %{label: "Calendly OAuth app — `webhooks:read|write`; DMH-AI webhook ingress",
-                         enable_url: "https://developer.calendly.com/api-docs/c1ddc06ce1f1b-create-webhook-subscription"}
       },
       %{
         id:           "activity_log",

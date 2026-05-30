@@ -9,22 +9,34 @@ defmodule DmhAi.Connectors.Calendly.MCPHandler do
   generic `Connectors.MCPServer`. Each function is a 1:1 mapping
   to a Calendly v2 endpoint at `api.calendly.com/*`:
 
-    user.me                    — GET /users/me
-    event_type.list            — GET /event_types?user={uri}
-    event_type.available_slots — GET /event_type_available_times
-    event.list                 — GET /scheduled_events?user={uri}
-    event.invitees             — GET /scheduled_events/{uuid}/invitees
+    user.me                    — GET  /users/me
+    user.busy_times            — GET  /user_busy_times?user={uri}&start_time=…&end_time=…
+    event_type.list            — GET  /event_types?user={uri}
+    event_type.get             — GET  /event_types/{uuid}
+    event_type.available_slots — GET  /event_type_available_times
+    event.list                 — GET  /scheduled_events?user={uri}
+    event.get                  — GET  /scheduled_events/{uuid}
+    event.invitees             — GET  /scheduled_events/{uuid}/invitees
+    invitee.get                — GET  /scheduled_events/{uuid}/invitees/{uuid}
+    organization.members       — GET  /organization_memberships?organization={uri}&email=…&count=…
+    organization.invite        — POST /organizations/{uuid}/invitations
+    webhook.list               — GET  /webhook_subscriptions?organization={uri}&scope=…&count=…
+    webhook.create             — POST /webhook_subscriptions
     single_use_link.create     — POST /scheduling_links
     event.cancel               — POST /scheduled_events/{uuid}/cancellation
     event.mark_no_show         — POST /invitee_no_shows
 
-  Calendly's API is URI-centric — every resource is identified by
-  a full URL (e.g. `https://api.calendly.com/event_types/AAAA…`),
-  not a short UUID. We pass these through verbatim; arguments
-  named `*_uri` always carry the full URL the previous read
-  returned. This keeps round-tripping deterministic (no
-  re-construction of URIs from UUIDs) at the cost of slightly
-  longer argument strings.
+  ## URI vs UUID — query param vs path param
+
+  Calendly's API is URI-centric for QUERY params and UUID-only for
+  PATH params. Arguments named `*_uri` carry the full URL the
+  previous read returned (e.g.
+  `https://api.calendly.com/event_types/AAAA…`); arguments named
+  `*_uuid` carry only the trailing identifier. Query-side URIs
+  ride the Req `:params` mechanism (Req URL-encodes them
+  automatically); path-side UUIDs are whitelisted via
+  `safe_path_id/1` before interpolation — no raw user-supplied
+  string ever lands directly inside a URL segment.
 
   ## Per-user URI resolution
 
@@ -34,12 +46,26 @@ defmodule DmhAi.Connectors.Calendly.MCPHandler do
   caches the result in the request context to avoid a round-trip
   per call. The `user.me` function exposes the same call to the
   agent for explicit "whoami" prompts.
+
+  ## `current_organization` chaining
+
+  `user.me` surfaces the connected user's `current_organization`
+  URI alongside their own URI — `organization.members`,
+  `organization.invite`, `webhook.list`, and `webhook.create` all
+  consume it as an arg (URI for queries, stripped UUID for the
+  invite path param) so org-wide queries chain off one `user.me`
+  read.
   """
 
   alias DmhAi.Connectors.MCPServer.{RestBridge, FunctionSpec}
   require Logger
 
   @api_base "https://api.calendly.com"
+
+  # Calendly UUIDs are URL-safe Base64 / hex tokens; whitelist the
+  # charset before interpolating into a path so unvalidated input
+  # can't inject extra path segments or query strings.
+  @path_id_re ~r/^[A-Za-z0-9_-]+$/
 
   @doc """
   Handler entry consumed by `Connectors.MCPServer.Registry.put/1`
@@ -96,23 +122,83 @@ defmodule DmhAi.Connectors.Calendly.MCPHandler do
         request:  &event_mark_no_show_request/2,
         response: &event_mark_no_show_response/2,
         doc:      "Record an invitee as a no-show."
+      },
+      "event.get" => %FunctionSpec{
+        method:   :get,
+        url:      &event_get_url/1,
+        request:  fn _args, _ctx -> [] end,
+        response: &event_get_response/2,
+        doc:      "Read one scheduled event by uuid."
+      },
+      "event_type.get" => %FunctionSpec{
+        method:   :get,
+        url:      &event_type_get_url/1,
+        request:  fn _args, _ctx -> [] end,
+        response: &event_type_get_response/2,
+        doc:      "Read one event type by uuid."
+      },
+      "invitee.get" => %FunctionSpec{
+        method:   :get,
+        url:      &invitee_get_url/1,
+        request:  fn _args, _ctx -> [] end,
+        response: &invitee_get_response/2,
+        doc:      "Read one invitee on a scheduled event (custom Q answers + UTM/tracking)."
+      },
+      "user.busy_times" => %FunctionSpec{
+        method:   :get,
+        url:      "#{@api_base}/user_busy_times",
+        request:  &user_busy_times_request/2,
+        response: &user_busy_times_response/2,
+        doc:      "List the user's busy intervals in a time window."
+      },
+      "organization.members" => %FunctionSpec{
+        method:   :get,
+        url:      "#{@api_base}/organization_memberships",
+        request:  &organization_members_request/2,
+        response: &organization_members_response/2,
+        doc:      "List organization members (optionally filtered by email)."
+      },
+      "organization.invite" => %FunctionSpec{
+        method:   :post,
+        url:      &organization_invite_url/1,
+        request:  &organization_invite_request/2,
+        response: &organization_invite_response/2,
+        doc:      "Invite a new member to the organization by email."
+      },
+      "webhook.create" => %FunctionSpec{
+        method:   :post,
+        url:      "#{@api_base}/webhook_subscriptions",
+        request:  &webhook_create_request/2,
+        response: &webhook_create_response/2,
+        doc:      "Subscribe to vendor push events at organization or user scope."
+      },
+      "webhook.list" => %FunctionSpec{
+        method:   :get,
+        url:      "#{@api_base}/webhook_subscriptions",
+        request:  &webhook_list_request/2,
+        response: &webhook_list_response/2,
+        doc:      "List webhook subscriptions in the given scope."
       }
     }
   end
 
   # ─── user.me ──────────────────────────────────────────────────────────
 
+  # `current_organization` is the chaining seam — `organization.*`
+  # and `webhook.*` consume it as their `organization_uri` /
+  # `organization_uuid` arg.
   defp user_me_response(s, body) when s in 200..299 do
     res = Map.get(body, "resource", %{})
 
     {:ok,
      %{
        "user" => %{
-         "uri"      => res["uri"],
-         "name"     => res["name"],
-         "email"    => res["email"],
-         "timezone" => res["timezone"],
-         "scheduling_url" => res["scheduling_url"]
+         "uri"                  => res["uri"],
+         "name"                 => res["name"],
+         "email"                => res["email"],
+         "timezone"             => res["timezone"],
+         "scheduling_url"       => res["scheduling_url"],
+         "current_organization" => res["current_organization"]
        }
      }}
   end
@@ -333,6 +419,147 @@ defmodule DmhAi.Connectors.Calendly.MCPHandler do
      }}
   end
 
+  # ─── event.get — GET /scheduled_events/{event_uuid} ───────────────────
+
+  defp event_get_url(args),
+    do: "#{@api_base}/scheduled_events/#{safe_path_id(args["event_uuid"])}"
+
+  defp event_get_response(s, body) when s in 200..299 do
+    {:ok, %{"event" => Map.get(body, "resource", %{})}}
+  end
+
+  # ─── event_type.get — GET /event_types/{event_type_uuid} ──────────────
+
+  defp event_type_get_url(args),
+    do: "#{@api_base}/event_types/#{safe_path_id(args["event_type_uuid"])}"
+
+  defp event_type_get_response(s, body) when s in 200..299 do
+    {:ok, %{"event_type" => Map.get(body, "resource", %{})}}
+  end
+
+  # ─── invitee.get — GET /scheduled_events/{uuid}/invitees/{uuid} ───────
+
+  defp invitee_get_url(args) do
+    event_uuid   = safe_path_id(args["event_uuid"])
+    invitee_uuid = safe_path_id(args["invitee_uuid"])
+    "#{@api_base}/scheduled_events/#{event_uuid}/invitees/#{invitee_uuid}"
+  end
+
+  defp invitee_get_response(s, body) when s in 200..299 do
+    {:ok, %{"invitee" => Map.get(body, "resource", %{})}}
+  end
+
+  # ─── user.busy_times — GET /user_busy_times?user=…&start_time=…&end_time=…
+
+  # `user_uri` is the FULL URI (`https://api.calendly.com/users/{uuid}`);
+  # Req URL-encodes it when serialising `:params`. `start_time` /
+  # `end_time` are ISO-8601 datetimes the agent supplies.
+  defp user_busy_times_request(args, _ctx) do
+    [
+      params: [
+        {"user",       args["user_uri"]},
+        {"start_time", args["start_time"]},
+        {"end_time",   args["end_time"]}
+      ]
+    ]
+  end
+
+  defp user_busy_times_response(s, body) when s in 200..299 do
+    {:ok, %{"busy_times" => Map.get(body, "collection", [])}}
+  end
+
+  # ─── organization.members — GET /organization_memberships?… ───────────
+
+  defp organization_members_request(args, _ctx) do
+    params =
+      [{"organization", args["organization_uri"]}]
+      |> maybe_add_query("email", Map.get(args, "email"))
+      |> maybe_add_query("count", Map.get(args, "count"))
+
+    [params: params]
+  end
+
+  defp organization_members_response(s, body) when s in 200..299 do
+    {:ok, %{"members" => Map.get(body, "collection", [])}}
+  end
+
+  # ─── organization.invite — POST /organizations/{uuid}/invitations ─────
+
+  defp organization_invite_url(args) do
+    "#{@api_base}/organizations/#{safe_path_id(args["organization_uuid"])}/invitations"
+  end
+
+  defp organization_invite_request(args, _ctx) do
+    [json: %{"email" => args["email"]}]
+  end
+
+  defp organization_invite_response(s, body) when s in 200..299 do
+    res = Map.get(body, "resource", %{})
+
+    {:ok,
+     %{
+       "invitation_uri" => res["uri"],
+       "email"          => res["email"],
+       "status"         => res["status"]
+     }}
+  end
+
+  # ─── webhook.create — POST /webhook_subscriptions ─────────────────────
+
+  # `scope` defaults to "organization" so org-wide subscriptions
+  # take one less arg from the caller. `user_uri` is only emitted
+  # in the body when `scope == "user"`; vendor 400s on stray
+  # `user` keys at organization scope, so the connector drops
+  # them defensively.
+  defp webhook_create_request(args, _ctx) do
+    scope = Map.get(args, "scope") || "organization"
+
+    body =
+      %{
+        "url"          => args["url"],
+        "events"       => args["events"],
+        "organization" => args["organization_uri"],
+        "scope"        => scope
+      }
+      |> maybe_add_user_when_user_scope(scope, Map.get(args, "user_uri"))
+
+    [json: body]
+  end
+
+  defp webhook_create_response(s, body) when s in 200..299 do
+    res = Map.get(body, "resource", %{})
+
+    {:ok,
+     %{
+       "webhook_uri" => res["uri"],
+       "callback_url" => res["callback_url"],
+       "state"       => res["state"]
+     }}
+  end
+
+  defp maybe_add_user_when_user_scope(body, "user", uri) when is_binary(uri) and uri != "",
+    do: Map.put(body, "user", uri)
+  defp maybe_add_user_when_user_scope(body, _scope, _uri), do: body
+
+  # ─── webhook.list — GET /webhook_subscriptions?… ──────────────────────
+
+  defp webhook_list_request(args, _ctx) do
+    scope = Map.get(args, "scope") || "organization"
+
+    params =
+      [
+        {"organization", args["organization_uri"]},
+        {"scope",        scope}
+      ]
+      |> maybe_add_query("count", Map.get(args, "count"))
+
+    [params: params]
+  end
+
+  defp webhook_list_response(s, body) when s in 200..299 do
+    {:ok, %{"webhooks" => Map.get(body, "collection", [])}}
+  end
+
   # ─── User URI resolution (cached per-call by RestBridge ctx) ──────────
 
   # Many Calendly endpoints require `user={uri}` scoping. We lazily
@@ -373,4 +600,18 @@ defmodule DmhAi.Connectors.Calendly.MCPHandler do
   defp maybe_add_query(list, _k, nil), do: list
   defp maybe_add_query(list, _k, ""),  do: list
   defp maybe_add_query(list, k, v),    do: list ++ [{k, to_string(v)}]
+
+  # Whitelist a path-param id to the Calendly id charset before
+  # interpolating it into a URL. A value that doesn't match raises —
+  # the dispatcher surfaces it as an error envelope rather than
+  # building a URL with an injected segment / query string.
+  defp safe_path_id(id) do
+    str = to_string(id)
+
+    if Regex.match?(@path_id_re, str) do
+      str
+    else
+      raise ArgumentError, "invalid calendly id: #{inspect(id)}"
+    end
+  end
 end
