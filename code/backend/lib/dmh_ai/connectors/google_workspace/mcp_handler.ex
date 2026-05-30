@@ -29,6 +29,19 @@ defmodule DmhAi.Connectors.GoogleWorkspace.MCPHandler do
   @people_base   "https://people.googleapis.com/v1"
   @sheets_base   "https://sheets.googleapis.com/v4"
 
+  # Whitelist for ids that get interpolated into URL segments. Gmail
+  # message ids, Drive file ids, Calendar event ids and Google Sheet
+  # ids are all `[A-Za-z0-9_-]+`; Calendar-default `primary` falls
+  # under the same charset.
+  @path_id_re ~r/^[A-Za-z0-9_-]+$/
+
+  # A1-notation Sheets ranges accept sheet-name qualifiers
+  # (`Sheet1!A1:B2`), apostrophe-quoted sheet names with periods /
+  # spaces removed (we don't accept spaces — the model can rename
+  # the sheet), and bare cell / column refs. The charset stays
+  # conservative — no SQL / DSL meta characters.
+  @sheets_range_re ~r/^[A-Za-z0-9_!:'.\-]+$/
+
   @doc """
   Connector handler entry consumed by
   `Connectors.MCPServer.Registry.put/1` at boot.
@@ -169,6 +182,48 @@ defmodule DmhAi.Connectors.GoogleWorkspace.MCPHandler do
       "sheets.read_range" => %FunctionSpec{
         handler: &sheets_read_range/2,
         doc:     "Read a cell range from a Google Sheet (A1 notation, e.g. 'Sheet1!A1:C50')."
+      },
+      "gmail.read" => %FunctionSpec{
+        handler: &gmail_read/2,
+        doc:     "Read a Gmail message in full (headers, body, snippet, attachments)."
+      },
+      "gmail.label" => %FunctionSpec{
+        handler: &gmail_label/2,
+        doc:     "Add and / or remove labels on a Gmail message."
+      },
+      "gmail.create_draft" => %FunctionSpec{
+        method:  :post,
+        url:     "#{@gmail_base}/drafts",
+        request: &gmail_create_draft_request/2,
+        response: fn s, body when s in 200..299 ->
+                    {:ok, %{"draft_id" => body["id"], "message_id" => get_in(body, ["message", "id"])}}
+                  end,
+        doc:     "Create a Gmail draft (plain-text MIME)."
+      },
+      "sheets.append_row" => %FunctionSpec{
+        handler: &sheets_append_row/2,
+        doc:     "Append a row to a Google Sheet at the given range."
+      },
+      "sheets.update_range" => %FunctionSpec{
+        handler: &sheets_update_range/2,
+        doc:     "Overwrite a cell range in a Google Sheet with a 2-D values array."
+      },
+      "drive.download" => %FunctionSpec{
+        handler: &drive_download/2,
+        doc:     "Download a stored Drive file's bytes (text/* → string; other MIME → base64)."
+      },
+      "drive.create_folder" => %FunctionSpec{
+        method:  :post,
+        url:     "#{@drive_base}/files",
+        request: &drive_create_folder_request/2,
+        response: fn s, body when s in 200..299 ->
+                    {:ok, %{"folder_id" => body["id"], "name" => body["name"]}}
+                  end,
+        doc:     "Create a Drive folder under root or a given parent."
+      },
+      "gcal.delete_event" => %FunctionSpec{
+        handler: &gcal_delete_event/2,
+        doc:     "Delete a Calendar event from the named calendar (defaults to 'primary')."
       }
     }
   end
@@ -612,6 +667,311 @@ defmodule DmhAi.Connectors.GoogleWorkspace.MCPHandler do
 
       {:error, _} ->
         {:error, :transport_error}
+    end
+  end
+
+  # ─── gmail.read — full message envelope + flattened headers ───────────
+
+  # vendor: GET /gmail/v1/users/me/messages/{id}?format=full
+  # docs:   https://developers.google.com/gmail/api/reference/rest/v1/users.messages/get
+  defp gmail_read(args, ctx) do
+    message_id = safe_path_id(args["message_id"])
+    url        = "#{@gmail_base}/messages/#{message_id}"
+
+    opts = [url: url, params: [{"format", "full"}]]
+
+    case RestBridge.raw_request(:get, with_bearer(opts, ctx)) do
+      {:ok, status, body} when status in 200..299 and is_map(body) ->
+        {:ok, %{"message" => normalise_full_message(body)}}
+
+      {:ok, status, body} ->
+        {:error, {:http, status, body}}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  defp normalise_full_message(m) do
+    headers = get_in(m, ["payload", "headers"]) || []
+
+    %{
+      "id"            => m["id"],
+      "thread_id"     => m["threadId"],
+      "subject"       => header(headers, "Subject"),
+      "from"          => header(headers, "From"),
+      "to"            => header(headers, "To"),
+      "received_at"   => header(headers, "Date"),
+      "snippet"       => m["snippet"],
+      "body"          => extract_message_body(m["payload"]),
+      "label_ids"     => m["labelIds"] || [],
+      "attachments"   => extract_attachments(m["payload"])
+    }
+  end
+
+  # Gmail messages can be `text/plain` (simple) or nested `multipart/*`
+  # (a tree of parts). Walk the part tree, concatenating any decoded
+  # text/plain bodies; ignore attachments.
+  defp extract_message_body(nil), do: ""
+  defp extract_message_body(%{"mimeType" => "text/plain", "body" => %{"data" => data}}) when is_binary(data),
+    do: decode_b64url(data)
+  defp extract_message_body(%{"parts" => parts}) when is_list(parts) do
+    parts
+    |> Enum.map(&extract_message_body/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.join("\n")
+  end
+  defp extract_message_body(_), do: ""
+
+  defp decode_b64url(s) do
+    case Base.url_decode64(s, padding: false) do
+      {:ok, bin} -> bin
+      :error     -> ""
+    end
+  end
+
+  defp extract_attachments(nil), do: []
+  defp extract_attachments(%{"parts" => parts}) when is_list(parts) do
+    parts
+    |> Enum.flat_map(fn part ->
+      case part do
+        %{"filename" => fname, "body" => %{"attachmentId" => aid, "size" => size}}
+            when is_binary(fname) and fname != "" ->
+          [%{
+            "name"         => fname,
+            "attachment_id" => aid,
+            "content_type" => Map.get(part, "mimeType"),
+            "size"         => size
+          }]
+
+        %{"parts" => _} ->
+          extract_attachments(part)
+
+        _ ->
+          []
+      end
+    end)
+  end
+  defp extract_attachments(_), do: []
+
+  # ─── gmail.label — modify label ids on a message ──────────────────────
+
+  # vendor: POST /gmail/v1/users/me/messages/{id}/modify
+  # docs:   https://developers.google.com/gmail/api/reference/rest/v1/users.messages/modify
+  defp gmail_label(args, ctx) do
+    message_id = safe_path_id(args["message_id"])
+    add_ids    = args["add_label_ids"] || []
+    rem_ids    = args["remove_label_ids"] || []
+
+    cond do
+      not is_list(add_ids) or not is_list(rem_ids) ->
+        {:error, :invalid_argument}
+
+      add_ids == [] and rem_ids == [] ->
+        {:error, :invalid_argument}
+
+      true ->
+        url  = "#{@gmail_base}/messages/#{message_id}/modify"
+        body = %{"addLabelIds" => add_ids, "removeLabelIds" => rem_ids}
+
+        case RestBridge.raw_request(:post, with_bearer([url: url, json: body], ctx)) do
+          {:ok, status, resp} when status in 200..299 and is_map(resp) ->
+            {:ok, %{"message_id" => resp["id"] || message_id}}
+
+          {:ok, status, body} ->
+            {:error, {:http, status, body}}
+
+          {:error, _} = err ->
+            err
+        end
+    end
+  end
+
+  # ─── gmail.create_draft — RFC-2822 MIME wrapped in a draft envelope ───
+
+  # vendor: POST /gmail/v1/users/me/drafts
+  # docs:   https://developers.google.com/gmail/api/reference/rest/v1/users.drafts/create
+  defp gmail_create_draft_request(args, _ctx) do
+    mime    = compose_mime(args["to"], args["subject"], args["body"])
+    encoded = Base.url_encode64(mime, padding: false)
+
+    [
+      json:    %{"message" => %{"raw" => encoded}},
+      headers: [{"content-type", "application/json"}]
+    ]
+  end
+
+  # ─── sheets.append_row — values.append, single-row wrap ───────────────
+
+  # vendor: POST /sheets/v4/spreadsheets/{id}/values/{range}:append
+  # docs:   https://developers.google.com/sheets/api/reference/rest/v4/spreadsheets.values/append
+  defp sheets_append_row(args, ctx) do
+    spreadsheet_id = safe_path_id(args["spreadsheet_id"])
+    range          = safe_sheet_range(args["range"])
+    values         = args["values"] || []
+
+    url =
+      "#{@sheets_base}/spreadsheets/#{spreadsheet_id}/values/" <>
+      "#{URI.encode(range)}:append"
+
+    opts = [
+      url:    url,
+      params: [{"valueInputOption", "USER_ENTERED"}],
+      json:   %{"values" => [values]}
+    ]
+
+    case RestBridge.raw_request(:post, with_bearer(opts, ctx)) do
+      {:ok, status, body} when status in 200..299 and is_map(body) ->
+        updated = get_in(body, ["updates", "updatedRange"]) || range
+        {:ok, %{"updated_range" => updated}}
+
+      {:ok, status, body} ->
+        {:error, {:http, status, body}}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  # ─── sheets.update_range — values.update, 2-D values ──────────────────
+
+  # vendor: PUT /sheets/v4/spreadsheets/{id}/values/{range}
+  # docs:   https://developers.google.com/sheets/api/reference/rest/v4/spreadsheets.values/update
+  defp sheets_update_range(args, ctx) do
+    spreadsheet_id = safe_path_id(args["spreadsheet_id"])
+    range          = safe_sheet_range(args["range"])
+    values         = args["values"] || []
+
+    url = "#{@sheets_base}/spreadsheets/#{spreadsheet_id}/values/#{URI.encode(range)}"
+
+    opts = [
+      url:    url,
+      params: [{"valueInputOption", "USER_ENTERED"}],
+      json:   %{"values" => values}
+    ]
+
+    case RestBridge.raw_request(:put, with_bearer(opts, ctx)) do
+      {:ok, status, body} when status in 200..299 and is_map(body) ->
+        updated = body["updatedRange"] || range
+        {:ok, %{"updated_range" => updated}}
+
+      {:ok, status, body} ->
+        {:error, {:http, status, body}}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  # ─── drive.download — GET /files/{id}?alt=media ───────────────────────
+
+  # vendor: GET /drive/v3/files/{id}?alt=media
+  # docs:   https://developers.google.com/drive/api/reference/rest/v3/files/get
+  # Plain stored files only. Native Docs / Sheets / Slides
+  # (`application/vnd.google-apps.*`) need `files/{id}/export` and
+  # are NOT handled here — surfacing a clear caveat is better than
+  # silently empty content.
+  defp drive_download(args, ctx) do
+    file_id = safe_path_id(args["file_id"])
+    url     = "#{@drive_base}/files/#{file_id}"
+
+    opts = [url: url, params: [{"alt", "media"}]]
+
+    case RestBridge.raw_request(:get, with_bearer(opts, ctx)) do
+      {:ok, status, body} when status in 200..299 ->
+        {content, mime} = encode_download_body(body)
+        {:ok, %{"content" => content, "content_type" => mime}}
+
+      {:ok, status, body} ->
+        {:error, {:http, status, body}}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  defp encode_download_body(body) when is_binary(body) do
+    if String.valid?(body) and String.printable?(body) do
+      {body, "text/plain"}
+    else
+      {Base.encode64(body), "application/octet-stream"}
+    end
+  end
+
+  defp encode_download_body(body) when is_map(body) do
+    # Drive's `alt=media` returns binary for stored files; a map
+    # response usually means an error envelope leaked through 2xx
+    # (rare). Surface verbatim as JSON.
+    {Jason.encode!(body), "application/json"}
+  end
+
+  defp encode_download_body(other), do: {to_string(other), "text/plain"}
+
+  # ─── drive.create_folder — files.create with folder mime type ─────────
+
+  # vendor: POST /drive/v3/files
+  # docs:   https://developers.google.com/drive/api/reference/rest/v3/files/create
+  defp drive_create_folder_request(args, _ctx) do
+    name = args["name"]
+
+    body =
+      %{"name" => name, "mimeType" => "application/vnd.google-apps.folder"}
+      |> maybe_put_parents(Map.get(args, "parent_id"))
+
+    [json: body]
+  end
+
+  defp maybe_put_parents(map, nil), do: map
+  defp maybe_put_parents(map, ""),  do: map
+  defp maybe_put_parents(map, parent_id) when is_binary(parent_id) do
+    Map.put(map, "parents", [safe_path_id(parent_id)])
+  end
+
+  # ─── gcal.delete_event — DELETE /calendars/{cal_id}/events/{event_id} ─
+
+  # vendor: DELETE /calendar/v3/calendars/{calendar_id}/events/{event_id}
+  # docs:   https://developers.google.com/calendar/api/v3/reference/events/delete
+  defp gcal_delete_event(args, ctx) do
+    event_id    = safe_path_id(args["event_id"])
+    calendar_id = safe_path_id(Map.get(args, "calendar_id") || "primary")
+
+    url = "#{@calendar_base}/calendars/#{calendar_id}/events/#{event_id}"
+
+    case RestBridge.raw_request(:delete, with_bearer([url: url], ctx)) do
+      {:ok, status, _body} when status in 200..299 ->
+        {:ok, %{"ok" => true}}
+
+      {:ok, status, body} ->
+        {:error, {:http, status, body}}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  # ─── path id + sheet range guards ─────────────────────────────────────
+  # Any id interpolated into a URL segment passes through these
+  # whitelists. A non-conforming value raises — the dispatcher surfaces
+  # it as an error envelope rather than building a URL with an
+  # injected path.
+
+  defp safe_path_id(id) do
+    str = to_string(id)
+
+    if Regex.match?(@path_id_re, str) do
+      str
+    else
+      raise ArgumentError, "invalid google_workspace path id: #{inspect(id)}"
+    end
+  end
+
+  defp safe_sheet_range(range) do
+    str = to_string(range)
+
+    if Regex.match?(@sheets_range_re, str) do
+      str
+    else
+      raise ArgumentError, "invalid sheets A1 range: #{inspect(range)}"
     end
   end
 

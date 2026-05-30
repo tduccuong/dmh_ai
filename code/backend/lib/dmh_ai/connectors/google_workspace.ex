@@ -448,6 +448,178 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
           scopes:  ["https://www.googleapis.com/auth/spreadsheets.readonly"]
         },
 
+        # vendor: GET /gmail/v1/users/me/messages/{message_id}?format=full
+        # docs:   https://developers.google.com/gmail/api/reference/rest/v1/users.messages/get
+        # Returns the full message envelope — headers, body, snippet,
+        # attachment metadata. The shim flattens common headers
+        # (From / To / Subject / Date) so the model can quote them
+        # without walking the `payload.headers[]` list.
+        "gmail.read" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "message_id" => %{type: :string, required: true,
+                              provenance: %{kind: :lookup,
+                                            source: "google_workspace.gmail.search"}}
+          },
+          returns: %{message: :map},
+          scopes:  ["https://www.googleapis.com/auth/gmail.readonly"]
+        },
+
+        # vendor: POST /gmail/v1/users/me/messages/{message_id}/modify
+        # docs:   https://developers.google.com/gmail/api/reference/rest/v1/users.messages/modify
+        # body `{addLabelIds:[…], removeLabelIds:[…]}`. The handler
+        # rejects requests where both lists are empty — the API would
+        # accept the no-op, but it always indicates a model bug.
+        "gmail.label" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "message_id"       => %{type: :string, required: true,
+                                    provenance: %{kind: :lookup,
+                                                  source: "google_workspace.gmail.search"}},
+            "add_label_ids"    => %{type: :list,  required: false,
+                                    provenance: %{kind: :literal_default}},
+            "remove_label_ids" => %{type: :list,  required: false,
+                                    provenance: %{kind: :literal_default}}
+          },
+          returns: %{message_id: :string},
+          errors:  [:unauthorised, :not_found, :rate_limited],
+          scopes:  ["https://www.googleapis.com/auth/gmail.modify"]
+        },
+
+        # vendor: POST /gmail/v1/users/me/drafts
+        # docs:   https://developers.google.com/gmail/api/reference/rest/v1/users.drafts/create
+        # The shim composes RFC-2822 MIME (plain text) and wraps it
+        # inside `{"message": {"raw": "<base64url>"}}` — same encoder
+        # used by `gmail.send`.
+        "gmail.create_draft" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "to"      => %{type: :string, required: true, format: :email,
+                           provenance: %{kind: :from_user}},
+            "subject" => %{type: :string, required: true,
+                           provenance: %{kind: :literal_default}},
+            "body"    => %{type: :string, required: true,
+                           provenance: %{kind: :literal_default}}
+          },
+          returns: %{draft_id: :string},
+          errors:  [:unauthorised, :rate_limited],
+          scopes:  ["https://www.googleapis.com/auth/gmail.compose"]
+        },
+
+        # vendor: POST /sheets/v4/spreadsheets/{id}/values/{range}:append
+        # docs:   https://developers.google.com/sheets/api/reference/rest/v4/spreadsheets.values/append
+        # The flat `values` list is wrapped into a single row so the
+        # caller doesn't have to nest. `valueInputOption=USER_ENTERED`
+        # so Sheets parses formulas / dates the way the spreadsheet UI
+        # would.
+        "sheets.append_row" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "spreadsheet_id" => %{type: :string, required: true,
+                                  provenance: %{kind: :lookup,
+                                                source: "google_workspace.drive.list"}},
+            "range"          => %{type: :string, required: true,
+                                  provenance: %{kind: :literal_default, value: "A1"}},
+            "values"         => %{type: :list,   required: true,
+                                  provenance: %{kind: :literal_default}}
+          },
+          returns: %{updated_range: :string},
+          errors:  [:unauthorised, :not_found, :rate_limited],
+          scopes:  ["https://www.googleapis.com/auth/spreadsheets"]
+        },
+
+        # vendor: PUT /sheets/v4/spreadsheets/{id}/values/{range}
+        # docs:   https://developers.google.com/sheets/api/reference/rest/v4/spreadsheets.values/update
+        # `values` is a 2-D array of rows — passed through verbatim.
+        # `valueInputOption=USER_ENTERED` for the same reason as
+        # `sheets.append_row`.
+        "sheets.update_range" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "spreadsheet_id" => %{type: :string, required: true,
+                                  provenance: %{kind: :lookup,
+                                                source: "google_workspace.drive.list"}},
+            "range"          => %{type: :string, required: true,
+                                  provenance: %{kind: :literal_default}},
+            "values"         => %{type: :list,   required: true,
+                                  provenance: %{kind: :literal_default}}
+          },
+          returns: %{updated_range: :string},
+          errors:  [:unauthorised, :not_found, :rate_limited],
+          scopes:  ["https://www.googleapis.com/auth/spreadsheets"]
+        },
+
+        # vendor: GET /drive/v3/files/{file_id}?alt=media
+        # docs:   https://developers.google.com/drive/api/reference/rest/v3/files/get
+        # `text/*` content surfaces as a string; other MIME types are
+        # base64-encoded so the model can still reference / forward the
+        # bytes through a string envelope. Native Docs / Sheets / Slides
+        # files (`application/vnd.google-apps.*`) require
+        # `files/{id}/export?mimeType=…` instead — this verb covers
+        # plain stored files only.
+        "drive.download" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "file_id" => %{type: :string, required: true,
+                           provenance: %{kind: :lookup,
+                                         source: "google_workspace.drive.list"}}
+          },
+          returns: %{content: :string, content_type: :string},
+          scopes:  ["https://www.googleapis.com/auth/drive.readonly"]
+        },
+
+        # vendor: POST /drive/v3/files
+        # docs:   https://developers.google.com/drive/api/reference/rest/v3/files/create
+        # body `{name, mimeType: "application/vnd.google-apps.folder",
+        # parents: [parent_id]}`. `parent_id` is omitted (drive root)
+        # when absent.
+        "drive.create_folder" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "name"      => %{type: :string, required: true,
+                             provenance: %{kind: :from_user}},
+            "parent_id" => %{type: :string, required: false,
+                             provenance: %{kind: :lookup,
+                                           source: "google_workspace.drive.list"}}
+          },
+          returns: %{folder_id: :string},
+          errors:  [:unauthorised, :rate_limited],
+          scopes:  ["https://www.googleapis.com/auth/drive.file"]
+        },
+
+        # vendor: DELETE /calendar/v3/calendars/{calendar_id}/events/{event_id}
+        # docs:   https://developers.google.com/calendar/api/v3/reference/events/delete
+        # Calendar id defaults to `primary` for the common single-user
+        # case; pass an explicit id to delete from a shared / secondary
+        # calendar.
+        "gcal.delete_event" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "event_id"    => %{type: :string, required: true,
+                               provenance: %{kind: :lookup,
+                                             source: "google_workspace.gcal.list_events"}},
+            "calendar_id" => %{type: :string, required: false,
+                               provenance: %{kind: :literal_default, value: "primary"}}
+          },
+          returns: %{ok: :boolean},
+          errors:  [:unauthorised, :not_found, :rate_limited],
+          scopes:  ["https://www.googleapis.com/auth/calendar"]
+        },
+
         # vendor: POST /gmail/v1/users/me/messages/send  (with threadId)
         # Replies attach a `threadId` + `In-Reply-To` header so Gmail
         # threads the reply correctly. Most agent-driven email is a
@@ -585,10 +757,14 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
         "email",
         "https://www.googleapis.com/auth/gmail.readonly",
         "https://www.googleapis.com/auth/gmail.send",
+        "https://www.googleapis.com/auth/gmail.modify",
+        "https://www.googleapis.com/auth/gmail.compose",
         "https://www.googleapis.com/auth/calendar.readonly",
         "https://www.googleapis.com/auth/calendar.events",
+        "https://www.googleapis.com/auth/calendar",
         "https://www.googleapis.com/auth/drive.readonly",
         "https://www.googleapis.com/auth/drive.file",
+        "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/documents.readonly"
       ],
       # Identity capture lives in `fetch_userinfo/1` (see top of module).
@@ -662,12 +838,15 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
       %{
         id:           "gmail",
         display_name: "Gmail",
-        description:  "Read inbox messages and send mail on the user's behalf.",
+        description:  "Read inbox messages, label/move them, draft replies, and send mail on the user's behalf.",
         scopes: [
           "https://www.googleapis.com/auth/gmail.readonly",
-          "https://www.googleapis.com/auth/gmail.send"
+          "https://www.googleapis.com/auth/gmail.send",
+          "https://www.googleapis.com/auth/gmail.modify",
+          "https://www.googleapis.com/auth/gmail.compose"
         ],
-        functions: ["gmail.search", "gmail.send", "gmail.reply"],
+        functions: ["gmail.search", "gmail.send", "gmail.reply",
+                    "gmail.read", "gmail.label", "gmail.create_draft"],
         vendor_prereq: %{
           label:      "Gmail API",
           enable_url: "https://console.cloud.google.com/apis/library/gmail.googleapis.com"
@@ -676,12 +855,14 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
       %{
         id:           "calendar",
         display_name: "Calendar",
-        description:  "Read availability and create calendar events.",
+        description:  "Read availability and create / update / delete calendar events.",
         scopes: [
           "https://www.googleapis.com/auth/calendar.readonly",
-          "https://www.googleapis.com/auth/calendar.events"
+          "https://www.googleapis.com/auth/calendar.events",
+          "https://www.googleapis.com/auth/calendar"
         ],
-        functions: ["gcal.find_free_slots", "gcal.list_events", "gcal.create_event", "gcal.update_event"],
+        functions: ["gcal.find_free_slots", "gcal.list_events",
+                    "gcal.create_event", "gcal.update_event", "gcal.delete_event"],
         vendor_prereq: %{
           label:      "Calendar API",
           enable_url: "https://console.cloud.google.com/apis/library/calendar-json.googleapis.com"
@@ -730,11 +911,12 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
       %{
         id:           "sheets",
         display_name: "Sheets",
-        description:  "Read cell ranges from the user's Google Sheets (read-only).",
+        description:  "Read cell ranges from the user's Google Sheets, and write rows / range updates back.",
         scopes: [
-          "https://www.googleapis.com/auth/spreadsheets.readonly"
+          "https://www.googleapis.com/auth/spreadsheets.readonly",
+          "https://www.googleapis.com/auth/spreadsheets"
         ],
-        functions: ["sheets.read_range"],
+        functions: ["sheets.read_range", "sheets.append_row", "sheets.update_range"],
         vendor_prereq: %{
           label:      "Google Sheets API",
           enable_url: "https://console.cloud.google.com/apis/library/sheets.googleapis.com"
@@ -815,12 +997,12 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
       %{
         id:           "drive",
         display_name: "Drive",
-        description:  "List Drive files and upload new ones.",
+        description:  "List Drive files, download stored content, create folders, and upload new files.",
         scopes: [
           "https://www.googleapis.com/auth/drive.readonly",
           "https://www.googleapis.com/auth/drive.file"
         ],
-        functions: ["drive.list", "drive.upload"],
+        functions: ["drive.list", "drive.upload", "drive.download", "drive.create_folder"],
         vendor_prereq: %{
           label:      "Drive API",
           enable_url: "https://console.cloud.google.com/apis/library/drive.googleapis.com"

@@ -31,18 +31,26 @@ defmodule DmhAi.Connectors.Mock.Fixtures.GoogleWorkspace do
       "gmail.search" => &gmail_search/1,
       "gmail.send"   => &gmail_send/1,
       "gmail.reply"  => &gmail_reply/1,
+      "gmail.read"   => &gmail_read/1,
+      "gmail.label"  => &gmail_label/1,
+      "gmail.create_draft" => &gmail_create_draft/1,
       "gcal.find_free_slots" => &gcal_find_free_slots/1,
       "gcal.list_events"     => &gcal_list_events/1,
       "gcal.create_event"    => &gcal_create_event/1,
       "gcal.update_event"    => &gcal_update_event/1,
+      "gcal.delete_event"    => &gcal_delete_event/1,
       "drive.list"   => &drive_list/1,
       "drive.upload" => &drive_upload/1,
+      "drive.download" => &drive_download/1,
+      "drive.create_folder" => &drive_create_folder/1,
       "docs.read_text" => &docs_read_text/1,
       "meet.create_meeting" => &meet_create_meeting/1,
       "tasks.list"   => &tasks_list/1,
       "tasks.create" => &tasks_create/1,
       "contacts.search" => &contacts_search/1,
-      "sheets.read_range" => &sheets_read_range/1
+      "sheets.read_range" => &sheets_read_range/1,
+      "sheets.append_row" => &sheets_append_row/1,
+      "sheets.update_range" => &sheets_update_range/1
     }
   end
 
@@ -69,7 +77,12 @@ defmodule DmhAi.Connectors.Mock.Fixtures.GoogleWorkspace do
       task_id:         "task_gw_mock_demo_q2_001",
       contact_name:    "Petra Kontaktbeispiel",
       contact_email:   "petra.kontaktbeispiel@dmh-demo.example",
-      sheet_value:     "DMH-DEMO-CELL-SENTINEL"
+      sheet_value:     "DMH-DEMO-CELL-SENTINEL",
+      gmail_msg_id:    "mock_msg_001",
+      gmail_draft_id:  "mock_draft_001",
+      drive_folder_new_id: "mock_folder_001",
+      sheets_updated_range: "Sheet1!A1:B1",
+      drive_download_body: "Aktenvermerk Q2 2026 — Stichprobe Belegprüfung."
     }
   end
 
@@ -282,6 +295,98 @@ defmodule DmhAi.Connectors.Mock.Fixtures.GoogleWorkspace do
         "Q2 themes: shipping the SME connector ladder, deepening per-connector workflow primitives,\n" <>
         "and standing up the live-portal UAT runbooks. Q3 themes: webhook ingress + scheduled-action\n" <>
         "primitive, opening the door to multi-day autonomous flows."
+    }
+  end
+
+  # ── Per-function fixtures: new in slice 4 expansion ──────────────────
+
+  defp gmail_read(args) do
+    %{gmail_msg_id: mid, nina_email: from} = sentinels()
+
+    %{
+      "message" => %{
+        "id"          => Map.get(args, "message_id", mid),
+        "thread_id"   => "mock_thread_001",
+        "subject"     => "Angebot Lieferanten-Update Q2",
+        "from"        => from,
+        "to"          => "betrieb@dmh-demo.example",
+        "received_at" => "2026-05-14T08:12:00+02:00",
+        "snippet"     => "Hallo, der Liefertermin verschiebt sich um eine Woche…",
+        "body"        =>
+          "Hallo zusammen,\n\n" <>
+          "der Liefertermin für die Q2-Charge verschiebt sich um eine Woche\n" <>
+          "auf den 28. Mai. Bitte das Team entsprechend informieren.\n\n" <>
+          "Viele Grüße,\nNina",
+        "label_ids"   => ["INBOX", "IMPORTANT"],
+        "attachments" => []
+      }
+    }
+  end
+
+  defp gmail_label(args) do
+    %{gmail_msg_id: mid} = sentinels()
+
+    %{
+      "message_id"     => Map.get(args, "message_id", mid),
+      "added_labels"   => Map.get(args, "add_label_ids") || [],
+      "removed_labels" => Map.get(args, "remove_label_ids") || []
+    }
+  end
+
+  defp gmail_create_draft(args) do
+    %{gmail_draft_id: did} = sentinels()
+
+    %{
+      "draft_id"   => did,
+      "message_id" => "mock_msg_draft_message_001",
+      "to"         => Map.get(args, "to"),
+      "subject"    => Map.get(args, "subject")
+    }
+  end
+
+  defp sheets_append_row(args) do
+    %{sheets_updated_range: range} = sentinels()
+
+    %{
+      "spreadsheet_id" => Map.get(args, "spreadsheet_id"),
+      "updated_range"  => range,
+      "values"         => Map.get(args, "values") || []
+    }
+  end
+
+  defp sheets_update_range(args) do
+    %{
+      "spreadsheet_id" => Map.get(args, "spreadsheet_id"),
+      "updated_range"  => Map.get(args, "range"),
+      "values"         => Map.get(args, "values") || []
+    }
+  end
+
+  defp drive_download(args) do
+    %{drive_download_body: body} = sentinels()
+
+    %{
+      "file_id"      => Map.get(args, "file_id"),
+      "content"      => body,
+      "content_type" => "text/plain"
+    }
+  end
+
+  defp drive_create_folder(args) do
+    %{drive_folder_new_id: fid} = sentinels()
+
+    %{
+      "folder_id" => fid,
+      "name"      => Map.get(args, "name"),
+      "parent_id" => Map.get(args, "parent_id")
+    }
+  end
+
+  defp gcal_delete_event(args) do
+    %{
+      "ok"       => true,
+      "event_id" => Map.get(args, "event_id"),
+      "calendar_id" => Map.get(args, "calendar_id", "primary")
     }
   end
 end

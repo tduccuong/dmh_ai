@@ -50,14 +50,35 @@ defmodule DmhAi.P03GoogleWorkspaceTest do
   describe "manifest" do
     test "validates clean", do: assert :ok = Manifest.validate(GoogleWorkspace.manifest())
 
-    test "declares 6 functions across gmail/gcal/drive" do
+    test "declares 23 functions across gmail/gcal/drive/sheets/docs/meet/tasks/contacts" do
       functions = GoogleWorkspace.manifest().functions
-      assert Map.has_key?(functions, "gmail.send")
+      # Original 15
       assert Map.has_key?(functions, "gmail.search")
-      assert Map.has_key?(functions, "gcal.create_event")
+      assert Map.has_key?(functions, "gmail.send")
+      assert Map.has_key?(functions, "gmail.reply")
       assert Map.has_key?(functions, "gcal.find_free_slots")
+      assert Map.has_key?(functions, "gcal.list_events")
+      assert Map.has_key?(functions, "gcal.create_event")
+      assert Map.has_key?(functions, "gcal.update_event")
       assert Map.has_key?(functions, "drive.list")
       assert Map.has_key?(functions, "drive.upload")
+      assert Map.has_key?(functions, "docs.read_text")
+      assert Map.has_key?(functions, "meet.create_meeting")
+      assert Map.has_key?(functions, "tasks.list")
+      assert Map.has_key?(functions, "tasks.create")
+      assert Map.has_key?(functions, "contacts.search")
+      assert Map.has_key?(functions, "sheets.read_range")
+      # +8 from the GW expansion
+      assert Map.has_key?(functions, "gmail.read")
+      assert Map.has_key?(functions, "gmail.label")
+      assert Map.has_key?(functions, "gmail.create_draft")
+      assert Map.has_key?(functions, "sheets.append_row")
+      assert Map.has_key?(functions, "sheets.update_range")
+      assert Map.has_key?(functions, "drive.download")
+      assert Map.has_key?(functions, "drive.create_folder")
+      assert Map.has_key?(functions, "gcal.delete_event")
+
+      assert map_size(functions) == 23
     end
 
     test "every write is callable_from: [:task] with idempotency_key required" do
@@ -139,6 +160,38 @@ defmodule DmhAi.P03GoogleWorkspaceTest do
                                %{"to" => "alice@example.com",
                                  "subject" => "Hi", "body" => "hello"},
                                %{user_id: admin_id, task_id: "t-1", step_seq: "tc-1"})
+    end
+
+    test "read function (gmail.read) succeeds without idempotency_key", %{admin_id: admin_id} do
+      Application.put_env(:dmh_ai, :__mcp_caller_stub__, fn "google_workspace", "gmail.read", args, _ ->
+        refute Map.has_key?(args, "__idempotency_key"), "reads must not get idempotency_key"
+        assert args["message_id"] == "msg-abc"
+        {:ok, %{"message" => %{"id" => "msg-abc", "subject" => "Hello"}}}
+      end)
+
+      assert {:ok, %{"message" => %{"subject" => "Hello"}}} =
+               Dispatcher.call("google_workspace.gmail.read",
+                               %{"message_id" => "msg-abc"},
+                               %{user_id: admin_id})
+    end
+
+    test "write function (sheets.append_row) in-task carries injected idempotency_key",
+         %{admin_id: admin_id} do
+      Application.put_env(:dmh_ai, :__mcp_caller_stub__,
+        fn "google_workspace", "sheets.append_row", args, _ ->
+          assert is_binary(args["__idempotency_key"]),
+                 "writes must carry idempotency_key injected by Dispatcher"
+          {:ok, %{"updated_range" => "Sheet1!A1:B1"}}
+        end)
+
+      ctx = %{user_id: admin_id, task_id: "t-sheets-append", step_seq: 0}
+
+      assert {:ok, %{"updated_range" => "Sheet1!A1:B1"}} =
+               Dispatcher.call("google_workspace.sheets.append_row",
+                               %{"spreadsheet_id" => "ss-1",
+                                 "range"          => "Sheet1!A1",
+                                 "values"         => ["foo", "bar"]},
+                               ctx)
     end
   end
 end
