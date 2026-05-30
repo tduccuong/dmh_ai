@@ -252,6 +252,300 @@
       "scopes_required": [
         "webinar:write"
       ]
+    },
+    {
+      "args": {
+        "meeting_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "zoom.meeting.find"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "status": {
+          "provenance": {
+            "kind": "literal_default",
+            "value": "approved"
+          },
+          "required": false,
+          "type": "string"
+        },
+        "limit": {
+          "required": false,
+          "type": "integer"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "meeting.list_registrants",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "registrants": "list"
+      },
+      "scopes_required": [
+        "meeting:read"
+      ]
+    },
+    {
+      "args": {
+        "meeting_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "zoom.meeting.find"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "email": {
+          "format": "email",
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "first_name": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "last_name": {
+          "required": false,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "meeting.add_registrant",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "join_url": "string",
+        "registrant_id": "string"
+      },
+      "scopes_required": [
+        "meeting:write"
+      ]
+    },
+    {
+      "args": {
+        "meeting_uuid": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "limit": {
+          "required": false,
+          "type": "integer"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "meeting.list_participants",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "participants": "list"
+      },
+      "scopes_required": [
+        "report:read:admin"
+      ]
+    },
+    {
+      "args": {
+        "meeting_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "zoom.meeting.find"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "recording.get",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "recording": "map"
+      },
+      "scopes_required": [
+        "recording:read"
+      ]
+    },
+    {
+      "args": {
+        "meeting_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "zoom.meeting.find"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "action": {
+          "provenance": {
+            "kind": "literal_default",
+            "value": "trash"
+          },
+          "required": false,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "recording.delete",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "ok": "boolean"
+      },
+      "scopes_required": [
+        "recording:write"
+      ]
+    },
+    {
+      "args": {
+        "limit": {
+          "required": false,
+          "type": "integer"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "webinar.find",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "webinars": "list"
+      },
+      "scopes_required": [
+        "webinar:read"
+      ]
+    },
+    {
+      "args": {
+        "webinar_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "zoom.webinar.find"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "email": {
+          "format": "email",
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "first_name": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "last_name": {
+          "required": false,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "webinar.add_registrant",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "join_url": "string",
+        "registrant_id": "string"
+      },
+      "scopes_required": [
+        "webinar:write"
+      ]
+    },
+    {
+      "args": {
+        "webinar_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "zoom.webinar.find"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "patch": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "map"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "webinar.update",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "webinar_id": "string"
+      },
+      "scopes_required": [
+        "webinar:write"
+      ]
     }
   ],
   "vendor_api_version": "v2"

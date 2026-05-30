@@ -7,17 +7,25 @@ defmodule DmhAi.Connectors.Zoom do
   @moduledoc """
   Zoom connector (Universal Region, Case B — vendor MCP).
 
-  Eight functions at the SME-relevant slice of Zoom's REST API
+  Sixteen functions at the SME-relevant slice of Zoom's REST API
   (developers.zoom.us) — meetings, recordings, users, webinars:
 
-    meeting.create   [write]  schedule a meeting for the authed user
-    meeting.find     [read]   list the authed user's meetings
-    meeting.get      [read]   read one meeting by id
-    meeting.update   [write]  patch an existing meeting
-    meeting.delete   [write]  delete a meeting
-    recording.find   [read]   list the authed user's cloud recordings
-    user.find        [read]   read a user (defaults to the authed user)
-    webinar.create   [write]  schedule a webinar for the authed user
+    meeting.create            [write]  schedule a meeting for the authed user
+    meeting.find              [read]   list the authed user's meetings
+    meeting.get               [read]   read one meeting by id
+    meeting.update            [write]  patch an existing meeting
+    meeting.delete            [write]  delete a meeting
+    meeting.list_registrants  [read]   list registrants for a meeting
+    meeting.add_registrant    [write]  add a registrant to a meeting
+    meeting.list_participants [read]   list participants of a past meeting (Reports API)
+    recording.find            [read]   list the authed user's cloud recordings
+    recording.get             [read]   read recording files for one meeting
+    recording.delete          [write]  trash / delete cloud recordings for one meeting
+    user.find                 [read]   read a user (defaults to the authed user)
+    webinar.create            [write]  schedule a webinar for the authed user
+    webinar.find              [read]   list the authed user's webinars
+    webinar.add_registrant    [write]  add a registrant to a webinar
+    webinar.update            [write]  patch an existing webinar
 
   Four capability groups (meetings / recordings / users / webinars)
   so admins can scope per-org — a scheduling-only org might tick
@@ -254,6 +262,144 @@ defmodule DmhAi.Connectors.Zoom do
           returns: %{webinar_id: :string, registration_url: :string},
           errors:  [:unauthorised, :rate_limited],
           scopes:  ["webinar:write"]
+        },
+
+        # vendor: GET /meetings/{meeting_id}/registrants
+        # docs:   https://developers.zoom.us/docs/api/meetings/
+        "meeting.list_registrants" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "meeting_id" => %{type: :string,  required: true,
+                              provenance: %{kind: :lookup,
+                                            source: "zoom.meeting.find"}},
+            "status"     => %{type: :string,  required: false,
+                              provenance: %{kind: :literal_default,
+                                            value: "approved"}},
+            "limit"      => %{type: :integer, required: false}
+          },
+          returns: %{registrants: :list},
+          scopes:  ["meeting:read"]
+        },
+
+        # vendor: POST /meetings/{meeting_id}/registrants
+        "meeting.add_registrant" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "meeting_id" => %{type: :string, required: true,
+                              provenance: %{kind: :lookup,
+                                            source: "zoom.meeting.find"}},
+            "email"      => %{type: :string, required: true, format: :email,
+                              provenance: %{kind: :from_user}},
+            "first_name" => %{type: :string, required: true,
+                              provenance: %{kind: :from_user}},
+            "last_name"  => %{type: :string, required: false}
+          },
+          returns: %{registrant_id: :string, join_url: :string},
+          errors:  [:unauthorised, :not_found, :rate_limited],
+          scopes:  ["meeting:write"]
+        },
+
+        # vendor: GET /report/meetings/{meeting_uuid}/participants
+        # Reports API — requires the coarse `report:read:admin` scope
+        # (no narrower meeting-scoped read alternative exists). The
+        # `meeting_uuid` arg is double-encoded before path interpolation
+        # because Zoom UUIDs may contain `/` and `+`.
+        "meeting.list_participants" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "meeting_uuid" => %{type: :string,  required: true,
+                                provenance: %{kind: :from_user}},
+            "limit"        => %{type: :integer, required: false}
+          },
+          returns: %{participants: :list},
+          scopes:  ["report:read:admin"]
+        },
+
+        # vendor: GET /meetings/{meeting_id}/recordings
+        "recording.get" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "meeting_id" => %{type: :string, required: true,
+                              provenance: %{kind: :lookup,
+                                            source: "zoom.meeting.find"}}
+          },
+          returns: %{recording: :map},
+          scopes:  ["recording:read"]
+        },
+
+        # vendor: DELETE /meetings/{meeting_id}/recordings?action={action}
+        # `action`: `trash` (recoverable) or `delete` (permanent).
+        "recording.delete" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "meeting_id" => %{type: :string, required: true,
+                              provenance: %{kind: :lookup,
+                                            source: "zoom.meeting.find"}},
+            "action"     => %{type: :string, required: false,
+                              provenance: %{kind: :literal_default,
+                                            value: "trash"}}
+          },
+          returns: %{ok: :boolean},
+          errors:  [:unauthorised, :not_found, :rate_limited],
+          scopes:  ["recording:write"]
+        },
+
+        # vendor: GET /users/me/webinars
+        "webinar.find" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "limit" => %{type: :integer, required: false}
+          },
+          returns: %{webinars: :list},
+          scopes:  ["webinar:read"]
+        },
+
+        # vendor: POST /webinars/{webinar_id}/registrants
+        "webinar.add_registrant" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "webinar_id" => %{type: :string, required: true,
+                              provenance: %{kind: :lookup,
+                                            source: "zoom.webinar.find"}},
+            "email"      => %{type: :string, required: true, format: :email,
+                              provenance: %{kind: :from_user}},
+            "first_name" => %{type: :string, required: true,
+                              provenance: %{kind: :from_user}},
+            "last_name"  => %{type: :string, required: false}
+          },
+          returns: %{registrant_id: :string, join_url: :string},
+          errors:  [:unauthorised, :not_found, :rate_limited],
+          scopes:  ["webinar:write"]
+        },
+
+        # vendor: PATCH /webinars/{webinar_id}
+        # `patch` is a free-form map of Zoom webinar fields → values;
+        # the shim does not enumerate or validate field names so any
+        # field passes through.
+        "webinar.update" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "webinar_id" => %{type: :string, required: true,
+                              provenance: %{kind: :lookup,
+                                            source: "zoom.webinar.find"}},
+            "patch"      => %{type: :map,    required: true,
+                              provenance: %{kind: :literal_default}}
+          },
+          returns: %{webinar_id: :string},
+          errors:  [:unauthorised, :not_found, :rate_limited],
+          scopes:  ["webinar:write"]
         }
       }
     }
@@ -301,10 +447,15 @@ defmodule DmhAi.Connectors.Zoom do
       token_endpoint:         "https://zoom.us/oauth/token",
       # Zoom moved to granular scopes (e.g. `meeting:write:meeting`) in
       # 2024 — these classic scope names may need updating for live OAuth.
+      # `report:read:admin` is the coarse admin scope the Reports API
+      # demands (no narrower equivalent exists for
+      # `meeting.list_participants`).
       scopes: [
         "meeting:read",
         "meeting:write",
         "recording:read",
+        "recording:write",
+        "report:read:admin",
         "user:read",
         "webinar:read",
         "webinar:write"
@@ -378,10 +529,18 @@ defmodule DmhAi.Connectors.Zoom do
       %{
         id:           "meetings",
         display_name: "Meetings",
-        description:  "Schedule, read, update, and delete meetings.",
-        scopes:       ["meeting:read", "meeting:write"],
-        functions:    ["meeting.create", "meeting.find", "meeting.get",
-                       "meeting.update", "meeting.delete"],
+        description:  "Schedule, read, update, delete meetings; manage registrants and inspect participants.",
+        scopes:       ["meeting:read", "meeting:write", "report:read:admin"],
+        functions:    [
+          "meeting.create",
+          "meeting.find",
+          "meeting.get",
+          "meeting.update",
+          "meeting.delete",
+          "meeting.list_registrants",
+          "meeting.add_registrant",
+          "meeting.list_participants"
+        ],
         vendor_prereq: %{
           label:      "Zoom OAuth app scopes (Meetings)",
           enable_url: "https://developers.zoom.us/docs/integrations/oauth/"
@@ -390,9 +549,9 @@ defmodule DmhAi.Connectors.Zoom do
       %{
         id:           "recordings",
         display_name: "Recordings",
-        description:  "List cloud recordings.",
-        scopes:       ["recording:read"],
-        functions:    ["recording.find"],
+        description:  "List, read, and delete cloud recordings.",
+        scopes:       ["recording:read", "recording:write"],
+        functions:    ["recording.find", "recording.get", "recording.delete"],
         vendor_prereq: %{
           label:      "Zoom OAuth app scopes (Recordings)",
           enable_url: "https://developers.zoom.us/docs/integrations/oauth/"
@@ -412,9 +571,14 @@ defmodule DmhAi.Connectors.Zoom do
       %{
         id:           "webinars",
         display_name: "Webinars",
-        description:  "Schedule webinars.",
-        scopes:       ["webinar:write"],
-        functions:    ["webinar.create"],
+        description:  "Schedule, list, update webinars; add registrants.",
+        scopes:       ["webinar:read", "webinar:write"],
+        functions:    [
+          "webinar.create",
+          "webinar.find",
+          "webinar.add_registrant",
+          "webinar.update"
+        ],
         vendor_prereq: %{
           label:      "Zoom OAuth app scopes (Webinars)",
           enable_url: "https://developers.zoom.us/docs/integrations/oauth/"

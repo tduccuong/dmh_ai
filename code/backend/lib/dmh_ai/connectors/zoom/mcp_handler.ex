@@ -9,14 +9,22 @@ defmodule DmhAi.Connectors.Zoom.MCPHandler do
   `Connectors.MCPServer`. Each function is a 1:1 mapping to a Zoom
   REST endpoint at `https://api.zoom.us/v2/*`:
 
-    meeting.create — POST   /users/me/meetings
-    meeting.find   — GET    /users/me/meetings
-    meeting.get    — GET    /meetings/{meeting_id}
-    meeting.update — PATCH  /meetings/{meeting_id}
-    meeting.delete — DELETE /meetings/{meeting_id}
-    recording.find — GET    /users/me/recordings
-    user.find      — GET    /users/{user_id_or_me}
-    webinar.create — POST   /users/me/webinars
+    meeting.create            — POST   /users/me/meetings
+    meeting.find              — GET    /users/me/meetings
+    meeting.get               — GET    /meetings/{meeting_id}
+    meeting.update            — PATCH  /meetings/{meeting_id}
+    meeting.delete            — DELETE /meetings/{meeting_id}
+    meeting.list_registrants  — GET    /meetings/{meeting_id}/registrants
+    meeting.add_registrant    — POST   /meetings/{meeting_id}/registrants
+    meeting.list_participants — GET    /report/meetings/{meeting_uuid}/participants
+    recording.find            — GET    /users/me/recordings
+    recording.get             — GET    /meetings/{meeting_id}/recordings
+    recording.delete          — DELETE /meetings/{meeting_id}/recordings
+    user.find                 — GET    /users/{user_id_or_me}
+    webinar.create            — POST   /users/me/webinars
+    webinar.find              — GET    /users/me/webinars
+    webinar.add_registrant    — POST   /webinars/{webinar_id}/registrants
+    webinar.update            — PATCH  /webinars/{webinar_id}
 
   Fixed host (`https://api.zoom.us/v2`), no per-instance templating.
   Standard `Authorization: Bearer <token>` auth, which `RestBridge`
@@ -31,6 +39,17 @@ defmodule DmhAi.Connectors.Zoom.MCPHandler do
   is built (`safe_path_id/1`) — no raw interpolation of unvalidated
   input. `user.find` defaults the path segment to `me` when the
   optional `user_id` arg is absent.
+
+  ## Meeting UUIDs are URI-encoded, not whitelisted
+
+  `meeting.list_participants` keys off Zoom's meeting `uuid` (not its
+  numeric id). UUIDs may contain `/` and `+`, which the standard
+  whitelist would reject. They are passed through `URI.encode_www_form/1`
+  before interpolation — `/` becomes `%2F`, `+` becomes `%2B`. The
+  Zoom docs explicitly call out the double-encoding requirement for
+  uuids beginning with `/` or containing `//`; the canonical
+  workaround is the same `URI.encode_www_form/1` pass applied twice
+  (handled inside `safe_meeting_uuid/1`).
 
   ## Numeric error codes
 
@@ -118,6 +137,61 @@ defmodule DmhAi.Connectors.Zoom.MCPHandler do
         request: &webinar_create_request/2,
         response: &webinar_create_response/2,
         doc:     "Schedule a webinar for the authed user."
+      },
+      "meeting.list_registrants" => %FunctionSpec{
+        method:  :get,
+        url:     &meeting_list_registrants_url/1,
+        request: &meeting_list_registrants_request/2,
+        response: &meeting_list_registrants_response/2,
+        doc:     "List registrants for a meeting."
+      },
+      "meeting.add_registrant" => %FunctionSpec{
+        method:  :post,
+        url:     &meeting_add_registrant_url/1,
+        request: &meeting_add_registrant_request/2,
+        response: &meeting_add_registrant_response/2,
+        doc:     "Add a registrant to a meeting."
+      },
+      "meeting.list_participants" => %FunctionSpec{
+        method:  :get,
+        url:     &meeting_list_participants_url/1,
+        request: &meeting_list_participants_request/2,
+        response: &meeting_list_participants_response/2,
+        doc:     "List participants of a past meeting (Reports API)."
+      },
+      "recording.get" => %FunctionSpec{
+        method:  :get,
+        url:     &recording_get_url/1,
+        response: &recording_get_response/2,
+        doc:     "Read recording files for one meeting."
+      },
+      "recording.delete" => %FunctionSpec{
+        method:  :delete,
+        url:     &recording_delete_url/1,
+        request: &recording_delete_request/2,
+        response: &recording_delete_response/2,
+        doc:     "Trash or permanently delete cloud recordings for one meeting."
+      },
+      "webinar.find" => %FunctionSpec{
+        method:  :get,
+        url:     "#{@api_base}/users/me/webinars",
+        request: &webinar_find_request/2,
+        response: &webinar_find_response/2,
+        doc:     "List the authed user's webinars."
+      },
+      "webinar.add_registrant" => %FunctionSpec{
+        method:  :post,
+        url:     &webinar_add_registrant_url/1,
+        request: &webinar_add_registrant_request/2,
+        response: &webinar_add_registrant_response/2,
+        doc:     "Add a registrant to a webinar."
+      },
+      "webinar.update" => %FunctionSpec{
+        method:  :patch,
+        url:     &webinar_update_url/1,
+        request: &webinar_update_request/2,
+        response: &webinar_update_response/2,
+        doc:     "Patch webinar fields (topic, start_time, duration, …)."
       }
     }
   end
@@ -237,6 +311,141 @@ defmodule DmhAi.Connectors.Zoom.MCPHandler do
      }}
   end
 
+  # ─── meeting.list_registrants — GET /meetings/{meeting_id}/registrants ─
+
+  defp meeting_list_registrants_url(args),
+    do: "#{@api_base}/meetings/#{safe_path_id(args["meeting_id"])}/registrants"
+
+  defp meeting_list_registrants_request(args, _ctx) do
+    params =
+      %{}
+      |> maybe_put_kv("status",    Map.get(args, "status"))
+      |> maybe_put_kv("page_size", Map.get(args, "limit"))
+
+    [params: params]
+  end
+
+  defp meeting_list_registrants_response(s, body) when s in 200..299 do
+    {:ok, %{"registrants" => Map.get(body, "registrants", [])}}
+  end
+
+  # ─── meeting.add_registrant — POST /meetings/{meeting_id}/registrants ─
+
+  defp meeting_add_registrant_url(args),
+    do: "#{@api_base}/meetings/#{safe_path_id(args["meeting_id"])}/registrants"
+
+  defp meeting_add_registrant_request(args, _ctx) do
+    body =
+      %{
+        "email"      => args["email"],
+        "first_name" => args["first_name"]
+      }
+      |> maybe_put_kv("last_name", Map.get(args, "last_name"))
+
+    [json: body]
+  end
+
+  defp meeting_add_registrant_response(s, body) when s in 200..299 do
+    {:ok,
+     %{
+       "registrant_id" => to_string(body["registrant_id"] || body["id"] || ""),
+       "join_url"      => body["join_url"]
+     }}
+  end
+
+  # ─── meeting.list_participants — GET /report/meetings/{uuid}/participants
+
+  # Reports API. The `meeting_uuid` is passed through `safe_meeting_uuid/1`
+  # — Zoom UUIDs may contain `/` and `+`, so they must be URI-encoded
+  # (and double-encoded when they start with `/` or contain `//`) rather
+  # than rejected by the whitelist.
+  defp meeting_list_participants_url(args) do
+    uuid = safe_meeting_uuid(args["meeting_uuid"])
+    "#{@api_base}/report/meetings/#{uuid}/participants"
+  end
+
+  defp meeting_list_participants_request(args, _ctx) do
+    params = maybe_put_kv(%{}, "page_size", Map.get(args, "limit"))
+    [params: params]
+  end
+
+  defp meeting_list_participants_response(s, body) when s in 200..299 do
+    {:ok, %{"participants" => Map.get(body, "participants", [])}}
+  end
+
+  # ─── recording.get — GET /meetings/{meeting_id}/recordings ────────────
+
+  defp recording_get_url(args),
+    do: "#{@api_base}/meetings/#{safe_path_id(args["meeting_id"])}/recordings"
+
+  defp recording_get_response(s, body) when s in 200..299 do
+    {:ok, %{"recording" => body}}
+  end
+
+  # ─── recording.delete — DELETE /meetings/{meeting_id}/recordings ──────
+
+  defp recording_delete_url(args),
+    do: "#{@api_base}/meetings/#{safe_path_id(args["meeting_id"])}/recordings"
+
+  defp recording_delete_request(args, _ctx) do
+    params = maybe_put_kv(%{}, "action", Map.get(args, "action"))
+    [params: params]
+  end
+
+  # Zoom answers 204 No Content on a successful recording delete.
+  defp recording_delete_response(s, _body) when s in 200..299 do
+    {:ok, %{"ok" => true}}
+  end
+
+  # ─── webinar.find — GET /users/me/webinars ────────────────────────────
+
+  defp webinar_find_request(args, _ctx) do
+    params = maybe_put_kv(%{}, "page_size", Map.get(args, "limit"))
+    [params: params]
+  end
+
+  defp webinar_find_response(s, body) when s in 200..299 do
+    {:ok, %{"webinars" => Map.get(body, "webinars", [])}}
+  end
+
+  # ─── webinar.add_registrant — POST /webinars/{webinar_id}/registrants ─
+
+  defp webinar_add_registrant_url(args),
+    do: "#{@api_base}/webinars/#{safe_path_id(args["webinar_id"])}/registrants"
+
+  defp webinar_add_registrant_request(args, _ctx) do
+    body =
+      %{
+        "email"      => args["email"],
+        "first_name" => args["first_name"]
+      }
+      |> maybe_put_kv("last_name", Map.get(args, "last_name"))
+
+    [json: body]
+  end
+
+  defp webinar_add_registrant_response(s, body) when s in 200..299 do
+    {:ok,
+     %{
+       "registrant_id" => to_string(body["registrant_id"] || body["id"] || ""),
+       "join_url"      => body["join_url"]
+     }}
+  end
+
+  # ─── webinar.update — PATCH /webinars/{webinar_id} ────────────────────
+
+  defp webinar_update_url(args),
+    do: "#{@api_base}/webinars/#{safe_path_id(args["webinar_id"])}"
+
+  defp webinar_update_request(args, _ctx) do
+    [json: args["patch"] || %{}]
+  end
+
+  # Zoom PATCH on a webinar returns 204 No Content on success.
+  defp webinar_update_response(s, _body) when s in 200..299 do
+    {:ok, %{"webinar_id" => "updated"}}
+  end
+
   # ─── helpers ──────────────────────────────────────────────────────────
 
   # Whitelist a path-param id to the Zoom id charset before
@@ -250,6 +459,23 @@ defmodule DmhAi.Connectors.Zoom.MCPHandler do
       str
     else
       raise ArgumentError, "invalid zoom id: #{inspect(id)}"
+    end
+  end
+
+  # Zoom meeting UUIDs are not numeric ids — they can include `/` and
+  # `+`, which the standard `safe_path_id/1` whitelist would reject.
+  # Encode rather than whitelist: URL-escape the uuid before
+  # interpolating it. Per Zoom docs, a uuid that starts with `/` or
+  # contains `//` must be double-encoded; we apply
+  # `URI.encode_www_form/1` twice in those cases so `/` becomes `%252F`
+  # at the wire.
+  defp safe_meeting_uuid(uuid) do
+    str = to_string(uuid)
+
+    if String.starts_with?(str, "/") or String.contains?(str, "//") do
+      str |> URI.encode_www_form() |> URI.encode_www_form()
+    else
+      URI.encode_www_form(str)
     end
   end
 

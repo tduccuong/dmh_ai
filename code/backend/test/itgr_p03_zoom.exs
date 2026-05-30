@@ -53,9 +53,10 @@ defmodule DmhAi.P03ZoomTest do
       assert :ok = Manifest.validate(Zoom.manifest())
     end
 
-    test "declares 8 functions at the Primitive 0.3 surface" do
+    test "declares 16 functions at the Primitive 0.3 surface" do
       functions = Zoom.manifest().functions
 
+      # Original 8
       assert Map.has_key?(functions, "meeting.create")
       assert Map.has_key?(functions, "meeting.find")
       assert Map.has_key?(functions, "meeting.get")
@@ -65,7 +66,17 @@ defmodule DmhAi.P03ZoomTest do
       assert Map.has_key?(functions, "user.find")
       assert Map.has_key?(functions, "webinar.create")
 
-      assert map_size(functions) == 8
+      # +8 from the Zoom expansion
+      assert Map.has_key?(functions, "meeting.list_registrants")
+      assert Map.has_key?(functions, "meeting.add_registrant")
+      assert Map.has_key?(functions, "meeting.list_participants")
+      assert Map.has_key?(functions, "recording.get")
+      assert Map.has_key?(functions, "recording.delete")
+      assert Map.has_key?(functions, "webinar.find")
+      assert Map.has_key?(functions, "webinar.add_registrant")
+      assert Map.has_key?(functions, "webinar.update")
+
+      assert map_size(functions) == 16
     end
 
     test "every write function is `callable_from: [:task]` (HARD Rule 2)" do
@@ -223,6 +234,64 @@ defmodule DmhAi.P03ZoomTest do
       assert {:error, %{error: "unauthorised"}} =
                Dispatcher.call("zoom.meeting.create",
                                %{"topic" => "Demo"},
+                               ctx)
+    end
+
+    test "read function (recording.get) from free chat returns the recording map",
+         %{admin_id: admin_id} do
+      Application.put_env(:dmh_ai, :__mcp_caller_stub__,
+        fn "zoom", "recording.get", args, _creds ->
+          assert args["meeting_id"] == "99MOCKMTG0001"
+
+          {:ok,
+           %{
+             "recording" => %{
+               "id"              => "99MOCKMTG0001",
+               "topic"           => "Beispiel-Besprechung Demo",
+               "recording_count" => 1,
+               "recording_files" => [
+                 %{
+                   "id"           => "MOCKREC0001",
+                   "file_type"    => "MP4",
+                   "download_url" => "https://zoom.us/rec/download/MOCKREC0001"
+                 }
+               ]
+             }
+           }}
+        end)
+
+      assert {:ok, %{"recording" => %{"id" => "99MOCKMTG0001"}}} =
+               Dispatcher.call("zoom.recording.get",
+                               %{"meeting_id" => "99MOCKMTG0001"},
+                               %{user_id: admin_id})
+    end
+
+    test "write function (webinar.add_registrant) in-task carries injected idempotency_key",
+         %{admin_id: admin_id} do
+      Application.put_env(:dmh_ai, :__mcp_caller_stub__,
+        fn "zoom", "webinar.add_registrant", args, _creds ->
+          assert is_binary(args["__idempotency_key"]),
+                 "writes must carry idempotency_key injected by Dispatcher"
+          assert args["webinar_id"] == "88MOCKWEB0001"
+          assert args["email"]      == "klara.beispiel@beispiel-team-demo.example"
+          assert args["first_name"] == "Klara"
+
+          {:ok,
+           %{
+             "registrant_id" => "MOCKREG0001",
+             "join_url"      => "https://zoom.us/webinar/register/confirm/88MOCKWEB0001"
+           }}
+        end)
+
+      ctx = %{user_id: admin_id, task_id: "t-add-webreg", step_seq: 0}
+
+      assert {:ok, %{"registrant_id" => "MOCKREG0001"}} =
+               Dispatcher.call("zoom.webinar.add_registrant",
+                               %{
+                                 "webinar_id" => "88MOCKWEB0001",
+                                 "email"      => "klara.beispiel@beispiel-team-demo.example",
+                                 "first_name" => "Klara"
+                               },
                                ctx)
     end
   end
