@@ -235,6 +235,287 @@
       "scopes_required": [
         "signature"
       ]
+    },
+    {
+      "args": {
+        "envelope_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "docusign.envelope.find"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "envelope.list_recipients",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "recipients": "list"
+      },
+      "scopes_required": [
+        "signature"
+      ]
+    },
+    {
+      "args": {
+        "envelope_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "docusign.envelope.find"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "envelope.list_documents",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "documents": "list"
+      },
+      "scopes_required": [
+        "signature"
+      ]
+    },
+    {
+      "args": {
+        "envelope_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "docusign.envelope.find"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "document_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "docusign.envelope.list_documents"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "envelope.download_document",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "content_b64": "string",
+        "content_type": "string"
+      },
+      "scopes_required": [
+        "signature"
+      ]
+    },
+    {
+      "args": {
+        "template_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "docusign.template.find"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "template.get",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "template": "map"
+      },
+      "scopes_required": [
+        "signature"
+      ]
+    },
+    {
+      "args": {
+        "email_subject": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": false,
+          "type": "string"
+        },
+        "status": {
+          "provenance": {
+            "kind": "literal_default",
+            "value": "sent"
+          },
+          "required": false,
+          "type": "string"
+        },
+        "template_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "docusign.template.find"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "template_roles": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "list"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited",
+        "validation"
+      ],
+      "function_name": "envelope.create_from_template",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "envelope_id": "string"
+      },
+      "scopes_required": [
+        "signature"
+      ]
+    },
+    {
+      "args": {
+        "envelope_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "docusign.envelope.find"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "envelope.resend",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "ok": "boolean"
+      },
+      "scopes_required": [
+        "signature"
+      ]
+    },
+    {
+      "args": {
+        "email": {
+          "format": "email",
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": false,
+          "type": "string"
+        },
+        "envelope_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "docusign.envelope.find"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "name": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": false,
+          "type": "string"
+        },
+        "recipient_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "docusign.envelope.list_recipients"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited",
+        "validation"
+      ],
+      "function_name": "envelope.update_recipient",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "recipient_id": "string"
+      },
+      "scopes_required": [
+        "signature"
+      ]
+    },
+    {
+      "args": {
+        "envelope_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "docusign.envelope.find"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "envelope.audit_events",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "events": "list"
+      },
+      "scopes_required": [
+        "signature"
+      ]
     }
   ],
   "vendor_api_version": "v2.1"

@@ -56,9 +56,10 @@ defmodule DmhAi.P03DocuSignTest do
       assert :ok = Manifest.validate(DocuSign.manifest())
     end
 
-    test "declares 7 functions at the Primitive 0.3 surface" do
+    test "declares 15 functions at the Primitive 0.3 surface" do
       functions = DocuSign.manifest().functions
 
+      # Original 7
       assert Map.has_key?(functions, "envelope.find")
       assert Map.has_key?(functions, "envelope.create")
       assert Map.has_key?(functions, "envelope.get")
@@ -67,7 +68,17 @@ defmodule DmhAi.P03DocuSignTest do
       assert Map.has_key?(functions, "recipient.add")
       assert Map.has_key?(functions, "template.find")
 
-      assert map_size(functions) == 7
+      # +8 from the DocuSign expansion
+      assert Map.has_key?(functions, "envelope.list_recipients")
+      assert Map.has_key?(functions, "envelope.list_documents")
+      assert Map.has_key?(functions, "envelope.download_document")
+      assert Map.has_key?(functions, "template.get")
+      assert Map.has_key?(functions, "envelope.create_from_template")
+      assert Map.has_key?(functions, "envelope.resend")
+      assert Map.has_key?(functions, "envelope.update_recipient")
+      assert Map.has_key?(functions, "envelope.audit_events")
+
+      assert map_size(functions) == 15
     end
 
     test "every write function is `callable_from: [:task]` (HARD Rule 2)" do
@@ -287,6 +298,45 @@ defmodule DmhAi.P03DocuSignTest do
 
       assert {:error, %{error: "not_found"}} =
                Dispatcher.call("docusign.envelope.send",
+                               %{"envelope_id" => "11111111-mock-envl-0000-000000000001"},
+                               ctx)
+    end
+
+    test "read function (envelope.list_recipients) from free chat returns the inner list",
+         %{admin_id: admin_id} do
+      Application.put_env(:dmh_ai, :__mcp_caller_stub__,
+        fn "docusign", "envelope.list_recipients", args, _creds ->
+          assert args["envelope_id"] == "11111111-mock-envl-0000-000000000001"
+
+          {:ok,
+           %{"recipients" => [%{"recipient_id" => "MOCKRECIPIENT001",
+                                "name"         => "Alex Beispiel",
+                                "email"        => "alex.beispiel@beispiel-shop-demo.example",
+                                "status"       => "sent",
+                                "role_name"    => "Signer 1"}]}}
+        end)
+
+      assert {:ok, %{"recipients" => [%{"recipient_id" => "MOCKRECIPIENT001"}]}} =
+               Dispatcher.call("docusign.envelope.list_recipients",
+                               %{"envelope_id" => "11111111-mock-envl-0000-000000000001"},
+                               %{user_id: admin_id})
+    end
+
+    test "write function (envelope.resend) in-task carries injected idempotency_key",
+         %{admin_id: admin_id} do
+      Application.put_env(:dmh_ai, :__mcp_caller_stub__,
+        fn "docusign", "envelope.resend", args, _creds ->
+          assert is_binary(args["__idempotency_key"]),
+                 "writes must carry idempotency_key injected by Dispatcher"
+          assert args["envelope_id"] == "11111111-mock-envl-0000-000000000001"
+
+          {:ok, %{"ok" => true}}
+        end)
+
+      ctx = %{user_id: admin_id, task_id: "t-resend-envelope", step_seq: 0}
+
+      assert {:ok, %{"ok" => true}} =
+               Dispatcher.call("docusign.envelope.resend",
                                %{"envelope_id" => "11111111-mock-envl-0000-000000000001"},
                                ctx)
     end

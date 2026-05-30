@@ -9,15 +9,23 @@ defmodule DmhAi.Connectors.DocuSign do
   bridge) covering envelopes, recipients, and templates on the
   DocuSign eSignature REST API (developers.docusign.com).
 
-  Seven functions at the SME-relevant slice:
+  Fifteen functions at the SME-relevant slice:
 
-    envelope.find    [read]   list envelopes matching status / from_date
-    envelope.create  [write]  create + send a new envelope (default sent)
-    envelope.get     [read]   read one envelope by id
-    envelope.send    [write]  PUT status=sent on an existing draft
-    envelope.void    [write]  PUT status=voided with a voided reason
-    recipient.add    [write]  POST recipients to an existing envelope
-    template.find    [read]   list templates
+    envelope.find                 [read]   list envelopes matching status / from_date
+    envelope.create               [write]  create + send a new envelope (default sent)
+    envelope.get                  [read]   read one envelope by id
+    envelope.send                 [write]  PUT status=sent on an existing draft
+    envelope.void                 [write]  PUT status=voided with a voided reason
+    envelope.list_recipients      [read]   union of signers + ccs + certified deliveries
+    envelope.list_documents       [read]   list the envelope's documents
+    envelope.download_document    [read]   fetch a document as base64 (binary PDF)
+    envelope.create_from_template [write]  POST /envelopes from a template + roles
+    envelope.resend               [write]  re-send envelope notifications (PUT recipients?resend_envelope=true)
+    envelope.update_recipient     [write]  PUT /recipients to patch one recipient
+    envelope.audit_events         [read]   read the envelope's audit trail
+    recipient.add                 [write]  POST recipients to an existing envelope
+    template.find                 [read]   list templates
+    template.get                  [read]   read one template by id
 
   Three capability groups (envelopes / recipients / templates) so
   admins can scope per-org. A fourth `case_e_fallback` entry sits at
@@ -296,6 +304,156 @@ defmodule DmhAi.Connectors.DocuSign do
           },
           returns: %{templates: :list},
           scopes:  ["signature"]
+        },
+
+        # vendor: GET /envelopes/{envelope_id}/recipients
+        # Returns the union of `signers` + `carbonCopies` +
+        # `certifiedDeliveries` arrays as a flat list — every recipient
+        # role on the envelope, regardless of routing class.
+        "envelope.list_recipients" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "envelope_id" => %{type: :string, required: true,
+                               provenance: %{kind: :lookup,
+                                             source: "docusign.envelope.find"}}
+          },
+          returns: %{recipients: :list},
+          scopes:  ["signature"]
+        },
+
+        # vendor: GET /envelopes/{envelope_id}/documents
+        # Response: `envelopeDocuments` array — id + name + type per
+        # document attached to the envelope.
+        "envelope.list_documents" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "envelope_id" => %{type: :string, required: true,
+                               provenance: %{kind: :lookup,
+                                             source: "docusign.envelope.find"}}
+          },
+          returns: %{documents: :list},
+          scopes:  ["signature"]
+        },
+
+        # vendor: GET /envelopes/{envelope_id}/documents/{document_id}
+        # Returns the document as binary content (typically PDF). The
+        # connector base64-encodes the body so it survives the
+        # JSON-shaped tool-result envelope, and surfaces a content_type
+        # alongside (defaults to application/pdf — DocuSign returns
+        # PDFs unless `?certificate=true` or a combined-document option
+        # was supplied).
+        "envelope.download_document" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "envelope_id" => %{type: :string, required: true,
+                               provenance: %{kind: :lookup,
+                                             source: "docusign.envelope.find"}},
+            "document_id" => %{type: :string, required: true,
+                               provenance: %{kind: :lookup,
+                                             source: "docusign.envelope.list_documents"}}
+          },
+          returns: %{content_b64: :string, content_type: :string},
+          scopes:  ["signature"]
+        },
+
+        # vendor: GET /templates/{template_id}
+        "template.get" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "template_id" => %{type: :string, required: true,
+                               provenance: %{kind: :lookup,
+                                             source: "docusign.template.find"}}
+          },
+          returns: %{template: :map},
+          scopes:  ["signature"]
+        },
+
+        # vendor: POST /envelopes (with templateId + templateRoles)
+        # Reuses the same `/envelopes` create endpoint as
+        # `envelope.create`; the templateId + templateRoles body flips
+        # the vendor's branch to materialise the envelope from the
+        # template's documents + tab layout.
+        "envelope.create_from_template" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "template_id"    => %{type: :string, required: true,
+                                  provenance: %{kind: :lookup,
+                                                source: "docusign.template.find"}},
+            "template_roles" => %{type: :list,   required: true,
+                                  provenance: %{kind: :literal_default}},
+            "email_subject"  => %{type: :string, required: false,
+                                  provenance: %{kind: :from_user}},
+            "status"         => %{type: :string, required: false,
+                                  provenance: %{kind: :literal_default, value: "sent"}}
+          },
+          returns: %{envelope_id: :string},
+          errors:  [:unauthorised, :not_found, :rate_limited, :validation],
+          scopes:  ["signature"]
+        },
+
+        # vendor: PUT /envelopes/{envelope_id}/recipients?resend_envelope=true
+        # DocuSign requires a body even though the resend is a no-op on
+        # recipient state — the handler sends `{signers: []}` to keep
+        # the existing recipient list intact while triggering a new
+        # notification email.
+        "envelope.resend" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "envelope_id" => %{type: :string, required: true,
+                               provenance: %{kind: :lookup,
+                                             source: "docusign.envelope.find"}}
+          },
+          returns: %{ok: :boolean},
+          errors:  [:unauthorised, :not_found, :rate_limited],
+          scopes:  ["signature"]
+        },
+
+        # vendor: PUT /envelopes/{envelope_id}/recipients
+        # Patches one signer in-place. DocuSign expects the body shape
+        # `{signers: [%{recipientId, name?, email?}]}` — the array
+        # wrapper is required even for a single-recipient update.
+        "envelope.update_recipient" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "envelope_id"  => %{type: :string, required: true,
+                                provenance: %{kind: :lookup,
+                                              source: "docusign.envelope.find"}},
+            "recipient_id" => %{type: :string, required: true,
+                                provenance: %{kind: :lookup,
+                                              source: "docusign.envelope.list_recipients"}},
+            "name"         => %{type: :string, required: false,
+                                provenance: %{kind: :from_user}},
+            "email"        => %{type: :string, required: false, format: :email,
+                                provenance: %{kind: :from_user}}
+          },
+          returns: %{recipient_id: :string},
+          errors:  [:unauthorised, :not_found, :rate_limited, :validation],
+          scopes:  ["signature"]
+        },
+
+        # vendor: GET /envelopes/{envelope_id}/audit_events
+        # Response: `auditEvents` array of `eventFields` records — flat
+        # timestamped log of every state change on the envelope.
+        "envelope.audit_events" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "envelope_id" => %{type: :string, required: true,
+                               provenance: %{kind: :lookup,
+                                             source: "docusign.envelope.find"}}
+          },
+          returns: %{events: :list},
+          scopes:  ["signature"]
         }
       }
     }
@@ -437,10 +595,15 @@ defmodule DmhAi.Connectors.DocuSign do
       %{
         id:           "envelopes",
         display_name: "Envelopes",
-        description:  "Find, create, read, send, and void DocuSign envelopes.",
+        description:  "Find, create, read, send, void, resend, list recipients / documents, download a document, create from a template, update a recipient, and read the audit trail of DocuSign envelopes.",
         scopes:       ["signature"],
         functions:    ["envelope.find", "envelope.create", "envelope.get",
-                       "envelope.send", "envelope.void"],
+                       "envelope.send", "envelope.void",
+                       "envelope.list_recipients", "envelope.list_documents",
+                       "envelope.download_document",
+                       "envelope.create_from_template",
+                       "envelope.resend", "envelope.update_recipient",
+                       "envelope.audit_events"],
         vendor_prereq: %{
           label:      "DocuSign developer account + OAuth 2.0 app",
           enable_url: "https://developers.docusign.com/platform/auth/"
@@ -460,9 +623,9 @@ defmodule DmhAi.Connectors.DocuSign do
       %{
         id:           "templates",
         display_name: "Templates",
-        description:  "List DocuSign templates.",
+        description:  "List DocuSign templates and read one by id.",
         scopes:       ["signature"],
-        functions:    ["template.find"],
+        functions:    ["template.find", "template.get"],
         vendor_prereq: %{
           label:      "DocuSign developer account + OAuth 2.0 app",
           enable_url: "https://developers.docusign.com/platform/auth/"
