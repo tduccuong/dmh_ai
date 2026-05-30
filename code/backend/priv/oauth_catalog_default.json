@@ -33,15 +33,14 @@
     "credential row stores account='' (the legacy single-account",
     "default) and lookup_creds returns it like any other row."
   ],
-
   "services": [
     {
-      "slug":                   "google",
-      "display_name":           "Google APIs (Calendar / Gmail / Drive / etc.)",
-      "host_match":             "googleapis.com",
+      "slug": "google",
+      "display_name": "Google APIs (Calendar / Gmail / Drive / etc.)",
+      "host_match": "googleapis.com",
       "authorization_endpoint": "https://accounts.google.com/o/oauth2/v2/auth",
-      "token_endpoint":         "https://oauth2.googleapis.com/token",
-      "scopes_default":         [
+      "token_endpoint": "https://oauth2.googleapis.com/token",
+      "scopes_default": [
         "openid",
         "email",
         "profile",
@@ -49,384 +48,322 @@
         "https://www.googleapis.com/auth/gmail.readonly",
         "https://www.googleapis.com/auth/drive.readonly"
       ],
-      "extra_auth_params":      { "access_type": "offline", "prompt": "consent" },
-      "extra_token_params":     {},
-      "userinfo_endpoint":      "https://openidconnect.googleapis.com/v1/userinfo",
-      "userinfo_field_path":    "email",
-      "client_id":              "",
-      "client_secret":          null,
-      "enabled":                false
+      "extra_auth_params": {
+        "access_type": "offline",
+        "prompt": "consent"
+      },
+      "extra_token_params": {},
+      "userinfo_endpoint": "https://openidconnect.googleapis.com/v1/userinfo",
+      "userinfo_field_path": "email",
+      "client_id": "",
+      "client_secret": null,
+      "enabled": false
     },
-
     {
-      "slug":                   "microsoft",
-      "display_name":           "Microsoft Graph (Outlook / OneDrive / Teams / etc.)",
-      "host_match":             "graph.microsoft.com",
+      "slug": "microsoft",
+      "display_name": "Microsoft Graph (Outlook / OneDrive / Teams / etc.)",
+      "host_match": "graph.microsoft.com",
       "authorization_endpoint": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
-      "token_endpoint":         "https://login.microsoftonline.com/common/oauth2/v2.0/token",
-      "scopes_default":         [
+      "token_endpoint": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+      "scopes_default": [
         "User.Read",
         "Calendars.Read",
         "Mail.Read",
         "Files.Read",
         "offline_access"
       ],
-      "extra_auth_params":      { "prompt": "select_account" },
-      "extra_token_params":     {},
-      "userinfo_endpoint":      "https://graph.microsoft.com/v1.0/me",
-      "userinfo_field_path":    "userPrincipalName",
-      "client_id":              "",
-      "client_secret":          null,
-      "enabled":                false
+      "extra_auth_params": {
+        "prompt": "select_account"
+      },
+      "extra_token_params": {},
+      "userinfo_endpoint": "https://graph.microsoft.com/v1.0/me",
+      "userinfo_field_path": "userPrincipalName",
+      "client_id": "",
+      "client_secret": null,
+      "enabled": false
     },
-
     {
-      "slug":                   "github",
-      "display_name":           "GitHub",
-      "host_match":             "api.github.com",
+      "slug": "github",
+      "display_name": "GitHub",
+      "host_match": "api.github.com",
       "authorization_endpoint": "https://github.com/login/oauth/authorize",
-      "token_endpoint":         "https://github.com/login/oauth/access_token",
-      "scopes_default":         ["repo", "user:email", "read:user"],
-      "extra_auth_params":      {},
-      "extra_token_params":     {},
-      "userinfo_endpoint":      "https://api.github.com/user",
-      "userinfo_field_path":    "login",
-      "client_id":              "",
-      "client_secret":          null,
-      "enabled":                false
+      "token_endpoint": "https://github.com/login/oauth/access_token",
+      "scopes_default": [
+        "repo",
+        "user:email",
+        "read:user"
+      ],
+      "extra_auth_params": {},
+      "extra_token_params": {},
+      "userinfo_endpoint": "https://api.github.com/user",
+      "userinfo_field_path": "login",
+      "client_id": "",
+      "client_secret": null,
+      "enabled": false
     },
-
     {
-      "slug":                   "gitlab",
-      "display_name":           "GitLab",
-      "host_match":             "gitlab.com",
+      "slug": "gitlab",
+      "display_name": "GitLab",
+      "host_match": "gitlab.com",
       "authorization_endpoint": "https://gitlab.com/oauth/authorize",
-      "token_endpoint":         "https://gitlab.com/oauth/token",
-      "scopes_default":         ["api", "read_user", "read_repository"],
-      "extra_auth_params":      {},
-      "extra_token_params":     {},
-      "userinfo_endpoint":      "https://gitlab.com/api/v4/user",
-      "userinfo_field_path":    "username",
-      "client_id":              "",
-      "client_secret":          null,
-      "enabled":                false
-    },
-
-    {
-      "slug":                   "slack",
-      "display_name":           "Slack",
-      "host_match":             "slack.com",
-      "authorization_endpoint": "https://slack.com/oauth/v2/authorize",
-      "token_endpoint":         "https://slack.com/api/oauth.v2.access",
-      "scopes_default":         [
-        "openid",
-        "email",
-        "profile",
-        "channels:read",
-        "chat:write",
-        "users:read",
-        "channels:history"
+      "token_endpoint": "https://gitlab.com/oauth/token",
+      "scopes_default": [
+        "api",
+        "read_user",
+        "read_repository"
       ],
-      "extra_auth_params":      {},
-      "extra_token_params":     {},
-      "userinfo_endpoint":      "https://slack.com/api/openid.connect.userInfo",
-      "userinfo_field_path":    "email",
-      "client_id":              "",
-      "client_secret":          null,
-      "enabled":                false
+      "extra_auth_params": {},
+      "extra_token_params": {},
+      "userinfo_endpoint": "https://gitlab.com/api/v4/user",
+      "userinfo_field_path": "username",
+      "client_id": "",
+      "client_secret": null,
+      "enabled": false
     },
-
     {
-      "slug":                   "discord",
-      "display_name":           "Discord",
-      "host_match":             "discord.com",
+      "slug": "discord",
+      "display_name": "Discord",
+      "host_match": "discord.com",
       "authorization_endpoint": "https://discord.com/oauth2/authorize",
-      "token_endpoint":         "https://discord.com/api/oauth2/token",
-      "scopes_default":         ["identify", "guilds", "messages.read"],
-      "extra_auth_params":      {},
-      "extra_token_params":     {},
-      "userinfo_endpoint":      "https://discord.com/api/users/@me",
-      "userinfo_field_path":    "username",
-      "client_id":              "",
-      "client_secret":          null,
-      "enabled":                false
-    },
-
-    {
-      "slug":                   "notion",
-      "display_name":           "Notion",
-      "host_match":             "api.notion.com",
-      "authorization_endpoint": "https://api.notion.com/v1/oauth/authorize",
-      "token_endpoint":         "https://api.notion.com/v1/oauth/token",
-      "scopes_default":         [],
-      "extra_auth_params":      { "owner": "user" },
-      "extra_token_params":     {},
-      "userinfo_endpoint":      null,
-      "userinfo_field_path":    null,
-      "client_id":              "",
-      "client_secret":          null,
-      "enabled":                false
-    },
-
-    {
-      "slug":                   "dropbox",
-      "display_name":           "Dropbox",
-      "host_match":             "api.dropboxapi.com",
-      "authorization_endpoint": "https://www.dropbox.com/oauth2/authorize",
-      "token_endpoint":         "https://api.dropboxapi.com/oauth2/token",
-      "scopes_default":         ["account_info.read", "files.metadata.read", "files.content.read"],
-      "extra_auth_params":      { "token_access_type": "offline" },
-      "extra_token_params":     {},
-      "userinfo_endpoint":      "https://api.dropboxapi.com/2/users/get_current_account",
-      "userinfo_field_path":    "email",
-      "client_id":              "",
-      "client_secret":          null,
-      "enabled":                false
-    },
-
-    {
-      "slug":                   "spotify",
-      "display_name":           "Spotify",
-      "host_match":             "api.spotify.com",
-      "authorization_endpoint": "https://accounts.spotify.com/authorize",
-      "token_endpoint":         "https://accounts.spotify.com/api/token",
-      "scopes_default":         ["user-read-private", "user-read-email", "user-library-read"],
-      "extra_auth_params":      {},
-      "extra_token_params":     {},
-      "userinfo_endpoint":      "https://api.spotify.com/v1/me",
-      "userinfo_field_path":    "email",
-      "client_id":              "",
-      "client_secret":          null,
-      "enabled":                false
-    },
-
-    {
-      "slug":                   "twitch",
-      "display_name":           "Twitch",
-      "host_match":             "api.twitch.tv",
-      "authorization_endpoint": "https://id.twitch.tv/oauth2/authorize",
-      "token_endpoint":         "https://id.twitch.tv/oauth2/token",
-      "scopes_default":         ["user:read:email"],
-      "extra_auth_params":      {},
-      "extra_token_params":     {},
-      "userinfo_endpoint":      null,
-      "userinfo_field_path":    null,
-      "client_id":              "",
-      "client_secret":          null,
-      "enabled":                false
-    },
-
-    {
-      "slug":                   "reddit",
-      "display_name":           "Reddit",
-      "host_match":             "oauth.reddit.com",
-      "authorization_endpoint": "https://www.reddit.com/api/v1/authorize",
-      "token_endpoint":         "https://www.reddit.com/api/v1/access_token",
-      "scopes_default":         ["identity", "read", "history"],
-      "extra_auth_params":      { "duration": "permanent" },
-      "extra_token_params":     {},
-      "userinfo_endpoint":      "https://oauth.reddit.com/api/v1/me",
-      "userinfo_field_path":    "name",
-      "client_id":              "",
-      "client_secret":          null,
-      "enabled":                false
-    },
-
-    {
-      "slug":                   "atlassian",
-      "display_name":           "Atlassian (Jira / Confluence Cloud)",
-      "host_match":             "api.atlassian.com",
-      "authorization_endpoint": "https://auth.atlassian.com/authorize",
-      "token_endpoint":         "https://auth.atlassian.com/oauth/token",
-      "scopes_default":         [
-        "read:jira-work",
-        "read:jira-user",
-        "read:confluence-content.all",
-        "offline_access"
+      "token_endpoint": "https://discord.com/api/oauth2/token",
+      "scopes_default": [
+        "identify",
+        "guilds",
+        "messages.read"
       ],
-      "extra_auth_params":      { "audience": "api.atlassian.com", "prompt": "consent" },
-      "extra_token_params":     {},
-      "userinfo_endpoint":      "https://api.atlassian.com/me",
-      "userinfo_field_path":    "email",
-      "client_id":              "",
-      "client_secret":          null,
-      "enabled":                false
+      "extra_auth_params": {},
+      "extra_token_params": {},
+      "userinfo_endpoint": "https://discord.com/api/users/@me",
+      "userinfo_field_path": "username",
+      "client_id": "",
+      "client_secret": null,
+      "enabled": false
     },
-
     {
-      "slug":                   "bitbucket",
-      "display_name":           "Bitbucket",
-      "host_match":             "api.bitbucket.org",
+      "slug": "dropbox",
+      "display_name": "Dropbox",
+      "host_match": "api.dropboxapi.com",
+      "authorization_endpoint": "https://www.dropbox.com/oauth2/authorize",
+      "token_endpoint": "https://api.dropboxapi.com/oauth2/token",
+      "scopes_default": [
+        "account_info.read",
+        "files.metadata.read",
+        "files.content.read"
+      ],
+      "extra_auth_params": {
+        "token_access_type": "offline"
+      },
+      "extra_token_params": {},
+      "userinfo_endpoint": "https://api.dropboxapi.com/2/users/get_current_account",
+      "userinfo_field_path": "email",
+      "client_id": "",
+      "client_secret": null,
+      "enabled": false
+    },
+    {
+      "slug": "spotify",
+      "display_name": "Spotify",
+      "host_match": "api.spotify.com",
+      "authorization_endpoint": "https://accounts.spotify.com/authorize",
+      "token_endpoint": "https://accounts.spotify.com/api/token",
+      "scopes_default": [
+        "user-read-private",
+        "user-read-email",
+        "user-library-read"
+      ],
+      "extra_auth_params": {},
+      "extra_token_params": {},
+      "userinfo_endpoint": "https://api.spotify.com/v1/me",
+      "userinfo_field_path": "email",
+      "client_id": "",
+      "client_secret": null,
+      "enabled": false
+    },
+    {
+      "slug": "twitch",
+      "display_name": "Twitch",
+      "host_match": "api.twitch.tv",
+      "authorization_endpoint": "https://id.twitch.tv/oauth2/authorize",
+      "token_endpoint": "https://id.twitch.tv/oauth2/token",
+      "scopes_default": [
+        "user:read:email"
+      ],
+      "extra_auth_params": {},
+      "extra_token_params": {},
+      "userinfo_endpoint": null,
+      "userinfo_field_path": null,
+      "client_id": "",
+      "client_secret": null,
+      "enabled": false
+    },
+    {
+      "slug": "reddit",
+      "display_name": "Reddit",
+      "host_match": "oauth.reddit.com",
+      "authorization_endpoint": "https://www.reddit.com/api/v1/authorize",
+      "token_endpoint": "https://www.reddit.com/api/v1/access_token",
+      "scopes_default": [
+        "identity",
+        "read",
+        "history"
+      ],
+      "extra_auth_params": {
+        "duration": "permanent"
+      },
+      "extra_token_params": {},
+      "userinfo_endpoint": "https://oauth.reddit.com/api/v1/me",
+      "userinfo_field_path": "name",
+      "client_id": "",
+      "client_secret": null,
+      "enabled": false
+    },
+    {
+      "slug": "bitbucket",
+      "display_name": "Bitbucket",
+      "host_match": "api.bitbucket.org",
       "authorization_endpoint": "https://bitbucket.org/site/oauth2/authorize",
-      "token_endpoint":         "https://bitbucket.org/site/oauth2/access_token",
-      "scopes_default":         ["account", "repository"],
-      "extra_auth_params":      {},
-      "extra_token_params":     {},
-      "userinfo_endpoint":      "https://api.bitbucket.org/2.0/user",
-      "userinfo_field_path":    "username",
-      "client_id":              "",
-      "client_secret":          null,
-      "enabled":                false
+      "token_endpoint": "https://bitbucket.org/site/oauth2/access_token",
+      "scopes_default": [
+        "account",
+        "repository"
+      ],
+      "extra_auth_params": {},
+      "extra_token_params": {},
+      "userinfo_endpoint": "https://api.bitbucket.org/2.0/user",
+      "userinfo_field_path": "username",
+      "client_id": "",
+      "client_secret": null,
+      "enabled": false
     },
-
     {
-      "slug":                   "linkedin",
-      "display_name":           "LinkedIn",
-      "host_match":             "api.linkedin.com",
+      "slug": "linkedin",
+      "display_name": "LinkedIn",
+      "host_match": "api.linkedin.com",
       "authorization_endpoint": "https://www.linkedin.com/oauth/v2/authorization",
-      "token_endpoint":         "https://www.linkedin.com/oauth/v2/accessToken",
-      "scopes_default":         ["openid", "profile", "email"],
-      "extra_auth_params":      {},
-      "extra_token_params":     {},
-      "userinfo_endpoint":      "https://api.linkedin.com/v2/userinfo",
-      "userinfo_field_path":    "email",
-      "client_id":              "",
-      "client_secret":          null,
-      "enabled":                false
+      "token_endpoint": "https://www.linkedin.com/oauth/v2/accessToken",
+      "scopes_default": [
+        "openid",
+        "profile",
+        "email"
+      ],
+      "extra_auth_params": {},
+      "extra_token_params": {},
+      "userinfo_endpoint": "https://api.linkedin.com/v2/userinfo",
+      "userinfo_field_path": "email",
+      "client_id": "",
+      "client_secret": null,
+      "enabled": false
     },
-
     {
-      "slug":                   "asana",
-      "display_name":           "Asana",
-      "host_match":             "app.asana.com",
-      "authorization_endpoint": "https://app.asana.com/-/oauth_authorize",
-      "token_endpoint":         "https://app.asana.com/-/oauth_token",
-      "scopes_default":         ["default"],
-      "extra_auth_params":      {},
-      "extra_token_params":     {},
-      "userinfo_endpoint":      "https://app.asana.com/api/1.0/users/me",
-      "userinfo_field_path":    "data.email",
-      "client_id":              "",
-      "client_secret":          null,
-      "enabled":                false
-    },
-
-    {
-      "slug":                   "zoom",
-      "display_name":           "Zoom",
-      "host_match":             "api.zoom.us",
-      "authorization_endpoint": "https://zoom.us/oauth/authorize",
-      "token_endpoint":         "https://zoom.us/oauth/token",
-      "scopes_default":         ["user:read:user"],
-      "extra_auth_params":      {},
-      "extra_token_params":     {},
-      "userinfo_endpoint":      "https://api.zoom.us/v2/users/me",
-      "userinfo_field_path":    "email",
-      "client_id":              "",
-      "client_secret":          null,
-      "enabled":                false
-    },
-
-    {
-      "slug":                   "box",
-      "display_name":           "Box",
-      "host_match":             "api.box.com",
+      "slug": "box",
+      "display_name": "Box",
+      "host_match": "api.box.com",
       "authorization_endpoint": "https://account.box.com/api/oauth2/authorize",
-      "token_endpoint":         "https://api.box.com/oauth2/token",
-      "scopes_default":         [],
-      "extra_auth_params":      {},
-      "extra_token_params":     {},
-      "userinfo_endpoint":      "https://api.box.com/2.0/users/me",
-      "userinfo_field_path":    "login",
-      "client_id":              "",
-      "client_secret":          null,
-      "enabled":                false
+      "token_endpoint": "https://api.box.com/oauth2/token",
+      "scopes_default": [],
+      "extra_auth_params": {},
+      "extra_token_params": {},
+      "userinfo_endpoint": "https://api.box.com/2.0/users/me",
+      "userinfo_field_path": "login",
+      "client_id": "",
+      "client_secret": null,
+      "enabled": false
     },
-
     {
-      "slug":                   "salesforce",
-      "display_name":           "Salesforce",
-      "host_match":             "salesforce.com",
-      "authorization_endpoint": "https://login.salesforce.com/services/oauth2/authorize",
-      "token_endpoint":         "https://login.salesforce.com/services/oauth2/token",
-      "scopes_default":         ["openid", "email", "profile", "api", "refresh_token", "offline_access"],
-      "extra_auth_params":      {},
-      "extra_token_params":     {},
-      "userinfo_endpoint":      "https://login.salesforce.com/services/oauth2/userinfo",
-      "userinfo_field_path":    "email",
-      "client_id":              "",
-      "client_secret":          null,
-      "enabled":                false
-    },
-
-    {
-      "slug":                   "zoho",
-      "display_name":           "Zoho",
-      "host_match":             "zoho.com",
+      "slug": "zoho",
+      "display_name": "Zoho",
+      "host_match": "zoho.com",
       "authorization_endpoint": "https://accounts.zoho.com/oauth/v2/auth",
-      "token_endpoint":         "https://accounts.zoho.com/oauth/v2/token",
-      "scopes_default":         ["AaaServer.profile.READ"],
-      "extra_auth_params":      { "access_type": "offline", "prompt": "consent" },
-      "extra_token_params":     {},
-      "userinfo_endpoint":      "https://accounts.zoho.com/oauth/user/info",
-      "userinfo_field_path":    "Email",
-      "client_id":              "",
-      "client_secret":          null,
-      "enabled":                false
+      "token_endpoint": "https://accounts.zoho.com/oauth/v2/token",
+      "scopes_default": [
+        "AaaServer.profile.READ"
+      ],
+      "extra_auth_params": {
+        "access_type": "offline",
+        "prompt": "consent"
+      },
+      "extra_token_params": {},
+      "userinfo_endpoint": "https://accounts.zoho.com/oauth/user/info",
+      "userinfo_field_path": "Email",
+      "client_id": "",
+      "client_secret": null,
+      "enabled": false
     },
-
     {
-      "slug":                   "strava",
-      "display_name":           "Strava",
-      "host_match":             "www.strava.com",
+      "slug": "strava",
+      "display_name": "Strava",
+      "host_match": "www.strava.com",
       "authorization_endpoint": "https://www.strava.com/oauth/authorize",
-      "token_endpoint":         "https://www.strava.com/oauth/token",
-      "scopes_default":         ["read", "activity:read"],
-      "extra_auth_params":      { "approval_prompt": "auto" },
-      "extra_token_params":     {},
-      "userinfo_endpoint":      "https://www.strava.com/api/v3/athlete",
-      "userinfo_field_path":    "username",
-      "client_id":              "",
-      "client_secret":          null,
-      "enabled":                false
+      "token_endpoint": "https://www.strava.com/oauth/token",
+      "scopes_default": [
+        "read",
+        "activity:read"
+      ],
+      "extra_auth_params": {
+        "approval_prompt": "auto"
+      },
+      "extra_token_params": {},
+      "userinfo_endpoint": "https://www.strava.com/api/v3/athlete",
+      "userinfo_field_path": "username",
+      "client_id": "",
+      "client_secret": null,
+      "enabled": false
     },
-
     {
-      "slug":                   "fitbit",
-      "display_name":           "Fitbit",
-      "host_match":             "api.fitbit.com",
+      "slug": "fitbit",
+      "display_name": "Fitbit",
+      "host_match": "api.fitbit.com",
       "authorization_endpoint": "https://www.fitbit.com/oauth2/authorize",
-      "token_endpoint":         "https://api.fitbit.com/oauth2/token",
-      "scopes_default":         ["profile", "activity", "heartrate"],
-      "extra_auth_params":      {},
-      "extra_token_params":     {},
-      "userinfo_endpoint":      "https://api.fitbit.com/1/user/-/profile.json",
-      "userinfo_field_path":    "user.encodedId",
-      "client_id":              "",
-      "client_secret":          null,
-      "enabled":                false
+      "token_endpoint": "https://api.fitbit.com/oauth2/token",
+      "scopes_default": [
+        "profile",
+        "activity",
+        "heartrate"
+      ],
+      "extra_auth_params": {},
+      "extra_token_params": {},
+      "userinfo_endpoint": "https://api.fitbit.com/1/user/-/profile.json",
+      "userinfo_field_path": "user.encodedId",
+      "client_id": "",
+      "client_secret": null,
+      "enabled": false
     },
-
     {
-      "slug":                   "twitter",
-      "display_name":           "Twitter / X",
-      "host_match":             "api.twitter.com",
+      "slug": "twitter",
+      "display_name": "Twitter / X",
+      "host_match": "api.twitter.com",
       "authorization_endpoint": "https://twitter.com/i/oauth2/authorize",
-      "token_endpoint":         "https://api.twitter.com/2/oauth2/token",
-      "scopes_default":         ["tweet.read", "users.read", "offline.access"],
-      "extra_auth_params":      {},
-      "extra_token_params":     {},
-      "userinfo_endpoint":      "https://api.twitter.com/2/users/me",
-      "userinfo_field_path":    "data.username",
-      "client_id":              "",
-      "client_secret":          null,
-      "enabled":                false
+      "token_endpoint": "https://api.twitter.com/2/oauth2/token",
+      "scopes_default": [
+        "tweet.read",
+        "users.read",
+        "offline.access"
+      ],
+      "extra_auth_params": {},
+      "extra_token_params": {},
+      "userinfo_endpoint": "https://api.twitter.com/2/users/me",
+      "userinfo_field_path": "data.username",
+      "client_id": "",
+      "client_secret": null,
+      "enabled": false
     },
-
     {
-      "slug":                   "facebook",
-      "display_name":           "Facebook / Meta",
-      "host_match":             "graph.facebook.com",
+      "slug": "facebook",
+      "display_name": "Facebook / Meta",
+      "host_match": "graph.facebook.com",
       "authorization_endpoint": "https://www.facebook.com/v18.0/dialog/oauth",
-      "token_endpoint":         "https://graph.facebook.com/v18.0/oauth/access_token",
-      "scopes_default":         ["email", "public_profile"],
-      "extra_auth_params":      {},
-      "extra_token_params":     {},
-      "userinfo_endpoint":      "https://graph.facebook.com/me?fields=email",
-      "userinfo_field_path":    "email",
-      "client_id":              "",
-      "client_secret":          null,
-      "enabled":                false
+      "token_endpoint": "https://graph.facebook.com/v18.0/oauth/access_token",
+      "scopes_default": [
+        "email",
+        "public_profile"
+      ],
+      "extra_auth_params": {},
+      "extra_token_params": {},
+      "userinfo_endpoint": "https://graph.facebook.com/me?fields=email",
+      "userinfo_field_path": "email",
+      "client_id": "",
+      "client_secret": null,
+      "enabled": false
     }
   ]
 }
