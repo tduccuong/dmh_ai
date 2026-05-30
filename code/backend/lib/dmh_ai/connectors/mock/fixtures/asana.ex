@@ -37,7 +37,15 @@ defmodule DmhAi.Connectors.Mock.Fixtures.Asana do
       "task.update"    => &task_update/1,
       "task.complete"  => &task_complete/1,
       "story.create"   => &story_create/1,
-      "user.find"      => &user_find/1
+      "user.find"      => &user_find/1,
+      "workspace.find" => &workspace_find/1,
+      "team.find"      => &team_find/1,
+      "section.find"   => &section_find/1,
+      "section.create" => &section_create/1,
+      "task.assign"    => &task_assign/1,
+      "task.delete"    => &task_delete/1,
+      "subtask.find"   => &subtask_find/1,
+      "subtask.create" => &subtask_create/1
     }
   end
 
@@ -46,13 +54,21 @@ defmodule DmhAi.Connectors.Mock.Fixtures.Asana do
   """
   def sentinels do
     %{
-      project_id:   "1200MOCKPROJ01",
-      project_name: "Beispiel-Projekt Demo",
-      task_id:      "1200MOCKTASK01",
-      task_name:    "Beispiel-Aufgabe Demo",
-      user_id:      "1200MOCKUSER01",
-      user_email:   "klara.beispiel@beispiel-team-demo.example",
-      story_id:     "1200MOCKSTORY1"
+      project_id:     "1200MOCKPROJ01",
+      project_name:   "Beispiel-Projekt Demo",
+      task_id:        "1200MOCKTASK01",
+      task_name:      "Beispiel-Aufgabe Demo",
+      user_id:        "1200MOCKUSER01",
+      user_email:     "klara.beispiel@beispiel-team-demo.example",
+      story_id:       "1200MOCKSTORY1",
+      workspace_id:   "1200MOCKWS001",
+      workspace_name: "Beispiel-Werkstatt GmbH",
+      team_id:        "1200MOCKTEAM01",
+      team_name:      "Beispiel-Team Vertrieb",
+      section_id:     "1200MOCKSEC001",
+      section_name:   "Beispiel-Abschnitt Eingang",
+      subtask_id:     "1200MOCKSUB001",
+      subtask_name:   "Beispiel-Teilaufgabe Demo"
     }
   end
 
@@ -136,6 +152,96 @@ defmodule DmhAi.Connectors.Mock.Fixtures.Asana do
       "data" => %{
         "gid"   => id,
         "email" => email
+      }
+    }
+  end
+
+  defp workspace_find(_args) do
+    %{workspace_id: id, workspace_name: name} = sentinels()
+
+    %{
+      "data" => [
+        %{
+          "gid"           => id,
+          "name"          => name,
+          "is_organization" => true
+        }
+      ]
+    }
+  end
+
+  defp team_find(_args) do
+    %{team_id: id, team_name: name} = sentinels()
+
+    %{
+      "data" => [
+        %{
+          "gid"  => id,
+          "name" => name
+        }
+      ]
+    }
+  end
+
+  defp section_find(_args) do
+    %{section_id: id, section_name: name} = sentinels()
+
+    %{
+      "data" => [
+        %{
+          "gid"  => id,
+          "name" => name
+        }
+      ]
+    }
+  end
+
+  defp section_create(_args) do
+    %{section_id: id, section_name: name} = sentinels()
+
+    %{
+      "data" => %{
+        "gid"  => id <> Integer.to_string(:erlang.unique_integer([:positive])),
+        "name" => name
+      }
+    }
+  end
+
+  defp task_assign(_args) do
+    %{task_id: id} = sentinels()
+
+    %{"data" => %{"gid" => id, "assignee" => sentinels().user_id}}
+  end
+
+  # Asana's DELETE returns the deleted task inside `"data"`, but the
+  # connector's response parser ignores the payload and maps to
+  # `%{ok: true}`. The fixture mirrors the wire shape faithfully.
+  defp task_delete(_args) do
+    %{task_id: id} = sentinels()
+
+    %{"data" => %{"gid" => id}}
+  end
+
+  defp subtask_find(_args) do
+    %{subtask_id: id, subtask_name: name} = sentinels()
+
+    %{
+      "data" => [
+        %{
+          "gid"  => id,
+          "name" => name
+        }
+      ]
+    }
+  end
+
+  defp subtask_create(_args) do
+    %{subtask_id: id, subtask_name: name} = sentinels()
+
+    %{
+      "data" => %{
+        "gid"  => id <> Integer.to_string(:erlang.unique_integer([:positive])),
+        "name" => name
       }
     }
   end

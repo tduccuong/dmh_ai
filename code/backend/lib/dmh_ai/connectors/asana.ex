@@ -7,21 +7,31 @@ defmodule DmhAi.Connectors.Asana do
   @moduledoc """
   Asana connector (Universal Region, Case B — vendor MCP).
 
-  Eight functions at the SME-relevant slice of Asana's REST API
-  (developers.asana.com) — projects, tasks, comments, users:
+  Sixteen functions at the SME-relevant slice of Asana's REST API
+  (developers.asana.com) — workspaces, teams, projects, sections,
+  tasks, subtasks, comments, users:
 
+    workspace.find  [read]   list workspaces the authed user belongs to
+    team.find       [read]   list teams in an organisation workspace
     project.find    [read]   list projects (optional workspace filter)
     project.create  [write]  create a project in a workspace
+    section.find    [read]   list sections inside a project
+    section.create  [write]  create a section in a project
     task.find       [read]   list tasks inside a project
     task.create     [write]  create a task (optionally in a project)
     task.update     [write]  patch an existing task
+    task.assign     [write]  assign an existing task to a user
     task.complete   [write]  mark a task complete
+    task.delete     [write]  delete a task
+    subtask.find    [read]   list subtasks under a parent task
+    subtask.create  [write]  create a subtask under a parent task
     story.create    [write]  add a comment (story) to a task
     user.find       [read]   read a user (defaults to the authed user)
 
-  Four capability groups (projects / tasks / comments / directory)
-  so admins can scope per-org — a task-tracking org might tick
-  projects + tasks, while a collaboration org also enables comments.
+  Eight capability groups (workspaces / teams / projects / sections
+  / tasks / subtasks / comments / directory) so admins can scope
+  per-org — a task-tracking org might tick projects + tasks + sections,
+  while a collaboration org also enables comments and subtasks.
 
   ## Fixed host, Bearer auth
 
@@ -121,7 +131,10 @@ defmodule DmhAi.Connectors.Asana do
        %{url: "https://developers.asana.com/reference/tasks", title: "Asana — Tasks API"},
        %{url: "https://developers.asana.com/reference/projects", title: "Asana — Projects API"},
        %{url: "https://developers.asana.com/reference/stories", title: "Asana — Stories API"},
-       %{url: "https://developers.asana.com/reference/users", title: "Asana — Users API"}
+       %{url: "https://developers.asana.com/reference/users", title: "Asana — Users API"},
+       %{url: "https://developers.asana.com/reference/workspaces", title: "Asana — Workspaces API"},
+       %{url: "https://developers.asana.com/reference/sections", title: "Asana — Sections API"},
+       %{url: "https://developers.asana.com/reference/teams", title: "Asana — Teams API"}
      ]}
   end
 
@@ -277,6 +290,141 @@ defmodule DmhAi.Connectors.Asana do
           },
           returns: %{user: :map},
           scopes:  ["default"]
+        },
+
+        # vendor: GET /workspaces
+        # Workspaces are the top-level container in Asana — every other
+        # object lives under one. A read here is the natural seed for
+        # any lookup chain that needs a workspace id.
+        "workspace.find" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "limit" => %{type: :integer, required: false}
+          },
+          returns: %{workspaces: :list},
+          scopes:  ["default"]
+        },
+
+        # vendor: GET /projects/{project_id}/sections
+        "section.find" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "project_id" => %{type: :string,  required: true,
+                              provenance: %{kind: :lookup,
+                                            source: "asana.project.find"}},
+            "limit"      => %{type: :integer, required: false}
+          },
+          returns: %{sections: :list},
+          scopes:  ["default"]
+        },
+
+        # vendor: POST /projects/{project_id}/sections
+        "section.create" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "project_id" => %{type: :string, required: true,
+                              provenance: %{kind: :lookup,
+                                            source: "asana.project.find"}},
+            "name"       => %{type: :string, required: true,
+                              provenance: %{kind: :from_user}}
+          },
+          returns: %{section_id: :string},
+          errors:  [:unauthorised, :rate_limited],
+          scopes:  ["default"]
+        },
+
+        # vendor: PUT /tasks/{task_id} (data: %{assignee: assignee_id})
+        # Sub-op of `task.update` but exposed as an explicit verb —
+        # useful when a lookup chain wants to pivot from a user_id
+        # straight to "give that user this task" without composing a
+        # free-form patch.
+        "task.assign" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "task_id"     => %{type: :string, required: true,
+                               provenance: %{kind: :lookup,
+                                             source: "asana.task.find"}},
+            "assignee_id" => %{type: :string, required: true,
+                               provenance: %{kind: :from_user}}
+          },
+          returns: %{task_id: :string},
+          errors:  [:unauthorised, :not_found, :rate_limited],
+          scopes:  ["default"]
+        },
+
+        # vendor: DELETE /tasks/{task_id}
+        # Asana's DELETE returns the deleted task object inside the
+        # `"data"` envelope; the response parser ignores the payload
+        # and returns `%{ok: true}` regardless.
+        "task.delete" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "task_id" => %{type: :string, required: true,
+                           provenance: %{kind: :lookup,
+                                         source: "asana.task.find"}}
+          },
+          returns: %{ok: :boolean},
+          errors:  [:unauthorised, :not_found, :rate_limited],
+          scopes:  ["default"]
+        },
+
+        # vendor: POST /tasks/{parent_task_id}/subtasks
+        "subtask.create" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "parent_task_id" => %{type: :string, required: true,
+                                  provenance: %{kind: :lookup,
+                                                source: "asana.task.find"}},
+            "name"           => %{type: :string, required: true,
+                                  provenance: %{kind: :from_user}},
+            "notes"          => %{type: :string, required: false},
+            "assignee_id"    => %{type: :string, required: false}
+          },
+          returns: %{subtask_id: :string},
+          errors:  [:unauthorised, :rate_limited],
+          scopes:  ["default"]
+        },
+
+        # vendor: GET /tasks/{parent_task_id}/subtasks
+        "subtask.find" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "parent_task_id" => %{type: :string,  required: true,
+                                  provenance: %{kind: :lookup,
+                                                source: "asana.task.find"}},
+            "limit"          => %{type: :integer, required: false}
+          },
+          returns: %{subtasks: :list},
+          scopes:  ["default"]
+        },
+
+        # vendor: GET /organizations/{workspace_id}/teams
+        # Teams only exist in organisation workspaces (not personal
+        # workspaces); the endpoint surfaces a 4xx for a non-org
+        # workspace_id, which the dispatcher classifies via
+        # `remap_error/1`.
+        "team.find" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "workspace_id" => %{type: :string,  required: true,
+                                provenance: %{kind: :lookup,
+                                              source: "asana.workspace.find"}},
+            "limit"        => %{type: :integer, required: false}
+          },
+          returns: %{teams: :list},
+          scopes:  ["default"]
         }
       }
     }
@@ -381,16 +529,39 @@ defmodule DmhAi.Connectors.Asana do
   def mcp_handler_module, do: DmhAi.Connectors.Asana.MCPHandler
 
   @doc """
-  Capability groups admin curates via External Connectors. Four
-  domain groups go live — projects / tasks / comments / directory
-  — so a task-tracking org can expose projects + tasks and skip the
-  rest, while a collaboration org also enables comments. The three
+  Capability groups admin curates via External Connectors. Eight
+  domain groups go live — workspaces / teams / projects / sections /
+  tasks / subtasks / comments / directory — so a task-tracking org
+  can expose projects + tasks + sections and skip the rest, while a
+  collaboration org also enables comments and subtasks. The three
   enforcement layers (OAuth scope filter, tool catalog filter,
   dispatcher gate) all read from `enabled_capabilities`.
   """
   @spec capabilities() :: [map()]
   def capabilities do
     [
+      %{
+        id:           "workspaces",
+        display_name: "Workspaces",
+        description:  "List workspaces the connected user belongs to.",
+        scopes:       ["default"],
+        functions:    ["workspace.find"],
+        vendor_prereq: %{
+          label:      "Asana OAuth app access",
+          enable_url: "https://developers.asana.com/docs/oauth"
+        }
+      },
+      %{
+        id:           "teams",
+        display_name: "Teams",
+        description:  "List teams in an organisation workspace.",
+        scopes:       ["default"],
+        functions:    ["team.find"],
+        vendor_prereq: %{
+          label:      "Asana OAuth app access",
+          enable_url: "https://developers.asana.com/docs/oauth"
+        }
+      },
       %{
         id:           "projects",
         display_name: "Projects",
@@ -403,11 +574,40 @@ defmodule DmhAi.Connectors.Asana do
         }
       },
       %{
+        id:           "sections",
+        display_name: "Sections",
+        description:  "List and create sections inside a project.",
+        scopes:       ["default"],
+        functions:    ["section.find", "section.create"],
+        vendor_prereq: %{
+          label:      "Asana OAuth app access",
+          enable_url: "https://developers.asana.com/docs/oauth"
+        }
+      },
+      %{
         id:           "tasks",
         display_name: "Tasks",
-        description:  "List, create, update, and complete tasks.",
+        description:  "List, create, update, assign, complete, and delete tasks.",
         scopes:       ["default"],
-        functions:    ["task.find", "task.create", "task.update", "task.complete"],
+        functions:    [
+          "task.find",
+          "task.create",
+          "task.update",
+          "task.assign",
+          "task.complete",
+          "task.delete"
+        ],
+        vendor_prereq: %{
+          label:      "Asana OAuth app access",
+          enable_url: "https://developers.asana.com/docs/oauth"
+        }
+      },
+      %{
+        id:           "subtasks",
+        display_name: "Subtasks",
+        description:  "List and create subtasks under a parent task.",
+        scopes:       ["default"],
+        functions:    ["subtask.find", "subtask.create"],
         vendor_prereq: %{
           label:      "Asana OAuth app access",
           enable_url: "https://developers.asana.com/docs/oauth"

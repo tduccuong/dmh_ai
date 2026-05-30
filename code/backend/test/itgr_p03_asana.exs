@@ -56,9 +56,10 @@ defmodule DmhAi.P03AsanaTest do
       assert :ok = Manifest.validate(Asana.manifest())
     end
 
-    test "declares 8 functions at the Primitive 0.3 surface" do
+    test "declares 16 functions at the Primitive 0.3 surface" do
       functions = Asana.manifest().functions
 
+      # Original 8
       assert Map.has_key?(functions, "project.find")
       assert Map.has_key?(functions, "project.create")
       assert Map.has_key?(functions, "task.find")
@@ -68,7 +69,17 @@ defmodule DmhAi.P03AsanaTest do
       assert Map.has_key?(functions, "story.create")
       assert Map.has_key?(functions, "user.find")
 
-      assert map_size(functions) == 8
+      # +8 from the Asana expansion
+      assert Map.has_key?(functions, "workspace.find")
+      assert Map.has_key?(functions, "team.find")
+      assert Map.has_key?(functions, "section.find")
+      assert Map.has_key?(functions, "section.create")
+      assert Map.has_key?(functions, "task.assign")
+      assert Map.has_key?(functions, "task.delete")
+      assert Map.has_key?(functions, "subtask.find")
+      assert Map.has_key?(functions, "subtask.create")
+
+      assert map_size(functions) == 16
     end
 
     test "every write function is `callable_from: [:task]` (HARD Rule 2)" do
@@ -170,6 +181,15 @@ defmodule DmhAi.P03AsanaTest do
 
       assert [json: %{"data" => %{"completed" => true}}] =
                request.(%{"task_id" => "1200MOCKTASK01"}, %{})
+    end
+
+    # section.create wraps `name` (the only writable field) under
+    # `"data"`, matching Asana's envelope contract on every POST.
+    test "section.create wraps `name` under the `data` key" do
+      request = MCPHandler.functions()["section.create"].request
+
+      assert [json: %{"data" => %{"name" => "Eingang"}}] =
+               request.(%{"project_id" => "1200MOCKPROJ01", "name" => "Eingang"}, %{})
     end
   end
 
@@ -295,6 +315,53 @@ defmodule DmhAi.P03AsanaTest do
       assert {:error, %{error: "unauthorised"}} =
                Dispatcher.call("asana.task.create",
                                %{"name" => "Demo"},
+                               ctx)
+    end
+
+    test "read function (section.find) from free chat returns the inner sections list",
+         %{admin_id: admin_id} do
+      Application.put_env(:dmh_ai, :__mcp_caller_stub__,
+        fn "asana", "section.find", args, _creds ->
+          assert args["project_id"] == "1200MOCKPROJ01"
+
+          # The Caller hands the connector the already-mapped shape;
+          # MCPHandler's `"data"`-envelope unwrap fires on the real
+          # transport path, so the stub returns the post-unwrap shape.
+          {:ok,
+           %{
+             "sections" => [
+               %{"gid" => "1200MOCKSEC001", "name" => "Beispiel-Abschnitt Eingang"}
+             ]
+           }}
+        end)
+
+      assert {:ok,
+              %{"sections" => [%{"gid" => "1200MOCKSEC001"}]}} =
+               Dispatcher.call("asana.section.find",
+                               %{"project_id" => "1200MOCKPROJ01"},
+                               %{user_id: admin_id})
+    end
+
+    test "write function (section.create) in-task carries injected idempotency_key",
+         %{admin_id: admin_id} do
+      Application.put_env(:dmh_ai, :__mcp_caller_stub__,
+        fn "asana", "section.create", args, _creds ->
+          assert is_binary(args["__idempotency_key"]),
+                 "writes must carry idempotency_key injected by Dispatcher"
+          assert args["project_id"] == "1200MOCKPROJ01"
+          assert args["name"]       == "Eingang"
+
+          {:ok, %{"section_id" => "1200MOCKSEC001"}}
+        end)
+
+      ctx = %{user_id: admin_id, task_id: "t-create-section", step_seq: 0}
+
+      assert {:ok, %{"section_id" => "1200MOCKSEC001"}} =
+               Dispatcher.call("asana.section.create",
+                               %{
+                                 "project_id" => "1200MOCKPROJ01",
+                                 "name"       => "Eingang"
+                               },
                                ctx)
     end
   end

@@ -9,14 +9,22 @@ defmodule DmhAi.Connectors.Asana.MCPHandler do
   `Connectors.MCPServer`. Each function is a 1:1 mapping to an Asana
   REST endpoint at `https://app.asana.com/api/1.0/*`:
 
-    project.find   — GET  /projects
-    project.create — POST /projects
-    task.find      — GET  /projects/{project_id}/tasks
-    task.create    — POST /tasks
-    task.update    — PUT  /tasks/{task_id}
-    task.complete  — PUT  /tasks/{task_id}
-    story.create   — POST /tasks/{task_id}/stories
-    user.find      — GET  /users/{user_id_or_me}
+    workspace.find — GET    /workspaces
+    team.find      — GET    /organizations/{workspace_id}/teams
+    project.find   — GET    /projects
+    project.create — POST   /projects
+    section.find   — GET    /projects/{project_id}/sections
+    section.create — POST   /projects/{project_id}/sections
+    task.find      — GET    /projects/{project_id}/tasks
+    task.create    — POST   /tasks
+    task.update    — PUT    /tasks/{task_id}
+    task.assign    — PUT    /tasks/{task_id}
+    task.complete  — PUT    /tasks/{task_id}
+    task.delete    — DELETE /tasks/{task_id}
+    subtask.find   — GET    /tasks/{parent_task_id}/subtasks
+    subtask.create — POST   /tasks/{parent_task_id}/subtasks
+    story.create   — POST   /tasks/{task_id}/stories
+    user.find      — GET    /users/{user_id_or_me}
 
   Fixed host (`https://app.asana.com/api/1.0`), no per-instance
   templating. Standard `Authorization: Bearer <token>` auth, which
@@ -126,6 +134,62 @@ defmodule DmhAi.Connectors.Asana.MCPHandler do
         url:     &user_find_url/1,
         response: &user_find_response/2,
         doc:     "Read a user (defaults to the authed user)."
+      },
+      "workspace.find" => %FunctionSpec{
+        method:  :get,
+        url:     "#{@api_base}/workspaces",
+        request: &workspace_find_request/2,
+        response: &workspace_find_response/2,
+        doc:     "List workspaces the authed user belongs to."
+      },
+      "team.find" => %FunctionSpec{
+        method:  :get,
+        url:     &team_find_url/1,
+        request: &team_find_request/2,
+        response: &team_find_response/2,
+        doc:     "List teams in an organisation workspace."
+      },
+      "section.find" => %FunctionSpec{
+        method:  :get,
+        url:     &section_find_url/1,
+        request: &section_find_request/2,
+        response: &section_find_response/2,
+        doc:     "List sections inside a project."
+      },
+      "section.create" => %FunctionSpec{
+        method:  :post,
+        url:     &section_create_url/1,
+        request: &section_create_request/2,
+        response: &section_create_response/2,
+        doc:     "Create a section in a project."
+      },
+      "task.assign" => %FunctionSpec{
+        method:  :put,
+        url:     &task_assign_url/1,
+        request: &task_assign_request/2,
+        response: &task_assign_response/2,
+        doc:     "Assign an existing task to a user."
+      },
+      "task.delete" => %FunctionSpec{
+        method:  :delete,
+        url:     &task_delete_url/1,
+        request: fn _args, _ctx -> [] end,
+        response: &task_delete_response/2,
+        doc:     "Delete a task."
+      },
+      "subtask.find" => %FunctionSpec{
+        method:  :get,
+        url:     &subtask_find_url/1,
+        request: &subtask_find_request/2,
+        response: &subtask_find_response/2,
+        doc:     "List subtasks under a parent task."
+      },
+      "subtask.create" => %FunctionSpec{
+        method:  :post,
+        url:     &subtask_create_url/1,
+        request: &subtask_create_request/2,
+        response: &subtask_create_response/2,
+        doc:     "Create a subtask under a parent task."
       }
     }
   end
@@ -242,6 +306,123 @@ defmodule DmhAi.Connectors.Asana.MCPHandler do
 
   defp user_find_response(s, body) when s in 200..299 do
     {:ok, %{"user" => unwrap_obj(body)}}
+  end
+
+  # ─── workspace.find — GET /workspaces ─────────────────────────────────
+
+  defp workspace_find_request(args, _ctx) do
+    params = maybe_put_kv(%{}, "limit", Map.get(args, "limit"))
+    [params: params]
+  end
+
+  defp workspace_find_response(s, body) when s in 200..299 do
+    {:ok, %{"workspaces" => unwrap_list(body)}}
+  end
+
+  # ─── team.find — GET /organizations/{workspace_id}/teams ──────────────
+  #
+  # Asana exposes per-organisation team listings under
+  # `/organizations/{workspace_id}/teams`. Workspaces that are not
+  # organisations surface a vendor error; the dispatcher's
+  # `remap_error/1` keyed off the HTTP status classifies that.
+
+  defp team_find_url(args),
+    do: "#{@api_base}/organizations/#{safe_path_id(args["workspace_id"])}/teams"
+
+  defp team_find_request(args, _ctx) do
+    params = maybe_put_kv(%{}, "limit", Map.get(args, "limit"))
+    [params: params]
+  end
+
+  defp team_find_response(s, body) when s in 200..299 do
+    {:ok, %{"teams" => unwrap_list(body)}}
+  end
+
+  # ─── section.find — GET /projects/{project_id}/sections ───────────────
+
+  defp section_find_url(args),
+    do: "#{@api_base}/projects/#{safe_path_id(args["project_id"])}/sections"
+
+  defp section_find_request(args, _ctx) do
+    params = maybe_put_kv(%{}, "limit", Map.get(args, "limit"))
+    [params: params]
+  end
+
+  defp section_find_response(s, body) when s in 200..299 do
+    {:ok, %{"sections" => unwrap_list(body)}}
+  end
+
+  # ─── section.create — POST /projects/{project_id}/sections ────────────
+
+  defp section_create_url(args),
+    do: "#{@api_base}/projects/#{safe_path_id(args["project_id"])}/sections"
+
+  defp section_create_request(args, _ctx) do
+    [json: %{"data" => %{"name" => args["name"]}}]
+  end
+
+  defp section_create_response(s, body) when s in 200..299 do
+    {:ok, %{"section_id" => to_string(unwrap_obj(body)["gid"])}}
+  end
+
+  # ─── task.assign — PUT /tasks/{task_id} ───────────────────────────────
+  #
+  # Sub-op of `task.update` — explicit verb so the lookup chain can
+  # pivot from a `user.find` straight to "assign this task to that
+  # user" without composing a free-form patch.
+
+  defp task_assign_url(args), do: "#{@api_base}/tasks/#{safe_path_id(args["task_id"])}"
+
+  defp task_assign_request(args, _ctx) do
+    [json: %{"data" => %{"assignee" => args["assignee_id"]}}]
+  end
+
+  defp task_assign_response(s, body) when s in 200..299 do
+    {:ok, %{"task_id" => to_string(unwrap_obj(body)["gid"])}}
+  end
+
+  # ─── task.delete — DELETE /tasks/{task_id} ────────────────────────────
+  #
+  # Asana's DELETE returns the deleted task object inside `"data"`;
+  # the parser ignores the payload and returns `%{ok: true}`. The
+  # `returns: %{ok: :boolean}` manifest entry maps to that shape.
+
+  defp task_delete_url(args), do: "#{@api_base}/tasks/#{safe_path_id(args["task_id"])}"
+
+  defp task_delete_response(s, _body) when s in 200..299 do
+    {:ok, %{"ok" => true}}
+  end
+
+  # ─── subtask.find — GET /tasks/{parent_task_id}/subtasks ──────────────
+
+  defp subtask_find_url(args),
+    do: "#{@api_base}/tasks/#{safe_path_id(args["parent_task_id"])}/subtasks"
+
+  defp subtask_find_request(args, _ctx) do
+    params = maybe_put_kv(%{}, "limit", Map.get(args, "limit"))
+    [params: params]
+  end
+
+  defp subtask_find_response(s, body) when s in 200..299 do
+    {:ok, %{"subtasks" => unwrap_list(body)}}
+  end
+
+  # ─── subtask.create — POST /tasks/{parent_task_id}/subtasks ───────────
+
+  defp subtask_create_url(args),
+    do: "#{@api_base}/tasks/#{safe_path_id(args["parent_task_id"])}/subtasks"
+
+  defp subtask_create_request(args, _ctx) do
+    data =
+      %{"name" => args["name"]}
+      |> maybe_put_kv("notes",    Map.get(args, "notes"))
+      |> maybe_put_kv("assignee", Map.get(args, "assignee_id"))
+
+    [json: %{"data" => data}]
+  end
+
+  defp subtask_create_response(s, body) when s in 200..299 do
+    {:ok, %{"subtask_id" => to_string(unwrap_obj(body)["gid"])}}
   end
 
   # ─── helpers ──────────────────────────────────────────────────────────
