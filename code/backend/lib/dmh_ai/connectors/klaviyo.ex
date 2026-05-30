@@ -29,14 +29,41 @@ defmodule DmhAi.Connectors.Klaviyo do
 
   REST base for the docs: `https://a.klaviyo.com/api`.
 
-  Six functions at the SME-relevant slice:
+  Fourteen functions at the SME-relevant slice:
 
-    profile.find     [read]   look up profiles by email / query
-    profile.create   [write]  create a new profile
-    profile.update   [write]  patch an existing profile
-    event.create     [write]  track an event for a profile
-    list.find        [read]   list audience lists
-    campaign.find    [read]   list campaigns (optionally filtered by status)
+    profile.find         [read]   look up profiles by email / query
+    profile.create       [write]  create a new profile
+    profile.update       [write]  patch an existing profile
+    event.create         [write]  track an event for a profile
+    event.find           [read]   browse tracked events (filterable by profile / metric)
+    list.find            [read]   list audience lists
+    list.create          [write]  create a new static list
+    list.add_profile     [write]  add a profile to a list
+    list.remove_profile  [write]  remove a profile from a list
+    campaign.find        [read]   list campaigns (optionally filtered by status)
+    segment.find         [read]   list dynamic segments (rule-driven, distinct from lists)
+    flow.find            [read]   list marketing-automation flows
+    template.find        [read]   list email templates
+    metric.find          [read]   list tracked metrics ("Placed Order", "Opened Email", ...)
+
+  ## List vs segment
+
+  Klaviyo distinguishes **lists** (static, manually-managed membership)
+  from **segments** (dynamic — membership is derived from rules each
+  time). `list.create` / `list.add_profile` / `list.remove_profile`
+  only act on lists; segments are read-only via `segment.find` because
+  segment membership is a function of the segment's rules, not a
+  collection mutated by the API.
+
+  ## Membership endpoint shape
+
+  Klaviyo exposes list membership as a JSON:API relationship:
+
+      POST/DELETE /lists/{list_id}/relationships/profiles
+      body: %{"data" => [%{"type" => "profile", "id" => "<profile_id>"}]}
+
+  The vendor MCP server wraps `list_id` + `profile_id` into that
+  envelope; the manifest declares the two flat args only.
 
   Klaviyo error contract (`/api/...` REST):
     * 429              → `:rate_limited`.
@@ -162,6 +189,119 @@ defmodule DmhAi.Connectors.Klaviyo do
             "limit"  => %{type: :integer, required: false}
           },
           returns: %{campaigns: :list}
+        },
+
+        # vendor: POST /api/lists (static list — distinct from segments)
+        "list.create" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "name" => %{type: :string, required: true,
+                        provenance: %{kind: :from_user}}
+          },
+          returns: %{list_id: :string},
+          errors:  [:unauthorised, :duplicate, :rate_limited]
+        },
+
+        # vendor: POST /api/lists/{list_id}/relationships/profiles
+        # The vendor MCP wraps `list_id` + `profile_id` into the
+        # JSON:API relationship envelope (see module doc).
+        "list.add_profile" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "list_id"    => %{type: :string, required: true,
+                              provenance: %{kind: :lookup,
+                                            source: "klaviyo.list.find"}},
+            "profile_id" => %{type: :string, required: true,
+                              provenance: %{kind: :lookup,
+                                            source: "klaviyo.profile.find"}}
+          },
+          returns: %{ok: :boolean},
+          errors:  [:unauthorised, :not_found, :rate_limited]
+        },
+
+        # vendor: DELETE /api/lists/{list_id}/relationships/profiles
+        # Same JSON:API relationship envelope as the add path.
+        "list.remove_profile" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "list_id"    => %{type: :string, required: true,
+                              provenance: %{kind: :lookup,
+                                            source: "klaviyo.list.find"}},
+            "profile_id" => %{type: :string, required: true,
+                              provenance: %{kind: :lookup,
+                                            source: "klaviyo.profile.find"}}
+          },
+          returns: %{ok: :boolean},
+          errors:  [:unauthorised, :not_found, :rate_limited]
+        },
+
+        # vendor: GET /api/segments (dynamic, rule-driven — read-only;
+        # see module doc on list vs segment).
+        "segment.find" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "limit" => %{type: :integer, required: false}
+          },
+          returns: %{segments: :list}
+        },
+
+        # vendor: GET /api/flows
+        "flow.find" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "status" => %{type: :string,  required: false},
+            "limit"  => %{type: :integer, required: false}
+          },
+          returns: %{flows: :list}
+        },
+
+        # vendor: GET /api/templates
+        "template.find" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "limit" => %{type: :integer, required: false}
+          },
+          returns: %{templates: :list}
+        },
+
+        # vendor: GET /api/metrics
+        # Klaviyo's tracked metric registry — "Placed Order",
+        # "Opened Email", etc. The id is required as the
+        # `metric_id` filter input on `event.find`.
+        "metric.find" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "limit" => %{type: :integer, required: false}
+          },
+          returns: %{metrics: :list}
+        },
+
+        # vendor: GET /api/events
+        # Optional `filter` query string slices by profile / metric;
+        # without filters returns the recent-events stream.
+        "event.find" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "profile_id" => %{type: :string,  required: false,
+                              provenance: %{kind: :lookup,
+                                            source: "klaviyo.profile.find"}},
+            "metric_id"  => %{type: :string,  required: false,
+                              provenance: %{kind: :lookup,
+                                            source: "klaviyo.metric.find"}},
+            "limit"      => %{type: :integer, required: false}
+          },
+          returns: %{events: :list}
         }
       }
     }

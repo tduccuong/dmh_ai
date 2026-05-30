@@ -59,15 +59,27 @@ defmodule DmhAi.P03KlaviyoTest do
       assert KlaviyoConn.manifest().region == "universal"
     end
 
-    test "declares 6 functions across profile/event/list/campaign" do
+    test "declares 14 functions across profile/event/list/campaign/segment/flow/template/metric" do
       functions = KlaviyoConn.manifest().functions
-      assert map_size(functions) == 6
+      assert map_size(functions) == 14
+
+      # Original 6
       assert Map.has_key?(functions, "profile.find")
       assert Map.has_key?(functions, "profile.create")
       assert Map.has_key?(functions, "profile.update")
       assert Map.has_key?(functions, "event.create")
       assert Map.has_key?(functions, "list.find")
       assert Map.has_key?(functions, "campaign.find")
+
+      # +8 from the Klaviyo expansion
+      assert Map.has_key?(functions, "list.create")
+      assert Map.has_key?(functions, "list.add_profile")
+      assert Map.has_key?(functions, "list.remove_profile")
+      assert Map.has_key?(functions, "segment.find")
+      assert Map.has_key?(functions, "flow.find")
+      assert Map.has_key?(functions, "template.find")
+      assert Map.has_key?(functions, "metric.find")
+      assert Map.has_key?(functions, "event.find")
     end
 
     test "every write is callable_from: [:task] with idempotency_key required" do
@@ -238,6 +250,39 @@ defmodule DmhAi.P03KlaviyoTest do
       assert {:error, %{error: "duplicate"}} =
                Dispatcher.call("klaviyo.profile.create",
                                %{"email" => "x@y.test"},
+                               %{user_id: admin_id, session_id: "s-1", step_seq: "step-1"})
+    end
+
+    test "read function (metric.find) from free chat returns the inner metrics list",
+         %{admin_id: admin_id} do
+      Application.put_env(:dmh_ai, :__mcp_caller_stub__,
+        fn "klaviyo", "metric.find", args, _creds ->
+          assert args["limit"] == 25
+
+          {:ok,
+           %{"metrics" => [%{"id" => "MOCKMETRIC001", "name" => "Placed Order"}]}}
+        end)
+
+      assert {:ok, %{"metrics" => [%{"id" => "MOCKMETRIC001"}]}} =
+               Dispatcher.call("klaviyo.metric.find",
+                               %{"limit" => 25},
+                               %{user_id: admin_id})
+    end
+
+    test "write function (list.create) in-task carries injected idempotency_key",
+         %{admin_id: admin_id} do
+      Application.put_env(:dmh_ai, :__mcp_caller_stub__,
+        fn "klaviyo", "list.create", args, _creds ->
+          assert is_binary(args["__idempotency_key"]),
+                 "writes must carry idempotency_key injected by Dispatcher"
+          assert args["name"] == "Newsletter Subscribers DE"
+
+          {:ok, %{"list_id" => "MOCKLIST002"}}
+        end)
+
+      assert {:ok, %{"list_id" => "MOCKLIST002"}} =
+               Dispatcher.call("klaviyo.list.create",
+                               %{"name" => "Newsletter Subscribers DE"},
                                %{user_id: admin_id, session_id: "s-1", step_seq: "step-1"})
     end
   end

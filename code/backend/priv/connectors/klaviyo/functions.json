@@ -185,6 +185,230 @@
         "campaigns": "list"
       },
       "scopes_required": []
+    },
+    {
+      "args": {
+        "name": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "duplicate",
+        "rate_limited"
+      ],
+      "function_name": "list.create",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "list_id": "string"
+      },
+      "scopes_required": []
+    },
+    {
+      "args": {
+        "list_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "klaviyo.list.find"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "profile_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "klaviyo.profile.find"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "list.add_profile",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "ok": "boolean"
+      },
+      "scopes_required": []
+    },
+    {
+      "args": {
+        "list_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "klaviyo.list.find"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "profile_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "klaviyo.profile.find"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "list.remove_profile",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "ok": "boolean"
+      },
+      "scopes_required": []
+    },
+    {
+      "args": {
+        "limit": {
+          "required": false,
+          "type": "integer"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "segment.find",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "segments": "list"
+      },
+      "scopes_required": []
+    },
+    {
+      "args": {
+        "limit": {
+          "required": false,
+          "type": "integer"
+        },
+        "status": {
+          "required": false,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "flow.find",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "flows": "list"
+      },
+      "scopes_required": []
+    },
+    {
+      "args": {
+        "limit": {
+          "required": false,
+          "type": "integer"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "template.find",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "templates": "list"
+      },
+      "scopes_required": []
+    },
+    {
+      "args": {
+        "limit": {
+          "required": false,
+          "type": "integer"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "metric.find",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "metrics": "list"
+      },
+      "scopes_required": []
+    },
+    {
+      "args": {
+        "limit": {
+          "required": false,
+          "type": "integer"
+        },
+        "metric_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "klaviyo.metric.find"
+          },
+          "required": false,
+          "type": "string"
+        },
+        "profile_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "klaviyo.profile.find"
+          },
+          "required": false,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "event.find",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "events": "list"
+      },
+      "scopes_required": []
     }
   ],
   "vendor_api_version": "2024-10-15"

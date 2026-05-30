@@ -31,12 +31,20 @@ defmodule DmhAi.Connectors.Mock.Fixtures.Klaviyo do
   @spec fixtures() :: %{required(String.t()) => (map() -> map()) | map()}
   def fixtures do
     %{
-      "profile.find"   => &profile_find/1,
-      "profile.create" => &profile_create/1,
-      "profile.update" => &profile_update/1,
-      "event.create"   => &event_create/1,
-      "list.find"      => &list_find/1,
-      "campaign.find"  => &campaign_find/1
+      "profile.find"        => &profile_find/1,
+      "profile.create"      => &profile_create/1,
+      "profile.update"      => &profile_update/1,
+      "event.create"        => &event_create/1,
+      "event.find"          => &event_find/1,
+      "list.find"           => &list_find/1,
+      "list.create"         => &list_create/1,
+      "list.add_profile"    => &list_add_profile/1,
+      "list.remove_profile" => &list_remove_profile/1,
+      "campaign.find"       => &campaign_find/1,
+      "segment.find"        => &segment_find/1,
+      "flow.find"           => &flow_find/1,
+      "template.find"       => &template_find/1,
+      "metric.find"         => &metric_find/1
     }
   end
 
@@ -48,8 +56,14 @@ defmodule DmhAi.Connectors.Mock.Fixtures.Klaviyo do
       profile_id:    "01MOCKPROFILE001",
       profile_email: "klara.beispiel@beispiel-shop-demo.example",
       event_id:      "01MOCKEVENT0001",
+      event_id_2:    "MOCKEVENT002",
       list_id:       "MOCKLIST001",
-      campaign_id:   "01MOCKCAMP00001"
+      list_new_id:   "MOCKLIST002",
+      campaign_id:   "01MOCKCAMP00001",
+      segment_id:    "MOCKSEGMENT001",
+      flow_id:       "MOCKFLOW001",
+      template_id:   "MOCKTEMPLATE001",
+      metric_id:     "MOCKMETRIC001"
     }
   end
 
@@ -111,6 +125,80 @@ defmodule DmhAi.Connectors.Mock.Fixtures.Klaviyo do
           "name"   => "Beispiel-Kampagne Demo",
           "status" => "Draft"
         }
+      ]
+    }
+  end
+
+  defp list_create(_args) do
+    %{list_new_id: id} = sentinels()
+
+    %{"list_id" => id}
+  end
+
+  defp list_add_profile(_args), do: %{"ok" => true}
+
+  defp list_remove_profile(_args), do: %{"ok" => true}
+
+  defp segment_find(_args) do
+    %{segment_id: id} = sentinels()
+
+    %{
+      "segments" => [
+        %{
+          "id"   => id,
+          "name" => "Beispiel-Segment Demo"
+        }
+      ]
+    }
+  end
+
+  defp flow_find(_args) do
+    %{flow_id: id} = sentinels()
+
+    %{
+      "flows" => [
+        %{
+          "id"     => id,
+          "name"   => "Beispiel-Flow Demo",
+          "status" => "live"
+        }
+      ]
+    }
+  end
+
+  defp template_find(_args) do
+    %{template_id: id} = sentinels()
+
+    %{
+      "templates" => [
+        %{
+          "id"   => id,
+          "name" => "Beispiel-Template Demo"
+        }
+      ]
+    }
+  end
+
+  defp metric_find(_args) do
+    %{metric_id: id} = sentinels()
+
+    %{
+      "metrics" => [
+        %{
+          "id"   => id,
+          "name" => "Placed Order"
+        }
+      ]
+    }
+  end
+
+  defp event_find(_args) do
+    %{event_id: id1, event_id_2: id2} = sentinels()
+
+    %{
+      "events" => [
+        %{"id" => id1, "metric" => "Placed Order"},
+        %{"id" => id2, "metric" => "Opened Email"}
       ]
     }
   end
