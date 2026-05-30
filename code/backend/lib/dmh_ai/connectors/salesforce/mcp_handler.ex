@@ -10,17 +10,25 @@ defmodule DmhAi.Connectors.Salesforce.MCPHandler do
   Salesforce REST endpoint at `{instance}.salesforce.com/services/
   data/v60.0/*`:
 
-    lead.find          — GET   /query?q=<SOQL over Lead>
-    lead.create        — POST  /sobjects/Lead
-    contact.find       — GET   /query?q=<SOQL over Contact>
-    contact.create     — POST  /sobjects/Contact
-    account.find       — GET   /query?q=<SOQL over Account>
-    account.create     — POST  /sobjects/Account
-    opportunity.find   — GET   /query?q=<SOQL over Opportunity>
-    opportunity.create — POST  /sobjects/Opportunity
-    opportunity.update — PATCH /sobjects/Opportunity/{id}
-    case.create        — POST  /sobjects/Case
-    task.create        — POST  /sobjects/Task
+    lead.find            — GET   /query?q=<SOQL over Lead>
+    lead.create          — POST  /sobjects/Lead
+    lead.update          — PATCH /sobjects/Lead/{id}
+    contact.find         — GET   /query?q=<SOQL over Contact>
+    contact.create       — POST  /sobjects/Contact
+    account.find         — GET   /query?q=<SOQL over Account>
+    account.create       — POST  /sobjects/Account
+    opportunity.find     — GET   /query?q=<SOQL over Opportunity>
+    opportunity.create   — POST  /sobjects/Opportunity
+    opportunity.update   — PATCH /sobjects/Opportunity/{id}
+    case.find            — GET   /query?q=<SOQL over Case>
+    case.create          — POST  /sobjects/Case
+    case.update          — PATCH /sobjects/Case/{id}
+    task.find            — GET   /query?q=<SOQL over Task>
+    task.create          — POST  /sobjects/Task
+    task.update          — PATCH /sobjects/Task/{id}
+    owner.find_by_email  — GET   /query?q=SELECT … FROM User WHERE Email = …
+    report.run           — GET   /analytics/reports/{report_id}
+    note.create          — POST  /sobjects/Note
 
   Salesforce's read endpoints are a single `/query` resource driven by
   a SOQL string (`?q=SELECT … FROM <Object> …`), not per-object search
@@ -31,16 +39,29 @@ defmodule DmhAi.Connectors.Salesforce.MCPHandler do
 
   Writes POST to `/sobjects/<Type>`; Salesforce answers
   `{"id": ..., "success": true}` which we map to the manifest's
-  declared `<object>_id` key.
+  declared `<object>_id` key. PATCH on a specific sObject returns
+  204 No Content — handler echoes the id.
 
   `{instance}` in `@api_base` is a placeholder — live calls require
   the framework to template the org's `instance_url` before dispatch.
   The mock vendor server answers by function name, not URL, so it is
   exercised without substitution.
 
+  ## Path-param ids
+
+  Functions acting on a specific record interpolate the id into the
+  path via a `:url` function `(args -> url)`. Salesforce ids are
+  alphanumeric (15- or 18-char) but the whitelist allows
+  `[A-Za-z0-9_-]+` for forward-compatibility (`safe_path_id/1`) —
+  no raw interpolation of unvalidated input.
+
+  All SOQL string literals built via `soql_quote/1` (escapes backslash
+  first, then the single quote) — closes the SOQL-injection vector on
+  every `*.find`.
+
   Salesforce uses standard `Authorization: Bearer <token>` auth, which
   `RestBridge` injects from `ctx.bearer_token` for the FunctionSpec
-  path; the custom `opportunity.update` handler adds it explicitly via
+  path; the custom PATCH handlers add it explicitly via
   `with_bearer/2`.
   """
 
@@ -48,6 +69,13 @@ defmodule DmhAi.Connectors.Salesforce.MCPHandler do
   require Logger
 
   @api_base "https://{instance}.salesforce.com/services/data/v60.0"
+
+  # Salesforce object ids are 15- or 18-char alphanumeric. Whitelist
+  # `[A-Za-z0-9_-]+` for forward-compatibility (custom-portal aliases
+  # may include `-` or `_`). Anything else raises — the dispatcher
+  # surfaces it as an error envelope rather than building a URL with
+  # an injected path segment.
+  @path_id_re ~r/^[A-Za-z0-9_-]+$/
 
   @doc """
   Handler entry consumed by `Connectors.MCPServer.Registry.put/1`
@@ -129,6 +157,17 @@ defmodule DmhAi.Connectors.Salesforce.MCPHandler do
         handler: &opportunity_update/2,
         doc:     "Patch Opportunity fields (stage, amount, close_date, …)."
       },
+      "lead.update" => %FunctionSpec{
+        handler: &lead_update/2,
+        doc:     "Patch Lead fields (Status, Company, Email, …)."
+      },
+      "case.find" => %FunctionSpec{
+        method:  :get,
+        url:     "#{@api_base}/query",
+        request: &case_find_request/2,
+        response: &case_find_response/2,
+        doc:     "Search Salesforce Cases via SOQL; filter by status / owner."
+      },
       "case.create" => %FunctionSpec{
         method:  :post,
         url:     "#{@api_base}/sobjects/Case",
@@ -138,6 +177,17 @@ defmodule DmhAi.Connectors.Salesforce.MCPHandler do
                   end,
         doc:     "Open a support Case."
       },
+      "case.update" => %FunctionSpec{
+        handler: &case_update/2,
+        doc:     "Patch Case fields (Status, Priority, OwnerId, …)."
+      },
+      "task.find" => %FunctionSpec{
+        method:  :get,
+        url:     "#{@api_base}/query",
+        request: &task_find_request/2,
+        response: &task_find_response/2,
+        doc:     "Search Salesforce Tasks via SOQL; filter by status / owner / related record."
+      },
       "task.create" => %FunctionSpec{
         method:  :post,
         url:     "#{@api_base}/sobjects/Task",
@@ -146,6 +196,35 @@ defmodule DmhAi.Connectors.Salesforce.MCPHandler do
                     {:ok, %{"task_id" => to_string(Map.get(body, "id"))}}
                   end,
         doc:     "Create a Task activity."
+      },
+      "task.update" => %FunctionSpec{
+        handler: &task_update/2,
+        doc:     "Patch Task fields (Status, Priority, ActivityDate, …)."
+      },
+      "owner.find_by_email" => %FunctionSpec{
+        method:  :get,
+        url:     "#{@api_base}/query",
+        request: &owner_find_by_email_request/2,
+        response: &owner_find_by_email_response/2,
+        doc:     "Resolve a Salesforce User by email — returns the owner record."
+      },
+      "report.run" => %FunctionSpec{
+        method:  :get,
+        url:     &report_run_url/1,
+        request: fn _args, _ctx -> [] end,
+        response: fn s, body when s in 200..299 ->
+                    {:ok, %{"report" => body}}
+                  end,
+        doc:     "Execute a saved Salesforce report by id; returns the raw report body."
+      },
+      "note.create" => %FunctionSpec{
+        method:  :post,
+        url:     "#{@api_base}/sobjects/Note",
+        request: &note_create_request/2,
+        response: fn s, body when s in 200..299 ->
+                    {:ok, %{"note_id" => to_string(Map.get(body, "id"))}}
+                  end,
+        doc:     "Attach a Note to any Salesforce record."
       }
     }
   end
@@ -337,23 +416,59 @@ defmodule DmhAi.Connectors.Salesforce.MCPHandler do
   # ─── opportunity.update — PATCH with dynamic URL ──────────────────────
 
   defp opportunity_update(args, ctx) do
-    patch = args["patch"] || %{}
-    url   = "#{@api_base}/sobjects/Opportunity/#{URI.encode(to_string(args["opportunity_id"]))}"
-    opts  = [url: url, json: patch]
+    patch_sobject("Opportunity", args["opportunity_id"], "opportunity_id", args["patch"], ctx)
+  end
 
-    # Salesforce PATCH on an sObject returns 204 No Content on success
-    # (no body), so we don't read fields back — we echo the id.
-    case RestBridge.raw_request(:patch, with_bearer(opts, ctx)) do
-      {:ok, status, _body} when status in 200..299 ->
-        {:ok, %{"opportunity_id" => to_string(args["opportunity_id"]),
-                "updated" => Map.keys(patch)}}
+  # ─── lead.update — PATCH with dynamic URL ─────────────────────────────
 
-      {:ok, _status, _body} ->
-        {:error, :upstream_other}
+  defp lead_update(args, ctx) do
+    patch_sobject("Lead", args["lead_id"], "lead_id", args["patch"], ctx)
+  end
 
-      {:error, _} = err ->
-        err
+  # ─── case.find — GET SOQL query ───────────────────────────────────────
+
+  defp case_find_request(args, _ctx) do
+    soql =
+      "SELECT Id, Subject, Status, Priority, CreatedDate, OwnerId, AccountId FROM Case" <>
+        case_where(args) <>
+        limit_clause(Map.get(args, "limit"))
+
+    [params: %{"q" => soql}]
+  end
+
+  # Case has no `Name` field, so the free-text predicate runs against
+  # `Subject`. Optional `status` / `owner` filters AND on top.
+  defp case_where(args) do
+    filters =
+      []
+      |> maybe_subject_like(Map.get(args, "query"))
+      |> maybe_filter("Status",     Map.get(args, "status"))
+      |> maybe_owner_name_like(Map.get(args, "owner"))
+
+    case filters do
+      []      -> ""
+      clauses -> " WHERE " <> Enum.join(clauses, " AND ")
     end
+  end
+
+  defp case_find_response(s, body) when s in 200..299 do
+    cases =
+      records(body)
+      |> Enum.map(&normalise_case/1)
+
+    {:ok, %{"cases" => cases}}
+  end
+
+  defp normalise_case(r) do
+    %{
+      "id"           => to_string(record_id(r)),
+      "subject"      => r["Subject"],
+      "status"       => r["Status"],
+      "priority"     => r["Priority"],
+      "created_date" => r["CreatedDate"],
+      "owner_id"     => r["OwnerId"],
+      "account_id"   => r["AccountId"]
+    }
   end
 
   # ─── case.create — POST sObject ───────────────────────────────────────
@@ -368,6 +483,59 @@ defmodule DmhAi.Connectors.Salesforce.MCPHandler do
     [json: body]
   end
 
+  # ─── case.update — PATCH with dynamic URL ─────────────────────────────
+
+  defp case_update(args, ctx) do
+    patch_sobject("Case", args["case_id"], "case_id", args["patch"], ctx)
+  end
+
+  # ─── task.find — GET SOQL query ───────────────────────────────────────
+
+  defp task_find_request(args, _ctx) do
+    soql =
+      "SELECT Id, Subject, Status, Priority, ActivityDate, OwnerId, WhatId FROM Task" <>
+        task_where(args) <>
+        limit_clause(Map.get(args, "limit"))
+
+    [params: %{"q" => soql}]
+  end
+
+  # Task has no free-text `query` arg; filters are explicit fields.
+  # `record_id` matches Salesforce Task.WhatId (the polymorphic link
+  # to a parent Account / Opportunity / Case).
+  defp task_where(args) do
+    filters =
+      []
+      |> maybe_filter("Status",    Map.get(args, "status"))
+      |> maybe_owner_name_like(Map.get(args, "owner"))
+      |> maybe_filter("WhatId",    Map.get(args, "record_id"))
+
+    case filters do
+      []      -> ""
+      clauses -> " WHERE " <> Enum.join(clauses, " AND ")
+    end
+  end
+
+  defp task_find_response(s, body) when s in 200..299 do
+    tasks =
+      records(body)
+      |> Enum.map(&normalise_task/1)
+
+    {:ok, %{"tasks" => tasks}}
+  end
+
+  defp normalise_task(r) do
+    %{
+      "id"            => to_string(record_id(r)),
+      "subject"       => r["Subject"],
+      "status"        => r["Status"],
+      "priority"      => r["Priority"],
+      "activity_date" => r["ActivityDate"],
+      "owner_id"      => r["OwnerId"],
+      "record_id"     => r["WhatId"]
+    }
+  end
+
   # ─── task.create — POST sObject ───────────────────────────────────────
 
   defp task_create_request(args, _ctx) do
@@ -378,6 +546,76 @@ defmodule DmhAi.Connectors.Salesforce.MCPHandler do
       |> maybe_put_kv("WhoId",        Map.get(args, "contact_id"))
 
     [json: body]
+  end
+
+  # ─── task.update — PATCH with dynamic URL ─────────────────────────────
+
+  defp task_update(args, ctx) do
+    patch_sobject("Task", args["task_id"], "task_id", args["patch"], ctx)
+  end
+
+  # ─── owner.find_by_email — GET SOQL over User sObject ────────────────
+
+  defp owner_find_by_email_request(args, _ctx) do
+    email = Map.get(args, "email", "")
+
+    soql =
+      "SELECT Id, Name, Email FROM User WHERE Email = #{soql_quote(email)} LIMIT 1"
+
+    [params: %{"q" => soql}]
+  end
+
+  defp owner_find_by_email_response(s, body) when s in 200..299 do
+    case records(body) |> List.first() do
+      %{} = row ->
+        {:ok, %{"owner" => %{
+                  "Id"    => to_string(record_id(row) || ""),
+                  "Name"  => row["Name"],
+                  "Email" => row["Email"]
+                }}}
+
+      _ ->
+        {:ok, %{"owner" => nil}}
+    end
+  end
+
+  # ─── report.run — GET /analytics/reports/{report_id} ──────────────────
+
+  defp report_run_url(args),
+    do: "#{@api_base}/analytics/reports/#{safe_path_id(args["report_id"])}"
+
+  # ─── note.create — POST /sobjects/Note ────────────────────────────────
+
+  defp note_create_request(args, _ctx) do
+    body = %{
+      "Title"    => args["title"],
+      "Body"     => args["body"],
+      "ParentId" => args["parent_id"]
+    }
+
+    [json: body]
+  end
+
+  # ─── shared PATCH helper ──────────────────────────────────────────────
+
+  # Salesforce PATCH on an sObject (`/sobjects/<Type>/<id>`) returns
+  # 204 No Content on success — body is empty, so we don't read fields
+  # back; we echo the id + the keys that landed in the patch.
+  defp patch_sobject(sobject_type, id, result_key, patch, ctx) do
+    patch = patch || %{}
+    url   = "#{@api_base}/sobjects/#{sobject_type}/#{safe_path_id(id)}"
+    opts  = [url: url, json: patch]
+
+    case RestBridge.raw_request(:patch, with_bearer(opts, ctx)) do
+      {:ok, status, _body} when status in 200..299 ->
+        {:ok, %{result_key => to_string(id), "updated" => Map.keys(patch)}}
+
+      {:ok, _status, _body} ->
+        {:error, :upstream_other}
+
+      {:error, _} = err ->
+        err
+    end
   end
 
   # ─── helpers ──────────────────────────────────────────────────────────
@@ -434,4 +672,36 @@ defmodule DmhAi.Connectors.Salesforce.MCPHandler do
   defp maybe_put_kv(map, _k, nil), do: map
   defp maybe_put_kv(map, _k, ""),  do: map
   defp maybe_put_kv(map, k, v),    do: Map.put(map, k, v)
+
+  # `Subject LIKE '%<q>%'` — free-text predicate for sObjects whose
+  # canonical search field is `Subject` rather than `Name` (Case,
+  # Task). Uses `soql_quote/1` on the full `%…%` literal so the
+  # wildcards stay outside the quoted segment.
+  defp maybe_subject_like(acc, nil), do: acc
+  defp maybe_subject_like(acc, ""),  do: acc
+  defp maybe_subject_like(acc, q),
+    do: acc ++ ["Subject LIKE #{soql_quote("%" <> q <> "%")}"]
+
+  # `Owner.Name LIKE '%<owner>%'` — partial match on the related
+  # User's Name, since the connector's `owner` filter is a person
+  # name, not an OwnerId. Same quoting rule as `maybe_subject_like`.
+  defp maybe_owner_name_like(acc, nil), do: acc
+  defp maybe_owner_name_like(acc, ""),  do: acc
+  defp maybe_owner_name_like(acc, owner),
+    do: acc ++ ["Owner.Name LIKE #{soql_quote("%" <> owner <> "%")}"]
+
+  # Whitelist a path-param id to Salesforce's id charset (15- or
+  # 18-char alphanumeric, with `_-` allowed for custom-portal aliases)
+  # before interpolating into a URL path. A value that doesn't match
+  # raises — the dispatcher surfaces it as an error envelope rather
+  # than building a URL with an injected path segment.
+  defp safe_path_id(id) do
+    str = to_string(id)
+
+    if Regex.match?(@path_id_re, str) do
+      str
+    else
+      raise ArgumentError, "invalid salesforce id: #{inspect(id)}"
+    end
+  end
 end

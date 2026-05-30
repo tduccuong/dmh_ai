@@ -51,11 +51,12 @@ defmodule DmhAi.P03SalesforceTest do
       assert :ok = Manifest.validate(Salesforce.manifest())
     end
 
-    test "declares 11 functions at the Primitive 0.3 surface" do
+    test "declares 19 functions at the Primitive 0.3 surface" do
       functions = Salesforce.manifest().functions
 
       assert Map.has_key?(functions, "lead.find")
       assert Map.has_key?(functions, "lead.create")
+      assert Map.has_key?(functions, "lead.update")
       assert Map.has_key?(functions, "contact.find")
       assert Map.has_key?(functions, "contact.create")
       assert Map.has_key?(functions, "account.find")
@@ -63,8 +64,21 @@ defmodule DmhAi.P03SalesforceTest do
       assert Map.has_key?(functions, "opportunity.find")
       assert Map.has_key?(functions, "opportunity.create")
       assert Map.has_key?(functions, "opportunity.update")
+      assert Map.has_key?(functions, "case.find")
       assert Map.has_key?(functions, "case.create")
+      assert Map.has_key?(functions, "case.update")
+      assert Map.has_key?(functions, "task.find")
       assert Map.has_key?(functions, "task.create")
+      assert Map.has_key?(functions, "task.update")
+      assert Map.has_key?(functions, "owner.find_by_email")
+      assert Map.has_key?(functions, "report.run")
+      assert Map.has_key?(functions, "note.create")
+    end
+
+    test "identity_lookup/0 resolves to owner.find_by_email" do
+      assert %{function: "salesforce.owner.find_by_email",
+               by_arg: :email,
+               emit_field: "Id"} = Salesforce.identity_lookup()
     end
 
     test "every write function is `callable_from: [:task]` (HARD Rule 2)" do
@@ -218,6 +232,39 @@ defmodule DmhAi.P03SalesforceTest do
       assert {:error, %{error: "duplicate"}} =
                Dispatcher.call("salesforce.contact.create",
                                %{"last_name" => "Beispiel", "email" => "existing@beispiel.de"},
+                               ctx)
+    end
+
+    test "case.find (read) from free chat returns the stubbed result list",
+         %{admin_id: admin_id} do
+      Application.put_env(:dmh_ai, :__mcp_caller_stub__, fn "salesforce", "case.find", args, _creds ->
+        assert args["query"] == "Lieferung"
+        {:ok, %{"cases" => [%{"id" => "500MOCKCASE01",
+                              "subject" => "Verspätete Lieferung Rahmenvertrag",
+                              "status" => "Working"}]}}
+      end)
+
+      assert {:ok, %{"cases" => [%{"id" => "500MOCKCASE01"}]}} =
+               Dispatcher.call("salesforce.case.find",
+                               %{"query" => "Lieferung"},
+                               %{user_id: admin_id})
+    end
+
+    test "case.update (write) inside an active task carries the injected idempotency_key",
+         %{admin_id: admin_id} do
+      Application.put_env(:dmh_ai, :__mcp_caller_stub__, fn "salesforce", "case.update", args, _creds ->
+        assert is_binary(args["__idempotency_key"]),
+               "writes must carry idempotency_key injected by Dispatcher"
+        assert args["case_id"] == "500MOCKCASE01"
+        {:ok, %{"case_id" => "500MOCKCASE01", "updated" => ["Status"]}}
+      end)
+
+      ctx = %{user_id: admin_id, task_id: "t-update-case", step_seq: 0}
+
+      assert {:ok, %{"case_id" => "500MOCKCASE01"}} =
+               Dispatcher.call("salesforce.case.update",
+                               %{"case_id" => "500MOCKCASE01",
+                                 "patch"   => %{"Status" => "Closed"}},
                                ctx)
     end
   end

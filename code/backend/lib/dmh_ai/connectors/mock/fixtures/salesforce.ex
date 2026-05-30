@@ -23,17 +23,25 @@ defmodule DmhAi.Connectors.Mock.Fixtures.Salesforce do
   @spec fixtures() :: %{required(String.t()) => (map() -> map()) | map()}
   def fixtures do
     %{
-      "lead.find"          => &lead_find/1,
-      "lead.create"        => &lead_create/1,
-      "contact.find"       => &contact_find/1,
-      "contact.create"     => &contact_create/1,
-      "account.find"       => &account_find/1,
-      "account.create"     => &account_create/1,
-      "opportunity.find"   => &opportunity_find/1,
-      "opportunity.create" => &opportunity_create/1,
-      "opportunity.update" => &opportunity_update/1,
-      "case.create"        => &case_create/1,
-      "task.create"        => &task_create/1
+      "lead.find"           => &lead_find/1,
+      "lead.create"         => &lead_create/1,
+      "lead.update"         => &lead_update/1,
+      "contact.find"        => &contact_find/1,
+      "contact.create"      => &contact_create/1,
+      "account.find"        => &account_find/1,
+      "account.create"      => &account_create/1,
+      "opportunity.find"    => &opportunity_find/1,
+      "opportunity.create"  => &opportunity_create/1,
+      "opportunity.update"  => &opportunity_update/1,
+      "case.find"           => &case_find/1,
+      "case.create"         => &case_create/1,
+      "case.update"         => &case_update/1,
+      "task.find"           => &task_find/1,
+      "task.create"         => &task_create/1,
+      "task.update"         => &task_update/1,
+      "owner.find_by_email" => &owner_find_by_email/1,
+      "report.run"          => &report_run/1,
+      "note.create"         => &note_create/1
     }
   end
 
@@ -51,8 +59,16 @@ defmodule DmhAi.Connectors.Mock.Fixtures.Salesforce do
       account_id:      "001MOCKACCT00001",
       opportunity_name: "Beispiel Rahmenvertrag 2026",
       opportunity_id:  "006MOCKOPP000001",
-      case_id:         "500MOCKCASE00001",
-      task_id:         "00TMOCKTASK00001"
+      case_id:         "500MOCKCASE01",
+      case_subject:    "Verspätete Lieferung Rahmenvertrag",
+      task_id:         "00TMOCKTASK01",
+      task_subject:    "Rückruf Beispiel Vertrieb GmbH",
+      note_id:         "002MOCKNOTE01",
+      report_id:       "00OMOCKREPRT0",
+      report_name:     "Quartalsumsatz DACH KMU",
+      owner_id:        "005MOCKUSER01",
+      owner_name:      "Anna Beispielvertrieb",
+      owner_email:     "owner.mock@example.de"
     }
   end
 
@@ -160,6 +176,24 @@ defmodule DmhAi.Connectors.Mock.Fixtures.Salesforce do
     }
   end
 
+  defp case_find(_args) do
+    %{case_id: id, case_subject: subject, account_id: acct, owner_id: owner} = sentinels()
+
+    %{
+      "cases" => [
+        %{
+          "id"           => id,
+          "subject"      => subject,
+          "status"       => "Working",
+          "priority"     => "High",
+          "created_date" => "2026-05-10T08:30:00.000+0000",
+          "owner_id"     => owner,
+          "account_id"   => acct
+        }
+      ]
+    }
+  end
+
   defp case_create(_args) do
     %{case_id: id} = sentinels()
 
@@ -168,11 +202,90 @@ defmodule DmhAi.Connectors.Mock.Fixtures.Salesforce do
     }
   end
 
+  defp case_update(args) do
+    %{
+      "case_id" => Map.get(args, "case_id"),
+      "updated" => Map.keys(Map.get(args, "patch") || %{})
+    }
+  end
+
+  defp lead_update(args) do
+    %{
+      "lead_id" => Map.get(args, "lead_id"),
+      "updated" => Map.keys(Map.get(args, "patch") || %{})
+    }
+  end
+
+  defp task_find(_args) do
+    %{task_id: id, task_subject: subject, owner_id: owner, opportunity_id: parent} = sentinels()
+
+    %{
+      "tasks" => [
+        %{
+          "id"            => id,
+          "subject"       => subject,
+          "status"        => "Not Started",
+          "priority"      => "Normal",
+          "activity_date" => "2026-06-03",
+          "owner_id"      => owner,
+          "record_id"     => parent
+        }
+      ]
+    }
+  end
+
   defp task_create(_args) do
     %{task_id: id} = sentinels()
 
     %{
       "task_id" => id <> "_" <> Integer.to_string(:erlang.unique_integer([:positive]))
+    }
+  end
+
+  defp task_update(args) do
+    %{
+      "task_id" => Map.get(args, "task_id"),
+      "updated" => Map.keys(Map.get(args, "patch") || %{})
+    }
+  end
+
+  defp owner_find_by_email(args) do
+    %{owner_id: id, owner_name: name, owner_email: default_email} = sentinels()
+
+    %{
+      "owner" => %{
+        "Id"    => id,
+        "Name"  => name,
+        "Email" => Map.get(args, "email") || default_email
+      }
+    }
+  end
+
+  defp report_run(_args) do
+    %{report_id: id, report_name: name} = sentinels()
+
+    %{
+      "report" => %{
+        "attributes" => %{
+          "type" => "Report",
+          "reportId" => id,
+          "reportName" => name
+        },
+        "factMap" => %{
+          "T!T" => %{
+            "aggregates" => [%{"label" => "149.700,00 €", "value" => 149_700}],
+            "rows" => []
+          }
+        }
+      }
+    }
+  end
+
+  defp note_create(_args) do
+    %{note_id: id} = sentinels()
+
+    %{
+      "note_id" => id <> "_" <> Integer.to_string(:erlang.unique_integer([:positive]))
     }
   end
 end

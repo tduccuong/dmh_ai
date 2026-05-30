@@ -7,26 +7,35 @@ defmodule DmhAi.Connectors.Salesforce do
   @moduledoc """
   Salesforce connector (Universal Region, Case B — vendor MCP).
 
-  Eleven functions at the SME-relevant slice of Salesforce's REST API
-  (developer.salesforce.com/docs/atlas.en-us.api_rest.meta) — leads,
-  contacts, accounts, opportunities, cases, tasks:
+  Nineteen functions at the SME-relevant slice of Salesforce's REST
+  API (developer.salesforce.com/docs/atlas.en-us.api_rest.meta) —
+  leads, contacts, accounts, opportunities, cases, tasks, owners,
+  reports, notes:
 
-    lead.find          [read]   SOQL search over Lead
-    lead.create        [write]  create a Lead
-    contact.find       [read]   SOQL search over Contact
-    contact.create     [write]  create a Contact (optionally on an Account)
-    account.find       [read]   SOQL search over Account
-    account.create     [write]  create an Account
-    opportunity.find   [read]   SOQL search over Opportunity
-    opportunity.create [write]  open an Opportunity
-    opportunity.update [write]  PATCH an existing Opportunity
-    case.create        [write]  open a support Case
-    task.create        [write]  create a Task activity
+    lead.find            [read]   SOQL search over Lead
+    lead.create          [write]  create a Lead
+    lead.update          [write]  PATCH an existing Lead
+    contact.find         [read]   SOQL search over Contact
+    contact.create       [write]  create a Contact (optionally on an Account)
+    account.find         [read]   SOQL search over Account
+    account.create       [write]  create an Account
+    opportunity.find     [read]   SOQL search over Opportunity
+    opportunity.create   [write]  open an Opportunity
+    opportunity.update   [write]  PATCH an existing Opportunity
+    case.find            [read]   SOQL search over Case
+    case.create          [write]  open a support Case
+    case.update          [write]  PATCH an existing Case
+    task.find            [read]   SOQL search over Task
+    task.create          [write]  create a Task activity
+    task.update          [write]  PATCH an existing Task
+    owner.find_by_email  [read]   resolve a Salesforce User by email
+    report.run           [read]   execute a saved report by id
+    note.create          [write]  attach a Note to any record
 
-  Six capability groups (leads / contacts / accounts / opportunities
-  / service / tasks) so admins can scope per-org — a service-desk org
-  might tick contacts + service, while a sales org enables leads +
-  accounts + opportunities.
+  Nine capability groups (leads / contacts / accounts / opportunities
+  / service / tasks / owners / reports / notes) so admins can scope
+  per-org — a service-desk org might tick contacts + service + notes,
+  while a sales org enables leads + accounts + opportunities + reports.
 
   ## Coarse OAuth scopes
 
@@ -45,6 +54,9 @@ defmodule DmhAi.Connectors.Salesforce do
   rate-limit signal is `REQUEST_LIMIT_EXCEEDED`. Map them to the
   canonical `:duplicate` / `:rate_limited` so recipes / tasks branch
   deterministically rather than parsing the upstream string.
+
+  Lead conversion (`convertLead`) is SOAP-only on Salesforce —
+  deferred from this REST connector.
   """
 
   use DmhAi.Connectors.MCPAdapter
@@ -307,6 +319,43 @@ defmodule DmhAi.Connectors.Salesforce do
           scopes:  ["api"]
         },
 
+        # vendor: PATCH /sobjects/Lead/{id}
+        # Free-form `patch` map of Salesforce Lead fields → values;
+        # the shim does not enumerate or validate field names so any
+        # field (standard or custom) passes through.
+        "lead.update" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "lead_id" => %{type: :string, required: true,
+                           provenance: %{kind: :lookup,
+                                         source: "salesforce.lead.find"}},
+            "patch"   => %{type: :map,    required: true,
+                           provenance: %{kind: :literal_default}}
+          },
+          returns: %{lead_id: :string},
+          errors:  [:unauthorised, :not_found, :rate_limited],
+          scopes:  ["api"]
+        },
+
+        # vendor: GET /query?q=<SOQL over Case>
+        # Optional `status` / `owner` filters ride along as AND
+        # clauses on top of the free-text subject LIKE.
+        "case.find" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "query"  => %{type: :string,  required: true,
+                          provenance: %{kind: :literal_default}},
+            "status" => %{type: :string,  required: false},
+            "owner"  => %{type: :string,  required: false},
+            "limit"  => %{type: :integer, required: false}
+          },
+          returns: %{cases: :list},
+          scopes:  ["api"]
+        },
+
         # vendor: POST /sobjects/Case
         "case.create" => %Function{
           permission:      :write,
@@ -326,6 +375,42 @@ defmodule DmhAi.Connectors.Salesforce do
           scopes:  ["api"]
         },
 
+        # vendor: PATCH /sobjects/Case/{id}
+        # Free-form `patch` map of Case fields → values (Status,
+        # Priority, OwnerId, Description, …). Salesforce PATCH returns
+        # 204 No Content; the response handler echoes the id.
+        "case.update" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "case_id" => %{type: :string, required: true,
+                           provenance: %{kind: :lookup,
+                                         source: "salesforce.case.find"}},
+            "patch"   => %{type: :map,    required: true,
+                           provenance: %{kind: :literal_default}}
+          },
+          returns: %{case_id: :string},
+          errors:  [:unauthorised, :not_found, :rate_limited],
+          scopes:  ["api"]
+        },
+
+        # vendor: GET /query?q=<SOQL over Task>
+        # `record_id` filters by Task.WhatId — the Salesforce link to
+        # the related parent record (Account / Opportunity / Case).
+        "task.find" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "status"    => %{type: :string,  required: false},
+            "owner"     => %{type: :string,  required: false},
+            "record_id" => %{type: :string,  required: false},
+            "limit"     => %{type: :integer, required: false}
+          },
+          returns: %{tasks: :list},
+          scopes:  ["api"]
+        },
+
         # vendor: POST /sobjects/Task
         "task.create" => %Function{
           permission:      :write,
@@ -341,18 +426,91 @@ defmodule DmhAi.Connectors.Salesforce do
           returns: %{task_id: :string},
           errors:  [:unauthorised, :rate_limited],
           scopes:  ["api"]
+        },
+
+        # vendor: PATCH /sobjects/Task/{id}
+        # Free-form `patch` map of Task fields → values (Status,
+        # Priority, ActivityDate, OwnerId, …).
+        "task.update" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "task_id" => %{type: :string, required: true,
+                           provenance: %{kind: :lookup,
+                                         source: "salesforce.task.find"}},
+            "patch"   => %{type: :map,    required: true,
+                           provenance: %{kind: :literal_default}}
+          },
+          returns: %{task_id: :string},
+          errors:  [:unauthorised, :not_found, :rate_limited],
+          scopes:  ["api"]
+        },
+
+        # vendor: GET /query?q=SELECT Id, Name, Email FROM User WHERE Email = '<email>' LIMIT 1
+        # Salesforce surfaces user records via SOQL over the User
+        # sObject; matching on Email is the canonical mapping from a
+        # person email → the `OwnerId` field referenced on every owned
+        # record. Returns a single owner map (or `nil` when not found).
+        "owner.find_by_email" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "email" => %{type: :string, required: true, format: :email,
+                         provenance: %{kind: :from_user}}
+          },
+          returns: %{owner: :map},
+          scopes:  ["api"]
+        },
+
+        # vendor: GET /analytics/reports/{report_id}
+        # Salesforce Analytics REST: runs a saved report and returns
+        # the report shape (factMap / groupingsAcross / groupingsDown
+        # / reportMetadata). The shim returns the raw body as `report`
+        # so the model can read whichever section it needs.
+        "report.run" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "report_id" => %{type: :string, required: true,
+                             provenance: %{kind: :from_user}}
+          },
+          returns: %{report: :map},
+          scopes:  ["api"]
+        },
+
+        # vendor: POST /sobjects/Note
+        # Uses the legacy `Note` object (Title + Body + ParentId).
+        # ContentNote is richer but requires the Files API for body
+        # upload; Note keeps the create-in-one-call contract simple.
+        "note.create" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "parent_id" => %{type: :string, required: true,
+                             provenance: %{kind: :from_user}},
+            "title"     => %{type: :string, required: true,
+                             provenance: %{kind: :literal_default}},
+            "body"      => %{type: :string, required: true,
+                             provenance: %{kind: :literal_default}}
+          },
+          returns: %{note_id: :string},
+          errors:  [:unauthorised, :rate_limited],
+          scopes:  ["api"]
         }
       }
     }
   end
 
   @impl true
-  # Salesforce exposes SOQL over Contact/User keyed by email, but a
-  # dedicated identity-pivot function is not yet in this manifest.
-  # Fix: add `contact.find_by_email` and switch this to:
-  #   %{function: "salesforce.contact.find_by_email",
-  #     by_arg: :email, emit_field: "id"}
-  def identity_lookup, do: nil
+  # Salesforce exposes SOQL over the User sObject keyed by email,
+  # surfaced as `owner.find_by_email`. The dispatcher invokes this
+  # when a downstream function needs to resolve a person → owner id
+  # (the OwnerId field on every owned record); `emit_field: "Id"`
+  # pulls the Salesforce 18-char id out of the response row.
+  def identity_lookup,
+    do: %{function: "salesforce.owner.find_by_email", by_arg: :email, emit_field: "Id"}
 
   @impl true
   # Salesforce REST error body is a JSON array of
@@ -482,13 +640,14 @@ defmodule DmhAi.Connectors.Salesforce do
   def mcp_handler_module, do: DmhAi.Connectors.Salesforce.MCPHandler
 
   @doc """
-  Capability groups admin curates via External Connectors. Six
+  Capability groups admin curates via External Connectors. Nine
   domain groups go live — leads / contacts / accounts / opportunities
-  / service / tasks — so a service-desk org can expose contacts +
-  service and skip the sales pipeline, while a sales org enables
-  leads + accounts + opportunities. The three enforcement layers
-  (OAuth scope filter, tool catalog filter, dispatcher gate) all read
-  from `enabled_capabilities`.
+  / service / tasks / owners / reports / notes — so a service-desk
+  org can expose contacts + service + notes and skip the sales
+  pipeline, while a sales org enables leads + accounts + opportunities
+  + reports. The three enforcement layers (OAuth scope filter, tool
+  catalog filter, dispatcher gate) all read from
+  `enabled_capabilities`.
 
   Every group's `scopes` is `["api"]` — Salesforce OAuth has no
   per-object scope; the groups exist for admin curation, not OAuth
@@ -500,9 +659,9 @@ defmodule DmhAi.Connectors.Salesforce do
       %{
         id:           "leads",
         display_name: "Leads",
-        description:  "Search and create Leads.",
+        description:  "Search, create, and update Leads.",
         scopes:       ["api"],
-        functions:    ["lead.find", "lead.create"],
+        functions:    ["lead.find", "lead.create", "lead.update"],
         vendor_prereq: %{
           label:      "Salesforce Connected App (API access)",
           enable_url: "https://help.salesforce.com/s/articleView?id=sf.connected_app_overview.htm"
@@ -544,9 +703,9 @@ defmodule DmhAi.Connectors.Salesforce do
       %{
         id:           "service",
         display_name: "Service",
-        description:  "Open support Cases.",
+        description:  "Find, open, and update support Cases.",
         scopes:       ["api"],
-        functions:    ["case.create"],
+        functions:    ["case.find", "case.create", "case.update"],
         vendor_prereq: %{
           label:      "Salesforce Connected App (API access)",
           enable_url: "https://help.salesforce.com/s/articleView?id=sf.connected_app_overview.htm"
@@ -555,9 +714,42 @@ defmodule DmhAi.Connectors.Salesforce do
       %{
         id:           "tasks",
         display_name: "Tasks",
-        description:  "Create Task activities.",
+        description:  "Find, create, and update Task activities.",
         scopes:       ["api"],
-        functions:    ["task.create"],
+        functions:    ["task.find", "task.create", "task.update"],
+        vendor_prereq: %{
+          label:      "Salesforce Connected App (API access)",
+          enable_url: "https://help.salesforce.com/s/articleView?id=sf.connected_app_overview.htm"
+        }
+      },
+      %{
+        id:           "owners",
+        display_name: "Owners",
+        description:  "Resolve a Salesforce User by email — used as a sub-step before assigning records.",
+        scopes:       ["api"],
+        functions:    ["owner.find_by_email"],
+        vendor_prereq: %{
+          label:      "Salesforce Connected App (API access)",
+          enable_url: "https://help.salesforce.com/s/articleView?id=sf.connected_app_overview.htm"
+        }
+      },
+      %{
+        id:           "reports",
+        display_name: "Reports",
+        description:  "Execute saved Salesforce reports.",
+        scopes:       ["api"],
+        functions:    ["report.run"],
+        vendor_prereq: %{
+          label:      "Salesforce Connected App (API access)",
+          enable_url: "https://help.salesforce.com/s/articleView?id=sf.connected_app_overview.htm"
+        }
+      },
+      %{
+        id:           "notes",
+        display_name: "Notes",
+        description:  "Attach Notes to any Salesforce record.",
+        scopes:       ["api"],
+        functions:    ["note.create"],
         vendor_prereq: %{
           label:      "Salesforce Connected App (API access)",
           enable_url: "https://help.salesforce.com/s/articleView?id=sf.connected_app_overview.htm"
