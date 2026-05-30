@@ -101,6 +101,105 @@
     },
     {
       "args": {
+        "email": {
+          "format": "email",
+          "provenance": {
+            "kind": "lookup",
+            "source": "brevo.contact.find"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "contact.delete",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "ok": "boolean"
+      },
+      "scopes_required": []
+    },
+    {
+      "args": {
+        "emails": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "list"
+        },
+        "list_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "brevo.list.find"
+          },
+          "required": true,
+          "type": "integer"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "contact.add_to_list",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "contacts_added": "integer"
+      },
+      "scopes_required": []
+    },
+    {
+      "args": {
+        "emails": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "list"
+        },
+        "list_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "brevo.list.find"
+          },
+          "required": true,
+          "type": "integer"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "contact.remove_from_list",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "contacts_removed": "integer"
+      },
+      "scopes_required": []
+    },
+    {
+      "args": {
         "html_content": {
           "required": false,
           "type": "string"
@@ -136,6 +235,47 @@
         "rate_limited"
       ],
       "function_name": "email.send",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "message_id": "string"
+      },
+      "scopes_required": []
+    },
+    {
+      "args": {
+        "params": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": false,
+          "type": "map"
+        },
+        "template_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "brevo.template.find"
+          },
+          "required": true,
+          "type": "integer"
+        },
+        "to": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "list"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "rate_limited"
+      ],
+      "function_name": "email.send_template",
       "idempotency_key": "required",
       "permission": "write",
       "poll_trigger_capable": false,
@@ -193,6 +333,138 @@
       "poll_trigger_capable": false,
       "returns": {
         "list_id": "integer"
+      },
+      "scopes_required": []
+    },
+    {
+      "args": {
+        "limit": {
+          "required": false,
+          "type": "integer"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "template.find",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "templates": "list"
+      },
+      "scopes_required": []
+    },
+    {
+      "args": {
+        "limit": {
+          "required": false,
+          "type": "integer"
+        },
+        "status": {
+          "required": false,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "campaign.find",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "campaigns": "list"
+      },
+      "scopes_required": []
+    },
+    {
+      "args": {
+        "html_content": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "name": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "recipients_list_ids": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "list"
+        },
+        "sender_email": {
+          "format": "email",
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "subject": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "duplicate",
+        "rate_limited"
+      ],
+      "function_name": "campaign.create",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "campaign_id": "integer"
+      },
+      "scopes_required": []
+    },
+    {
+      "args": {
+        "email": {
+          "format": "email",
+          "required": false,
+          "type": "string"
+        },
+        "event": {
+          "required": false,
+          "type": "string"
+        },
+        "limit": {
+          "required": false,
+          "type": "integer"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "transactional.event.find",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "events": "list"
       },
       "scopes_required": []
     }

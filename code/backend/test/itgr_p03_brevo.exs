@@ -61,15 +61,27 @@ defmodule DmhAi.P03BrevoTest do
       assert BrevoConn.manifest().region == "universal"
     end
 
-    test "declares 6 functions across contact/email/list" do
+    test "declares 14 functions across contact/email/list/template/campaign/event" do
       functions = BrevoConn.manifest().functions
-      assert map_size(functions) == 6
+      assert map_size(functions) == 14
+
+      # Original 6
       assert Map.has_key?(functions, "contact.find")
       assert Map.has_key?(functions, "contact.create")
       assert Map.has_key?(functions, "contact.update")
       assert Map.has_key?(functions, "email.send")
       assert Map.has_key?(functions, "list.find")
       assert Map.has_key?(functions, "list.create")
+
+      # +8 from the Brevo expansion
+      assert Map.has_key?(functions, "contact.delete")
+      assert Map.has_key?(functions, "contact.add_to_list")
+      assert Map.has_key?(functions, "contact.remove_from_list")
+      assert Map.has_key?(functions, "email.send_template")
+      assert Map.has_key?(functions, "template.find")
+      assert Map.has_key?(functions, "campaign.find")
+      assert Map.has_key?(functions, "campaign.create")
+      assert Map.has_key?(functions, "transactional.event.find")
     end
 
     test "every write is callable_from: [:task] with idempotency_key required" do
@@ -241,6 +253,41 @@ defmodule DmhAi.P03BrevoTest do
       assert {:error, %{error: "duplicate"}} =
                Dispatcher.call("brevo.contact.create",
                                %{"email" => "x@y.test"},
+                               %{user_id: admin_id, session_id: "s-1", step_seq: "step-1"})
+    end
+
+    test "read function (template.find) from free chat returns the inner templates list",
+         %{admin_id: admin_id} do
+      Application.put_env(:dmh_ai, :__mcp_caller_stub__,
+        fn "brevo", "template.find", args, _creds ->
+          assert args["limit"] == 25
+
+          {:ok,
+           %{"templates" => [%{"id" => 200_001, "name" => "Beispiel-Template Demo"}]}}
+        end)
+
+      assert {:ok, %{"templates" => [%{"id" => 200_001}]}} =
+               Dispatcher.call("brevo.template.find",
+                               %{"limit" => 25},
+                               %{user_id: admin_id})
+    end
+
+    test "write function (contact.add_to_list) in-task carries injected idempotency_key",
+         %{admin_id: admin_id} do
+      Application.put_env(:dmh_ai, :__mcp_caller_stub__,
+        fn "brevo", "contact.add_to_list", args, _creds ->
+          assert is_binary(args["__idempotency_key"]),
+                 "writes must carry idempotency_key injected by Dispatcher"
+          assert args["list_id"] == 90_001
+          assert args["emails"] == ["x@y.test", "z@y.test"]
+
+          {:ok, %{"contacts_added" => 2}}
+        end)
+
+      assert {:ok, %{"contacts_added" => 2}} =
+               Dispatcher.call("brevo.contact.add_to_list",
+                               %{"list_id" => 90_001,
+                                 "emails"  => ["x@y.test", "z@y.test"]},
                                %{user_id: admin_id, session_id: "s-1", step_seq: "step-1"})
     end
   end
