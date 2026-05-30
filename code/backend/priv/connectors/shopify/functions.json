@@ -313,6 +313,320 @@
       "scopes_required": [
         "write_products"
       ]
+    },
+    {
+      "args": {
+        "product_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "shopify.product.find"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "product.delete",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "ok": "boolean"
+      },
+      "scopes_required": [
+        "write_products"
+      ]
+    },
+    {
+      "args": {
+        "order_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "shopify.order.find"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "reason": {
+          "provenance": {
+            "kind": "literal_default",
+            "value": "customer"
+          },
+          "required": false,
+          "type": "string"
+        },
+        "email_customer": {
+          "required": false,
+          "type": "boolean"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "order.cancel",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "order_id": "string"
+      },
+      "scopes_required": [
+        "write_orders"
+      ]
+    },
+    {
+      "args": {
+        "order_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "shopify.order.find"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "amount": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "currency": {
+          "provenance": {
+            "kind": "literal_default",
+            "value": "EUR"
+          },
+          "required": false,
+          "type": "string"
+        },
+        "note": {
+          "required": false,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "order.refund",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "refund_id": "string"
+      },
+      "scopes_required": [
+        "write_orders"
+      ]
+    },
+    {
+      "args": {
+        "available": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "integer"
+        },
+        "inventory_item_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "shopify.product.find"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "location_id": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "inventory.set_level",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "inventory_level": "map"
+      },
+      "scopes_required": [
+        "write_inventory"
+      ]
+    },
+    {
+      "args": {
+        "customer_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "shopify.customer.find"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "patch": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "map"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "duplicate",
+        "rate_limited"
+      ],
+      "function_name": "customer.update",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "customer_id": "string"
+      },
+      "scopes_required": [
+        "write_customers"
+      ]
+    },
+    {
+      "args": {
+        "code": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "value_type": {
+          "provenance": {
+            "kind": "literal_default",
+            "value": "percentage"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "value": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "starts_at": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": false,
+          "type": "string"
+        },
+        "ends_at": {
+          "required": false,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "duplicate",
+        "rate_limited"
+      ],
+      "function_name": "discount.create",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "discount_code_id": "string",
+        "price_rule_id": "string"
+      },
+      "scopes_required": [
+        "write_price_rules",
+        "write_discounts"
+      ]
+    },
+    {
+      "args": {
+        "since_id": {
+          "required": false,
+          "type": "string"
+        },
+        "limit": {
+          "required": false,
+          "type": "integer"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "abandoned_checkout.find",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "checkouts": "list"
+      },
+      "scopes_required": [
+        "read_checkouts"
+      ]
+    },
+    {
+      "args": {
+        "order_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "shopify.order.find"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "transaction.find",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "transactions": "list"
+      },
+      "scopes_required": [
+        "read_orders"
+      ]
     }
   ],
   "vendor_api_version": "2024-01"

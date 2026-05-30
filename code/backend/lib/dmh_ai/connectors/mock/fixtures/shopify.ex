@@ -23,15 +23,23 @@ defmodule DmhAi.Connectors.Mock.Fixtures.Shopify do
   @spec fixtures() :: %{required(String.t()) => (map() -> map()) | map()}
   def fixtures do
     %{
-      "product.find"       => &product_find/1,
-      "product.create"     => &product_create/1,
-      "product.update"     => &product_update/1,
-      "order.find"         => &order_find/1,
-      "order.fulfill"      => &order_fulfill/1,
-      "customer.find"      => &customer_find/1,
-      "customer.create"    => &customer_create/1,
-      "inventory.adjust"   => &inventory_adjust/1,
-      "draft_order.create" => &draft_order_create/1
+      "product.find"            => &product_find/1,
+      "product.create"          => &product_create/1,
+      "product.update"          => &product_update/1,
+      "product.delete"          => &product_delete/1,
+      "order.find"              => &order_find/1,
+      "order.fulfill"           => &order_fulfill/1,
+      "order.cancel"            => &order_cancel/1,
+      "order.refund"            => &order_refund/1,
+      "transaction.find"        => &transaction_find/1,
+      "customer.find"           => &customer_find/1,
+      "customer.create"         => &customer_create/1,
+      "customer.update"         => &customer_update/1,
+      "inventory.adjust"        => &inventory_adjust/1,
+      "inventory.set_level"     => &inventory_set_level/1,
+      "draft_order.create"      => &draft_order_create/1,
+      "discount.create"         => &discount_create/1,
+      "abandoned_checkout.find" => &abandoned_checkout_find/1
     }
   end
 
@@ -51,7 +59,12 @@ defmodule DmhAi.Connectors.Mock.Fixtures.Shopify do
       customer_id:      "shopify_customer_mock_004",
       inventory_item_id: "shopify_invitem_mock_005",
       location_id:      "shopify_location_mock_006",
-      draft_order_id:   "shopify_draftorder_mock_007"
+      draft_order_id:   "shopify_draftorder_mock_007",
+      refund_id:        "shopify_refund_mock_008",
+      transaction_id:   "shopify_transaction_mock_009",
+      checkout_id:      "shopify_checkout_mock_010",
+      price_rule_id:    "shopify_pricerule_mock_011",
+      discount_code_id: "shopify_discountcode_mock_012"
     }
   end
 
@@ -152,6 +165,86 @@ defmodule DmhAi.Connectors.Mock.Fixtures.Shopify do
 
     %{
       "draft_order_id" => id <> "_" <> Integer.to_string(:erlang.unique_integer([:positive]))
+    }
+  end
+
+  defp product_delete(_args) do
+    %{"ok" => true}
+  end
+
+  defp order_cancel(args) do
+    %{order_id: id} = sentinels()
+    %{"order_id" => Map.get(args, "order_id", id)}
+  end
+
+  defp order_refund(_args) do
+    %{refund_id: id} = sentinels()
+
+    %{
+      "refund_id" => id <> "_" <> Integer.to_string(:erlang.unique_integer([:positive]))
+    }
+  end
+
+  defp transaction_find(args) do
+    %{transaction_id: tid, order_id: oid} = sentinels()
+
+    %{
+      "transactions" => [
+        %{
+          "id"       => tid,
+          "order_id" => Map.get(args, "order_id", oid),
+          "kind"     => "sale",
+          "status"   => "success",
+          "amount"   => "49.90",
+          "currency" => "EUR",
+          "gateway"  => "manual"
+        }
+      ]
+    }
+  end
+
+  defp customer_update(args) do
+    %{
+      "customer_id" => Map.get(args, "customer_id"),
+      "updated"     => Map.keys(Map.get(args, "patch") || %{})
+    }
+  end
+
+  defp inventory_set_level(args) do
+    %{location_id: loc, inventory_item_id: item} = sentinels()
+
+    %{
+      "inventory_level" => %{
+        "inventory_item_id" => Map.get(args, "inventory_item_id", item),
+        "location_id"       => Map.get(args, "location_id", loc),
+        "available"         => Map.get(args, "available", 0)
+      }
+    }
+  end
+
+  defp discount_create(_args) do
+    %{price_rule_id: rid, discount_code_id: cid} = sentinels()
+    suffix = "_" <> Integer.to_string(:erlang.unique_integer([:positive]))
+
+    %{
+      "price_rule_id"    => rid <> suffix,
+      "discount_code_id" => cid <> suffix
+    }
+  end
+
+  defp abandoned_checkout_find(_args) do
+    %{checkout_id: cid, customer_email: email} = sentinels()
+
+    %{
+      "checkouts" => [
+        %{
+          "id"            => cid,
+          "email"         => email,
+          "total_price"   => "49.90",
+          "currency"      => "EUR",
+          "abandoned_at"  => "2026-05-29T14:00:00Z"
+        }
+      ]
     }
   end
 end

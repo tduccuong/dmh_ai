@@ -51,9 +51,10 @@ defmodule DmhAi.P03ShopifyTest do
       assert :ok = Manifest.validate(Shopify.manifest())
     end
 
-    test "declares 9 functions at the Primitive 0.3 surface" do
+    test "declares 17 functions at the Primitive 0.3 surface" do
       functions = Shopify.manifest().functions
 
+      # Original 9
       assert Map.has_key?(functions, "product.find")
       assert Map.has_key?(functions, "product.create")
       assert Map.has_key?(functions, "product.update")
@@ -63,6 +64,18 @@ defmodule DmhAi.P03ShopifyTest do
       assert Map.has_key?(functions, "customer.create")
       assert Map.has_key?(functions, "inventory.adjust")
       assert Map.has_key?(functions, "draft_order.create")
+
+      # +8 from the Shopify expansion
+      assert Map.has_key?(functions, "product.delete")
+      assert Map.has_key?(functions, "order.cancel")
+      assert Map.has_key?(functions, "order.refund")
+      assert Map.has_key?(functions, "inventory.set_level")
+      assert Map.has_key?(functions, "customer.update")
+      assert Map.has_key?(functions, "discount.create")
+      assert Map.has_key?(functions, "abandoned_checkout.find")
+      assert Map.has_key?(functions, "transaction.find")
+
+      assert map_size(functions) == 17
     end
 
     test "every write function is `callable_from: [:task]` (HARD Rule 2)" do
@@ -182,6 +195,60 @@ defmodule DmhAi.P03ShopifyTest do
       assert {:error, %{error: "duplicate"}} =
                Dispatcher.call("shopify.customer.create",
                                %{"email" => "existing@beispiel.de", "first_name" => "Existing"},
+                               ctx)
+    end
+
+    test "read function (transaction.find) from free chat returns the transactions list",
+         %{admin_id: admin_id} do
+      Application.put_env(:dmh_ai, :__mcp_caller_stub__,
+        fn "shopify", "transaction.find", args, _creds ->
+          assert args["order_id"] == "shopify_order_mock_002"
+
+          {:ok,
+           %{
+             "transactions" => [
+               %{
+                 "id"       => "shopify_transaction_mock_009",
+                 "order_id" => "shopify_order_mock_002",
+                 "kind"     => "sale",
+                 "status"   => "success",
+                 "amount"   => "49.90",
+                 "currency" => "EUR",
+                 "gateway"  => "manual"
+               }
+             ]
+           }}
+        end)
+
+      assert {:ok,
+              %{
+                "transactions" => [%{"id" => "shopify_transaction_mock_009", "kind" => "sale"}]
+              }} =
+               Dispatcher.call("shopify.transaction.find",
+                               %{"order_id" => "shopify_order_mock_002"},
+                               %{user_id: admin_id})
+    end
+
+    test "write function (order.cancel) in-task carries injected idempotency_key",
+         %{admin_id: admin_id} do
+      Application.put_env(:dmh_ai, :__mcp_caller_stub__,
+        fn "shopify", "order.cancel", args, _creds ->
+          assert is_binary(args["__idempotency_key"]),
+                 "writes must carry idempotency_key injected by Dispatcher"
+          assert args["order_id"] == "shopify_order_mock_002"
+          assert args["reason"]   == "customer"
+
+          {:ok, %{"order_id" => "shopify_order_mock_002"}}
+        end)
+
+      ctx = %{user_id: admin_id, task_id: "t-cancel-order", step_seq: 0}
+
+      assert {:ok, %{"order_id" => "shopify_order_mock_002"}} =
+               Dispatcher.call("shopify.order.cancel",
+                               %{
+                                 "order_id" => "shopify_order_mock_002",
+                                 "reason"   => "customer"
+                               },
                                ctx)
     end
   end

@@ -7,23 +7,32 @@ defmodule DmhAi.Connectors.Shopify do
   @moduledoc """
   Shopify connector (Universal Region, Case B — vendor MCP).
 
-  Nine functions at the SME-relevant slice of Shopify's Admin API
-  (shopify.dev/docs/api/admin-rest) — products, orders, customers,
-  inventory:
+  Seventeen functions at the SME-relevant slice of Shopify's Admin
+  API (shopify.dev/docs/api/admin-rest) — products, orders,
+  customers, inventory, marketing:
 
-    product.find       [read]   search the product catalogue
-    product.create     [write]  create a product
-    product.update     [write]  PUT-patch an existing product
-    order.find         [read]   list orders (filter by status)
-    order.fulfill      [write]  fulfil an order (optional tracking)
-    customer.find      [read]   search customers
-    customer.create    [write]  create a customer by email
-    inventory.adjust   [write]  adjust an inventory level at a location
-    draft_order.create [write]  open a draft order (cart/quote)
+    product.find             [read]   search the product catalogue
+    product.create           [write]  create a product
+    product.update           [write]  PUT-patch an existing product
+    product.delete           [write]  delete a product
+    order.find               [read]   list orders (filter by status)
+    order.fulfill            [write]  fulfil an order (optional tracking)
+    order.cancel             [write]  cancel an order (optional reason / email)
+    order.refund             [write]  refund an order against its primary payment
+    transaction.find         [read]   list transactions for one order
+    customer.find            [read]   search customers
+    customer.create          [write]  create a customer by email
+    customer.update          [write]  PUT-patch an existing customer
+    inventory.adjust         [write]  adjust an inventory level at a location (delta)
+    inventory.set_level      [write]  set an inventory level at a location (absolute)
+    draft_order.create       [write]  open a draft order (cart/quote)
+    discount.create          [write]  create a price rule + attached discount code
+    abandoned_checkout.find  [read]   list abandoned checkouts
 
-  Four capability groups (products / orders / customers / inventory)
-  so admins can scope per-org — a fulfilment-only org might tick
-  orders + inventory, while a full storefront org enables all four.
+  Five capability groups (products / orders / customers / inventory
+  / marketing) so admins can scope per-org — a fulfilment-only org
+  might tick orders + inventory, while a full storefront org enables
+  all five.
 
   ## Vendor quirks (`remap_error/1`)
 
@@ -32,6 +41,38 @@ defmodule DmhAi.Connectors.Shopify do
   duplicate signal. Map it to canonical `:duplicate` so recipes /
   tasks branch deterministically rather than parsing the upstream
   string.
+
+  ## Two-step caveat: `discount.create`
+
+  Shopify ties discount codes to a *price rule*. There is no single
+  endpoint that creates both. `discount.create` issues TWO calls:
+  first `POST /price_rules.json` to mint the rule, then `POST
+  /price_rules/{id}/discount_codes.json` to attach the code. If
+  step 2 fails, step 1 leaves an orphan price rule on the shop — the
+  shim does not auto-roll-back. Operators handling a failed
+  `discount.create` should delete the dangling rule manually via
+  the Shopify admin UI.
+
+  ## Refund without line items: `order.refund`
+
+  Shopify refunds are tied to transactions, not orders. The simplest
+  refund path posts a refund with an empty `refund_line_items` list
+  and a single `refund` transaction against the order's primary
+  payment for the supplied amount. This refunds money without
+  itemising which line items are being credited — fine for the
+  common "refund the whole charge" case, but unsuitable for partial
+  per-line refunds. For per-line refunds, callers must compose the
+  refund payload directly against the REST API.
+
+  ## REST → GraphQL migration risk
+
+  This connector targets the 2024-01 REST Admin API. Shopify has
+  publicly stated that REST is on a deprecation path in favour of
+  the GraphQL Admin API (gid-based identifiers, different envelope
+  shapes, different error model). When that deprecation lands every
+  function in this module will need a parallel GraphQL handler;
+  the shape of `args` + `returns` should remain stable but the
+  internal request / response transforms will be rewritten.
   """
 
   use DmhAi.Connectors.MCPAdapter
@@ -103,7 +144,12 @@ defmodule DmhAi.Connectors.Shopify do
        %{url: "https://shopify.dev/docs/api/admin-rest/2024-01/resources/product", title: "Shopify Admin — Products"},
        %{url: "https://shopify.dev/docs/api/admin-rest/2024-01/resources/order", title: "Shopify Admin — Orders"},
        %{url: "https://shopify.dev/docs/api/admin-rest/2024-01/resources/customer", title: "Shopify Admin — Customers"},
-       %{url: "https://shopify.dev/docs/api/admin-rest/2024-01/resources/inventorylevel", title: "Shopify Admin — Inventory"}
+       %{url: "https://shopify.dev/docs/api/admin-rest/2024-01/resources/inventorylevel", title: "Shopify Admin — Inventory"},
+       %{url: "https://shopify.dev/docs/api/admin-rest/2024-01/resources/refund", title: "Shopify Admin — Refunds"},
+       %{url: "https://shopify.dev/docs/api/admin-rest/2024-01/resources/transaction", title: "Shopify Admin — Transactions"},
+       %{url: "https://shopify.dev/docs/api/admin-rest/2024-01/resources/pricerule", title: "Shopify Admin — Price Rules"},
+       %{url: "https://shopify.dev/docs/api/admin-rest/2024-01/resources/discountcode", title: "Shopify Admin — Discount Codes"},
+       %{url: "https://shopify.dev/docs/api/admin-rest/2024-01/resources/checkout", title: "Shopify Admin — Checkouts (abandoned)"}
      ]}
   end
 
@@ -291,6 +337,172 @@ defmodule DmhAi.Connectors.Shopify do
           returns: %{draft_order_id: :string},
           errors:  [:unauthorised, :rate_limited],
           scopes:  ["write_draft_orders"]
+        },
+
+        # vendor: DELETE /admin/api/2024-01/products/{product_id}.json
+        "product.delete" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "product_id" => %{type: :string, required: true,
+                              provenance: %{kind: :lookup,
+                                            source: "shopify.product.find"}}
+          },
+          returns: %{ok: :boolean},
+          errors:  [:unauthorised, :not_found, :rate_limited],
+          scopes:  ["write_products"]
+        },
+
+        # vendor: POST /admin/api/2024-01/orders/{order_id}/cancel.json
+        # `email_customer` maps to the upstream `email` boolean — when
+        # true Shopify sends the cancellation notice to the buyer.
+        "order.cancel" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "order_id"       => %{type: :string,  required: true,
+                                  provenance: %{kind: :lookup,
+                                                source: "shopify.order.find"}},
+            "reason"         => %{type: :string,  required: false,
+                                  provenance: %{kind: :literal_default,
+                                                value: "customer"}},
+            "email_customer" => %{type: :boolean, required: false}
+          },
+          returns: %{order_id: :string},
+          errors:  [:unauthorised, :not_found, :rate_limited],
+          scopes:  ["write_orders"]
+        },
+
+        # vendor: POST /admin/api/2024-01/orders/{order_id}/refunds.json
+        # Shopify refunds bind to transactions, not orders. This shim
+        # composes the simplest valid refund: an empty
+        # `refund_line_items` list + a single `refund` transaction for
+        # the supplied amount. See module doc — fine for "refund the
+        # whole charge", not for partial per-line refunds.
+        # `amount` is a string because Shopify money fields are
+        # stringly-typed across the Admin API.
+        "order.refund" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "order_id" => %{type: :string, required: true,
+                            provenance: %{kind: :lookup,
+                                          source: "shopify.order.find"}},
+            "amount"   => %{type: :string, required: true,
+                            provenance: %{kind: :from_user}},
+            "currency" => %{type: :string, required: false,
+                            provenance: %{kind: :literal_default,
+                                          value: "EUR"}},
+            "note"     => %{type: :string, required: false}
+          },
+          returns: %{refund_id: :string},
+          errors:  [:unauthorised, :not_found, :rate_limited],
+          scopes:  ["write_orders"]
+        },
+
+        # vendor: POST /admin/api/2024-01/inventory_levels/set.json
+        # Sibling of `inventory.adjust`. `adjust` is delta-based
+        # ("+3 / -2"); `set_level` is absolute ("there are now 12"),
+        # which is the right verb when the caller knows the final
+        # stock count rather than the change.
+        "inventory.set_level" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "inventory_item_id" => %{type: :string,  required: true,
+                                     provenance: %{kind: :lookup,
+                                                   source: "shopify.product.find"}},
+            "location_id"       => %{type: :string,  required: true,
+                                     provenance: %{kind: :from_user}},
+            "available"         => %{type: :integer, required: true,
+                                     provenance: %{kind: :from_user}}
+          },
+          returns: %{inventory_level: :map},
+          errors:  [:unauthorised, :not_found, :rate_limited],
+          scopes:  ["write_inventory"]
+        },
+
+        # vendor: PUT /admin/api/2024-01/customers/{customer_id}.json
+        # `patch` is a free-form map of Shopify customer fields →
+        # values; the shim does not enumerate or validate field names
+        # so any field passes through.
+        "customer.update" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "customer_id" => %{type: :string, required: true,
+                               provenance: %{kind: :lookup,
+                                             source: "shopify.customer.find"}},
+            "patch"       => %{type: :map,    required: true,
+                               provenance: %{kind: :literal_default}}
+          },
+          returns: %{customer_id: :string},
+          errors:  [:unauthorised, :not_found, :duplicate, :rate_limited],
+          scopes:  ["write_customers"]
+        },
+
+        # CUSTOM HANDLER — two API calls. See module doc for the
+        # orphan-price-rule caveat when step 2 fails.
+        # vendor: POST /admin/api/2024-01/price_rules.json
+        #       + POST /admin/api/2024-01/price_rules/{id}/discount_codes.json
+        # `value` is stringly-typed; Shopify expects negative values
+        # for percentage / fixed_amount discounts (e.g. "-10.0" for
+        # 10% off when `value_type` is "percentage").
+        "discount.create" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "code"       => %{type: :string, required: true,
+                              provenance: %{kind: :from_user}},
+            "value_type" => %{type: :string, required: true,
+                              provenance: %{kind: :literal_default,
+                                            value: "percentage"}},
+            "value"      => %{type: :string, required: true,
+                              provenance: %{kind: :from_user}},
+            "starts_at"  => %{type: :string, required: false,
+                              provenance: %{kind: :literal_default}},
+            "ends_at"    => %{type: :string, required: false}
+          },
+          returns: %{discount_code_id: :string, price_rule_id: :string},
+          errors:  [:unauthorised, :duplicate, :rate_limited],
+          scopes:  ["write_price_rules", "write_discounts"]
+        },
+
+        # vendor: GET /admin/api/2024-01/checkouts.json
+        # Shopify exposes abandoned checkouts via the generic
+        # `/checkouts.json` listing — there is no separate
+        # `/abandoned_checkouts.json` endpoint in 2024-01.
+        "abandoned_checkout.find" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "since_id" => %{type: :string,  required: false},
+            "limit"    => %{type: :integer, required: false}
+          },
+          returns: %{checkouts: :list},
+          scopes:  ["read_checkouts"]
+        },
+
+        # vendor: GET /admin/api/2024-01/orders/{order_id}/transactions.json
+        # Useful as a follow-up to `order.find` when the agent needs
+        # the payment trail (gateway, kind, amount) — e.g. before
+        # calling `order.refund` so it knows how much was charged.
+        "transaction.find" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "order_id" => %{type: :string, required: true,
+                            provenance: %{kind: :lookup,
+                                          source: "shopify.order.find"}}
+          },
+          returns: %{transactions: :list},
+          scopes:  ["read_orders"]
         }
       }
     }
@@ -355,7 +567,10 @@ defmodule DmhAi.Connectors.Shopify do
         "read_customers",
         "write_customers",
         "write_inventory",
-        "write_draft_orders"
+        "write_draft_orders",
+        "read_checkouts",
+        "write_price_rules",
+        "write_discounts"
       ],
       # Shopify ships no OIDC userinfo endpoint; identity capture
       # lives in `fetch_userinfo/1` (see top of module) via the Admin
@@ -417,12 +632,13 @@ defmodule DmhAi.Connectors.Shopify do
   def mcp_handler_module, do: DmhAi.Connectors.Shopify.MCPHandler
 
   @doc """
-  Capability groups admin curates via External Connectors. Four
+  Capability groups admin curates via External Connectors. Five
   domain groups go live — products / orders / customers / inventory
-  — so a fulfilment-only org can expose orders + inventory and skip
-  the rest, while a full storefront org enables all four. The three
-  enforcement layers (OAuth scope filter, tool catalog filter,
-  dispatcher gate) all read from `enabled_capabilities`.
+  / marketing — so a fulfilment-only org can expose orders +
+  inventory and skip the rest, while a full storefront org enables
+  all five. The three enforcement layers (OAuth scope filter, tool
+  catalog filter, dispatcher gate) all read from
+  `enabled_capabilities`.
   """
   @spec capabilities() :: [map()]
   def capabilities do
@@ -430,9 +646,9 @@ defmodule DmhAi.Connectors.Shopify do
       %{
         id:           "products",
         display_name: "Products",
-        description:  "Search, create, and update storefront products.",
+        description:  "Search, create, update, and delete storefront products.",
         scopes:       ["read_products", "write_products"],
-        functions:    ["product.find", "product.create", "product.update"],
+        functions:    ["product.find", "product.create", "product.update", "product.delete"],
         vendor_prereq: %{
           label:      "Shopify app scopes (Products)",
           enable_url: "https://shopify.dev/docs/apps/auth/oauth"
@@ -441,9 +657,16 @@ defmodule DmhAi.Connectors.Shopify do
       %{
         id:           "orders",
         display_name: "Orders",
-        description:  "Find orders, fulfil them, and build draft orders.",
+        description:  "Find orders, fulfil / cancel / refund them, list transactions, and build draft orders.",
         scopes:       ["read_orders", "write_orders", "write_draft_orders"],
-        functions:    ["order.find", "order.fulfill", "draft_order.create"],
+        functions:    [
+          "order.find",
+          "order.fulfill",
+          "order.cancel",
+          "order.refund",
+          "transaction.find",
+          "draft_order.create"
+        ],
         vendor_prereq: %{
           label:      "Shopify app scopes (Orders)",
           enable_url: "https://shopify.dev/docs/apps/auth/oauth"
@@ -452,9 +675,9 @@ defmodule DmhAi.Connectors.Shopify do
       %{
         id:           "customers",
         display_name: "Customers",
-        description:  "Search and create customer records.",
+        description:  "Search, create, and update customer records.",
         scopes:       ["read_customers", "write_customers"],
-        functions:    ["customer.find", "customer.create"],
+        functions:    ["customer.find", "customer.create", "customer.update"],
         vendor_prereq: %{
           label:      "Shopify app scopes (Customers)",
           enable_url: "https://shopify.dev/docs/apps/auth/oauth"
@@ -463,11 +686,22 @@ defmodule DmhAi.Connectors.Shopify do
       %{
         id:           "inventory",
         display_name: "Inventory",
-        description:  "Adjust inventory levels at a location.",
+        description:  "Adjust (delta) or set (absolute) inventory levels at a location.",
         scopes:       ["write_inventory"],
-        functions:    ["inventory.adjust"],
+        functions:    ["inventory.adjust", "inventory.set_level"],
         vendor_prereq: %{
           label:      "Shopify app scopes (Inventory)",
+          enable_url: "https://shopify.dev/docs/apps/auth/oauth"
+        }
+      },
+      %{
+        id:           "marketing",
+        display_name: "Marketing",
+        description:  "Create discount codes and review abandoned checkouts.",
+        scopes:       ["read_checkouts", "write_price_rules", "write_discounts"],
+        functions:    ["discount.create", "abandoned_checkout.find"],
+        vendor_prereq: %{
+          label:      "Shopify app scopes (Marketing)",
           enable_url: "https://shopify.dev/docs/apps/auth/oauth"
         }
       }
