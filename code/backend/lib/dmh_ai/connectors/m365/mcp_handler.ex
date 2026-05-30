@@ -31,6 +31,26 @@ defmodule DmhAi.Connectors.M365.MCPHandler do
   require Logger
 
   @graph_base "https://graph.microsoft.com/v1.0/me"
+  @graph_root "https://graph.microsoft.com/v1.0"
+
+  # Microsoft Graph identifiers used in URL path segments:
+  #   * mailbox message ids — base64url, may include `=`/`-`/`_`
+  #   * drive item ids       — base64url
+  #   * To Do list / task ids — base64url
+  #   * Teams channel ids    — `19:<base64>@thread.tacv2` (colons + `@`)
+  # The whitelist accepts every shape Graph actually returns; anything
+  # else raises, so the dispatcher surfaces an error envelope rather
+  # than constructing a URL with an injected path segment.
+  @path_id_re ~r/^[A-Za-z0-9_=:@.\-]+$/
+
+  # Excel range in A1 notation (single cell or range, e.g. `A1`, `B2:D10`).
+  @excel_range_re ~r/^[A-Z]+\d+(:[A-Z]+\d+)?$/
+
+  # Outlook well-known mail folder ids accepted in addition to mailbox
+  # folder ids. The whitelist regex already covers them, but they're
+  # listed here so future readers know which strings the model is
+  # expected to pass for the common destinations:
+  #   inbox · archive · deleteditems · drafts · sentitems · junkemail
 
   @doc """
   Handler entry consumed by `Connectors.MCPServer.Registry.put/1`
@@ -118,6 +138,38 @@ defmodule DmhAi.Connectors.M365.MCPHandler do
       "onenote.read_page" => %FunctionSpec{
         handler: &onenote_read_page/2,
         doc:     "Read a OneNote page's text content (HTML stripped to plain text)."
+      },
+      "cal.list_events" => %FunctionSpec{
+        handler: &cal_list_events/2,
+        doc:     "List Outlook calendar events between two timestamps (optionally KQL-filtered)."
+      },
+      "mail.read" => %FunctionSpec{
+        handler: &mail_read/2,
+        doc:     "Fetch a single Outlook message with full body + attachments metadata."
+      },
+      "mail.move_to_folder" => %FunctionSpec{
+        handler: &mail_move_to_folder/2,
+        doc:     "Move an Outlook message to a destination folder (well-known id or mailbox folder id)."
+      },
+      "excel.update_range" => %FunctionSpec{
+        handler: &excel_update_range/2,
+        doc:     "Write a 2D values array into an Excel worksheet range (A1 notation)."
+      },
+      "files.download" => %FunctionSpec{
+        handler: &files_download/2,
+        doc:     "Download a OneDrive item's content (text passes through, binary base64-encoded)."
+      },
+      "teams.list_channels" => %FunctionSpec{
+        handler: &teams_list_channels/2,
+        doc:     "List channels of a Microsoft Teams team."
+      },
+      "teams.post_channel_message" => %FunctionSpec{
+        handler: &teams_post_channel_message/2,
+        doc:     "Post a message into a Teams channel (HTML body)."
+      },
+      "todo.complete" => %FunctionSpec{
+        handler: &todo_complete/2,
+        doc:     "Mark a Microsoft To Do task as completed."
       }
     }
   end
@@ -633,4 +685,335 @@ defmodule DmhAi.Connectors.M365.MCPHandler do
     |> String.trim()
   end
   defp strip_html_to_text(_), do: ""
+
+  # ─── cal.list_events — GET /me/calendar/calendarView ──────────────────
+  # vendor: GET /v1.0/me/calendar/calendarView?startDateTime=…&endDateTime=…
+  #         &$top=N[&$search="<q>"]
+  # Graph's calendarView expands recurrences into individual instances
+  # within the window, which is what an SME wants when asking "what's
+  # on my calendar next week".
+
+  defp cal_list_events(args, ctx) do
+    time_min = args["time_min"]
+    time_max = args["time_max"]
+    limit    = Map.get(args, "limit", 25)
+    query    = Map.get(args, "query")
+
+    params =
+      [
+        {"startDateTime", time_min},
+        {"endDateTime",   time_max},
+        {"$top",          limit},
+        {"$select",       "id,subject,start,end,location,organizer,attendees,webLink"}
+      ]
+      |> maybe_add_search(query)
+
+    opts = [
+      url:     "#{@graph_base}/calendar/calendarView",
+      params:  params,
+      headers: search_headers(query)
+    ]
+
+    case RestBridge.raw_request(:get, with_bearer(opts, ctx)) do
+      {:ok, 200, %{"value" => raw}} when is_list(raw) ->
+        events = Enum.map(raw, &normalise_event/1)
+        {:ok, %{"events" => events}}
+
+      {:ok, _status, _body} ->
+        {:error, :upstream_other}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  defp maybe_add_search(params, nil), do: params
+  defp maybe_add_search(params, ""),  do: params
+  defp maybe_add_search(params, q) when is_binary(q),
+    do: params ++ [{"$search", "\"#{q}\""}]
+
+  defp search_headers(q) when is_binary(q) and q != "",
+    do: [{"consistencylevel", "eventual"}]
+  defp search_headers(_), do: []
+
+  defp normalise_event(%{} = e) do
+    %{
+      "id"       => e["id"],
+      "subject"  => e["subject"],
+      "start"    => get_in(e, ["start", "dateTime"]),
+      "end"      => get_in(e, ["end",   "dateTime"]),
+      "location" => get_in(e, ["location", "displayName"]),
+      "organizer" => get_in(e, ["organizer", "emailAddress", "address"]),
+      "web_link" => e["webLink"]
+    }
+  end
+
+  # ─── mail.read — GET /me/messages/{id} ────────────────────────────────
+  # vendor: GET /v1.0/me/messages/{id}?$expand=attachments($select=…)
+  # docs:   https://learn.microsoft.com/graph/api/message-get
+  # Returns the message body + attachments metadata so the model can
+  # reference attachment names + sizes without downloading them.
+
+  defp mail_read(args, ctx) do
+    message_id = safe_path_id(args["message_id"])
+    url        = "#{@graph_base}/messages/#{message_id}"
+
+    opts = [
+      url:    url,
+      params: [
+        {"$expand", "attachments($select=id,name,contentType,size)"},
+        {"$select", "id,subject,from,toRecipients,receivedDateTime,body,bodyPreview,hasAttachments"}
+      ]
+    ]
+
+    case RestBridge.raw_request(:get, with_bearer(opts, ctx)) do
+      {:ok, status, body} when status in 200..299 and is_map(body) ->
+        {:ok, %{"message" => normalise_message(body)}}
+
+      {:ok, status, body} ->
+        {:error, {:http, status, body}}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  defp normalise_message(m) do
+    %{
+      "id"             => m["id"],
+      "subject"        => m["subject"],
+      "from"           => get_in(m, ["from", "emailAddress", "address"]),
+      "to"             => Enum.map(m["toRecipients"] || [],
+                            fn r -> get_in(r, ["emailAddress", "address"]) end),
+      "received_at"    => m["receivedDateTime"],
+      "body"           => get_in(m, ["body", "content"]),
+      "body_type"      => get_in(m, ["body", "contentType"]),
+      "snippet"        => m["bodyPreview"],
+      "has_attachments" => m["hasAttachments"],
+      "attachments"    => Enum.map(m["attachments"] || [], &normalise_attachment/1)
+    }
+  end
+
+  defp normalise_attachment(a) do
+    %{
+      "id"           => a["id"],
+      "name"         => a["name"],
+      "content_type" => a["contentType"],
+      "size"         => a["size"]
+    }
+  end
+
+  # ─── mail.move_to_folder — POST /me/messages/{id}/move ────────────────
+  # vendor: POST /v1.0/me/messages/{id}/move  body: {"destinationId":"<id>"}
+  # docs:   https://learn.microsoft.com/graph/api/message-move
+  # Graph returns the moved message — we only need the new id.
+
+  defp mail_move_to_folder(args, ctx) do
+    message_id     = safe_path_id(args["message_id"])
+    destination_id = safe_path_id(args["destination_folder_id"])
+
+    url  = "#{@graph_base}/messages/#{message_id}/move"
+    body = %{"destinationId" => destination_id}
+
+    case RestBridge.raw_request(:post, with_bearer([url: url, json: body], ctx)) do
+      {:ok, status, body} when status in 200..299 and is_map(body) ->
+        {:ok, %{"message_id" => body["id"] || message_id}}
+
+      {:ok, status, body} ->
+        {:error, {:http, status, body}}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  # ─── excel.update_range — PATCH workbook range ────────────────────────
+  # vendor: PATCH /v1.0/me/drive/items/{id}/workbook/worksheets/{sheet}/range(address='A1:C5')
+  # docs:   https://learn.microsoft.com/graph/api/range-update
+  # `range` is validated against A1 notation before the URL is built.
+
+  defp excel_update_range(args, ctx) do
+    file_id   = safe_path_id(args["file_id"])
+    worksheet = safe_path_id(args["worksheet"])
+    range     = validate_excel_range(args["range"])
+    values    = args["values"]
+
+    url =
+      "#{@graph_base}/drive/items/#{file_id}" <>
+        "/workbook/worksheets/#{worksheet}/range(address='#{range}')"
+
+    case RestBridge.raw_request(:patch, with_bearer([url: url, json: %{"values" => values}], ctx)) do
+      {:ok, status, _body} when status in 200..299 ->
+        {:ok, %{"ok" => true}}
+
+      {:ok, status, body} ->
+        {:error, {:http, status, body}}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  defp validate_excel_range(range) do
+    str = to_string(range)
+
+    if Regex.match?(@excel_range_re, str) do
+      str
+    else
+      raise ArgumentError, "invalid Excel range (A1 notation expected): #{inspect(range)}"
+    end
+  end
+
+  # ─── files.download — GET /me/drive/items/{id}/content ────────────────
+  # vendor: GET /v1.0/me/drive/items/{id}/content
+  # docs:   https://learn.microsoft.com/graph/api/driveitem-get-content
+  # text/* content passes through as a string; binary content is
+  # base64-encoded so the model can still reference / forward it
+  # through a string envelope. Larger-than-context files are an
+  # operator concern (no automatic chunking here).
+
+  defp files_download(args, ctx) do
+    file_id = safe_path_id(args["file_id"])
+    url     = "#{@graph_base}/drive/items/#{file_id}/content"
+
+    case RestBridge.raw_request(:get, with_bearer([url: url], ctx)) do
+      {:ok, status, body} when status in 200..299 ->
+        {content, mime} = encode_download_body(body)
+        {:ok, %{"content" => content, "content_type" => mime}}
+
+      {:ok, status, body} ->
+        {:error, {:http, status, body}}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  defp encode_download_body(body) when is_binary(body) do
+    if String.valid?(body) and printable?(body) do
+      {body, "text/plain"}
+    else
+      {Base.encode64(body), "application/octet-stream"}
+    end
+  end
+
+  defp encode_download_body(body) when is_map(body) do
+    # Graph occasionally returns JSON metadata when a follow-up
+    # download link is required; surface it verbatim so the agent
+    # can decide what to do next.
+    {Jason.encode!(body), "application/json"}
+  end
+
+  defp encode_download_body(other), do: {to_string(other), "text/plain"}
+
+  defp printable?(s),
+    do: String.printable?(s) or String.printable?(s, 0)
+
+  # ─── teams.list_channels — GET /teams/{id}/channels ───────────────────
+  # vendor: GET /v1.0/teams/{team_id}/channels?$top=N
+  # docs:   https://learn.microsoft.com/graph/api/channel-list
+
+  defp teams_list_channels(args, ctx) do
+    team_id = safe_path_id(args["team_id"])
+    limit   = Map.get(args, "limit", 25)
+
+    opts = [
+      url:    "#{@graph_root}/teams/#{team_id}/channels",
+      params: [{"$top", limit}, {"$select", "id,displayName,description,membershipType"}]
+    ]
+
+    case RestBridge.raw_request(:get, with_bearer(opts, ctx)) do
+      {:ok, 200, %{"value" => channels}} when is_list(channels) ->
+        flat = Enum.map(channels, &normalise_channel/1)
+        {:ok, %{"channels" => flat}}
+
+      {:ok, _status, _body} ->
+        {:error, :upstream_other}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  defp normalise_channel(c) do
+    %{
+      "id"              => c["id"],
+      "name"            => c["displayName"],
+      "description"     => c["description"],
+      "membership_type" => c["membershipType"]
+    }
+  end
+
+  # ─── teams.post_channel_message — POST channel message ────────────────
+  # vendor: POST /v1.0/teams/{team_id}/channels/{channel_id}/messages
+  # docs:   https://learn.microsoft.com/graph/api/chatmessage-post
+  # Channel ids look like `19:<base64>@thread.tacv2`, hence the
+  # `:`/`@` in the whitelist; team ids are plain UUIDs.
+
+  defp teams_post_channel_message(args, ctx) do
+    team_id    = safe_path_id(args["team_id"])
+    channel_id = safe_path_id(args["channel_id"])
+    body_text  = args["body"] || ""
+    subject    = Map.get(args, "subject")
+
+    url = "#{@graph_root}/teams/#{team_id}/channels/#{channel_id}/messages"
+
+    body =
+      %{
+        "body" => %{"contentType" => "html", "content" => body_text}
+      }
+      |> maybe_put_kv("subject", subject)
+
+    case RestBridge.raw_request(:post, with_bearer([url: url, json: body], ctx)) do
+      {:ok, status, resp} when status in 200..299 and is_map(resp) ->
+        {:ok, %{"message_id" => to_string(resp["id"] || "")}}
+
+      {:ok, status, body} ->
+        {:error, {:http, status, body}}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  # ─── todo.complete — PATCH /me/todo/lists/{list}/tasks/{task} ─────────
+  # vendor: PATCH /v1.0/me/todo/lists/{list_id}/tasks/{task_id}
+  #         body: {"status":"completed"}
+  # docs:   https://learn.microsoft.com/graph/api/todotask-update
+  # Graph sets `completedDateTime` itself when status flips.
+
+  defp todo_complete(args, ctx) do
+    list_id = safe_path_id(args["list_id"])
+    task_id = safe_path_id(args["task_id"])
+
+    url  = "#{@graph_base}/todo/lists/#{list_id}/tasks/#{task_id}"
+    body = %{"status" => "completed"}
+
+    case RestBridge.raw_request(:patch, with_bearer([url: url, json: body], ctx)) do
+      {:ok, status, resp} when status in 200..299 and is_map(resp) ->
+        {:ok, %{"task_id" => to_string(resp["id"] || task_id)}}
+
+      {:ok, status, body} ->
+        {:error, {:http, status, body}}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  # ─── path id guard ────────────────────────────────────────────────────
+  # Graph identifiers used in URL segments are validated against
+  # `@path_id_re` (see top of module). A value that doesn't match
+  # raises — the dispatcher surfaces it as an error envelope rather
+  # than building a URL with an injected path segment.
+
+  defp safe_path_id(id) do
+    str = to_string(id)
+
+    if Regex.match?(@path_id_re, str) do
+      str
+    else
+      raise ArgumentError, "invalid m365 path id: #{inspect(id)}"
+    end
+  end
 end

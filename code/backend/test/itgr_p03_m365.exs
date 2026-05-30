@@ -50,14 +50,34 @@ defmodule DmhAi.P03M365Test do
   describe "manifest" do
     test "validates clean", do: assert :ok = Manifest.validate(M365.manifest())
 
-    test "declares 6 functions across mail/cal/files" do
+    test "declares 22 functions across mail/cal/files/teams/todo/contacts/excel/onenote" do
       functions = M365.manifest().functions
+      # Original 14
       assert Map.has_key?(functions, "mail.send")
       assert Map.has_key?(functions, "mail.search")
+      assert Map.has_key?(functions, "mail.reply")
       assert Map.has_key?(functions, "cal.create_event")
       assert Map.has_key?(functions, "cal.find_free_slots")
+      assert Map.has_key?(functions, "cal.update_event")
       assert Map.has_key?(functions, "files.list")
       assert Map.has_key?(functions, "files.upload")
+      assert Map.has_key?(functions, "teams.create_meeting")
+      assert Map.has_key?(functions, "todo.list")
+      assert Map.has_key?(functions, "todo.create")
+      assert Map.has_key?(functions, "contacts.search")
+      assert Map.has_key?(functions, "excel.read_range")
+      assert Map.has_key?(functions, "onenote.read_page")
+      # +8 from the M365 expansion
+      assert Map.has_key?(functions, "cal.list_events")
+      assert Map.has_key?(functions, "mail.read")
+      assert Map.has_key?(functions, "mail.move_to_folder")
+      assert Map.has_key?(functions, "excel.update_range")
+      assert Map.has_key?(functions, "files.download")
+      assert Map.has_key?(functions, "teams.list_channels")
+      assert Map.has_key?(functions, "teams.post_channel_message")
+      assert Map.has_key?(functions, "todo.complete")
+
+      assert map_size(functions) == 22
     end
 
     test "every write is callable_from: [:task] with idempotency_key required" do
@@ -130,6 +150,50 @@ defmodule DmhAi.P03M365Test do
                                %{"to" => "alice@example.com",
                                  "subject" => "Hi", "body" => "hello"},
                                %{user_id: admin_id, task_id: "t-1", step_seq: "tc-1"})
+    end
+
+    test "free-chat cal.list_events returns the events list", %{admin_id: admin_id} do
+      Application.put_env(:dmh_ai, :__mcp_caller_stub__, fn "m365", "cal.list_events", args, _ ->
+        refute Map.has_key?(args, "__idempotency_key"), "reads must not get idempotency_key"
+        assert args["time_min"] == "2026-05-25T00:00:00Z"
+        assert args["time_max"] == "2026-05-31T23:59:59Z"
+
+        {:ok,
+         %{
+           "events" => [
+             %{"id" => "evt-1", "subject" => "Sprint review", "start" => "2026-05-26T09:00:00Z"}
+           ]
+         }}
+      end)
+
+      assert {:ok, %{"events" => [%{"subject" => "Sprint review"}]}} =
+               Dispatcher.call("m365.cal.list_events",
+                               %{
+                                 "time_min" => "2026-05-25T00:00:00Z",
+                                 "time_max" => "2026-05-31T23:59:59Z"
+                               },
+                               %{user_id: admin_id})
+    end
+
+    test "write teams.post_channel_message in-task gets idempotency_key", %{admin_id: admin_id} do
+      Application.put_env(:dmh_ai, :__mcp_caller_stub__,
+        fn "m365", "teams.post_channel_message", args, _ ->
+          assert is_binary(args["__idempotency_key"])
+          assert args["team_id"] == "MOCKTEAM001"
+          assert args["channel_id"] == "19:MOCKCHANNEL001@thread.tacv2"
+          assert args["body"] == "Status update."
+
+          {:ok, %{"message_id" => "MOCKMSG001"}}
+        end)
+
+      assert {:ok, %{"message_id" => "MOCKMSG001"}} =
+               Dispatcher.call("m365.teams.post_channel_message",
+                               %{
+                                 "team_id"    => "MOCKTEAM001",
+                                 "channel_id" => "19:MOCKCHANNEL001@thread.tacv2",
+                                 "body"       => "Status update."
+                               },
+                               %{user_id: admin_id, task_id: "t-2", step_seq: "tc-2"})
     end
   end
 end

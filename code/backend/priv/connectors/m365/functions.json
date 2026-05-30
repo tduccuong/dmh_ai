@@ -50,6 +50,47 @@
     },
     {
       "args": {
+        "limit": {
+          "required": false,
+          "type": "integer"
+        },
+        "query": {
+          "required": false,
+          "type": "string"
+        },
+        "time_max": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "time_min": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "cal.list_events",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "events": "list"
+      },
+      "scopes_required": [
+        "Calendars.Read"
+      ]
+    },
+    {
+      "args": {
         "attendees": {
           "required": false,
           "type": "list"
@@ -204,6 +245,85 @@
     },
     {
       "args": {
+        "file_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "m365.files.list"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "range": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "values": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "list"
+        },
+        "worksheet": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "excel.update_range",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "ok": "boolean"
+      },
+      "scopes_required": [
+        "Files.ReadWrite"
+      ]
+    },
+    {
+      "args": {
+        "file_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "m365.files.list"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "files.download",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "content": "string",
+        "content_type": "string"
+      },
+      "scopes_required": [
+        "Files.Read"
+      ]
+    },
+    {
+      "args": {
         "limit": {
           "required": false,
           "type": "integer"
@@ -264,6 +384,70 @@
       },
       "scopes_required": [
         "Files.ReadWrite"
+      ]
+    },
+    {
+      "args": {
+        "destination_folder_id": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "message_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "m365.mail.search"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "mail.move_to_folder",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "message_id": "string"
+      },
+      "scopes_required": [
+        "Mail.ReadWrite"
+      ]
+    },
+    {
+      "args": {
+        "message_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "m365.mail.search"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "mail.read",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "message": "map"
+      },
+      "scopes_required": [
+        "Mail.Read"
       ]
     },
     {
@@ -436,6 +620,121 @@
       },
       "scopes_required": [
         "OnlineMeetings.ReadWrite"
+      ]
+    },
+    {
+      "args": {
+        "limit": {
+          "required": false,
+          "type": "integer"
+        },
+        "team_id": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "teams.list_channels",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "channels": "list"
+      },
+      "scopes_required": [
+        "Channel.ReadBasic.All"
+      ]
+    },
+    {
+      "args": {
+        "body": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "channel_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "m365.teams.list_channels"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "subject": {
+          "required": false,
+          "type": "string"
+        },
+        "team_id": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "teams.post_channel_message",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "message_id": "string"
+      },
+      "scopes_required": [
+        "ChannelMessage.Send"
+      ]
+    },
+    {
+      "args": {
+        "list_id": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "task_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "m365.todo.list"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "todo.complete",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "task_id": "string"
+      },
+      "scopes_required": [
+        "Tasks.ReadWrite"
       ]
     },
     {

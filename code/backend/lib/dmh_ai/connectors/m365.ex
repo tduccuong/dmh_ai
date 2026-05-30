@@ -329,6 +329,162 @@ defmodule DmhAi.Connectors.M365 do
           },
           returns: %{text: :string, title: :string},
           scopes:  ["Notes.Read"]
+        },
+
+        # vendor: GET /me/calendar/calendarView?startDateTime=…&endDateTime=…
+        # docs:   https://learn.microsoft.com/graph/api/calendar-list-calendarview
+        # Returns the upcoming events between two ISO-8601 instants;
+        # supports a free-text $search filter when `query` is set.
+        "cal.list_events" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "time_min" => %{type: :string,  required: true,
+                            provenance: %{kind: :literal_default}},
+            "time_max" => %{type: :string,  required: true,
+                            provenance: %{kind: :literal_default}},
+            "query"    => %{type: :string,  required: false},
+            "limit"    => %{type: :integer, required: false}
+          },
+          returns: %{events: :list},
+          scopes:  ["Calendars.Read"]
+        },
+
+        # vendor: GET /me/messages/{id}
+        # docs:   https://learn.microsoft.com/graph/api/message-get
+        # Full body + attachments metadata for a single message id
+        # (typically resolved via `mail.search` first).
+        "mail.read" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "message_id" => %{type: :string, required: true,
+                              provenance: %{kind: :lookup,
+                                            source: "m365.mail.search"}}
+          },
+          returns: %{message: :map},
+          scopes:  ["Mail.Read"]
+        },
+
+        # vendor: POST /me/messages/{id}/move
+        # docs:   https://learn.microsoft.com/graph/api/message-move
+        # Well-known destination ids:
+        #   inbox · archive · deleteditems · drafts · sentitems · junkemail
+        # Mailbox-local folder ids work too.
+        "mail.move_to_folder" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "message_id"           => %{type: :string, required: true,
+                                        provenance: %{kind: :lookup,
+                                                      source: "m365.mail.search"}},
+            "destination_folder_id" => %{type: :string, required: true,
+                                         provenance: %{kind: :from_user}}
+          },
+          returns: %{message_id: :string},
+          errors:  [:unauthorised, :not_found, :rate_limited],
+          scopes:  ["Mail.ReadWrite"]
+        },
+
+        # vendor: PATCH /me/drive/items/{id}/workbook/worksheets/{name}/range(address='A1:C5')
+        # docs:   https://learn.microsoft.com/graph/api/range-update
+        # Writes a 2D `values` array into a worksheet cell range
+        # (A1 notation). Range string is regex-validated server-side
+        # before the URL is built.
+        "excel.update_range" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "file_id"   => %{type: :string, required: true,
+                             provenance: %{kind: :lookup,
+                                           source: "m365.files.list"}},
+            "worksheet" => %{type: :string, required: true,
+                             provenance: %{kind: :from_user}},
+            "range"     => %{type: :string, required: true,
+                             provenance: %{kind: :literal_default}},
+            "values"    => %{type: :list,   required: true,
+                             provenance: %{kind: :literal_default}}
+          },
+          returns: %{ok: :boolean},
+          errors:  [:unauthorised, :not_found, :rate_limited],
+          scopes:  ["Files.ReadWrite"]
+        },
+
+        # vendor: GET /me/drive/items/{id}/content
+        # docs:   https://learn.microsoft.com/graph/api/driveitem-get-content
+        # text/* responses pass through as a string; binary content
+        # is base64-encoded so the model can still attach / reference
+        # it through the standard string envelope.
+        "files.download" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "file_id" => %{type: :string, required: true,
+                           provenance: %{kind: :lookup,
+                                         source: "m365.files.list"}}
+          },
+          returns: %{content: :string, content_type: :string},
+          scopes:  ["Files.Read"]
+        },
+
+        # vendor: GET /teams/{team_id}/channels
+        # docs:   https://learn.microsoft.com/graph/api/channel-list
+        # Lists the channels of a Team (team id is the AAD group id).
+        "teams.list_channels" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "team_id" => %{type: :string,  required: true,
+                           provenance: %{kind: :from_user}},
+            "limit"   => %{type: :integer, required: false}
+          },
+          returns: %{channels: :list},
+          scopes:  ["Channel.ReadBasic.All"]
+        },
+
+        # vendor: POST /teams/{team_id}/channels/{channel_id}/messages
+        # docs:   https://learn.microsoft.com/graph/api/chatmessage-post
+        # Channel ids take the shape `19:<base64>@thread.tacv2`; both
+        # ids whitelist `[A-Za-z0-9_=:-]+` so they pass `safe_path_id`.
+        "teams.post_channel_message" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "team_id"    => %{type: :string, required: true,
+                              provenance: %{kind: :from_user}},
+            "channel_id" => %{type: :string, required: true,
+                              provenance: %{kind: :lookup,
+                                            source: "m365.teams.list_channels"}},
+            "body"       => %{type: :string, required: true,
+                              provenance: %{kind: :literal_default}},
+            "subject"    => %{type: :string, required: false}
+          },
+          returns: %{message_id: :string},
+          errors:  [:unauthorised, :not_found, :rate_limited],
+          scopes:  ["ChannelMessage.Send"]
+        },
+
+        # vendor: PATCH /me/todo/lists/{list_id}/tasks/{task_id}
+        # docs:   https://learn.microsoft.com/graph/api/todotask-update
+        # Marks a Microsoft To Do task as completed by setting its
+        # `status` field — Graph derives `completedDateTime` from it.
+        "todo.complete" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "list_id" => %{type: :string, required: true,
+                           provenance: %{kind: :from_user}},
+            "task_id" => %{type: :string, required: true,
+                           provenance: %{kind: :lookup,
+                                         source: "m365.todo.list"}}
+          },
+          returns: %{task_id: :string},
+          errors:  [:unauthorised, :not_found, :rate_limited],
+          scopes:  ["Tasks.ReadWrite"]
         }
       }
     }
@@ -384,6 +540,7 @@ defmodule DmhAi.Connectors.M365 do
       token_endpoint:         "https://login.microsoftonline.com/common/oauth2/v2.0/token",
       scopes: [
         "Mail.Read",
+        "Mail.ReadWrite",
         "Mail.Send",
         "Calendars.Read",
         "Calendars.ReadWrite",
@@ -393,6 +550,8 @@ defmodule DmhAi.Connectors.M365 do
         "Tasks.Read",
         "Tasks.ReadWrite",
         "Contacts.Read",
+        "Channel.ReadBasic.All",
+        "ChannelMessage.Send",
         "offline_access",
         "User.Read"
       ],
@@ -466,9 +625,9 @@ defmodule DmhAi.Connectors.M365 do
       %{
         id:           "mail",
         display_name: "Outlook Mail",
-        description:  "Read inbox messages and send mail on the user's behalf.",
-        scopes:       ["Mail.Read", "Mail.Send"],
-        functions:    ["mail.search", "mail.send", "mail.reply"],
+        description:  "Read inbox messages, send mail, and organise messages on the user's behalf.",
+        scopes:       ["Mail.Read", "Mail.ReadWrite", "Mail.Send"],
+        functions:    ["mail.search", "mail.read", "mail.send", "mail.reply", "mail.move_to_folder"],
         vendor_prereq: %{
           label:      "Microsoft Graph (Mail permissions)",
           enable_url: "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade"
@@ -477,9 +636,9 @@ defmodule DmhAi.Connectors.M365 do
       %{
         id:           "calendar",
         display_name: "Outlook Calendar",
-        description:  "Read availability and create calendar events.",
+        description:  "Read availability, list upcoming events, and create / update calendar events.",
         scopes:       ["Calendars.Read", "Calendars.ReadWrite"],
-        functions:    ["cal.find_free_slots", "cal.create_event", "cal.update_event"],
+        functions:    ["cal.find_free_slots", "cal.list_events", "cal.create_event", "cal.update_event"],
         vendor_prereq: %{
           label:      "Microsoft Graph (Calendar permissions)",
           enable_url: "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade"
@@ -488,9 +647,9 @@ defmodule DmhAi.Connectors.M365 do
       %{
         id:           "files",
         display_name: "OneDrive Files",
-        description:  "List OneDrive files and upload new ones.",
+        description:  "List OneDrive files, download contents, and upload new ones.",
         scopes:       ["Files.Read", "Files.ReadWrite"],
-        functions:    ["files.list", "files.upload"],
+        functions:    ["files.list", "files.download", "files.upload"],
         vendor_prereq: %{
           label:      "Microsoft Graph (Files permissions)",
           enable_url: "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade"
@@ -498,21 +657,21 @@ defmodule DmhAi.Connectors.M365 do
       },
       %{
         id:           "teams",
-        display_name: "Teams Meetings",
-        description:  "Create Microsoft Teams online meetings; the agent shares the join link.",
-        scopes:       ["OnlineMeetings.ReadWrite"],
-        functions:    ["teams.create_meeting"],
+        display_name: "Teams",
+        description:  "Create Teams meetings, list channels, and post messages to channels.",
+        scopes:       ["OnlineMeetings.ReadWrite", "Channel.ReadBasic.All", "ChannelMessage.Send"],
+        functions:    ["teams.create_meeting", "teams.list_channels", "teams.post_channel_message"],
         vendor_prereq: %{
-          label:      "Microsoft Graph (OnlineMeetings.ReadWrite delegated permission)",
+          label:      "Microsoft Graph (Teams meetings, channels, and channel messages)",
           enable_url: "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade"
         }
       },
       %{
         id:           "todo",
         display_name: "Microsoft To Do",
-        description:  "List the user's To Do tasks on their default list and add new ones.",
+        description:  "List the user's To Do tasks on their default list, add new ones, and mark them complete.",
         scopes:       ["Tasks.Read", "Tasks.ReadWrite"],
-        functions:    ["todo.list", "todo.create"],
+        functions:    ["todo.list", "todo.create", "todo.complete"],
         vendor_prereq: %{
           label:      "Microsoft Graph (Tasks delegated permissions)",
           enable_url: "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade"
@@ -531,22 +690,22 @@ defmodule DmhAi.Connectors.M365 do
       },
       %{
         id:           "excel",
-        display_name: "Excel (read-only)",
-        description:  "Read cell ranges from Excel workbooks stored in OneDrive (read-only).",
-        scopes:       ["Files.Read"],
-        functions:    ["excel.read_range"],
+        display_name: "Excel",
+        description:  "Read and update cell ranges in Excel workbooks stored in OneDrive.",
+        scopes:       ["Files.Read", "Files.ReadWrite"],
+        functions:    ["excel.read_range", "excel.update_range"],
         vendor_prereq: %{
-          label:      "Microsoft Graph (Files.Read covers workbook reads)",
+          label:      "Microsoft Graph (Files permissions cover workbook reads + writes)",
           enable_url: "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade"
         }
       },
       # ── Planned (vendor surface visible to admins, not yet built) ──
       %{
         id:           "teams_chat",
-        display_name: "Teams Chat",
-        description:  "Send Teams channel messages and read chat history.",
+        display_name: "Teams 1:1 / Group Chat",
+        description:  "Read + send Teams 1:1 and group chat history (channel messages already live under the Teams capability).",
         status:       :planned,
-        scopes:       ["ChannelMessage.Send", "Chat.ReadWrite"],
+        scopes:       ["Chat.ReadWrite"],
         functions:    [],
         vendor_prereq: %{label: "Microsoft Graph (Teams chat permissions)",
                          enable_url: "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade"}

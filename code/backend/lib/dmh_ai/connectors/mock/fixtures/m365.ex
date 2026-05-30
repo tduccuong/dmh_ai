@@ -28,16 +28,24 @@ defmodule DmhAi.Connectors.Mock.Fixtures.M365 do
       "mail.search"         => &mail_search/1,
       "mail.send"           => &mail_send/1,
       "mail.reply"          => &mail_reply/1,
+      "mail.read"           => &mail_read/1,
+      "mail.move_to_folder" => &mail_move_to_folder/1,
       "cal.find_free_slots" => &cal_find_free_slots/1,
       "cal.create_event"    => &cal_create_event/1,
       "cal.update_event"    => &cal_update_event/1,
+      "cal.list_events"     => &cal_list_events/1,
       "files.list"          => &files_list/1,
       "files.upload"        => &files_upload/1,
-      "teams.create_meeting" => &teams_create_meeting/1,
-      "todo.list"   => &todo_list/1,
-      "todo.create" => &todo_create/1,
+      "files.download"      => &files_download/1,
+      "teams.create_meeting"        => &teams_create_meeting/1,
+      "teams.list_channels"         => &teams_list_channels/1,
+      "teams.post_channel_message"  => &teams_post_channel_message/1,
+      "todo.list"     => &todo_list/1,
+      "todo.create"   => &todo_create/1,
+      "todo.complete" => &todo_complete/1,
       "contacts.search" => &contacts_search/1,
-      "excel.read_range" => &excel_read_range/1,
+      "excel.read_range"  => &excel_read_range/1,
+      "excel.update_range" => &excel_update_range/1,
       "onenote.read_page" => &onenote_read_page/1
     }
   end
@@ -52,6 +60,8 @@ defmodule DmhAi.Connectors.Mock.Fixtures.M365 do
       stefan_email:    "stefan.beispiel@dmh-m365-demo.example",
       free_slot:       "2026-05-22T10:00:00Z",
       event_id:        "evt_m365_mock_demo_001",
+      list_event_id:   "MOCKEVT001",
+      list_event_subject: "Q2 Review — DMH Pilot Synchronisation",
       onedrive_file:   "Projektbrief_DMH_M365_Pilot_2026q2.docx",
       onedrive_folder: "M365 Pilot Handovers",
       teams_join_url:  "https://teams.microsoft.com/l/meetup-join/dmh-m365-mock",
@@ -60,7 +70,16 @@ defmodule DmhAi.Connectors.Mock.Fixtures.M365 do
       todo_id:         "task_m365_mock_q2_review_001",
       contact_name:    "Maria Kontaktbeispiel",
       contact_email:   "maria.kontaktbeispiel@dmh-m365-demo.example",
-      excel_value:     "M365-DEMO-CELL-SENTINEL"
+      excel_value:     "M365-DEMO-CELL-SENTINEL",
+      message_id:      "MOCKMSG001",
+      channel_id:      "19:MOCKCHANNEL001@thread.tacv2",
+      channel_name:    "Allgemein — DMH Pilot",
+      team_id:         "MOCKTEAM001",
+      task_id:         "MOCKTASK001",
+      file_id:         "MOCK_FILE_001",
+      file_download_text: "DMH M365 Pilot — interne Notiz. Sentinel: M365-DOWNLOAD-OK.",
+      message_body:    "Sehr geehrtes Pilot-Team, anbei die Q2-Unterlagen zur Vorbereitung. Sentinel: M365-MAIL-READ-OK.",
+      destination_folder_id: "archive"
     }
   end
 
@@ -245,6 +264,114 @@ defmodule DmhAi.Connectors.Mock.Fixtures.M365 do
         "Goals for the week:\n" <>
         "• Ship Calendly connector + Slice 3 expansion across HubSpot / GW / M365.\n" <>
         "• Verify cross-connector flow (HubSpot find → Calendly book → HubSpot log + task)."
+    }
+  end
+
+  # ── Per-function fixtures: new in M365 +8 expansion ──────────────────
+
+  defp cal_list_events(args) do
+    %{
+      list_event_id: id,
+      list_event_subject: subject,
+      anna_email: organiser,
+      free_slot: free_slot
+    } = sentinels()
+
+    %{
+      "events" => [
+        %{
+          "id"        => id,
+          "subject"   => subject,
+          "start"     => free_slot,
+          "end"       => shift_iso(free_slot, 60),
+          "location"  => "Teams · DMH Pilot",
+          "organizer" => organiser,
+          "web_link"  => "https://outlook.office.com/calendar/item/" <> id
+        }
+      ],
+      "queried"  => Map.get(args, "query"),
+      "time_min" => Map.get(args, "time_min"),
+      "time_max" => Map.get(args, "time_max")
+    }
+  end
+
+  defp mail_read(args) do
+    %{
+      anna_email: from,
+      stefan_email: to,
+      message_body: body,
+      message_id: sentinel_id
+    } = sentinels()
+
+    id = Map.get(args, "message_id") || sentinel_id
+
+    %{
+      "message" => %{
+        "id"              => id,
+        "subject"         => "Outlook Pilot — Onboarding Plan",
+        "from"            => from,
+        "to"              => [to],
+        "received_at"     => "2026-05-15T08:24:00Z",
+        "body"            => body,
+        "body_type"       => "text",
+        "snippet"         => String.slice(body, 0, 64),
+        "has_attachments" => false,
+        "attachments"     => []
+      }
+    }
+  end
+
+  defp mail_move_to_folder(args) do
+    %{message_id: sentinel_id} = sentinels()
+
+    %{
+      "message_id" => Map.get(args, "message_id") || sentinel_id
+    }
+  end
+
+  defp excel_update_range(_args) do
+    %{
+      "ok" => true
+    }
+  end
+
+  defp files_download(_args) do
+    %{file_download_text: text} = sentinels()
+
+    %{
+      "content"      => text,
+      "content_type" => "text/plain"
+    }
+  end
+
+  defp teams_list_channels(_args) do
+    %{channel_id: id, channel_name: name} = sentinels()
+
+    %{
+      "channels" => [
+        %{
+          "id"              => id,
+          "name"            => name,
+          "description"     => "Hauptkanal für den DMH M365-Pilot.",
+          "membership_type" => "standard"
+        }
+      ]
+    }
+  end
+
+  defp teams_post_channel_message(_args) do
+    %{message_id: id} = sentinels()
+
+    %{
+      "message_id" => id
+    }
+  end
+
+  defp todo_complete(args) do
+    %{task_id: sentinel_id} = sentinels()
+
+    %{
+      "task_id" => Map.get(args, "task_id") || sentinel_id
     }
   end
 end
