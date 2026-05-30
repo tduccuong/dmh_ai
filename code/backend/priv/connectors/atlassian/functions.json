@@ -198,6 +198,179 @@
     },
     {
       "args": {
+        "issue_key": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "atlassian.issue.find"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "issue.delete",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "ok": "boolean"
+      },
+      "scopes_required": [
+        "write:jira-work"
+      ]
+    },
+    {
+      "args": {
+        "content": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "filename": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "issue_key": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "atlassian.issue.find"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "issue.add_attachment",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "attachment_id": "string"
+      },
+      "scopes_required": [
+        "write:jira-work"
+      ]
+    },
+    {
+      "args": {
+        "board_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "atlassian.board.find"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "limit": {
+          "required": false,
+          "type": "integer"
+        },
+        "state": {
+          "provenance": {
+            "kind": "literal_default",
+            "value": "active"
+          },
+          "required": false,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "sprint.find",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "sprints": "list"
+      },
+      "scopes_required": [
+        "read:jira-work"
+      ]
+    },
+    {
+      "args": {
+        "issue_keys": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "list"
+        },
+        "sprint_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "atlassian.sprint.find"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "issue.move_to_sprint",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "ok": "boolean"
+      },
+      "scopes_required": [
+        "write:jira-work"
+      ]
+    },
+    {
+      "args": {
+        "limit": {
+          "required": false,
+          "type": "integer"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "board.find",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "boards": "list"
+      },
+      "scopes_required": [
+        "read:jira-work"
+      ]
+    },
+    {
+      "args": {
         "limit": {
           "required": false,
           "type": "integer"
@@ -217,6 +390,33 @@
       },
       "scopes_required": [
         "read:jira-work"
+      ]
+    },
+    {
+      "args": {
+        "email": {
+          "format": "email",
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "user.find_by_email",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "user": "map"
+      },
+      "scopes_required": [
+        "read:jira-user"
       ]
     },
     {
@@ -338,6 +538,59 @@
       },
       "scopes_required": [
         "write:confluence-content"
+      ]
+    },
+    {
+      "args": {
+        "page_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "atlassian.page.find"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "page.delete",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "ok": "boolean"
+      },
+      "scopes_required": [
+        "write:confluence-content"
+      ]
+    },
+    {
+      "args": {
+        "limit": {
+          "required": false,
+          "type": "integer"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "space.find",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "spaces": "list"
+      },
+      "scopes_required": [
+        "read:confluence-space.summary"
       ]
     }
   ],

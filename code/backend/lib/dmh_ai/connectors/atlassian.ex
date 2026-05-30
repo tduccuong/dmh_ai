@@ -8,31 +8,44 @@ defmodule DmhAi.Connectors.Atlassian do
   Atlassian connector (Universal Region, Case B — vendor MCP) covering
   Jira + Confluence under a single slug. Trello is deferred.
 
-  Nine functions at the SME-relevant slice of Atlassian's Cloud REST
-  APIs (developer.atlassian.com) — Jira issues / projects / transitions
-  / comments and Confluence pages:
+  Seventeen functions at the SME-relevant slice of Atlassian's Cloud
+  REST APIs (developer.atlassian.com) — Jira issues / projects /
+  transitions / comments / attachments / agile boards + sprints, a
+  Jira user-lookup pivot, and Confluence pages + spaces:
 
-    issue.find        [read]   build a JQL search from structured args
-    issue.create      [write]  create a Jira issue
-    issue.update      [write]  PUT fields on an existing issue
-    issue.transition  [write]  POST a workflow transition on an issue
-    issue.comment     [write]  POST a comment on an issue
-    project.find      [read]   list Jira projects
-    page.find         [read]   find Confluence pages by space + title
-    page.create       [write]  create a Confluence page
-    page.update       [write]  PUT-replace a Confluence page
+    issue.find            [read]   build a JQL search from structured args
+    issue.create          [write]  create a Jira issue
+    issue.update          [write]  PUT fields on an existing issue
+    issue.transition      [write]  POST a workflow transition on an issue
+    issue.comment         [write]  POST a comment on an issue
+    issue.delete          [write]  DELETE an issue by key
+    issue.add_attachment  [write]  POST a multipart attachment on an issue
+    issue.move_to_sprint  [write]  POST issue keys onto a sprint (Agile API)
+    sprint.find           [read]   list sprints on a board (Agile API)
+    board.find            [read]   list Jira Agile boards (Agile API)
+    project.find          [read]   list Jira projects
+    user.find_by_email    [read]   search Jira users by email (identity pivot)
+    page.find             [read]   find Confluence pages by space + title
+    page.create           [write]  create a Confluence page
+    page.update           [write]  PUT-replace a Confluence page
+    page.delete           [write]  DELETE a Confluence page
+    space.find            [read]   list Confluence spaces
 
-  Three capability groups (jira_issues / jira_projects /
-  confluence_pages) so admins can scope per-org — a dev-tooling org
-  might tick jira_issues + jira_projects only, while a docs-heavy org
-  also enables confluence_pages. A fourth `trello` group is listed as
+  Capability groups (jira_issues / jira_agile / jira_projects / users
+  / confluence_pages / confluence_spaces) so admins can scope per-org —
+  a dev-tooling org might tick jira_issues + jira_projects + jira_agile
+  only, while a docs-heavy org also enables confluence_pages +
+  confluence_spaces. A separate `trello` group is listed as
   `status: :planned` so the FE can show it as deferred.
 
   ## Per-tenant API host (`cloudId`)
 
   Atlassian Cloud REST is per-tenant: every Jira call lives at
-  `https://api.atlassian.com/ex/jira/{cloudid}/rest/api/3/...` and
-  every Confluence call at
+  `https://api.atlassian.com/ex/jira/{cloudid}/rest/api/3/...`, every
+  Jira Agile call at
+  `https://api.atlassian.com/ex/jira/{cloudid}/rest/agile/1.0/...`
+  (boards + sprints live on a SEPARATE Jira `agile/1.0` prefix, not
+  the `api/3` prefix), and every Confluence call at
   `https://api.atlassian.com/ex/confluence/{cloudid}/wiki/rest/api/...`,
   where `{cloudid}` is a placeholder, not a real host. After the OAuth
   token exchange the framework calls
@@ -271,6 +284,96 @@ defmodule DmhAi.Connectors.Atlassian do
           scopes:  ["write:jira-work"]
         },
 
+        # vendor: DELETE /rest/api/3/issue/{issue_key}
+        "issue.delete" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "issue_key" => %{type: :string, required: true,
+                             provenance: %{kind: :lookup,
+                                           source: "atlassian.issue.find"}}
+          },
+          returns: %{ok: :boolean},
+          errors:  [:unauthorised, :not_found, :rate_limited],
+          scopes:  ["write:jira-work"]
+        },
+
+        # vendor: POST /rest/api/3/issue/{issue_key}/attachments
+        # Multipart upload with the Atlassian-required header
+        # `X-Atlassian-Token: no-check`; the connector composes the
+        # multipart body via a custom handler since the form-data shape
+        # does not fit the default JSON `request` builder.
+        "issue.add_attachment" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "issue_key" => %{type: :string, required: true,
+                             provenance: %{kind: :lookup,
+                                           source: "atlassian.issue.find"}},
+            "filename"  => %{type: :string, required: true,
+                             provenance: %{kind: :from_user}},
+            "content"   => %{type: :string, required: true,
+                             provenance: %{kind: :literal_default}}
+          },
+          returns: %{attachment_id: :string},
+          errors:  [:unauthorised, :not_found, :rate_limited],
+          scopes:  ["write:jira-work"]
+        },
+
+        # vendor: GET /rest/agile/1.0/board/{board_id}/sprint
+        # Jira Agile lives on a SEPARATE `agile/1.0` URL prefix, not
+        # `api/3`; sprints are owned by a board so the board id is
+        # required. `state` defaults to `active` so chats can ask
+        # "the current sprint" without naming the state literal.
+        "sprint.find" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "board_id" => %{type: :string,  required: true,
+                            provenance: %{kind: :lookup,
+                                          source: "atlassian.board.find"}},
+            "state"    => %{type: :string,  required: false,
+                            provenance: %{kind: :literal_default, value: "active"}},
+            "limit"    => %{type: :integer, required: false}
+          },
+          returns: %{sprints: :list},
+          scopes:  ["read:jira-work"]
+        },
+
+        # vendor: POST /rest/agile/1.0/sprint/{sprint_id}/issue
+        # Body shape `{issues: [issue_keys]}` — the vendor moves the
+        # listed issues onto the sprint. Idempotent at the Atlassian
+        # side; the connector still requires an idempotency key so
+        # retries don't double-fire downstream effects.
+        "issue.move_to_sprint" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "sprint_id"  => %{type: :string, required: true,
+                              provenance: %{kind: :lookup,
+                                            source: "atlassian.sprint.find"}},
+            "issue_keys" => %{type: :list,   required: true,
+                              provenance: %{kind: :literal_default}}
+          },
+          returns: %{ok: :boolean},
+          errors:  [:unauthorised, :not_found, :rate_limited],
+          scopes:  ["write:jira-work"]
+        },
+
+        # vendor: GET /rest/agile/1.0/board
+        "board.find" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "limit" => %{type: :integer, required: false}
+          },
+          returns: %{boards: :list},
+          scopes:  ["read:jira-work"]
+        },
+
         # vendor: GET /rest/api/3/project
         "project.find" => %Function{
           permission:    :read,
@@ -280,6 +383,23 @@ defmodule DmhAi.Connectors.Atlassian do
           },
           returns: %{projects: :list},
           scopes:  ["read:jira-work"]
+        },
+
+        # vendor: GET /rest/api/3/user/search?query={email}
+        # Atlassian's user-search endpoint filters by email OR display
+        # name via the same `query` param. The connector takes the
+        # first match and exposes its `accountId` as the identity
+        # pivot — used by the framework's lookup-by-email shortcut so
+        # downstream functions referencing `{{owner}}` resolve.
+        "user.find_by_email" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "email" => %{type: :string, required: true, format: :email,
+                         provenance: %{kind: :from_user}}
+          },
+          returns: %{user: :map},
+          scopes:  ["read:jira-user"]
         },
 
         # vendor: GET /wiki/rest/api/content?spaceKey=…&title=…&type=page
@@ -333,18 +453,45 @@ defmodule DmhAi.Connectors.Atlassian do
           returns: %{page_id: :string},
           errors:  [:unauthorised, :not_found, :rate_limited],
           scopes:  ["write:confluence-content"]
+        },
+
+        # vendor: DELETE /wiki/rest/api/content/{page_id}
+        "page.delete" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "page_id" => %{type: :string, required: true,
+                           provenance: %{kind: :lookup,
+                                         source: "atlassian.page.find"}}
+          },
+          returns: %{ok: :boolean},
+          errors:  [:unauthorised, :not_found, :rate_limited],
+          scopes:  ["write:confluence-content"]
+        },
+
+        # vendor: GET /wiki/rest/api/space
+        "space.find" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "limit" => %{type: :integer, required: false}
+          },
+          returns: %{spaces: :list},
+          scopes:  ["read:confluence-space.summary"]
         }
       }
     }
   end
 
   @impl true
-  # Atlassian's `/users/search?query=<email>` returns the matching
-  # accountId, but a dedicated identity-pivot function is not yet in
-  # this manifest. Fix: add `user.find_by_email` and switch this to:
-  #   %{function: "atlassian.user.find_by_email",
-  #     by_arg: :email, emit_field: "account_id"}
-  def identity_lookup, do: nil
+  # `user.find_by_email` hits Jira's `/user/search?query=<email>` —
+  # Atlassian's user-search endpoint matches by email or display name.
+  # The connector takes the first match and emits its `accountId`, so
+  # downstream functions referencing `{{owner}}` resolve to the
+  # account id the Jira REST API expects on assignment fields.
+  def identity_lookup,
+    do: %{function: "atlassian.user.find_by_email", by_arg: :email, emit_field: "accountId"}
 
   @impl true
   # Atlassian error bodies vary by product: Jira returns
@@ -398,6 +545,7 @@ defmodule DmhAi.Connectors.Atlassian do
       scopes: [
         "read:jira-work",
         "write:jira-work",
+        "read:jira-user",
         "read:confluence-content.summary",
         "write:confluence-content",
         "read:me",
@@ -463,14 +611,15 @@ defmodule DmhAi.Connectors.Atlassian do
   def mcp_handler_module, do: DmhAi.Connectors.Atlassian.MCPHandler
 
   @doc """
-  Capability groups admin curates via External Connectors. Three
-  domain groups go live — jira_issues / jira_projects /
-  confluence_pages — so a dev-tooling org can expose jira_issues +
-  jira_projects and skip the docs surface, while a docs-heavy org
-  also enables confluence_pages. A fourth `trello` entry exists at
-  `status: :planned` so the FE can render it as a coming-soon item;
-  it carries no functions and is filtered out of the dispatcher gate.
-  The three enforcement layers (OAuth scope filter, tool catalog
+  Capability groups admin curates via External Connectors. Six domain
+  groups go live — jira_issues / jira_agile / jira_projects / users /
+  confluence_pages / confluence_spaces — so a dev-tooling org can
+  expose Jira surfaces (issues + projects + agile boards/sprints) and
+  skip the docs surface, while a docs-heavy org also enables
+  confluence_pages + confluence_spaces. A separate `trello` entry
+  exists at `status: :planned` so the FE can render it as a coming-soon
+  item; it carries no functions and is filtered out of the dispatcher
+  gate. The three enforcement layers (OAuth scope filter, tool catalog
   filter, dispatcher gate) all read from `enabled_capabilities`.
   """
   @spec capabilities() :: [map()]
@@ -479,10 +628,22 @@ defmodule DmhAi.Connectors.Atlassian do
       %{
         id:           "jira_issues",
         display_name: "Jira — Issues",
-        description:  "Search, create, update, transition, and comment on Jira issues.",
+        description:  "Search, create, update, transition, comment on, delete, and attach files to Jira issues.",
         scopes:       ["read:jira-work", "write:jira-work"],
         functions:    ["issue.find", "issue.create", "issue.update",
-                       "issue.transition", "issue.comment"],
+                       "issue.transition", "issue.comment",
+                       "issue.delete", "issue.add_attachment"],
+        vendor_prereq: %{
+          label:      "Atlassian OAuth 2.0 (3LO) app — Jira scopes",
+          enable_url: "https://developer.atlassian.com/cloud/jira/platform/oauth-2-3lo-apps/"
+        }
+      },
+      %{
+        id:           "jira_agile",
+        display_name: "Jira — Agile (boards + sprints)",
+        description:  "List Jira Agile boards + sprints, and move issues onto a sprint.",
+        scopes:       ["read:jira-work", "write:jira-work"],
+        functions:    ["sprint.find", "issue.move_to_sprint", "board.find"],
         vendor_prereq: %{
           label:      "Atlassian OAuth 2.0 (3LO) app — Jira scopes",
           enable_url: "https://developer.atlassian.com/cloud/jira/platform/oauth-2-3lo-apps/"
@@ -500,11 +661,33 @@ defmodule DmhAi.Connectors.Atlassian do
         }
       },
       %{
+        id:           "users",
+        display_name: "Jira — Users",
+        description:  "Pivot a Jira user by email to their accountId (identity lookup).",
+        scopes:       ["read:jira-user"],
+        functions:    ["user.find_by_email"],
+        vendor_prereq: %{
+          label:      "Atlassian OAuth 2.0 (3LO) app — Jira scopes",
+          enable_url: "https://developer.atlassian.com/cloud/jira/platform/oauth-2-3lo-apps/"
+        }
+      },
+      %{
         id:           "confluence_pages",
         display_name: "Confluence — Pages",
-        description:  "Find, create, and update Confluence pages.",
+        description:  "Find, create, update, and delete Confluence pages.",
         scopes:       ["read:confluence-content.summary", "write:confluence-content"],
-        functions:    ["page.find", "page.create", "page.update"],
+        functions:    ["page.find", "page.create", "page.update", "page.delete"],
+        vendor_prereq: %{
+          label:      "Atlassian OAuth 2.0 (3LO) app — Confluence scopes",
+          enable_url: "https://developer.atlassian.com/cloud/jira/platform/oauth-2-3lo-apps/"
+        }
+      },
+      %{
+        id:           "confluence_spaces",
+        display_name: "Confluence — Spaces",
+        description:  "List Confluence spaces.",
+        scopes:       ["read:confluence-space.summary"],
+        functions:    ["space.find"],
         vendor_prereq: %{
           label:      "Atlassian OAuth 2.0 (3LO) app — Confluence scopes",
           enable_url: "https://developer.atlassian.com/cloud/jira/platform/oauth-2-3lo-apps/"

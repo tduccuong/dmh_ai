@@ -56,9 +56,10 @@ defmodule DmhAi.P03AtlassianTest do
       assert :ok = Manifest.validate(Atlassian.manifest())
     end
 
-    test "declares 9 functions at the Primitive 0.3 surface" do
+    test "declares 17 functions at the Primitive 0.3 surface" do
       functions = Atlassian.manifest().functions
 
+      # Original 9
       assert Map.has_key?(functions, "issue.find")
       assert Map.has_key?(functions, "issue.create")
       assert Map.has_key?(functions, "issue.update")
@@ -69,7 +70,17 @@ defmodule DmhAi.P03AtlassianTest do
       assert Map.has_key?(functions, "page.create")
       assert Map.has_key?(functions, "page.update")
 
-      assert map_size(functions) == 9
+      # +8 from the Atlassian expansion
+      assert Map.has_key?(functions, "issue.delete")
+      assert Map.has_key?(functions, "issue.add_attachment")
+      assert Map.has_key?(functions, "sprint.find")
+      assert Map.has_key?(functions, "issue.move_to_sprint")
+      assert Map.has_key?(functions, "board.find")
+      assert Map.has_key?(functions, "user.find_by_email")
+      assert Map.has_key?(functions, "page.delete")
+      assert Map.has_key?(functions, "space.find")
+
+      assert map_size(functions) == 17
     end
 
     test "every write function is `callable_from: [:task]` (HARD Rule 2)" do
@@ -105,6 +116,12 @@ defmodule DmhAi.P03AtlassianTest do
 
     test "region tag is `universal`" do
       assert Atlassian.manifest().region == "universal"
+    end
+
+    test "identity_lookup pivots Jira user search to accountId" do
+      assert %{function: "atlassian.user.find_by_email",
+               by_arg: :email,
+               emit_field: "accountId"} = Atlassian.identity_lookup()
     end
   end
 
@@ -283,6 +300,43 @@ defmodule DmhAi.P03AtlassianTest do
       assert {:error, %{error: "not_found"}} =
                Dispatcher.call("atlassian.issue.comment",
                                %{"issue_key" => "MOCKPROJ-1", "body" => "Hallo"},
+                               ctx)
+    end
+
+    test "read function (board.find) from free chat returns the inner boards list",
+         %{admin_id: admin_id} do
+      Application.put_env(:dmh_ai, :__mcp_caller_stub__,
+        fn "atlassian", "board.find", args, _creds ->
+          assert args["limit"] == 25
+
+          {:ok,
+           %{"boards" => [%{"id" => "MOCKBOARD1",
+                            "name" => "Beispiel Mock-Board",
+                            "type" => "scrum"}]}}
+        end)
+
+      assert {:ok, %{"boards" => [%{"id" => "MOCKBOARD1"}]}} =
+               Dispatcher.call("atlassian.board.find",
+                               %{"limit" => 25},
+                               %{user_id: admin_id})
+    end
+
+    test "write function (issue.delete) in-task carries injected idempotency_key",
+         %{admin_id: admin_id} do
+      Application.put_env(:dmh_ai, :__mcp_caller_stub__,
+        fn "atlassian", "issue.delete", args, _creds ->
+          assert is_binary(args["__idempotency_key"]),
+                 "writes must carry idempotency_key injected by Dispatcher"
+          assert args["issue_key"] == "MOCKPROJ-1"
+
+          {:ok, %{"ok" => true}}
+        end)
+
+      ctx = %{user_id: admin_id, task_id: "t-delete-issue", step_seq: 0}
+
+      assert {:ok, %{"ok" => true}} =
+               Dispatcher.call("atlassian.issue.delete",
+                               %{"issue_key" => "MOCKPROJ-1"},
                                ctx)
     end
   end
