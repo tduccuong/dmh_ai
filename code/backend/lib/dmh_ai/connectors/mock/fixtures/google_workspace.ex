@@ -32,6 +32,7 @@ defmodule DmhAi.Connectors.Mock.Fixtures.GoogleWorkspace do
       "gmail.send"   => &gmail_send/1,
       "gmail.reply"  => &gmail_reply/1,
       "gcal.find_free_slots" => &gcal_find_free_slots/1,
+      "gcal.list_events"     => &gcal_list_events/1,
       "gcal.create_event"    => &gcal_create_event/1,
       "gcal.update_event"    => &gcal_update_event/1,
       "drive.list"   => &drive_list/1,
@@ -59,6 +60,7 @@ defmodule DmhAi.Connectors.Mock.Fixtures.GoogleWorkspace do
       tobias_email:    "tobias.beispiel@dmh-demo.example",
       free_slot:       "2026-05-21T14:30:00+02:00",
       event_id:        "evt_mock_dmh_demo_001",
+      listed_event_id: "evt_mock_dmh_demo_listed_001",
       drive_file:      "spec_dmh_demo_handover_2026q2.md",
       drive_folder_id: "drv_folder_mock_handovers",
       meet_join_url:   "https://meet.google.com/dmh-demo-mock",
@@ -133,6 +135,27 @@ defmodule DmhAi.Connectors.Mock.Fixtures.GoogleWorkspace do
       "start"    => Map.get(args, "start"),
       "end"      => Map.get(args, "end"),
       "html_link" => "https://calendar.google.com/calendar/event?eid=" <> id
+    }
+  end
+
+  defp gcal_list_events(_args) do
+    %{listed_event_id: lid} = sentinels()
+
+    %{
+      "events" => [
+        %{
+          "id"      => lid,
+          "summary" => "Mock standup",
+          "start"   => %{"dateTime" => "2026-05-26T09:00:00Z"},
+          "end"     => %{"dateTime" => "2026-05-26T09:30:00Z"}
+        },
+        %{
+          "id"      => "evt_mock_dmh_demo_listed_002",
+          "summary" => "Mock review",
+          "start"   => %{"dateTime" => "2026-05-27T14:00:00Z"},
+          "end"     => %{"dateTime" => "2026-05-27T15:00:00Z"}
+        }
+      ]
     }
   end
 

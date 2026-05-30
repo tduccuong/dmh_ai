@@ -96,6 +96,7 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
     "gmail.search"       => {"gmail",    "v1", "gmail.users.messages.list"},
     "gmail.send"         => {"gmail",    "v1", "gmail.users.messages.send"},
     "gmail.reply"        => {"gmail",    "v1", "gmail.users.messages.send"},
+    "gcal.list_events"   => {"calendar", "v3", "calendar.events.list"},
     "calendar.list"      => {"calendar", "v3", "calendar.events.list"},
     "calendar.create"    => {"calendar", "v3", "calendar.events.insert"},
     "drive.upload"       => {"drive",    "v3", "drive.files.create"},
@@ -261,6 +262,30 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
             "attendees"    => %{type: :list,    required: false}
           },
           returns: %{slots: :list},
+          scopes:  ["https://www.googleapis.com/auth/calendar.readonly"]
+        },
+
+        # vendor: GET https://www.googleapis.com/calendar/v3/calendars/primary/events
+        # docs:   https://developers.google.com/calendar/api/v3/reference/events/list
+        # shim translation: manifest args `time_min` / `time_max` →
+        # API args `timeMin` / `timeMax` (RFC-3339 strings); `query`
+        # → `q` (free-text search across event fields); `max_results`
+        # → `maxResults`. The shim always pins `singleEvents=true` +
+        # `orderBy=startTime` so recurring events expand into their
+        # instances and the response is chronological — what every
+        # "list events between X and Y" caller wants.
+        "gcal.list_events" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "time_min"    => %{type: :string,  required: true,
+                               provenance: %{kind: :literal_default}},
+            "time_max"    => %{type: :string,  required: true,
+                               provenance: %{kind: :literal_default}},
+            "query"       => %{type: :string,  required: false},
+            "max_results" => %{type: :integer, required: false}
+          },
+          returns: %{events: :list},
           scopes:  ["https://www.googleapis.com/auth/calendar.readonly"]
         },
 
@@ -656,7 +681,7 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
           "https://www.googleapis.com/auth/calendar.readonly",
           "https://www.googleapis.com/auth/calendar.events"
         ],
-        functions: ["gcal.find_free_slots", "gcal.create_event", "gcal.update_event"],
+        functions: ["gcal.find_free_slots", "gcal.list_events", "gcal.create_event", "gcal.update_event"],
         vendor_prereq: %{
           label:      "Calendar API",
           enable_url: "https://console.cloud.google.com/apis/library/calendar-json.googleapis.com"

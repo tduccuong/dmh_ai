@@ -218,6 +218,47 @@
     },
     {
       "args": {
+        "max_results": {
+          "required": false,
+          "type": "integer"
+        },
+        "query": {
+          "required": false,
+          "type": "string"
+        },
+        "time_max": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "time_min": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "gcal.list_events",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "events": "list"
+      },
+      "scopes_required": [
+        "https://www.googleapis.com/auth/calendar.readonly"
+      ]
+    },
+    {
+      "args": {
         "event_id": {
           "provenance": {
             "kind": "literal_default"

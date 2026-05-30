@@ -65,6 +65,14 @@ defmodule DmhAi.Connectors.GoogleWorkspace.MCPHandler do
         handler: &gcal_find_free_slots/2,
         doc:     "List free slots of `duration_min` length within a window."
       },
+      "gcal.list_events" => %FunctionSpec{
+        method:  :get,
+        url:     "#{@calendar_base}/calendars/primary/events",
+        request: &gcal_list_events_request/2,
+        response: fn 200, body -> {:ok, %{"events" => Map.get(body, "items", [])}}
+                    s, _b when s in 200..299 -> {:ok, %{"events" => []}} end,
+        doc:     "List Calendar events on the primary calendar within a window (recurring events expanded)."
+      },
       "gcal.create_event" => %FunctionSpec{
         method:  :post,
         url:     "#{@calendar_base}/calendars/primary/events",
@@ -465,6 +473,32 @@ defmodule DmhAi.Connectors.GoogleWorkspace.MCPHandler do
 
     [json: body]
   end
+
+  # ─── gcal.list_events — events.list with window + chronological order ─
+
+  # `singleEvents=true` + `orderBy=startTime` are the standard pairing:
+  # recurring events expand into individual instances and the response
+  # comes back chronological — what "list events between X and Y"
+  # callers expect. Optional `q` / `maxResults` ride along when set.
+  defp gcal_list_events_request(args, _ctx) do
+    base = [
+      {"timeMin",      args["time_min"]},
+      {"timeMax",      args["time_max"]},
+      {"singleEvents", "true"},
+      {"orderBy",      "startTime"}
+    ]
+
+    params =
+      base
+      |> maybe_append_param("q",          Map.get(args, "query"))
+      |> maybe_append_param("maxResults", Map.get(args, "max_results"))
+
+    [params: params]
+  end
+
+  defp maybe_append_param(params, _k, nil), do: params
+  defp maybe_append_param(params, _k, ""),  do: params
+  defp maybe_append_param(params, k, v),    do: params ++ [{k, v}]
 
   # ─── drive.list — files.list with folder_id → `q` clause ──────────────
 

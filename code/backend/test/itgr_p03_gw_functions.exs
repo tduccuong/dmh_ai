@@ -71,6 +71,20 @@ defmodule DmhAi.P03GoogleWorkspaceFunctionsTest do
       assert slot["duration_min"] == 45
     end
 
+    test "gcal.list_events returns the fixture event id within the window",
+         %{user_id: user_id, sentinels: s} do
+      assert {:ok, %{"events" => events}} =
+               Dispatcher.call("google_workspace.gcal.list_events",
+                               %{
+                                 "time_min" => "2026-05-26T00:00:00Z",
+                                 "time_max" => "2026-05-28T00:00:00Z"
+                               },
+                               %{user_id: user_id})
+
+      assert is_list(events)
+      assert Enum.any?(events, fn e -> e["id"] == s.listed_event_id end)
+    end
+
     test "drive.list returns the fixture file in the fixture folder",
          %{user_id: user_id, sentinels: s} do
       assert {:ok, %{"items" => items}} =
