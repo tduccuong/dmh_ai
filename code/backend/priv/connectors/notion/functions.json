@@ -269,6 +269,257 @@
       "scopes_required": [
         "default"
       ]
+    },
+    {
+      "args": {
+        "page_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "notion.page.find"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "page.archive",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "page_id": "string"
+      },
+      "scopes_required": [
+        "default"
+      ]
+    },
+    {
+      "args": {
+        "parent_page_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "notion.page.find"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "properties": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "map"
+        },
+        "title": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "rate_limited"
+      ],
+      "function_name": "database.create",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "database_id": "string"
+      },
+      "scopes_required": [
+        "default"
+      ]
+    },
+    {
+      "args": {
+        "database_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "notion.database.find"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "patch": {
+          "provenance": {
+            "kind": "literal_default"
+          },
+          "required": true,
+          "type": "map"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "database.update",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "database_id": "string"
+      },
+      "scopes_required": [
+        "default"
+      ]
+    },
+    {
+      "args": {
+        "block_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "notion.page.find"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "limit": {
+          "required": false,
+          "type": "integer"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "block.get",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "blocks": "list"
+      },
+      "scopes_required": [
+        "default"
+      ]
+    },
+    {
+      "args": {
+        "block_id": {
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "task"
+      ],
+      "error_classes": [
+        "unauthorised",
+        "not_found",
+        "rate_limited"
+      ],
+      "function_name": "block.delete",
+      "idempotency_key": "required",
+      "permission": "write",
+      "poll_trigger_capable": false,
+      "returns": {
+        "ok": "boolean"
+      },
+      "scopes_required": [
+        "default"
+      ]
+    },
+    {
+      "args": {
+        "limit": {
+          "required": false,
+          "type": "integer"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "user.list",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "users": "list"
+      },
+      "scopes_required": [
+        "default"
+      ]
+    },
+    {
+      "args": {
+        "email": {
+          "format": "email",
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "user.find_by_email",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "user": "map"
+      },
+      "scopes_required": [
+        "default"
+      ]
+    },
+    {
+      "args": {
+        "block_id": {
+          "provenance": {
+            "kind": "lookup",
+            "source": "notion.page.find"
+          },
+          "required": true,
+          "type": "string"
+        },
+        "limit": {
+          "required": false,
+          "type": "integer"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "comment.find",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "comments": "list"
+      },
+      "scopes_required": [
+        "default"
+      ]
     }
   ],
   "vendor_api_version": "2022-06-28"

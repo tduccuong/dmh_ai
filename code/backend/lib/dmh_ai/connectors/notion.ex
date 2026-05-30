@@ -7,21 +7,30 @@ defmodule DmhAi.Connectors.Notion do
   @moduledoc """
   Notion connector (Universal Region, Case B — vendor MCP).
 
-  Eight functions at the SME-relevant slice of Notion's REST API
-  (developers.notion.com) — pages, databases, blocks, comments:
+  Sixteen functions at the SME-relevant slice of Notion's REST API
+  (developers.notion.com) — pages, databases, blocks, comments, users:
 
-    page.find       [read]   search for pages
-    page.get        [read]   read one page by id
-    page.create     [write]  create a page under a parent
-    page.update     [write]  patch a page's properties
-    block.append    [write]  append child blocks to a block/page
-    database.find   [read]   search for databases
-    database.query  [read]   query rows of a database
-    comment.create  [write]  add a comment to a page
+    page.find            [read]   search for pages
+    page.get             [read]   read one page by id
+    page.create          [write]  create a page under a parent
+    page.update          [write]  patch a page's properties
+    page.archive         [write]  soft-delete a page (sets archived=true)
+    block.append         [write]  append child blocks to a block/page
+    block.get            [read]   read children of a block (or page)
+    block.delete         [write]  soft-archive a block
+    database.find        [read]   search for databases
+    database.query       [read]   query rows of a database
+    database.create      [write]  create a database under a parent page
+    database.update      [write]  patch a database (title / properties / description)
+    comment.create       [write]  add a comment to a page
+    comment.find         [read]   list comments under a block / page
+    user.list            [read]   list workspace users
+    user.find_by_email   [read]   resolve a workspace user by email
 
-  Four capability groups (pages / blocks / databases / comments)
-  so admins can scope per-org — a docs-reading org might tick
-  pages + databases, while a collaboration org also enables comments.
+  Five capability groups (pages / blocks / databases / comments /
+  users) so admins can scope per-org — a docs-reading org might tick
+  pages + databases, while a collaboration org also enables comments
+  and the directory.
 
   ## Fixed host, Bearer auth
 
@@ -300,16 +309,155 @@ defmodule DmhAi.Connectors.Notion do
           returns: %{comment_id: :string},
           errors:  [:unauthorised, :not_found, :rate_limited],
           scopes:  ["default"]
+        },
+
+        # vendor: PATCH /pages/{page_id} (body: %{"archived" => true})
+        # Notion's soft-delete: the page stays addressable but is
+        # hidden from the workspace UI and from search results.
+        "page.archive" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "page_id" => %{type: :string, required: true,
+                           provenance: %{kind: :lookup,
+                                         source: "notion.page.find"}}
+          },
+          returns: %{page_id: :string},
+          errors:  [:unauthorised, :not_found, :rate_limited],
+          scopes:  ["default"]
+        },
+
+        # vendor: POST /databases
+        # `properties` is a free-form map of Notion property-schema
+        # entries (e.g. `%{"Name" => %{"title" => %{}}, "Status" =>
+        # %{"select" => %{"options" => [...]}}}`); the shim passes it
+        # through verbatim under the `"properties"` key.
+        "database.create" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "parent_page_id" => %{type: :string, required: true,
+                                  provenance: %{kind: :lookup,
+                                                source: "notion.page.find"}},
+            "title"          => %{type: :string, required: true,
+                                  provenance: %{kind: :from_user}},
+            "properties"     => %{type: :map,    required: true,
+                                  provenance: %{kind: :literal_default}}
+          },
+          returns: %{database_id: :string},
+          errors:  [:unauthorised, :rate_limited],
+          scopes:  ["default"]
+        },
+
+        # vendor: PATCH /databases/{database_id}
+        # `patch` is a free-form top-level Notion database-update map
+        # (title / properties / description); the shim passes it
+        # through verbatim as the request body.
+        "database.update" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "database_id" => %{type: :string, required: true,
+                               provenance: %{kind: :lookup,
+                                             source: "notion.database.find"}},
+            "patch"       => %{type: :map,    required: true,
+                               provenance: %{kind: :literal_default}}
+          },
+          returns: %{database_id: :string},
+          errors:  [:unauthorised, :not_found, :rate_limited],
+          scopes:  ["default"]
+        },
+
+        # vendor: GET /blocks/{block_id}/children
+        # Children of a page or a block — Notion treats both
+        # uniformly under `/blocks/{id}/children`.
+        "block.get" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "block_id" => %{type: :string,  required: true,
+                            provenance: %{kind: :lookup,
+                                          source: "notion.page.find"}},
+            "limit"    => %{type: :integer, required: false}
+          },
+          returns: %{blocks: :list},
+          scopes:  ["default"]
+        },
+
+        # vendor: DELETE /blocks/{block_id}
+        # Notion's block soft-archive — the block stays addressable
+        # but is hidden from its parent's children list.
+        "block.delete" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "block_id" => %{type: :string, required: true,
+                            provenance: %{kind: :from_user}}
+          },
+          returns: %{ok: :boolean},
+          errors:  [:unauthorised, :not_found, :rate_limited],
+          scopes:  ["default"]
+        },
+
+        # vendor: GET /users
+        # Workspace user directory — used as the seed for chains
+        # that need a Notion user id and as the paginated source for
+        # `user.find_by_email`'s client-side filter.
+        "user.list" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "limit" => %{type: :integer, required: false}
+          },
+          returns: %{users: :list},
+          scopes:  ["default"]
+        },
+
+        # custom handler: paginates GET /users (Notion exposes no
+        # native email-pivot endpoint) and filters client-side for
+        # `person.email == email`. Capped at a few pages so a
+        # large directory doesn't fan out; if the address is not in
+        # the cap window the call returns an empty `user` map.
+        "user.find_by_email" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "email" => %{type: :string, required: true, format: :email,
+                         provenance: %{kind: :from_user}}
+          },
+          returns: %{user: :map},
+          scopes:  ["default"]
+        },
+
+        # vendor: GET /comments?block_id={id}
+        # Lists comments under a block (or page treated as a block).
+        "comment.find" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "block_id" => %{type: :string,  required: true,
+                            provenance: %{kind: :lookup,
+                                          source: "notion.page.find"}},
+            "limit"    => %{type: :integer, required: false}
+          },
+          returns: %{comments: :list},
+          scopes:  ["default"]
         }
       }
     }
   end
 
   @impl true
-  # Notion exposes `/users` keyed by id, but it has no email-pivot
-  # endpoint (a bot may not even know a member's email), so a dedicated
-  # identity-pivot function is not in this manifest.
-  def identity_lookup, do: nil
+  # Notion exposes no native email-pivot endpoint; the custom
+  # `user.find_by_email` paginates `/users` and filters client-side
+  # for `person.email == email`. The dispatcher invokes this when a
+  # downstream function needs to resolve a person → Notion user id.
+  def identity_lookup,
+    do: %{function: "notion.user.find_by_email", by_arg: :email, emit_field: "id"}
 
   @impl true
   # Notion returns normal HTTP status codes with a JSON error body of
@@ -409,12 +557,13 @@ defmodule DmhAi.Connectors.Notion do
   def mcp_handler_module, do: DmhAi.Connectors.Notion.MCPHandler
 
   @doc """
-  Capability groups admin curates via External Connectors. Four
-  domain groups go live — pages / blocks / databases / comments —
-  so a docs-reading org can expose pages + databases and skip the
-  rest, while a collaboration org also enables comments. The three
-  enforcement layers (OAuth scope filter, tool catalog filter,
-  dispatcher gate) all read from `enabled_capabilities`.
+  Capability groups admin curates via External Connectors. Five
+  domain groups go live — pages / blocks / databases / comments /
+  users — so a docs-reading org can expose pages + databases and
+  skip the rest, while a collaboration org also enables comments
+  and the directory. The three enforcement layers (OAuth scope
+  filter, tool catalog filter, dispatcher gate) all read from
+  `enabled_capabilities`.
   """
   @spec capabilities() :: [map()]
   def capabilities do
@@ -422,9 +571,15 @@ defmodule DmhAi.Connectors.Notion do
       %{
         id:           "pages",
         display_name: "Pages",
-        description:  "Search, read, create, and update pages.",
+        description:  "Search, read, create, update, and archive pages.",
         scopes:       ["default"],
-        functions:    ["page.find", "page.get", "page.create", "page.update"],
+        functions:    [
+          "page.find",
+          "page.get",
+          "page.create",
+          "page.update",
+          "page.archive"
+        ],
         vendor_prereq: %{
           label:      "Notion integration capabilities",
           enable_url: "https://developers.notion.com/docs/authorization"
@@ -433,9 +588,9 @@ defmodule DmhAi.Connectors.Notion do
       %{
         id:           "blocks",
         display_name: "Blocks",
-        description:  "Append child blocks to a page or block.",
+        description:  "Read, append, and delete child blocks of a page or block.",
         scopes:       ["default"],
-        functions:    ["block.append"],
+        functions:    ["block.append", "block.get", "block.delete"],
         vendor_prereq: %{
           label:      "Notion integration capabilities",
           enable_url: "https://developers.notion.com/docs/authorization"
@@ -444,9 +599,14 @@ defmodule DmhAi.Connectors.Notion do
       %{
         id:           "databases",
         display_name: "Databases",
-        description:  "Search and query databases.",
+        description:  "Search, query, create, and update databases.",
         scopes:       ["default"],
-        functions:    ["database.find", "database.query"],
+        functions:    [
+          "database.find",
+          "database.query",
+          "database.create",
+          "database.update"
+        ],
         vendor_prereq: %{
           label:      "Notion integration capabilities",
           enable_url: "https://developers.notion.com/docs/authorization"
@@ -455,9 +615,20 @@ defmodule DmhAi.Connectors.Notion do
       %{
         id:           "comments",
         display_name: "Comments",
-        description:  "Add comments to pages.",
+        description:  "Add and list comments under a page or block.",
         scopes:       ["default"],
-        functions:    ["comment.create"],
+        functions:    ["comment.create", "comment.find"],
+        vendor_prereq: %{
+          label:      "Notion integration capabilities",
+          enable_url: "https://developers.notion.com/docs/authorization"
+        }
+      },
+      %{
+        id:           "users",
+        display_name: "Users",
+        description:  "List workspace users and resolve one by email.",
+        scopes:       ["default"],
+        functions:    ["user.list", "user.find_by_email"],
         vendor_prereq: %{
           label:      "Notion integration capabilities",
           enable_url: "https://developers.notion.com/docs/authorization"

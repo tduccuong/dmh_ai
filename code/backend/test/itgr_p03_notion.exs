@@ -59,9 +59,10 @@ defmodule DmhAi.P03NotionTest do
       assert :ok = Manifest.validate(Notion.manifest())
     end
 
-    test "declares 8 functions at the Primitive 0.3 surface" do
+    test "declares 16 functions at the Primitive 0.3 surface" do
       functions = Notion.manifest().functions
 
+      # Original 8
       assert Map.has_key?(functions, "page.find")
       assert Map.has_key?(functions, "page.get")
       assert Map.has_key?(functions, "page.create")
@@ -71,7 +72,23 @@ defmodule DmhAi.P03NotionTest do
       assert Map.has_key?(functions, "database.query")
       assert Map.has_key?(functions, "comment.create")
 
-      assert map_size(functions) == 8
+      # +8 from the Notion expansion
+      assert Map.has_key?(functions, "page.archive")
+      assert Map.has_key?(functions, "database.create")
+      assert Map.has_key?(functions, "database.update")
+      assert Map.has_key?(functions, "block.get")
+      assert Map.has_key?(functions, "block.delete")
+      assert Map.has_key?(functions, "user.list")
+      assert Map.has_key?(functions, "user.find_by_email")
+      assert Map.has_key?(functions, "comment.find")
+
+      assert map_size(functions) == 16
+    end
+
+    test "identity_lookup/0 resolves to user.find_by_email" do
+      assert %{function: "notion.user.find_by_email",
+               by_arg: :email,
+               emit_field: "id"} = Notion.identity_lookup()
     end
 
     test "every write function is `callable_from: [:task]` (HARD Rule 2)" do
@@ -335,6 +352,53 @@ defmodule DmhAi.P03NotionTest do
                Dispatcher.call("notion.page.create",
                                %{"parent_id" => "00000000-mock-page-0000-000000000001",
                                  "title" => "Demo"},
+                               ctx)
+    end
+
+    test "read function (user.list) from free chat returns the inner users list",
+         %{admin_id: admin_id} do
+      Application.put_env(:dmh_ai, :__mcp_caller_stub__,
+        fn "notion", "user.list", args, _creds ->
+          assert args["limit"] == 25
+
+          # The Caller hands the connector the already-mapped shape;
+          # MCPHandler's `results` unwrap fires on the real transport
+          # path, so the stub returns the post-unwrap shape.
+          {:ok,
+           %{
+             "users" => [
+               %{
+                 "id" => "00000000-mock-user-0000-000000000001",
+                 "type" => "person",
+                 "person" => %{"email" => "klara.beispiel@beispiel-team-demo.example"}
+               }
+             ]
+           }}
+        end)
+
+      assert {:ok,
+              %{"users" => [%{"id" => "00000000-mock-user-0000-000000000001"}]}} =
+               Dispatcher.call("notion.user.list",
+                               %{"limit" => 25},
+                               %{user_id: admin_id})
+    end
+
+    test "write function (page.archive) in-task carries injected idempotency_key",
+         %{admin_id: admin_id} do
+      Application.put_env(:dmh_ai, :__mcp_caller_stub__,
+        fn "notion", "page.archive", args, _creds ->
+          assert is_binary(args["__idempotency_key"]),
+                 "writes must carry idempotency_key injected by Dispatcher"
+          assert args["page_id"] == "00000000-mock-page-0000-000000000001"
+
+          {:ok, %{"page_id" => "00000000-mock-page-0000-000000000001"}}
+        end)
+
+      ctx = %{user_id: admin_id, task_id: "t-archive-page", step_seq: 0}
+
+      assert {:ok, %{"page_id" => "00000000-mock-page-0000-000000000001"}} =
+               Dispatcher.call("notion.page.archive",
+                               %{"page_id" => "00000000-mock-page-0000-000000000001"},
                                ctx)
     end
   end
