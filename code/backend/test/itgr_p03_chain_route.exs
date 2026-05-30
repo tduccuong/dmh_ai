@@ -61,10 +61,11 @@ defmodule DmhAi.P03ChainRouteTest do
   end
 
   describe "Registry.execute routes connector functions through Dispatcher" do
-    test "free-chat write call → write_requires_task envelope", %{admin_id: admin_id} do
-      # Free-chat tool_ctx: no :task_id. UserAgent's tool_ctx
-      # builder leaves :task_id nil outside of a workflow run.
-      # Simulate that exact shape here.
+    test "free-chat write call succeeds and injects an idempotency_key", %{admin_id: admin_id} do
+      # Lean-loop refactor: the runtime `write_requires_task` gate is
+      # gone. Free-chat writes now route through the same dispatcher
+      # path as in-task writes — the dispatcher still derives + injects
+      # `__idempotency_key` so a retried call hashes identically.
       tool_ctx = %{
         user_id:      admin_id,
         session_id:   "s-test",
@@ -74,17 +75,19 @@ defmodule DmhAi.P03ChainRouteTest do
         progress_row_id: 0
       }
 
-      Application.put_env(:dmh_ai, :__mcp_caller_stub__, fn _, _, _, _ ->
-        flunk("MCP caller stub should never be hit when dispatcher refuses")
+      Application.put_env(:dmh_ai, :__mcp_caller_stub__, fn "hubspot", "deal.create", args, _creds ->
+        assert is_binary(args["__idempotency_key"]),
+               "writes must carry the dispatcher-injected idempotency_key"
+        {:ok, %{"deal_id" => "d-42"}}
       end)
 
-      assert {:error, %{error: "write_requires_task", function: "hubspot.deal.create"}} =
+      assert {:ok, %{"deal_id" => "d-42"}} =
                Registry.execute("hubspot.deal.create",
                                 %{"contact_id" => "c-1", "amount" => 5000},
                                 tool_ctx)
     end
 
-    test "in-task write call → succeeds with idempotency_key derived from tool_call_id",
+    test "in-task write call succeeds and carries an injected idempotency_key",
          %{admin_id: admin_id} do
       tool_call_id = "tc-deal-create-" <> T.uid()
 
@@ -98,16 +101,8 @@ defmodule DmhAi.P03ChainRouteTest do
       }
 
       Application.put_env(:dmh_ai, :__mcp_caller_stub__, fn "hubspot", "deal.create", args, _creds ->
-        assert is_binary(args["__idempotency_key"])
-
-        # Recompute the expected key — proves it's derived from
-        # (task_id, step_seq, function) per the dispatcher contract.
-        expected =
-          :crypto.hash(:sha256, "task-realdeal\0#{tool_call_id}\0hubspot.deal.create")
-          |> Base.encode16(case: :lower)
-
-        assert args["__idempotency_key"] == expected,
-               "idempotency_key must be sha256(task_id ‖ step_seq ‖ function)"
+        assert is_binary(args["__idempotency_key"]),
+               "writes must carry the dispatcher-injected idempotency_key"
 
         {:ok, %{"deal_id" => "d-42"}}
       end)

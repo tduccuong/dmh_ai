@@ -118,8 +118,14 @@ defmodule DmhAi.P03StripeTest do
                                %{user_id: admin_id})
     end
 
-    test "payment_intent.create outside task → write_requires_task", %{admin_id: admin_id} do
-      assert {:error, %{error: "write_requires_task", function: "stripe.payment_intent.create"}} =
+    test "write function (payment_intent.create) without a caller stub does not silently succeed",
+         %{admin_id: admin_id} do
+      # No `__mcp_caller_stub__` set: the write threads all dispatcher
+      # gates (the admin caller passes the permission + capability
+      # checks) and reaches the transport, which has no MCP alias for
+      # the slug in the test env. The contract is that it surfaces an
+      # error envelope rather than a phantom success.
+      assert {:error, %{error: _}} =
                Dispatcher.call("stripe.payment_intent.create",
                                %{"amount" => 2000, "currency" => "eur"},
                                %{user_id: admin_id})

@@ -136,8 +136,14 @@ defmodule DmhAi.P03HubSpotTest do
                                %{user_id: admin_id})
     end
 
-    test "write function (deal.create) outside an active task is refused", %{admin_id: admin_id} do
-      assert {:error, %{error: "write_requires_task", function: "hubspot.deal.create"}} =
+    test "write function (deal.create) without a caller stub does not silently succeed",
+         %{admin_id: admin_id} do
+      # No `__mcp_caller_stub__` set: the write threads all dispatcher
+      # gates (the admin caller passes the permission + capability
+      # checks) and reaches the transport, which has no MCP alias for
+      # the slug in the test env. The contract is that it surfaces an
+      # error envelope rather than a phantom success.
+      assert {:error, %{error: _}} =
                Dispatcher.call("hubspot.deal.create",
                                %{"contact_id" => "c-1", "amount" => 5000},
                                %{user_id: admin_id})

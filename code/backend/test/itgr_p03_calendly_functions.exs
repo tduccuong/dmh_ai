@@ -89,14 +89,6 @@ defmodule DmhAi.P03CalendlyFunctionsTest do
   end
 
   describe "write functions (require active task + carry idempotency_key)" do
-    test "single_use_link.create outside an active task is refused (dispatcher gate)",
-         %{user_id: user_id, sentinels: s} do
-      assert {:error, %{error: "write_requires_task"}} =
-               Dispatcher.call("calendly.single_use_link.create",
-                               %{"event_type_uri" => s.event_type_uri},
-                               %{user_id: user_id})
-    end
-
     test "single_use_link.create inside a task returns a booking URL",
          %{user_id: user_id, sentinels: s} do
       ctx = %{user_id: user_id, task_id: "t-cal-link", step_seq: 0}

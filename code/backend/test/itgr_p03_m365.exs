@@ -105,8 +105,14 @@ defmodule DmhAi.P03M365Test do
                Dispatcher.call("m365.mail.search", %{"query" => "hello"}, %{user_id: admin_id})
     end
 
-    test "write outside task → write_requires_task", %{admin_id: admin_id} do
-      assert {:error, %{error: "write_requires_task", function: "m365.mail.send"}} =
+    test "write function (mail.send) without a caller stub does not silently succeed",
+         %{admin_id: admin_id} do
+      # No `__mcp_caller_stub__` set: the write threads all dispatcher
+      # gates (the admin caller passes the permission + capability
+      # checks) and reaches the transport, which has no MCP alias for
+      # the slug in the test env. The contract is that it surfaces an
+      # error envelope rather than a phantom success.
+      assert {:error, %{error: _}} =
                Dispatcher.call("m365.mail.send",
                                %{"to" => "alice@example.com",
                                  "subject" => "Hi", "body" => "hello"},

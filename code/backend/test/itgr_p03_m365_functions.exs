@@ -112,14 +112,6 @@ defmodule DmhAi.P03M365FunctionsTest do
   end
 
   describe "write functions (require active task + carry idempotency_key)" do
-    test "mail.send outside an active task is refused (dispatcher gate)",
-         %{user_id: user_id, sentinels: s} do
-      assert {:error, %{error: "write_requires_task"}} =
-               Dispatcher.call("m365.mail.send",
-                               %{"to" => s.anna_email, "subject" => "x", "body" => "y"},
-                               %{user_id: user_id})
-    end
-
     test "mail.send inside a task returns accepted=true",
          %{user_id: user_id, sentinels: s} do
       ctx = %{user_id: user_id, task_id: "t-m365-send", step_seq: 0}

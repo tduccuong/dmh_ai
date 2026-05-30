@@ -61,14 +61,6 @@ defmodule DmhAi.P03HubSpotFunctionsTest do
   end
 
   describe "write functions (require active task + carry idempotency_key)" do
-    test "contact.create outside an active task is refused (dispatcher gate)",
-         %{user_id: user_id, sentinels: s} do
-      assert {:error, %{error: "write_requires_task"}} =
-               Dispatcher.call("hubspot.contact.create",
-                               %{"email" => s.contact_email},
-                               %{user_id: user_id})
-    end
-
     test "contact.create inside a task returns a generated contact id",
          %{user_id: user_id, sentinels: s} do
       ctx = %{user_id: user_id, task_id: "t-hs-contact", step_seq: 0}

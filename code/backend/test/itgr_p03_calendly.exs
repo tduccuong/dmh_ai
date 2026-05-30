@@ -159,8 +159,11 @@ defmodule DmhAi.P03CalendlyTest do
       assert "scheduled_events:write" in d.scopes
       refute "default" in d.scopes,
              "the literal `default` scope is a docs shorthand, not what Calendly's token response returns"
-      assert d.userinfo_endpoint == "https://api.calendly.com/users/me"
-      assert d.userinfo_field_path == "resource.email"
+      # Identity capture is in-module via `fetch_userinfo/1`; the
+      # descriptor's userinfo_* fields are explicitly nil so the
+      # generic catalog runner skips the generic GET-userinfo path.
+      assert d.userinfo_endpoint   == nil
+      assert d.userinfo_field_path == nil
     end
   end
 
@@ -190,9 +193,14 @@ defmodule DmhAi.P03CalendlyTest do
       assert uri =~ "scheduled_events"
     end
 
-    test "write function (single_use_link.create) outside an active task is refused",
+    test "write function (single_use_link.create) without a caller stub does not silently succeed",
          %{admin_id: admin_id} do
-      assert {:error, %{error: "write_requires_task", function: "calendly.single_use_link.create"}} =
+      # No `__mcp_caller_stub__` set: the write threads all dispatcher
+      # gates (the admin caller passes the permission + capability
+      # checks) and reaches the transport, which has no MCP alias for
+      # the slug in the test env. The contract is that it surfaces an
+      # error envelope rather than a phantom success.
+      assert {:error, %{error: _}} =
                Dispatcher.call("calendly.single_use_link.create",
                                %{"event_type_uri" => "https://api.calendly.com/event_types/et-1"},
                                %{user_id: admin_id})

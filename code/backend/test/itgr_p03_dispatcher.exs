@@ -183,13 +183,22 @@ defmodule DmhAi.P03DispatcherTest do
       :ok
     end
 
-    test "write from free chat (no task) → write_requires_task envelope", %{admin_id: admin_id} do
+    test "write from free chat succeeds and injects an idempotency_key", %{admin_id: admin_id} do
+      # The lean-loop refactor removed the runtime `write_requires_task`
+      # gate: write functions now run from free-chat too, and the
+      # dispatcher always derives + injects `__idempotency_key` into
+      # the args handed to the stub Caller (deterministic on the ctx
+      # fields available — task_id / step_seq may be nil from free chat).
       ctx = %{user_id: admin_id}
 
-      assert {:error, %{error: "write_requires_task", function: "stub.write_thing"}} =
+      assert {:ok, %{function: "write_thing", args: args}} =
                Dispatcher.call("stub.write_thing", %{"value" => "x"}, ctx)
 
-      refute_received {:stub_called, _, _}
+      assert is_binary(args["__idempotency_key"]),
+             "writes must carry the dispatcher-injected idempotency_key"
+
+      assert_received {:stub_called, "write_thing", call_args}
+      assert call_args["__idempotency_key"] == args["__idempotency_key"]
     end
 
     test "write inside active task → idempotency_key injected → succeeds", %{admin_id: admin_id} do

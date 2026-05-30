@@ -111,14 +111,6 @@ defmodule DmhAi.P03GoogleWorkspaceFunctionsTest do
   end
 
   describe "write functions (require active task + carry idempotency_key)" do
-    test "gmail.send outside an active task is refused (dispatcher gate)",
-         %{user_id: user_id, sentinels: s} do
-      assert {:error, %{error: "write_requires_task"}} =
-               Dispatcher.call("google_workspace.gmail.send",
-                               %{"to" => s.nina_email, "subject" => "x", "body" => "y"},
-                               %{user_id: user_id})
-    end
-
     test "gmail.send inside a task succeeds; mock echoes addressee",
          %{user_id: user_id, sentinels: s} do
       ctx = %{user_id: user_id, task_id: "t-gw-send", step_seq: 0}
