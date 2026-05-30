@@ -1040,12 +1040,35 @@ defmodule DmhAi.Agent.UserAgent do
         end
 
         DmhAi.SysLog.log("[ASSISTANT] auto-activated profile=#{profile} for tool=#{tool_name}")
-        Map.put(ctx, :active_profiles, new_active)
+        {Map.put(ctx, :active_profiles, new_active), profile}
 
       _ ->
-        ctx
+        {ctx, nil}
     end
   end
+
+  # Mirror what `activate_profile` / `connect_mcp` already return: when
+  # the runtime auto-activates a profile to satisfy a direct tool call,
+  # inject that profile's manifest into the {:ok, result} envelope so
+  # the model immediately sees the other tools it just unlocked.
+  # Only augments map results; non-map results (strings, lists) pass
+  # through untouched.
+  defp augment_with_profile_manifest(result, nil, _ctx), do: result
+
+  defp augment_with_profile_manifest(result, profile, ctx) when is_map(result) do
+    manifest = DmhAi.Tools.Profiles.build_manifest([profile], ctx.user_id, ctx.session_id)
+
+    result
+    |> Map.put_new("profile_activated", profile)
+    |> Map.put_new("manifest", manifest)
+    |> Map.put_new(
+      "note",
+      "Profile `" <> profile <> "` was auto-activated by this call; `manifest` lists every tool " <>
+        "it now makes callable. Compose subsequent calls / IR against those names."
+    )
+  end
+
+  defp augment_with_profile_manifest(result, _profile, _ctx), do: result
 
   defp session_cancelled?(%{session_id: session_id}) when is_binary(session_id) do
     try do
@@ -1082,10 +1105,12 @@ defmodule DmhAi.Agent.UserAgent do
 
         # Dependency resolution: a tool call naming a tool from a
         # known-but-inactive profile auto-activates that profile and
-        # proceeds — no reject, no wasted turn. The activation persists
-        # to session context so the schema ships next turn. See
+        # proceeds — no reject, no wasted turn. When activation fires,
+        # the profile's manifest is injected into the {:ok, result}
+        # envelope below so the model sees the rest of that profile's
+        # tools immediately, not only on the next turn. See
         # `arch_wiki/dmh_ai/architecture.md` §Tool profiles.
-        ctx = resolve_profile_dependency(name, ctx)
+        {ctx, auto_activated_profile} = resolve_profile_dependency(name, ctx)
 
         {tool_msg, exec_result} =
           with :ok <- DmhAi.Agent.Police.check_tool_name_validity(name, ctx.user_id),
@@ -1123,7 +1148,9 @@ defmodule DmhAi.Agent.UserAgent do
               case exec_result do
                 {:ok, result} ->
                   DmhAi.Agent.SessionProgress.mark_tool_done(row.id, duration_ms)
-                  format_tool_result(result)
+                  result
+                  |> augment_with_profile_manifest(auto_activated_profile, ctx)
+                  |> format_tool_result()
 
                 {:error, reason} ->
                   DmhAi.Agent.SessionProgress.mark_tool_done(row.id, duration_ms)

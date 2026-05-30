@@ -53,34 +53,31 @@ defmodule DmhAi.Connectors.Seed do
 
   @doc """
   Seed Layer A (functions) for one connector. Reads
-  `priv/connectors/<slug>/functions.json`. No-op when the DB already
-  has rows for the slug unless `force: true`.
+  `priv/connectors/<slug>/functions.json` and runs `Manifest.replace_all/3`
+  every boot, so edits to the bundled JSON propagate without an explicit
+  reseed. The replace is idempotent — same rows in produce the same rows
+  out. `force?` is kept for the callsite signature but no longer
+  short-circuits anything; it remains a no-op flag for callers.
   """
   @spec seed_functions(String.t(), boolean()) :: :ok
   def seed_functions(slug, force? \\ false)
 
-  def seed_functions(slug, force?) when is_binary(slug) do
-    cond do
-      not force? and Manifest.count_for_slug(slug) > 0 ->
+  def seed_functions(slug, _force?) when is_binary(slug) do
+    case load_seed_file(slug, "functions.json") do
+      {:ok, rows} ->
+        {:ok, n} = Manifest.replace_all(slug, rows, "seed")
+        log_discovery_run(slug, "functions", :success, n, nil, "seed")
+        Logger.info("[Connectors.Seed] slug=#{slug} functions seeded n=#{n}")
         :ok
 
-      true ->
-        case load_seed_file(slug, "functions.json") do
-          {:ok, rows} ->
-            {:ok, n} = Manifest.replace_all(slug, rows, "seed")
-            log_discovery_run(slug, "functions", :success, n, nil, "seed")
-            Logger.info("[Connectors.Seed] slug=#{slug} functions seeded n=#{n}")
-            :ok
+      {:error, :not_found} ->
+        Logger.info("[Connectors.Seed] slug=#{slug} no priv/connectors/#{slug}/functions.json — skipping")
+        :ok
 
-          {:error, :not_found} ->
-            Logger.info("[Connectors.Seed] slug=#{slug} no priv/connectors/#{slug}/functions.json — skipping")
-            :ok
-
-          {:error, reason} ->
-            Logger.warning("[Connectors.Seed] slug=#{slug} seed failed: #{inspect(reason)}")
-            log_discovery_run(slug, "functions", :failed, 0, inspect(reason), "seed")
-            :ok
-        end
+      {:error, reason} ->
+        Logger.warning("[Connectors.Seed] slug=#{slug} seed failed: #{inspect(reason)}")
+        log_discovery_run(slug, "functions", :failed, 0, inspect(reason), "seed")
+        :ok
     end
   end
 

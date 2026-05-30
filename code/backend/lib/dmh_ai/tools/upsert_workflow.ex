@@ -63,7 +63,7 @@ defmodule DmhAi.Tools.UpsertWorkflow do
 
     Each connector tool's contract is already in its tool definition — arg types + `required` in `parameters`, plus a `Contract —` line giving per-arg provenance, the return-key shape, and OAuth scopes. Read it there; don't probe. Only for vendor-managed enums whose values depend on THIS user's account (stage/calendar ids, label names) call `inspect_function_property(name, path)` for the live values; trust the literal on `source: "not_supported"`.
 
-    IR shape (the only required top-level key is `nodes`; `outputs` is optional):
+    IR shape (the only required top-level key is `nodes`; `outputs` is optional; `inputs` lives on the trigger node — never at the root):
 
     ```
     trigger:  { id, kind:"trigger", label, trigger_kind, inputs:[], next, …kind-specific }
@@ -1130,10 +1130,15 @@ defmodule DmhAi.Tools.UpsertWorkflow do
       not is_list(Map.get(ir, "nodes")) ->
         {:error, "upsert_workflow: ir.nodes missing or not an array"}
 
-      is_list(Map.get(ir, "inputs")) ->
+      # A non-empty top-level `inputs` is a real misuse — the model is
+      # declaring inputs at the wrong level. An EMPTY top-level
+      # `inputs: []` is benign noise (no other pass reads it) and the
+      # model emits it naturally from input-shaped schemas, so we
+      # silently tolerate it instead of failing the whole upsert.
+      match?(list when is_list(list) and list != [], Map.get(ir, "inputs")) ->
         {:error,
-         "upsert_workflow: IR has a top-level `inputs` array. Trigger inputs " <>
-           "belong on the TRIGGER node, not at the IR root. Move the array " <>
+         "upsert_workflow: IR has a non-empty top-level `inputs` array. Trigger " <>
+           "inputs belong on the TRIGGER node, not at the IR root. Move the array " <>
            "into the trigger node's `inputs` field: " <>
            "`{id: 0, kind: \"trigger\", trigger_kind: \"manual\", " <>
            "inputs: [...], next: 1}`. The IR root only accepts `nodes` " <>

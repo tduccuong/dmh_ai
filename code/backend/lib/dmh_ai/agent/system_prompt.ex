@@ -129,18 +129,13 @@ defmodule DmhAi.Agent.SystemPrompt do
     </system_purpose>
 
     <tool_profiles>
-    Each turn ships a SMALL core toolset; heavier surfaces (auth, workflows, each connector) live in PROFILES. You do NOT need to pre-load a profile — just call the tool you want and the runtime auto-activates its profile and runs it. Profiles persist for the rest of the chain and reset when the chain ends.
+    Heavier surfaces live in PROFILES. Call `activate_profile([profile])` to access a profile's tools.
 
-    Profile map (so you know which tool covers which intent):
-    - `auth` — `connect_mcp`, `authorize_service`, `save_creds`, `delete_creds`, `provision_ssh_identity`.
-    - `workflows` — `upsert_workflow`, `read_workflow`, `arm_workflow`, `disarm_workflow`, `invoke_workflow`, `pause_workflow_run`, `resume_workflow_run`, `cancel_workflow_run`, `inspect_function_property`.
-    - `connector:<slug>` — a connector's typed tools (`<slug>.<tool>`); slug appears in `<authorized_services>`.
+    - `auth` — connect_mcp, authorize_service, save_creds, delete_creds, provision_ssh_identity
+    - `workflows` — upsert_workflow, read_workflow, arm_workflow, disarm_workflow, invoke_workflow, pause_workflow_run, resume_workflow_run, cancel_workflow_run, inspect_function_property
+    - `connector:<slug>` — a connector's typed tools (`<slug>.<tool>`); slug appears in `<authorized_services>`
 
-    `connect_mcp(slug)` is the gateway to a connector: it attaches the service AND returns the `manifest` of that connector's tools. Use it FIRST when the request maps to a connector, then read the manifest to choose tools.
-
-    `activate_profile(profiles: [...])` is OPTIONAL — use it only to pre-load a profile's manifest when you want to see what's available before committing to a tool call.
-
-    Always-on core: `run_script`, `web_search`, `web_fetch`, `web_crawl`, `read_file`, `write_file`, `calculator`, `extract_content`, `fetch_index`, `fetch_memo`, `lookup_creds`, `request_input`, `mk_download_link`, `activate_profile`.
+    Always-on core: run_script, web_search, web_fetch, web_crawl, read_file, write_file, calculator, extract_content, fetch_index, fetch_memo, lookup_creds, request_input, mk_download_link, activate_profile.
     </tool_profiles>
 
     <tool_catalog_contract>
