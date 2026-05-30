@@ -23,17 +23,25 @@ defmodule DmhAi.Connectors.Mock.Fixtures.HubSpot do
   @spec fixtures() :: %{required(String.t()) => (map() -> map()) | map()}
   def fixtures do
     %{
-      "contact.find"   => &contact_find/1,
-      "contact.create" => &contact_create/1,
-      "contact.update" => &contact_update/1,
-      "company.find"   => &company_find/1,
-      "company.create" => &company_create/1,
-      "company.update" => &company_update/1,
-      "deal.find"      => &deal_find/1,
-      "deal.create"    => &deal_create/1,
-      "deal.update"    => &deal_update/1,
-      "activity.log"   => &activity_log/1,
-      "task.create"    => &task_create/1
+      "contact.find"         => &contact_find/1,
+      "contact.create"       => &contact_create/1,
+      "contact.update"       => &contact_update/1,
+      "contact.add_to_list"  => &contact_add_to_list/1,
+      "company.find"         => &company_find/1,
+      "company.create"       => &company_create/1,
+      "company.update"       => &company_update/1,
+      "deal.find"            => &deal_find/1,
+      "deal.create"          => &deal_create/1,
+      "deal.update"          => &deal_update/1,
+      "ticket.find"          => &ticket_find/1,
+      "ticket.create"        => &ticket_create/1,
+      "ticket.update"        => &ticket_update/1,
+      "owner.find_by_email"  => &owner_find_by_email/1,
+      "engagement.log_call"  => &engagement_log_call/1,
+      "engagement.log_email" => &engagement_log_email/1,
+      "list.find"            => &list_find/1,
+      "activity.log"         => &activity_log/1,
+      "task.create"          => &task_create/1
     }
   end
 
@@ -42,18 +50,26 @@ defmodule DmhAi.Connectors.Mock.Fixtures.HubSpot do
   """
   def sentinels do
     %{
-      contact_name:  "Klara Vertriebsbeispiel",
-      contact_email: "klara.vertrieb@dmh-hubspot-demo.example",
-      contact_id:    "hs_contact_mock_001",
-      company_name:  "Mustermann GmbH",
-      company_domain: "mustermann-gmbh.example",
-      company_id:    "hs_company_mock_004",
-      deal_name:     "Mustermann GmbH — Q2 Stiftungsfeier",
-      deal_id:       "hs_deal_mock_002",
-      deal_stage:    "appointmentscheduled",
-      deal_amount:   "15000",
-      activity_id:   "hs_activity_mock_003",
-      task_id:       "hs_task_mock_005"
+      contact_name:    "Klara Vertriebsbeispiel",
+      contact_email:   "klara.vertrieb@dmh-hubspot-demo.example",
+      contact_id:      "hs_contact_mock_001",
+      company_name:    "Mustermann GmbH",
+      company_domain:  "mustermann-gmbh.example",
+      company_id:      "hs_company_mock_004",
+      deal_name:       "Mustermann GmbH — Q2 Stiftungsfeier",
+      deal_id:         "hs_deal_mock_002",
+      deal_stage:      "appointmentscheduled",
+      deal_amount:     "15000",
+      activity_id:     "hs_activity_mock_003",
+      task_id:         "hs_task_mock_005",
+      ticket_id:       "12345678901",
+      ticket_subject:  "Mustermann GmbH — Lieferung verspätet",
+      owner_id:        "67890123",
+      owner_email:     "vertrieb-lead@dmh-hubspot-demo.example",
+      call_id:         "99887766",
+      email_id:        "55443322",
+      list_id:         "98765432",
+      list_name:       "DACH SME — Q2 Outbound"
     }
   end
 
@@ -169,6 +185,90 @@ defmodule DmhAi.Connectors.Mock.Fixtures.HubSpot do
 
     %{
       "task_id" => id <> "_" <> Integer.to_string(:erlang.unique_integer([:positive]))
+    }
+  end
+
+  defp ticket_find(_args) do
+    %{ticket_id: id, ticket_subject: subject} = sentinels()
+
+    %{
+      "tickets" => [
+        %{
+          "id"       => id,
+          "subject"  => subject,
+          "content"  => "Kundin meldet Lieferverzögerung um 3 Werktage.",
+          "pipeline" => "0",
+          "status"   => "1",
+          "priority" => "HIGH",
+          "owner_id" => "67890123"
+        }
+      ]
+    }
+  end
+
+  defp ticket_create(args) do
+    %{ticket_id: id} = sentinels()
+
+    %{
+      "ticket_id" => id <> "_" <> Integer.to_string(:erlang.unique_integer([:positive])),
+      "subject"   => Map.get(args, "subject")
+    }
+  end
+
+  defp ticket_update(args) do
+    %{
+      "ticket_id" => Map.get(args, "ticket_id"),
+      "updated"   => Map.keys(Map.get(args, "patch") || %{})
+    }
+  end
+
+  defp owner_find_by_email(args) do
+    %{owner_id: id, owner_email: default_email} = sentinels()
+
+    %{
+      "owner" => %{
+        "id"         => id,
+        "email"      => Map.get(args, "email") || default_email,
+        "first_name" => "Vertriebs",
+        "last_name"  => "Leitung"
+      }
+    }
+  end
+
+  defp engagement_log_call(_args) do
+    %{call_id: id} = sentinels()
+
+    %{
+      "call_id" => id <> "_" <> Integer.to_string(:erlang.unique_integer([:positive]))
+    }
+  end
+
+  defp engagement_log_email(_args) do
+    %{email_id: id} = sentinels()
+
+    %{
+      "email_id" => id <> "_" <> Integer.to_string(:erlang.unique_integer([:positive]))
+    }
+  end
+
+  defp list_find(_args) do
+    %{list_id: id, list_name: name} = sentinels()
+
+    %{
+      "lists" => [
+        %{
+          "id"              => id,
+          "name"            => name,
+          "processing_type" => "MANUAL",
+          "object_type_id"  => "0-1"
+        }
+      ]
+    }
+  end
+
+  defp contact_add_to_list(args) do
+    %{
+      "added" => length(Map.get(args, "contact_ids") || [])
     }
   end
 end

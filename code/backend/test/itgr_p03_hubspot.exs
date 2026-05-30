@@ -52,20 +52,34 @@ defmodule DmhAi.P03HubSpotTest do
       assert :ok = Manifest.validate(HubSpot.manifest())
     end
 
-    test "declares 11 functions at the Primitive 0.3 surface" do
+    test "declares 19 functions at the Primitive 0.3 surface" do
       functions = HubSpot.manifest().functions
 
       assert Map.has_key?(functions, "contact.find")
       assert Map.has_key?(functions, "contact.create")
       assert Map.has_key?(functions, "contact.update")
+      assert Map.has_key?(functions, "contact.add_to_list")
       assert Map.has_key?(functions, "company.find")
       assert Map.has_key?(functions, "company.create")
       assert Map.has_key?(functions, "company.update")
       assert Map.has_key?(functions, "deal.find")
       assert Map.has_key?(functions, "deal.create")
       assert Map.has_key?(functions, "deal.update")
+      assert Map.has_key?(functions, "ticket.find")
+      assert Map.has_key?(functions, "ticket.create")
+      assert Map.has_key?(functions, "ticket.update")
+      assert Map.has_key?(functions, "owner.find_by_email")
+      assert Map.has_key?(functions, "engagement.log_call")
+      assert Map.has_key?(functions, "engagement.log_email")
+      assert Map.has_key?(functions, "list.find")
       assert Map.has_key?(functions, "activity.log")
       assert Map.has_key?(functions, "task.create")
+    end
+
+    test "identity_lookup/0 resolves to owner.find_by_email" do
+      assert %{function: "hubspot.owner.find_by_email",
+               by_arg: :email,
+               emit_field: "id"} = HubSpot.identity_lookup()
     end
 
     test "every write function is `callable_from: [:task]` (HARD Rule 2)" do
@@ -177,6 +191,38 @@ defmodule DmhAi.P03HubSpotTest do
       assert {:error, %{error: "duplicate"}} =
                Dispatcher.call("hubspot.contact.create",
                                %{"email" => "existing@acme.de", "name" => "Existing"},
+                               ctx)
+    end
+
+    test "ticket.find (read) returns the stubbed result list", %{admin_id: admin_id} do
+      Application.put_env(:dmh_ai, :__mcp_caller_stub__, fn "hubspot", "ticket.find", args, _creds ->
+        assert args["query"] == "Lieferung"
+        {:ok, %{"tickets" => [%{"id" => "12345678901", "subject" => "Lieferung verspätet"}]}}
+      end)
+
+      assert {:ok, %{"tickets" => [%{"id" => "12345678901"}]}} =
+               Dispatcher.call("hubspot.ticket.find",
+                               %{"query" => "Lieferung"},
+                               %{user_id: admin_id})
+    end
+
+    test "ticket.create (write) carries the dispatcher-injected idempotency_key",
+         %{admin_id: admin_id} do
+      Application.put_env(:dmh_ai, :__mcp_caller_stub__, fn "hubspot", "ticket.create", args, _creds ->
+        assert is_binary(args["__idempotency_key"]),
+               "writes must carry idempotency_key injected by Dispatcher"
+        assert args["subject"] == "Lieferung verspätet"
+        {:ok, %{"ticket_id" => "12345678901"}}
+      end)
+
+      ctx = %{user_id: admin_id, task_id: "t-create-ticket", step_seq: 0}
+
+      assert {:ok, %{"ticket_id" => "12345678901"}} =
+               Dispatcher.call("hubspot.ticket.create",
+                               %{
+                                 "subject"        => "Lieferung verspätet",
+                                 "pipeline_stage" => "1"
+                               },
                                ctx)
     end
   end

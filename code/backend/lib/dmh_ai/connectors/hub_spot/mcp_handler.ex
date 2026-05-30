@@ -9,17 +9,25 @@ defmodule DmhAi.Connectors.HubSpot.MCPHandler do
   generic `Connectors.MCPServer`. Each function is a 1:1 mapping
   to a HubSpot CRM v3 endpoint at `api.hubapi.com/crm/v3/*`:
 
-    contact.find   — POST  /crm/v3/objects/contacts/search
-    contact.create — POST  /crm/v3/objects/contacts
-    contact.update — PATCH /crm/v3/objects/contacts/{id}
-    company.find   — POST  /crm/v3/objects/companies/search
-    company.create — POST  /crm/v3/objects/companies
-    company.update — PATCH /crm/v3/objects/companies/{id}
-    deal.find      — POST  /crm/v3/objects/deals/search
-    deal.create    — POST  /crm/v3/objects/deals
-    deal.update    — PATCH /crm/v3/objects/deals/{id}
-    activity.log   — POST  /crm/v3/objects/notes
-    task.create    — POST  /crm/v3/objects/tasks
+    contact.find         — POST  /crm/v3/objects/contacts/search
+    contact.create       — POST  /crm/v3/objects/contacts
+    contact.update       — PATCH /crm/v3/objects/contacts/{id}
+    contact.add_to_list  — PUT   /crm/v3/lists/{list_id}/memberships/add
+    company.find         — POST  /crm/v3/objects/companies/search
+    company.create       — POST  /crm/v3/objects/companies
+    company.update       — PATCH /crm/v3/objects/companies/{id}
+    deal.find            — POST  /crm/v3/objects/deals/search
+    deal.create          — POST  /crm/v3/objects/deals
+    deal.update          — PATCH /crm/v3/objects/deals/{id}
+    ticket.find          — POST  /crm/v3/objects/tickets/search
+    ticket.create        — POST  /crm/v3/objects/tickets
+    ticket.update        — PATCH /crm/v3/objects/tickets/{id}
+    owner.find_by_email  — GET   /crm/v3/owners?email=<email>
+    engagement.log_call  — POST  /crm/v3/objects/calls
+    engagement.log_email — POST  /crm/v3/objects/emails
+    list.find            — POST  /crm/v3/lists/search
+    activity.log         — POST  /crm/v3/objects/notes
+    task.create          — POST  /crm/v3/objects/tasks
 
   HubSpot's search API is POST-with-body (filterGroups + query),
   not the GET-with-$search style Microsoft Graph uses. The shim
@@ -27,12 +35,41 @@ defmodule DmhAi.Connectors.HubSpot.MCPHandler do
   with `properties` payload — we flatten to the canonical
   `{id, name, email, …}` shape so the model treats every CRM the
   same regardless of vendor.
+
+  ## Path-param ids
+
+  Functions acting on a specific object interpolate the id into the
+  path via a `:url` function `(args -> url)`. HubSpot ids are digit
+  strings (and list ids too), but the whitelist allows `[A-Za-z0-9_-]+`
+  for forward-compatibility (`safe_path_id/1`) — no raw interpolation
+  of unvalidated input.
   """
 
   alias DmhAi.Connectors.MCPServer.{RestBridge, FunctionSpec}
   require Logger
 
   @api_base "https://api.hubapi.com/crm/v3/objects"
+  # Owners + Lists live at a parallel CRM v3 root (not under `/objects`).
+  @crm_base "https://api.hubapi.com/crm/v3"
+
+  # HubSpot association registry — stable typeIds for cross-object
+  # associations on the standard schema (custom portals may add
+  # mappings but never remove these).
+  #   3   = contact → deal           (deal.create's contact association)
+  #   209 = call    → deal           (engagement.log_call)
+  #   210 = email   → deal           (engagement.log_email)
+  #   214 = note    → deal           (activity.log)
+  #   216 = task    → deal           (task.create)
+  #   204 = task    → contact        (task.create)
+  @assoc_call_to_deal    209
+  @assoc_email_to_deal   210
+
+  # HubSpot ids are digit strings (and list ids too). Allow
+  # `[A-Za-z0-9_-]+` for forward compatibility (custom portals can
+  # alias an id to a slug). Anything else raises — the dispatcher
+  # surfaces it as an error envelope rather than building a URL
+  # with an injected path segment.
+  @path_id_re ~r/^[A-Za-z0-9_-]+$/
 
   @doc """
   Handler entry consumed by `Connectors.MCPServer.Registry.put/1`
@@ -123,6 +160,62 @@ defmodule DmhAi.Connectors.HubSpot.MCPHandler do
                     {:ok, %{"task_id" => body["id"]}}
                   end,
         doc:     "Create a Task engagement — actionable follow-up tied to a deal or contact."
+      },
+      "ticket.find" => %FunctionSpec{
+        method:  :post,
+        url:     "#{@api_base}/tickets/search",
+        request: &ticket_find_request/2,
+        response: &ticket_find_response/2,
+        doc:     "Search HubSpot tickets; filter by pipeline / status."
+      },
+      "ticket.create" => %FunctionSpec{
+        method:  :post,
+        url:     "#{@api_base}/tickets",
+        request: &ticket_create_request/2,
+        response: fn s, body when s in 200..299 ->
+                    {:ok, %{"ticket_id" => body["id"]}}
+                  end,
+        doc:     "Open a Service Hub support ticket."
+      },
+      "ticket.update" => %FunctionSpec{
+        handler: &ticket_update/2,
+        doc:     "Patch ticket properties (stage, priority, …)."
+      },
+      "owner.find_by_email" => %FunctionSpec{
+        method:  :get,
+        url:     "#{@crm_base}/owners",
+        request: &owner_find_by_email_request/2,
+        response: &owner_find_by_email_response/2,
+        doc:     "Resolve a HubSpot owner record by email address."
+      },
+      "engagement.log_call" => %FunctionSpec{
+        method:  :post,
+        url:     "#{@api_base}/calls",
+        request: &engagement_log_call_request/2,
+        response: fn s, body when s in 200..299 ->
+                    {:ok, %{"call_id" => body["id"]}}
+                  end,
+        doc:     "Log a Call engagement on a deal."
+      },
+      "engagement.log_email" => %FunctionSpec{
+        method:  :post,
+        url:     "#{@api_base}/emails",
+        request: &engagement_log_email_request/2,
+        response: fn s, body when s in 200..299 ->
+                    {:ok, %{"email_id" => body["id"]}}
+                  end,
+        doc:     "Log an Email engagement on a deal."
+      },
+      "list.find" => %FunctionSpec{
+        method:  :post,
+        url:     "#{@crm_base}/lists/search",
+        request: &list_find_request/2,
+        response: &list_find_response/2,
+        doc:     "Search HubSpot lists by display name."
+      },
+      "contact.add_to_list" => %FunctionSpec{
+        handler: &contact_add_to_list/2,
+        doc:     "Add contacts to a HubSpot list."
       }
     }
   end
@@ -274,7 +367,7 @@ defmodule DmhAi.Connectors.HubSpot.MCPHandler do
 
   defp patch_object(object_plural, id, result_key, patch, ctx) do
     patch = patch || %{}
-    url   = "#{@api_base}/#{object_plural}/#{URI.encode(id)}"
+    url   = "#{@api_base}/#{object_plural}/#{safe_path_id(id)}"
     opts  = [url: url, json: %{"properties" => patch}]
 
     case RestBridge.raw_request(:patch, with_bearer(opts, ctx)) do
@@ -435,6 +528,203 @@ defmodule DmhAi.Connectors.HubSpot.MCPHandler do
       }]
   end
 
+  # ─── ticket.find — POST search ────────────────────────────────────────
+
+  defp ticket_find_request(args, _ctx) do
+    filters =
+      []
+      |> maybe_append_filter("hs_pipeline",       Map.get(args, "pipeline"))
+      |> maybe_append_filter("hs_pipeline_stage", Map.get(args, "status"))
+
+    body =
+      %{
+        "query"      => Map.get(args, "query", ""),
+        "limit"      => Map.get(args, "limit", 10),
+        "properties" => ["subject", "content", "hs_pipeline", "hs_pipeline_stage",
+                         "hs_ticket_priority", "hubspot_owner_id", "createdate"]
+      }
+
+    body =
+      case filters do
+        []   -> body
+        list -> Map.put(body, "filterGroups", [%{"filters" => list}])
+      end
+
+    [json: body]
+  end
+
+  defp ticket_find_response(s, body) when s in 200..299 do
+    tickets =
+      Map.get(body, "results", [])
+      |> Enum.map(fn t ->
+        props = Map.get(t, "properties", %{})
+        %{
+          "id"       => t["id"],
+          "subject"  => props["subject"],
+          "content"  => props["content"],
+          "pipeline" => props["hs_pipeline"],
+          "status"   => props["hs_pipeline_stage"],
+          "priority" => props["hs_ticket_priority"],
+          "owner_id" => props["hubspot_owner_id"]
+        }
+      end)
+
+    {:ok, %{"tickets" => tickets}}
+  end
+
+  # ─── ticket.create ────────────────────────────────────────────────────
+
+  defp ticket_create_request(args, _ctx) do
+    props =
+      %{
+        "subject"           => args["subject"],
+        "hs_pipeline_stage" => args["pipeline_stage"]
+      }
+      |> maybe_put_kv("content",             Map.get(args, "content"))
+      |> maybe_put_kv("hs_ticket_priority",  Map.get(args, "priority"))
+      |> maybe_put_kv("hubspot_owner_id",    Map.get(args, "hubspot_owner_id"))
+
+    [json: %{"properties" => props}]
+  end
+
+  # ─── ticket.update — PATCH with dynamic URL ───────────────────────────
+
+  defp ticket_update(args, ctx) do
+    patch_object(:tickets, args["ticket_id"], "ticket_id", args["patch"], ctx)
+  end
+
+  # ─── owner.find_by_email — GET with query param ───────────────────────
+
+  defp owner_find_by_email_request(args, _ctx) do
+    # `:params` is Req's query-string keyword — values are URL-escaped
+    # by Req, so the user's email never lands raw in the URL.
+    [params: [{"email", Map.get(args, "email", "")}]]
+  end
+
+  defp owner_find_by_email_response(s, body) when s in 200..299 do
+    case Map.get(body, "results", []) do
+      [first | _] when is_map(first) ->
+        {:ok, %{"owner" => %{
+                  "id"         => to_string(first["id"] || ""),
+                  "email"      => first["email"],
+                  "first_name" => first["firstName"],
+                  "last_name"  => first["lastName"]
+                }}}
+
+      _ ->
+        {:ok, %{"owner" => nil}}
+    end
+  end
+
+  # ─── engagement.log_call — POST with deal association ─────────────────
+
+  # HubSpot's `hs_timestamp` is ms since epoch. The request builder
+  # stamps it from the server clock — not an arg — so engagement
+  # timestamps reflect when the log happened, not whatever the model
+  # passed.
+  defp engagement_log_call_request(args, _ctx) do
+    props =
+      %{
+        "hs_timestamp"      => now_ms_str(),
+        "hs_call_body"      => args["body"],
+        "hs_call_direction" => Map.get(args, "direction") || "OUTBOUND"
+      }
+      |> maybe_put_kv("hs_call_duration", duration_ms(Map.get(args, "duration_seconds")))
+
+    associations = [
+      %{
+        "to" => %{"id" => args["deal_id"]},
+        "types" => [
+          %{"associationCategory" => "HUBSPOT_DEFINED",
+            "associationTypeId"   => @assoc_call_to_deal}
+        ]
+      }
+    ]
+
+    [json: %{"properties" => props, "associations" => associations}]
+  end
+
+  # ─── engagement.log_email — POST with deal association ────────────────
+
+  defp engagement_log_email_request(args, _ctx) do
+    props = %{
+      "hs_timestamp"       => now_ms_str(),
+      "hs_email_subject"   => args["subject"],
+      "hs_email_text"      => args["body"],
+      "hs_email_direction" => Map.get(args, "direction") || "EMAIL"
+    }
+
+    associations = [
+      %{
+        "to" => %{"id" => args["deal_id"]},
+        "types" => [
+          %{"associationCategory" => "HUBSPOT_DEFINED",
+            "associationTypeId"   => @assoc_email_to_deal}
+        ]
+      }
+    ]
+
+    [json: %{"properties" => props, "associations" => associations}]
+  end
+
+  # ─── list.find — POST search ──────────────────────────────────────────
+
+  defp list_find_request(args, _ctx) do
+    body =
+      %{"query" => Map.get(args, "query", "")}
+      |> maybe_put_kv("count", Map.get(args, "limit"))
+
+    [json: body]
+  end
+
+  defp list_find_response(s, body) when s in 200..299 do
+    lists =
+      Map.get(body, "lists", [])
+      |> Enum.map(fn l ->
+        %{
+          "id"              => to_string(l["listId"] || l["id"] || ""),
+          "name"            => l["name"],
+          "processing_type" => l["processingType"],
+          "object_type_id"  => l["objectTypeId"]
+        }
+      end)
+
+    {:ok, %{"lists" => lists}}
+  end
+
+  # ─── contact.add_to_list — PUT bare-array body ────────────────────────
+
+  defp contact_add_to_list(args, ctx) do
+    list_id = safe_path_id(args["list_id"])
+    ids     = normalise_id_list(args["contact_ids"])
+    url     = "#{@crm_base}/lists/#{list_id}/memberships/add"
+    opts    = [url: url, json: ids]
+
+    case RestBridge.raw_request(:put, with_bearer(opts, ctx)) do
+      {:ok, status, body} when status in 200..299 ->
+        added = count_added(body, ids)
+        {:ok, %{"added" => added}}
+
+      {:ok, _status, _body} ->
+        {:error, :upstream_other}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  # HubSpot's add-memberships response carries `recordIdsAdded`;
+  # absent that, the count of contact ids we requested is the safe
+  # default (the endpoint is idempotent — re-adding a member is a
+  # no-op and still 2xx).
+  defp count_added(%{"recordIdsAdded" => ids}, _requested) when is_list(ids), do: length(ids)
+  defp count_added(%{"results" => ids}, _requested) when is_list(ids),       do: length(ids)
+  defp count_added(_body, requested) when is_list(requested),                 do: length(requested)
+  defp count_added(_body, _),                                                 do: 0
+
+  defp normalise_id_list(list) when is_list(list), do: Enum.map(list, &to_string/1)
+  defp normalise_id_list(_),                       do: []
+
   # ─── helpers ──────────────────────────────────────────────────────────
 
   defp with_bearer(opts, %{bearer_token: t}) when is_binary(t) and t != "" do
@@ -445,4 +735,34 @@ defmodule DmhAi.Connectors.HubSpot.MCPHandler do
 
   defp maybe_put_kv(map, _k, nil), do: map
   defp maybe_put_kv(map, k, v),    do: Map.put(map, k, v)
+
+  defp maybe_append_filter(list, _property, nil), do: list
+  defp maybe_append_filter(list, _property, ""),  do: list
+  defp maybe_append_filter(list, property, value) do
+    list ++ [%{"propertyName" => property, "operator" => "EQ", "value" => value}]
+  end
+
+  # Whitelist a path-param id to HubSpot's id charset (digit strings,
+  # with `_-` allowed for custom-portal aliases) before interpolating
+  # into a URL path. A value that doesn't match raises — the dispatcher
+  # surfaces it as an error envelope rather than building a URL with
+  # an injected path segment.
+  defp safe_path_id(id) do
+    str = to_string(id)
+
+    if Regex.match?(@path_id_re, str) do
+      str
+    else
+      raise ArgumentError, "invalid hubspot id: #{inspect(id)}"
+    end
+  end
+
+  # Current epoch milliseconds as a string — HubSpot's engagement
+  # `hs_timestamp` shape.
+  defp now_ms_str, do: System.system_time(:millisecond) |> Integer.to_string()
+
+  # Convert duration arg (seconds, integer) → ms string for HubSpot.
+  defp duration_ms(nil), do: nil
+  defp duration_ms(s) when is_integer(s) and s >= 0, do: Integer.to_string(s * 1000)
+  defp duration_ms(_), do: nil
 end

@@ -7,26 +7,35 @@ defmodule DmhAi.Connectors.HubSpot do
   @moduledoc """
   HubSpot connector (Universal Region, Case B — vendor MCP).
 
-  Eleven functions at the SME-relevant slice of HubSpot's CRM API
+  Nineteen functions at the SME-relevant slice of HubSpot's CRM API
   (developers.hubspot.com/docs/api/crm/*) — contacts, deals,
-  companies, tasks, activities:
+  companies, tickets, owners, engagements (calls / emails),
+  lists, tasks, activities:
 
-    contact.find    [read]   search by query string
-    contact.create  [write]  upsert a contact
-    contact.update  [write]  PATCH an existing contact's properties
-    company.find    [read]   search companies (B2B org records)
-    company.create  [write]  create a company
-    company.update  [write]  PATCH a company's properties
-    deal.find       [read]   list deals (filter by stage / owner)
-    deal.create     [write]  open a deal tied to a contact
-    deal.update     [write]  patch a deal (stage transition, amount …)
-    activity.log    [write]  log a Note engagement on a deal
-    task.create     [write]  create a Task engagement (actionable, not a note)
+    contact.find         [read]   search by query string
+    contact.create       [write]  upsert a contact
+    contact.update       [write]  PATCH an existing contact's properties
+    contact.add_to_list  [write]  add contacts to a static list
+    company.find         [read]   search companies (B2B org records)
+    company.create       [write]  create a company
+    company.update       [write]  PATCH a company's properties
+    deal.find            [read]   list deals (filter by stage / owner)
+    deal.create          [write]  open a deal tied to a contact
+    deal.update          [write]  patch a deal (stage transition, amount …)
+    ticket.find          [read]   search Service Hub tickets
+    ticket.create        [write]  open a support ticket
+    ticket.update        [write]  PATCH a ticket (stage, priority …)
+    owner.find_by_email  [read]   resolve a HubSpot owner by email
+    engagement.log_call  [write]  log a Call engagement on a deal
+    engagement.log_email [write]  log an Email engagement on a deal
+    list.find            [read]   search HubSpot lists
+    activity.log         [write]  log a Note engagement on a deal
+    task.create          [write]  create a Task engagement (actionable, not a note)
 
-  Five capability groups (contacts / deals / companies / tasks /
-  activities) so admins can scope per-org — a CSM-only org might
-  tick contacts + activities + companies + tasks; a sales-team
-  org enables all five.
+  Eight capability groups (contacts / deals / companies / tickets /
+  owners / engagements / lists / tasks / activities) so admins can
+  scope per-org — a CSM-only org might tick contacts + activities
+  + companies + tickets; a sales-team org enables them all.
 
   ## Vendor quirks (`remap_error/1`)
 
@@ -93,9 +102,14 @@ defmodule DmhAi.Connectors.HubSpot do
        %{url: "https://developers.hubspot.com/docs/api/crm/contacts", title: "HubSpot CRM — Contacts"},
        %{url: "https://developers.hubspot.com/docs/api/crm/companies", title: "HubSpot CRM — Companies"},
        %{url: "https://developers.hubspot.com/docs/api/crm/deals", title: "HubSpot CRM — Deals"},
-       %{url: "https://developers.hubspot.com/docs/api/crm/properties", title: "HubSpot CRM — Properties"},
+       %{url: "https://developers.hubspot.com/docs/api/crm/tickets", title: "HubSpot CRM — Tickets"},
+       %{url: "https://developers.hubspot.com/docs/api/crm/owners", title: "HubSpot CRM — Owners"},
+       %{url: "https://developers.hubspot.com/docs/api/crm/lists", title: "HubSpot CRM — Lists"},
+       %{url: "https://developers.hubspot.com/docs/api/properties", title: "HubSpot CRM — Properties"},
        %{url: "https://developers.hubspot.com/docs/api/crm/engagements/tasks", title: "HubSpot CRM — Tasks"},
-       %{url: "https://developers.hubspot.com/docs/api/crm/engagements/notes", title: "HubSpot CRM — Notes"}
+       %{url: "https://developers.hubspot.com/docs/api/crm/engagements/notes", title: "HubSpot CRM — Notes"},
+       %{url: "https://developers.hubspot.com/docs/api/crm/calls", title: "HubSpot CRM — Calls"},
+       %{url: "https://developers.hubspot.com/docs/api/crm/email", title: "HubSpot CRM — Emails"}
      ]}
   end
 
@@ -123,17 +137,23 @@ defmodule DmhAi.Connectors.HubSpot do
   # `inspect_property/3` callback uses this to route a property lookup
   # at the cached metadata row produced by `discover_metadata/1`.
   @function_to_object %{
-    "contact.find"   => "contacts",
-    "contact.create" => "contacts",
-    "contact.update" => "contacts",
-    "company.find"   => "companies",
-    "company.create" => "companies",
-    "company.update" => "companies",
-    "deal.find"      => "deals",
-    "deal.create"    => "deals",
-    "deal.update"    => "deals",
-    "activity.log"   => "deals",
-    "task.create"    => "deals"
+    "contact.find"         => "contacts",
+    "contact.create"       => "contacts",
+    "contact.update"       => "contacts",
+    "contact.add_to_list"  => "contacts",
+    "company.find"         => "companies",
+    "company.create"       => "companies",
+    "company.update"       => "companies",
+    "deal.find"            => "deals",
+    "deal.create"          => "deals",
+    "deal.update"          => "deals",
+    "ticket.find"          => "tickets",
+    "ticket.create"        => "tickets",
+    "ticket.update"        => "tickets",
+    "activity.log"         => "deals",
+    "task.create"          => "deals",
+    "engagement.log_call"  => "deals",
+    "engagement.log_email" => "deals"
   }
 
   # Layer B reader. The compiler asks "is `<path>` a real property on
@@ -177,7 +197,7 @@ defmodule DmhAi.Connectors.HubSpot do
   defp extract_enum(_), do: nil
 
   defp sweep_property_objects(token) do
-    objects = ["contacts", "companies", "deals"]
+    objects = ["contacts", "companies", "deals", "tickets"]
     headers = [{"authorization", "Bearer " <> token}, {"accept", "application/json"}]
 
     Enum.reduce_while(objects, {:ok, []}, fn obj, {:ok, acc} ->
@@ -417,18 +437,198 @@ defmodule DmhAi.Connectors.HubSpot do
           returns: %{task_id: :string},
           errors:  [:unauthorised, :rate_limited],
           scopes:  ["crm.objects.deals.write"]
+        },
+
+        # vendor: POST /crm/v3/objects/tickets/search
+        # docs:   https://developers.hubspot.com/docs/api/crm/tickets
+        # shim translation: `query` → `query` field; optional
+        # `pipeline` / `status` ride along as filterGroups entries
+        # (`hs_pipeline` / `hs_pipeline_stage`).
+        "ticket.find" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "query"    => %{type: :string,  required: true,
+                            provenance: %{kind: :literal_default}},
+            "pipeline" => %{type: :string,  required: false},
+            "status"   => %{type: :string,  required: false},
+            "limit"    => %{type: :integer, required: false}
+          },
+          returns: %{tickets: :list},
+          scopes:  ["tickets"]
+        },
+
+        # vendor: POST /crm/v3/objects/tickets
+        # shim translation: `subject` → `subject`; `content` →
+        # `content`; `pipeline_stage` → `hs_pipeline_stage`;
+        # `priority` → `hs_ticket_priority`; `hubspot_owner_id` →
+        # `hubspot_owner_id`. HubSpot rejects ticket-create without
+        # a pipeline_stage; the default "1" maps to the universal
+        # "New / Backlog" stage of the default Support pipeline so
+        # the agent can open a ticket without admin config.
+        "ticket.create" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "subject"          => %{type: :string, required: true,
+                                    provenance: %{kind: :from_user}},
+            "content"          => %{type: :string, required: false},
+            "pipeline_stage"   => %{type: :string, required: true,
+                                    provenance: %{kind: :literal_default, value: "1"}},
+            "priority"         => %{type: :string, required: false},
+            "hubspot_owner_id" => %{type: :string, required: false,
+                                    provenance: %{kind: :lookup,
+                                                  source: "hubspot.owner.find_by_email"}}
+          },
+          returns: %{ticket_id: :string},
+          errors:  [:unauthorised, :duplicate, :rate_limited],
+          scopes:  ["tickets"]
+        },
+
+        # vendor: PATCH /crm/v3/objects/tickets/{id}
+        # Same free-form `patch` map shape as `contact.update` —
+        # passes through HubSpot's standard + custom ticket
+        # properties (hs_pipeline_stage, hs_ticket_priority,
+        # hs_ticket_category, …).
+        "ticket.update" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "ticket_id" => %{type: :string, required: true,
+                             provenance: %{kind: :lookup,
+                                           source: "hubspot.ticket.find"}},
+            "patch"     => %{type: :map,    required: true,
+                             provenance: %{kind: :literal_default}}
+          },
+          returns: %{ticket_id: :string},
+          errors:  [:unauthorised, :not_found, :rate_limited],
+          scopes:  ["tickets"]
+        },
+
+        # vendor: GET /crm/v3/owners?email=<email>
+        # docs:   https://developers.hubspot.com/docs/api/crm/owners
+        # The owners endpoint is the canonical mapping from a person
+        # email → the `hubspot_owner_id` field referenced on every
+        # owned record. This is the resolver invoked by lookup
+        # provenance on the other functions' owner args.
+        "owner.find_by_email" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "email" => %{type: :string, required: true, format: :email,
+                         provenance: %{kind: :from_user}}
+          },
+          returns: %{owner: :map},
+          scopes:  ["crm.objects.owners.read"]
+        },
+
+        # vendor: POST /crm/v3/objects/calls
+        # docs:   https://developers.hubspot.com/docs/api/crm/calls
+        # shim translation: `body` → `hs_call_body`;
+        # `duration_seconds` → `hs_call_duration` (HubSpot stores
+        # milliseconds; the request builder multiplies); `direction`
+        # → `hs_call_direction` (OUTBOUND / INBOUND). The request
+        # builder stamps `hs_timestamp` from the server clock —
+        # not an arg — so engagement timestamps reflect when the
+        # log happened, not whatever the model passed.
+        "engagement.log_call" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "deal_id"          => %{type: :string,  required: true,
+                                    provenance: %{kind: :lookup,
+                                                  source: "hubspot.deal.find"}},
+            "body"             => %{type: :string,  required: true,
+                                    provenance: %{kind: :literal_default}},
+            "duration_seconds" => %{type: :integer, required: false},
+            "direction"        => %{type: :string,  required: false,
+                                    provenance: %{kind: :literal_default, value: "OUTBOUND"}}
+          },
+          returns: %{call_id: :string},
+          errors:  [:unauthorised, :rate_limited],
+          scopes:  ["crm.objects.deals.write"]
+        },
+
+        # vendor: POST /crm/v3/objects/emails
+        # docs:   https://developers.hubspot.com/docs/api/crm/email
+        # shim translation: `subject` → `hs_email_subject`; `body`
+        # → `hs_email_text`; `direction` → `hs_email_direction`.
+        # `hs_timestamp` stamped server-side (same rationale as
+        # `engagement.log_call`).
+        "engagement.log_email" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "deal_id"   => %{type: :string, required: true,
+                             provenance: %{kind: :lookup,
+                                           source: "hubspot.deal.find"}},
+            "subject"   => %{type: :string, required: true,
+                             provenance: %{kind: :literal_default}},
+            "body"      => %{type: :string, required: true,
+                             provenance: %{kind: :literal_default}},
+            "direction" => %{type: :string, required: false,
+                             provenance: %{kind: :literal_default, value: "EMAIL"}}
+          },
+          returns: %{email_id: :string},
+          errors:  [:unauthorised, :rate_limited],
+          scopes:  ["crm.objects.deals.write"]
+        },
+
+        # vendor: POST /crm/v3/lists/search
+        # docs:   https://developers.hubspot.com/docs/api/crm/lists
+        # `query` matches against the list's display name; `count`
+        # caps the result. Returns enough metadata (`listId`,
+        # `name`, `processingType`) for the model to pick the right
+        # list before calling `contact.add_to_list`.
+        "list.find" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "query" => %{type: :string,  required: true,
+                         provenance: %{kind: :literal_default}},
+            "limit" => %{type: :integer, required: false}
+          },
+          returns: %{lists: :list},
+          scopes:  ["crm.lists.read"]
+        },
+
+        # vendor: PUT /crm/v3/lists/{list_id}/memberships/add
+        # docs:   https://developers.hubspot.com/docs/api/crm/lists
+        # Body is a bare JSON array of contact-id strings, NOT
+        # wrapped in a `properties` envelope. HubSpot's response
+        # carries `recordIdsAdded` from which the shim computes the
+        # `added` count.
+        "contact.add_to_list" => %Function{
+          permission:      :write,
+          callable_from:   [:task],
+          idempotency_key: :required,
+          args: %{
+            "list_id"     => %{type: :string, required: true,
+                               provenance: %{kind: :lookup,
+                                             source: "hubspot.list.find"}},
+            "contact_ids" => %{type: :list,   required: true,
+                               provenance: %{kind: :literal_default}}
+          },
+          returns: %{added: :integer},
+          errors:  [:unauthorised, :not_found, :rate_limited],
+          scopes:  ["crm.lists.write"]
         }
       }
     }
   end
 
   @impl true
-  # Primitive 0.9 — HubSpot exposes /crm/v3/owners?email=<email>,
-  # but the function is not yet in this manifest. Fix: add
-  # `owners.find_by_email` and switch this to:
-  #   %{function: "hubspot.owners.find_by_email",
-  #     by_arg: :email, emit_field: "id"}
-  def identity_lookup, do: nil
+  # HubSpot exposes /crm/v3/owners?email=<email>, surfaced as
+  # `owner.find_by_email`. The dispatcher invokes this when a
+  # downstream function needs to resolve a person → owner id (e.g.
+  # `ticket.create.hubspot_owner_id`); `emit_field: "id"` pulls the
+  # numeric owner id out of the response row.
+  def identity_lookup,
+    do: %{function: "hubspot.owner.find_by_email", by_arg: :email, emit_field: "id"}
 
   @impl true
   def remap_error(%{"category" => "OBJECT_ALREADY_EXISTS"}), do: :duplicate
@@ -465,7 +665,11 @@ defmodule DmhAi.Connectors.HubSpot do
         "crm.objects.companies.read",
         "crm.objects.companies.write",
         "crm.objects.deals.read",
-        "crm.objects.deals.write"
+        "crm.objects.deals.write",
+        "tickets",
+        "crm.objects.owners.read",
+        "crm.lists.read",
+        "crm.lists.write"
       ],
       # HubSpot doesn't ship an OIDC userinfo endpoint; the
       # Identity capture lives in `fetch_userinfo/1` (see top of
@@ -595,17 +799,43 @@ defmodule DmhAi.Connectors.HubSpot do
           enable_url: "https://developers.hubspot.com/docs/api/working-with-oauth"
         }
       },
-      # ── Planned (CRM surface visible to admins, not yet built) ──
       %{
         id:           "tickets",
         display_name: "Tickets",
         description:  "Read + manage Service Hub support tickets.",
-        status:       :planned,
         scopes:       ["tickets"],
-        functions:    [],
+        functions:    ["ticket.find", "ticket.create", "ticket.update"],
         vendor_prereq: %{label: "HubSpot Public App scopes (Tickets)",
                          enable_url: "https://developers.hubspot.com/docs/api/working-with-oauth"}
       },
+      %{
+        id:           "owners",
+        display_name: "Owners",
+        description:  "Resolve a HubSpot owner by email — used as a sub-step before assigning records.",
+        scopes:       ["crm.objects.owners.read"],
+        functions:    ["owner.find_by_email"],
+        vendor_prereq: %{label: "HubSpot Public App scopes (Owners)",
+                         enable_url: "https://developers.hubspot.com/docs/api/working-with-oauth"}
+      },
+      %{
+        id:           "engagements",
+        display_name: "Engagements",
+        description:  "Log Call / Email engagements against deals (separate from informational notes).",
+        scopes:       ["crm.objects.deals.write"],
+        functions:    ["engagement.log_call", "engagement.log_email"],
+        vendor_prereq: %{label: "HubSpot Public App scopes (Engagements)",
+                         enable_url: "https://developers.hubspot.com/docs/api/working-with-oauth"}
+      },
+      %{
+        id:           "lists",
+        display_name: "Lists",
+        description:  "Search HubSpot lists and add contacts to them.",
+        scopes:       ["crm.lists.read", "crm.lists.write"],
+        functions:    ["list.find", "contact.add_to_list"],
+        vendor_prereq: %{label: "HubSpot Public App scopes (Lists)",
+                         enable_url: "https://developers.hubspot.com/docs/api/working-with-oauth"}
+      },
+      # ── Planned (CRM surface visible to admins, not yet built) ──
       %{
         id:           "meetings",
         display_name: "Meetings",
