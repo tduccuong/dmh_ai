@@ -168,6 +168,36 @@ defmodule DmhAi.Agent.UserAgent.ContextBuilders do
   def fallback_content_for_form(_), do: "Please fill in the form below."
 
   @doc """
+  Pull the `signal_blocker` blocker envelope out of a turn's tool
+  results. Returns nil when none of the calls signalled a blocker.
+  Mirrors `extract_form_from_results/1`.
+  """
+  def extract_blocker_from_results(exec_results) do
+    Enum.find_value(exec_results, fn
+      {:ok, %{blocker: %{} = blocker}} -> blocker
+      _                                 -> nil
+    end)
+  end
+
+  @doc """
+  Compose the user-visible message for a blocker-terminated chain.
+  Model narration (if any) goes first; the blocker reason is the
+  closing sentence so the user sees the explicit gap statement last.
+  When the model wrote no narration, the reason stands alone.
+  """
+  def compose_blocker_message(narration, blocker) when is_binary(narration) and is_map(blocker) do
+    reason = blocker[:reason] || blocker["reason"] || ""
+
+    case String.trim(narration) do
+      "" -> reason
+      n  -> n <> "\n\n" <> reason
+    end
+  end
+
+  def compose_blocker_message(_, blocker) when is_map(blocker),
+    do: blocker[:reason] || blocker["reason"] || ""
+
+  @doc """
   Emit the chain-end progress row AND reset the session's active
   profiles to `[]` so the next chain starts at core-only.
   """

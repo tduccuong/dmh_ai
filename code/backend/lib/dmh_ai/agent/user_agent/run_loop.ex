@@ -114,7 +114,13 @@ defmodule DmhAi.Agent.UserAgent.RunLoop do
       (get_in(c, ["function", "name"]) || "") in ~w(request_input connect_mcp)
     end)
 
-    if String.trim(clean_narration) != "" and not may_emit_form? do
+    signals_blocker? = Enum.any?(calls, fn c ->
+      get_in(c, ["function", "name"]) == "signal_blocker"
+    end)
+
+    chain_terminating? = may_emit_form? or signals_blocker?
+
+    if String.trim(clean_narration) != "" and not chain_terminating? do
       DmhAi.SysLog.log("[ASSISTANT] turn=#{turn} narration(#{String.length(clean_narration)} chars) persisted")
       narration_msg = %{role: "assistant", content: clean_narration}
       {:ok, _} = SessionIO.append_session_message(ctx.session_id, ctx.user_id, narration_msg)
@@ -126,6 +132,7 @@ defmodule DmhAi.Agent.UserAgent.RunLoop do
     {ctx, tool_result_msgs} = CircuitBreaker.bump_nudge_counters(ctx, tool_result_msgs_raw)
     tool_result_msgs = Enum.map(tool_result_msgs, &Map.put(&1, :emit_turn, turn))
     form = if may_emit_form?, do: ContextBuilders.extract_form_from_results(exec_results), else: nil
+    blocker = if signals_blocker?, do: ContextBuilders.extract_blocker_from_results(exec_results), else: nil
 
     cond do
       form != nil ->
@@ -139,6 +146,14 @@ defmodule DmhAi.Agent.UserAgent.RunLoop do
         {:ok, _} = SessionIO.append_session_message(ctx.session_id, ctx.user_id, msg)
         DmhAi.SysLog.log("[ASSISTANT] turn=#{turn} form persisted (kind=#{form["kind"] || "request_input"} token=#{form["token"] || form[:token]})")
         ContextBuilders.emit_chain_end(ctx, "form")
+        {:chain_done, SessionIO.max_user_ts_in_messages(messages)}
+
+      blocker != nil ->
+        content = ContextBuilders.compose_blocker_message(clean_narration, blocker)
+        msg = %{role: "assistant", content: content}
+        {:ok, _} = SessionIO.append_session_message(ctx.session_id, ctx.user_id, msg)
+        DmhAi.SysLog.log("[ASSISTANT] turn=#{turn} blocker signalled — chain ended (reason=#{String.slice(blocker[:reason] || blocker["reason"] || "", 0, 200)})")
+        ContextBuilders.emit_chain_end(ctx, "blocker")
         {:chain_done, SessionIO.max_user_ts_in_messages(messages)}
 
       true ->

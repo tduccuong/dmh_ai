@@ -46,6 +46,7 @@ defmodule DmhAi.Tools.Profiles do
     DmhAi.Tools.ExtractContent,
     DmhAi.Tools.LookupCreds,
     DmhAi.Tools.RequestInput,
+    DmhAi.Tools.SignalBlocker,
     DmhAi.Tools.FetchIndex,
     DmhAi.Tools.FetchMemo,
     DmhAi.Tools.MkDownloadLink
