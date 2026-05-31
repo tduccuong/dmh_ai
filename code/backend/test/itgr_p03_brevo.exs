@@ -291,4 +291,117 @@ defmodule DmhAi.P03BrevoTest do
                                %{user_id: admin_id, session_id: "s-1", step_seq: "step-1"})
     end
   end
+
+  describe "inspect_property/3 — Layer B reader" do
+    # Fixture rows mirror what `discover_metadata/1` writes — one row per
+    # cache path. The `path` + `schema` shape matches the runtime caller's
+    # `ctx[:vendor_metadata]` payload (see InspectFunctionProperty).
+    setup do
+      attributes_row = %{
+        path: "contacts.attributes",
+        schema: %{
+          "object_type" => "contacts.attributes",
+          "properties"  => [
+            %{"name" => "FIRSTNAME", "type" => "text", "category" => "normal"},
+            %{"name" => "LASTNAME",  "type" => "text", "category" => "normal"},
+            %{"name" => "PREF",
+              "type" => "category",
+              "category" => "category",
+              "options" => [
+                %{"value" => 1, "label" => "Newsletter"},
+                %{"value" => 2, "label" => "Promotions"}
+              ]}
+          ]
+        }
+      }
+
+      lists_row = %{
+        path: "contacts.lists",
+        schema: %{
+          "object_type" => "contacts.lists",
+          "properties"  => [
+            %{"name" => "list_id", "type" => "integer", "options" => [
+              %{"value" => 12, "label" => "Newsletter"},
+              %{"value" => 17, "label" => "VIP"}
+            ]}
+          ]
+        }
+      }
+
+      {:ok, %{attributes_row: attributes_row, lists_row: lists_row}}
+    end
+
+    test "contact.create with dotted path resolves attribute from cache",
+         %{attributes_row: attributes_row} do
+      assert {:ok, %{type: "text", source: :vendor_metadata}} =
+               BrevoConn.inspect_property(
+                 "contact.create",
+                 "attributes.FIRSTNAME",
+                 %{vendor_metadata: [attributes_row]})
+    end
+
+    test "contact.update with bare attribute name resolves the same row",
+         %{attributes_row: attributes_row} do
+      assert {:ok, %{type: "text", source: :vendor_metadata}} =
+               BrevoConn.inspect_property(
+                 "contact.update",
+                 "FIRSTNAME",
+                 %{vendor_metadata: [attributes_row]})
+    end
+
+    test "category attribute returns its enumeration as the enum list",
+         %{attributes_row: attributes_row} do
+      assert {:ok, %{type: "category", enum: enum, source: :vendor_metadata}} =
+               BrevoConn.inspect_property(
+                 "contact.create",
+                 "attributes.PREF",
+                 %{vendor_metadata: [attributes_row]})
+
+      assert enum == [1, 2]
+    end
+
+    test "contact.add_to_list resolves list_id with the lists enum",
+         %{lists_row: lists_row} do
+      assert {:ok, %{type: "integer", enum: enum, source: :vendor_metadata}} =
+               BrevoConn.inspect_property(
+                 "contact.add_to_list",
+                 "list_id",
+                 %{vendor_metadata: [lists_row]})
+
+      assert enum == [12, 17]
+    end
+
+    test "contact.remove_from_list shares the lists cache row",
+         %{lists_row: lists_row} do
+      assert {:ok, %{type: "integer", source: :vendor_metadata}} =
+               BrevoConn.inspect_property(
+                 "contact.remove_from_list",
+                 "list_id",
+                 %{vendor_metadata: [lists_row]})
+    end
+
+    test "cache miss returns :not_supported", %{attributes_row: attributes_row} do
+      assert {:error, :not_supported} =
+               BrevoConn.inspect_property(
+                 "contact.create",
+                 "attributes.NONEXISTENT",
+                 %{vendor_metadata: [attributes_row]})
+    end
+
+    test "function not in @function_to_cache returns :not_supported" do
+      assert {:error, :not_supported} =
+               BrevoConn.inspect_property(
+                 "email.send",
+                 "subject",
+                 %{vendor_metadata: []})
+    end
+
+    test "empty vendor_metadata returns :not_supported" do
+      assert {:error, :not_supported} =
+               BrevoConn.inspect_property(
+                 "contact.create",
+                 "attributes.FIRSTNAME",
+                 %{vendor_metadata: []})
+    end
+  end
 end

@@ -47,6 +47,22 @@ defmodule DmhAi.Connectors.Brevo do
     campaign.create           [write]  create an email campaign (draft)
     transactional.event.find  [read]   browse delivery events (delivered/opened/bounced/...)
 
+  ## Layer B — per-user vendor metadata
+
+  `discover_metadata/1` sweeps two Brevo endpoints with the user's
+  `api_key:brevo` credential and caches the result in
+  `connector_vendor_metadata` so `inspect_function_property` can answer
+  contact-attribute + list-id questions without a live probe at compile
+  time. Two cache rows go in per user:
+
+    * `contacts.attributes` — schema for every contact attribute
+      (FIRSTNAME, SMS, PREF, …) including the `enumeration` options
+      on category-typed attributes.
+    * `contacts.lists` — synthesised as a single `list_id` property
+      whose `options` enumerate the user's lists so name-match in
+      `inspect_property/3` finds them on the same code path as
+      attribute lookups.
+
   ## Templates vs transactional vs campaigns
 
   Brevo's email surface has three distinct shapes that are easy to confuse:
@@ -108,6 +124,164 @@ defmodule DmhAi.Connectors.Brevo do
        %{url: "https://developers.brevo.com/reference/getemailcampaigns",   title: "Brevo - Email campaigns"},
        %{url: "https://developers.brevo.com/reference/getemaileventreport", title: "Brevo - Transactional email events"}
      ]}
+  end
+
+  # Per-user metadata sweep. Hits Brevo's `/v3/contacts/attributes` and
+  # `/v3/contacts/lists` endpoints and stores one
+  # `connector_vendor_metadata` row per object so the model can later
+  # read attribute shapes (incl. `enumeration` options on category
+  # attributes) and list ids without a live probe at compile time.
+  @impl DmhAi.Connectors.Discoverable
+  def discover_metadata(user_id) when is_binary(user_id) do
+    case DmhAi.Auth.Credentials.lookup_all(user_id, "api_key:brevo") do
+      [%{payload: %{"api_key" => key}} | _] when is_binary(key) ->
+        sweep_layer_b(key)
+
+      _ ->
+        {:error, :no_brevo_credential}
+    end
+  end
+
+  # Map a function bare-name to the Brevo cache row whose schema is the
+  # source of truth for that function's args. The `inspect_property/3`
+  # callback uses this to route a property lookup at the cached metadata
+  # row produced by `discover_metadata/1`. Contact CRUD functions read
+  # the attribute schema; list-membership functions read the synthesised
+  # `list_id` enum.
+  @function_to_cache %{
+    "contact.find"             => "contacts.attributes",
+    "contact.create"           => "contacts.attributes",
+    "contact.update"           => "contacts.attributes",
+    "contact.add_to_list"      => "contacts.lists",
+    "contact.remove_from_list" => "contacts.lists"
+  }
+
+  # Layer B reader. Same shape as HubSpot's: consult the metadata cache
+  # populated by `discover_metadata/1`, locate the matching property by
+  # name and return its type, label, and (when set) the vendor's option
+  # list.
+  #
+  # Path-stripping quirk: Brevo's contact-create / contact-update args
+  # carry attributes nested under an `attributes` map, so the model
+  # frequently passes the dotted form (`"attributes.FIRSTNAME"`) when
+  # introspecting one. Strip a leading `attributes.` prefix before the
+  # name match so both `"FIRSTNAME"` and `"attributes.FIRSTNAME"` resolve.
+  #
+  # Returns `:not_supported` when:
+  #   * the function name doesn't map to a known cache row
+  #   * the user hasn't run Discover Metadata yet (cache empty)
+  #   * the requested property isn't in the cached schema
+  @impl true
+  def inspect_property(function_name, path, ctx) do
+    bare_path = strip_attributes_prefix(path)
+
+    with cache_path when is_binary(cache_path) <- Map.get(@function_to_cache, function_name),
+         %{schema: %{"properties" => props}} when is_list(props) <-
+           Enum.find(ctx[:vendor_metadata] || [], fn r -> r.path == cache_path end),
+         %{} = prop <- Enum.find(props, fn p -> p["name"] == bare_path end) do
+      {:ok,
+       %{
+         type:        prop["type"],
+         enum:        extract_enum(prop),
+         description: prop["label"],
+         source:      :vendor_metadata
+       }}
+    else
+      _ -> {:error, :not_supported}
+    end
+  end
+
+  defp strip_attributes_prefix("attributes." <> rest), do: rest
+  defp strip_attributes_prefix(other),                  do: other
+
+  defp extract_enum(%{"options" => options}) when is_list(options) and options != [] do
+    options
+    |> Enum.map(fn o -> o["value"] end)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp extract_enum(_), do: nil
+
+  defp sweep_layer_b(key) do
+    headers = [{"api-key", key}, {"accept", "application/json"}]
+
+    steps = [
+      {"contacts.attributes",
+       "https://api.brevo.com/v3/contacts/attributes",
+       &build_attributes_row/1},
+      # One-shot pagination is intentional: Brevo defaults to 50 rows
+      # which covers SME accounts. If a deployment ever needs more,
+      # walk `offset` via the `count` field on the response.
+      {"contacts.lists",
+       "https://api.brevo.com/v3/contacts/lists?limit=50&offset=0",
+       &build_lists_row/1}
+    ]
+
+    Enum.reduce_while(steps, {:ok, []}, fn {cache_path, url, builder}, {:ok, acc} ->
+      case Req.get(url, headers: headers, finch: DmhAi.Finch, receive_timeout: 8_000) do
+        {:ok, %{status: 200, body: body}} when is_map(body) ->
+          schema = builder.(body)
+          {:cont, {:ok, acc ++ [%{path: cache_path, schema: schema, expires_at: nil}]}}
+
+        {:ok, %{status: s, body: body}} ->
+          {:halt, {:error, {:http, s, body}}}
+
+        {:error, reason} ->
+          {:halt, {:error, {:transport, reason}}}
+      end
+    end)
+  end
+
+  # Brevo's contact-attribute response shape:
+  #   {"attributes": [%{"name", "category", "type", "enumeration", ...}, ...]}
+  # Keep the useful fields verbatim and rename `enumeration` → `options`
+  # so the shared `extract_enum/1` (same shape as HubSpot's) works
+  # without a Brevo-specific helper. Non-category attributes don't
+  # carry `enumeration`; drop the key in that case.
+  defp build_attributes_row(%{"attributes" => attrs}) when is_list(attrs) do
+    properties =
+      Enum.map(attrs, fn attr ->
+        attr
+        |> Map.take(~w(name type category enumeration calculatedValue))
+        |> rename_enumeration_to_options()
+      end)
+
+    %{"object_type" => "contacts.attributes", "properties" => properties}
+  end
+
+  defp build_attributes_row(_), do: %{"object_type" => "contacts.attributes", "properties" => []}
+
+  defp rename_enumeration_to_options(%{"enumeration" => enum} = m) when is_list(enum) do
+    m
+    |> Map.delete("enumeration")
+    |> Map.put("options", enum)
+  end
+
+  defp rename_enumeration_to_options(m), do: Map.delete(m, "enumeration")
+
+  # Brevo's contact-list response shape:
+  #   {"lists": [%{"id", "name", "folderId", ...}, ...], "count": n}
+  # Encode as a single synthetic `list_id` property whose `options` are
+  # the list ids. That way `inspect_property("contact.add_to_list",
+  # "list_id", ctx)` resolves via the same name-match path attribute
+  # lookups take — no special-casing in the reader.
+  defp build_lists_row(%{"lists" => lists}) when is_list(lists) do
+    options =
+      Enum.map(lists, fn l -> %{"value" => l["id"], "label" => l["name"]} end)
+
+    %{
+      "object_type" => "contacts.lists",
+      "properties"  => [
+        %{"name" => "list_id", "type" => "integer", "options" => options}
+      ]
+    }
+  end
+
+  defp build_lists_row(_) do
+    %{
+      "object_type" => "contacts.lists",
+      "properties"  => [%{"name" => "list_id", "type" => "integer", "options" => []}]
+    }
   end
 
   @impl true
