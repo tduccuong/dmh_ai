@@ -29,6 +29,17 @@ defmodule DmhAi.Connectors.Klaviyo do
 
   REST base for the docs: `https://a.klaviyo.com/api`.
 
+  ## Layer B — per-user vendor metadata
+
+  `discover_metadata/1` sweeps three Klaviyo endpoints (`/api/lists`,
+  `/api/metrics`, `/api/segments`) with the user's `api_key:klaviyo`
+  credential and caches one `connector_vendor_metadata` row per
+  collection so `inspect_function_property` can answer id-lookup
+  questions (`list_id`, `metric_id`, `segment_id`) from the cache.
+  Each cache row carries a single synthetic property whose `options`
+  enumerate the available ids — same name-match path the Brevo reader
+  uses, so no special-casing in `inspect_property/3`.
+
   Fourteen functions at the SME-relevant slice:
 
     profile.find         [read]   look up profiles by email / query
@@ -97,6 +108,133 @@ defmodule DmhAi.Connectors.Klaviyo do
        %{url: "https://developers.klaviyo.com/en/reference/campaigns_api_overview", title: "Klaviyo — Campaigns API"}
      ]}
   end
+
+  # Klaviyo's REST surface is date-versioned — every request carries a
+  # `revision` header pinning the API contract version. Bump this
+  # constant when migrating to a newer Klaviyo revision.
+  @klaviyo_revision "2024-10-15"
+
+  # Per-user metadata sweep. Hits Klaviyo's `/api/lists`, `/api/metrics`,
+  # and `/api/segments` endpoints and stores one
+  # `connector_vendor_metadata` row per collection so the model can
+  # later read the id enums (list_id, metric_id, segment_id) without
+  # a live probe at compile time.
+  @impl DmhAi.Connectors.Discoverable
+  def discover_metadata(user_id) when is_binary(user_id) do
+    case DmhAi.Auth.Credentials.lookup_all(user_id, "api_key:klaviyo") do
+      [%{payload: %{"api_key" => key}} | _] when is_binary(key) ->
+        sweep_layer_b(key)
+
+      _ ->
+        {:error, :no_klaviyo_credential}
+    end
+  end
+
+  # Map a function bare-name to the Klaviyo cache row whose enum is the
+  # source of truth for that function's id arg. `inspect_property/3`
+  # uses this to route a property lookup at the cached metadata row
+  # produced by `discover_metadata/1`.
+  @function_to_cache %{
+    "list.find"            => "lists",
+    "list.add_profile"     => "lists",
+    "list.remove_profile"  => "lists",
+    "metric.find"          => "metrics",
+    "event.find"           => "metrics",
+    "event.create"         => "metrics",
+    "segment.find"         => "segments"
+  }
+
+  # Layer B reader. Same shape as Brevo's: consult the metadata cache
+  # populated by `discover_metadata/1`, locate the matching property by
+  # exact name and return its type, label, and the vendor's option list.
+  #
+  # Returns `:not_supported` when:
+  #   * the function name doesn't map to a known cache row
+  #   * the user hasn't run Discover Metadata yet (cache empty)
+  #   * the requested property isn't in the cached schema
+  @impl true
+  def inspect_property(function_name, path, ctx) do
+    with cache_path when is_binary(cache_path) <- Map.get(@function_to_cache, function_name),
+         %{schema: %{"properties" => props}} when is_list(props) <-
+           Enum.find(ctx[:vendor_metadata] || [], fn r -> r.path == cache_path end),
+         %{} = prop <- Enum.find(props, fn p -> p["name"] == path end) do
+      {:ok,
+       %{
+         type:        prop["type"],
+         enum:        extract_enum(prop),
+         description: prop["label"],
+         source:      :vendor_metadata
+       }}
+    else
+      _ -> {:error, :not_supported}
+    end
+  end
+
+  defp extract_enum(%{"options" => options}) when is_list(options) and options != [] do
+    options
+    |> Enum.map(fn o -> o["value"] end)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp extract_enum(_), do: nil
+
+  defp sweep_layer_b(key) do
+    headers = [
+      {"authorization", "Klaviyo-API-Key " <> key},
+      {"accept", "application/json"},
+      {"revision", @klaviyo_revision}
+    ]
+
+    steps = [
+      {"lists",    "https://a.klaviyo.com/api/lists?page[size]=100",    "list_id"},
+      {"metrics",  "https://a.klaviyo.com/api/metrics?page[size]=100",  "metric_id"},
+      {"segments", "https://a.klaviyo.com/api/segments?page[size]=100", "segment_id"}
+    ]
+
+    Enum.reduce_while(steps, {:ok, []}, fn {cache_path, url, prop_name}, {:ok, acc} ->
+      case Req.get(url, headers: headers, finch: DmhAi.Finch, receive_timeout: 8_000) do
+        {:ok, %{status: 200, body: body}} when is_map(body) ->
+          schema = build_id_enum_row(cache_path, prop_name, body)
+          {:cont, {:ok, acc ++ [%{path: cache_path, schema: schema, expires_at: nil}]}}
+
+        {:ok, %{status: s, body: body}} ->
+          {:halt, {:error, {:http, s, body}}}
+
+        {:error, reason} ->
+          {:halt, {:error, {:transport, reason}}}
+      end
+    end)
+  end
+
+  # Klaviyo's collection endpoints return JSON:API:
+  #   %{"data" => [%{"id" => "...", "type" => "list",
+  #                 "attributes" => %{"name" => "..."}}, ...], "links" => ...}
+  # The id sits at the top level of each data element; the human-readable
+  # name is under `attributes.name`. Build one synthetic id property
+  # whose `options` enumerate the collection — same shape Brevo uses for
+  # its synthesised `list_id` row, so `inspect_property/3` resolves via
+  # the same name-match path.
+  defp build_id_enum_row(cache_path, prop_name, body) do
+    options = extract_jsonapi_options(body)
+
+    %{
+      "object_type" => cache_path,
+      "properties"  => [
+        %{"name" => prop_name, "type" => "string", "options" => options}
+      ]
+    }
+  end
+
+  defp extract_jsonapi_options(%{"data" => data}) when is_list(data) do
+    Enum.map(data, fn item ->
+      %{
+        "value" => item["id"],
+        "label" => get_in(item, ["attributes", "name"])
+      }
+    end)
+  end
+
+  defp extract_jsonapi_options(_), do: []
 
   @impl true
   def credential_kind, do: :api_key

@@ -286,4 +286,147 @@ defmodule DmhAi.P03KlaviyoTest do
                                %{user_id: admin_id, session_id: "s-1", step_seq: "step-1"})
     end
   end
+
+  describe "inspect_property/3 — Layer B reader" do
+    # Fixture rows mirror what `discover_metadata/1` writes — one row per
+    # cache path. The `path` + `schema` shape matches the runtime caller's
+    # `ctx[:vendor_metadata]` payload (see InspectFunctionProperty).
+    # Each row synthesises a single id property whose `options` enumerate
+    # the collection — same shape Brevo's `contacts.lists` row uses.
+    setup do
+      lists_row = %{
+        path: "lists",
+        schema: %{
+          "object_type" => "lists",
+          "properties"  => [
+            %{"name" => "list_id", "type" => "string", "options" => [
+              %{"value" => "abc123", "label" => "Newsletter Subscribers"},
+              %{"value" => "def456", "label" => "VIP Customers"}
+            ]}
+          ]
+        }
+      }
+
+      metrics_row = %{
+        path: "metrics",
+        schema: %{
+          "object_type" => "metrics",
+          "properties"  => [
+            %{"name" => "metric_id", "type" => "string", "options" => [
+              %{"value" => "M001", "label" => "Placed Order"},
+              %{"value" => "M002", "label" => "Opened Email"}
+            ]}
+          ]
+        }
+      }
+
+      segments_row = %{
+        path: "segments",
+        schema: %{
+          "object_type" => "segments",
+          "properties"  => [
+            %{"name" => "segment_id", "type" => "string", "options" => [
+              %{"value" => "S001", "label" => "Active in 30 days"}
+            ]}
+          ]
+        }
+      }
+
+      {:ok, %{lists_row: lists_row, metrics_row: metrics_row, segments_row: segments_row}}
+    end
+
+    test "list.add_profile resolves list_id with the lists enum",
+         %{lists_row: lists_row} do
+      assert {:ok, %{type: "string", enum: enum, source: :vendor_metadata}} =
+               KlaviyoConn.inspect_property(
+                 "list.add_profile",
+                 "list_id",
+                 %{vendor_metadata: [lists_row]})
+
+      assert enum == ["abc123", "def456"]
+    end
+
+    test "list.remove_profile shares the lists cache row",
+         %{lists_row: lists_row} do
+      assert {:ok, %{type: "string", source: :vendor_metadata}} =
+               KlaviyoConn.inspect_property(
+                 "list.remove_profile",
+                 "list_id",
+                 %{vendor_metadata: [lists_row]})
+    end
+
+    test "list.find resolves list_id from the lists cache row",
+         %{lists_row: lists_row} do
+      assert {:ok, %{type: "string", source: :vendor_metadata}} =
+               KlaviyoConn.inspect_property(
+                 "list.find",
+                 "list_id",
+                 %{vendor_metadata: [lists_row]})
+    end
+
+    test "event.find resolves metric_id with the metrics enum",
+         %{metrics_row: metrics_row} do
+      assert {:ok, %{type: "string", enum: enum, source: :vendor_metadata}} =
+               KlaviyoConn.inspect_property(
+                 "event.find",
+                 "metric_id",
+                 %{vendor_metadata: [metrics_row]})
+
+      assert enum == ["M001", "M002"]
+    end
+
+    test "metric.find resolves metric_id from the metrics cache row",
+         %{metrics_row: metrics_row} do
+      assert {:ok, %{type: "string", source: :vendor_metadata}} =
+               KlaviyoConn.inspect_property(
+                 "metric.find",
+                 "metric_id",
+                 %{vendor_metadata: [metrics_row]})
+    end
+
+    test "event.create resolves metric_id (event_name argument is free-text but the metric pivot still routes through metrics)",
+         %{metrics_row: metrics_row} do
+      assert {:ok, %{type: "string", source: :vendor_metadata}} =
+               KlaviyoConn.inspect_property(
+                 "event.create",
+                 "metric_id",
+                 %{vendor_metadata: [metrics_row]})
+    end
+
+    test "segment.find resolves segment_id with the segments enum",
+         %{segments_row: segments_row} do
+      assert {:ok, %{type: "string", enum: enum, source: :vendor_metadata}} =
+               KlaviyoConn.inspect_property(
+                 "segment.find",
+                 "segment_id",
+                 %{vendor_metadata: [segments_row]})
+
+      assert enum == ["S001"]
+    end
+
+    test "cache miss (unknown property name) returns :not_supported",
+         %{lists_row: lists_row} do
+      assert {:error, :not_supported} =
+               KlaviyoConn.inspect_property(
+                 "list.add_profile",
+                 "nonexistent_property",
+                 %{vendor_metadata: [lists_row]})
+    end
+
+    test "function not in @function_to_cache returns :not_supported" do
+      assert {:error, :not_supported} =
+               KlaviyoConn.inspect_property(
+                 "profile.create",
+                 "email",
+                 %{vendor_metadata: []})
+    end
+
+    test "empty vendor_metadata returns :not_supported" do
+      assert {:error, :not_supported} =
+               KlaviyoConn.inspect_property(
+                 "list.add_profile",
+                 "list_id",
+                 %{vendor_metadata: []})
+    end
+  end
 end
