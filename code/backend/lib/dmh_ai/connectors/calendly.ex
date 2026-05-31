@@ -49,6 +49,18 @@ defmodule DmhAi.Connectors.Calendly do
   in the External Connectors ticker as `:planned` so admins see the
   full Calendly surface and know what's coming.
 
+  ## Layer B — per-user vendor metadata
+
+  `discover_metadata/1` sweeps Calendly with the user's
+  `oauth:calendly` credential and caches two
+  `connector_vendor_metadata` rows so `inspect_function_property`
+  can validate `event_type_uuid` / `event_type_uri` literals
+  against the user's live event-type catalogue at IR compile time
+  without a live probe. The custom-questions row is cached for
+  future use; v1 of `inspect_property/3` doesn't drill into it
+  because per-event-type context is needed to pick the right
+  question set.
+
   ## Vendor quirks (`remap_error/1`)
 
   Calendly returns RFC-7807-style JSON error envelopes with a
@@ -109,6 +121,199 @@ defmodule DmhAi.Connectors.Calendly do
 
   @impl DmhAi.Connectors.Discoverable
   def discover_functions, do: DmhAi.Connectors.Seed.read_priv_rows(mcp_slug())
+
+  # Per-user metadata sweep. Two cache rows go in per user:
+  #
+  #   * `event_types` — the user's live event types as two
+  #     synthesised properties (`event_type_uuid` + `event_type_uri`)
+  #     whose options enumerate the user's catalogue. The dual
+  #     property design lets `inspect_property/3` validate either
+  #     identifier form on the same name-match code path; Calendly
+  #     functions take the UUID for path params and the full URI
+  #     for query params, and the model decides which shape to
+  #     emit when composing the call.
+  #   * `event_types.questions` — custom questions inlined per
+  #     event type on the same API response, reshaped as a
+  #     `by_event_type` map keyed by uuid. Cached for future use;
+  #     v1 of `inspect_property/3` doesn't drill into it (see the
+  #     callback's doc-comment).
+  @impl DmhAi.Connectors.Discoverable
+  def discover_metadata(user_id) when is_binary(user_id) do
+    case DmhAi.Auth.Credentials.lookup_all(user_id, "oauth:calendly") do
+      [%{payload: %{"access_token" => token}} | _] when is_binary(token) ->
+        sweep_layer_b(token)
+
+      _ ->
+        {:error, :no_calendly_credential}
+    end
+  end
+
+  # Map a function bare-name to the Calendly cache row whose enum is
+  # the source of truth for that function's `event_type_*` arg. The
+  # `inspect_property/3` callback uses this to route a property
+  # lookup at the cached metadata row produced by
+  # `discover_metadata/1`. Both `event_type_uuid` and
+  # `event_type_uri` resolve via the same `event_types` row — the
+  # row carries one synthesised property per identifier form.
+  @function_to_cache %{
+    "event_type.get"             => "event_types",
+    "event_type.available_slots" => "event_types",
+    "event.list"                 => "event_types",
+    "single_use_link.create"     => "event_types"
+  }
+
+  # Layer B reader. Same shape as HubSpot's / Brevo's: consult the
+  # metadata cache populated by `discover_metadata/1`, locate the
+  # matching property by exact name and return its type, label, and
+  # vendor's option list as the enum.
+  #
+  # Custom questions per event-type are cached in the
+  # `event_types.questions` row but `inspect_property/3` does not
+  # drill into them here — the compiler would need per-event-type
+  # context (which uuid) to pick the right question set, and the v1
+  # property-introspection contract is a flat (function, path) lookup.
+  # Deferred until the compiler can pass cursor context for nested
+  # lookups.
+  #
+  # Returns `:not_supported` when:
+  #   * the function name doesn't map to a known cache row
+  #   * the user hasn't run Discover Metadata yet (cache empty)
+  #   * the requested property isn't in the cached schema
+  @impl true
+  def inspect_property(function_name, path, ctx) do
+    with cache_path when is_binary(cache_path) <- Map.get(@function_to_cache, function_name),
+         %{schema: %{"properties" => props}} when is_list(props) <-
+           Enum.find(ctx[:vendor_metadata] || [], fn r -> r.path == cache_path end),
+         %{} = prop <- Enum.find(props, fn p -> p["name"] == path end) do
+      {:ok,
+       %{
+         type:        prop["type"],
+         enum:        extract_enum(prop),
+         description: prop["label"],
+         source:      :vendor_metadata
+       }}
+    else
+      _ -> {:error, :not_supported}
+    end
+  end
+
+  defp extract_enum(%{"options" => options}) when is_list(options) and options != [] do
+    options
+    |> Enum.map(fn o -> o["value"] end)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp extract_enum(_), do: nil
+
+  # Layer B sweep. Discover the connected user's organization URI
+  # via `/users/me`, then enumerate their live event types in one
+  # page. SME-sized Calendly accounts almost never exceed 100 event
+  # types — the single-page cap is intentional to keep the sweep
+  # simple; if a deployment ever needs more, walk
+  # `pagination.next_page_token`. Custom questions are inlined on
+  # the same response so no extra HTTP call is needed.
+  defp sweep_layer_b(token) do
+    headers = [{"authorization", "Bearer " <> token}, {"accept", "application/json"}]
+
+    with {:ok, org_uri} <- fetch_org_uri(headers),
+         {:ok, collection} <- fetch_event_types(headers, org_uri) do
+      {:ok,
+       [
+         %{path: "event_types",           schema: build_event_types_row(collection),  expires_at: nil},
+         %{path: "event_types.questions", schema: build_questions_row(collection),    expires_at: nil}
+       ]}
+    end
+  end
+
+  defp fetch_org_uri(headers) do
+    case Req.get("https://api.calendly.com/users/me",
+                 headers: headers, finch: DmhAi.Finch, receive_timeout: 8_000) do
+      {:ok, %{status: 200, body: %{"resource" => %{"current_organization" => uri}}}}
+          when is_binary(uri) ->
+        {:ok, uri}
+
+      {:ok, %{status: s, body: body}} ->
+        {:error, {:http, s, body}}
+
+      {:error, reason} ->
+        {:error, {:transport, reason}}
+    end
+  end
+
+  defp fetch_event_types(headers, org_uri) do
+    url = "https://api.calendly.com/event_types"
+
+    case Req.get(url,
+                 headers: headers,
+                 params: [organization: org_uri, active: true, count: 100],
+                 finch: DmhAi.Finch, receive_timeout: 8_000) do
+      {:ok, %{status: 200, body: %{"collection" => collection}}} when is_list(collection) ->
+        {:ok, collection}
+
+      {:ok, %{status: s, body: body}} ->
+        {:error, {:http, s, body}}
+
+      {:error, reason} ->
+        {:error, {:transport, reason}}
+    end
+  end
+
+  defp build_event_types_row(collection) do
+    uuid_options =
+      Enum.map(collection, fn et ->
+        %{"value" => uri_to_uuid(et["uri"]), "label" => et["name"]}
+      end)
+
+    uri_options =
+      Enum.map(collection, fn et ->
+        %{"value" => et["uri"], "label" => et["name"]}
+      end)
+
+    %{
+      "object_type" => "event_types",
+      "properties"  => [
+        %{"name" => "event_type_uuid", "type" => "string", "options" => uuid_options},
+        %{"name" => "event_type_uri",  "type" => "string", "options" => uri_options}
+      ]
+    }
+  end
+
+  defp build_questions_row(collection) do
+    by_event_type =
+      Enum.reduce(collection, %{}, fn et, acc ->
+        questions =
+          (et["custom_questions"] || [])
+          |> Enum.map(&shape_question/1)
+
+        Map.put(acc, uri_to_uuid(et["uri"]), questions)
+      end)
+
+    %{"object_type" => "event_types.questions", "by_event_type" => by_event_type}
+  end
+
+  defp shape_question(q) do
+    base = %{
+      "name"     => q["name"],
+      "type"     => q["type"],
+      "required" => q["required"]
+    }
+
+    case q["answer_choices"] do
+      choices when is_list(choices) and choices != [] ->
+        Map.put(base, "options",
+                Enum.map(choices, fn c -> %{"value" => c, "label" => c} end))
+
+      _ ->
+        base
+    end
+  end
+
+  # Calendly URIs end in the resource UUID, e.g.
+  #   "https://api.calendly.com/event_types/AAAA-BBBB"
+  # The trailing path segment IS the UUID; split on `/` and take
+  # the last element.
+  defp uri_to_uuid(uri) when is_binary(uri), do: uri |> String.split("/") |> List.last()
+  defp uri_to_uuid(_),                       do: nil
 
   @impl true
   def manifest do

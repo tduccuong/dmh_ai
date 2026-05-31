@@ -297,4 +297,76 @@ defmodule DmhAi.P03CalendlyTest do
       assert uri =~ "organizations/MOCK/invitations"
     end
   end
+
+  describe "inspect_property/3 — Layer B reader" do
+    # Fixture row mirrors what `discover_metadata/1` writes for the
+    # `event_types` cache path — two synthesised properties so the
+    # model can validate either uuid OR URI form on the same name
+    # match. The `path` + `schema` shape matches the runtime caller's
+    # `ctx[:vendor_metadata]` payload (see InspectFunctionProperty).
+    setup do
+      event_types_row = %{
+        path: "event_types",
+        schema: %{
+          "object_type" => "event_types",
+          "properties"  => [
+            %{"name" => "event_type_uuid", "type" => "string", "options" => [
+              %{"value" => "AAAA-1111", "label" => "Discovery Call (30 min)"},
+              %{"value" => "BBBB-2222", "label" => "Strategy Session (60 min)"}
+            ]},
+            %{"name" => "event_type_uri", "type" => "string", "options" => [
+              %{"value" => "https://api.calendly.com/event_types/AAAA-1111",
+                "label" => "Discovery Call (30 min)"},
+              %{"value" => "https://api.calendly.com/event_types/BBBB-2222",
+                "label" => "Strategy Session (60 min)"}
+            ]}
+          ]
+        }
+      }
+
+      {:ok, %{event_types_row: event_types_row}}
+    end
+
+    test "event_type.get resolves event_type_uuid from cache with the uuid enum",
+         %{event_types_row: event_types_row} do
+      assert {:ok, %{type: "string", enum: enum, source: :vendor_metadata}} =
+               Calendly.inspect_property(
+                 "event_type.get",
+                 "event_type_uuid",
+                 %{vendor_metadata: [event_types_row]})
+
+      assert enum == ["AAAA-1111", "BBBB-2222"]
+    end
+
+    test "event_type.available_slots resolves event_type_uri form against the URI enum",
+         %{event_types_row: event_types_row} do
+      assert {:ok, %{type: "string", enum: enum, source: :vendor_metadata}} =
+               Calendly.inspect_property(
+                 "event_type.available_slots",
+                 "event_type_uri",
+                 %{vendor_metadata: [event_types_row]})
+
+      assert enum == [
+               "https://api.calendly.com/event_types/AAAA-1111",
+               "https://api.calendly.com/event_types/BBBB-2222"
+             ]
+    end
+
+    test "cache miss (empty vendor_metadata) returns :not_supported" do
+      assert {:error, :not_supported} =
+               Calendly.inspect_property(
+                 "event_type.get",
+                 "event_type_uuid",
+                 %{vendor_metadata: []})
+    end
+
+    test "function not in @function_to_cache returns :not_supported",
+         %{event_types_row: event_types_row} do
+      assert {:error, :not_supported} =
+               Calendly.inspect_property(
+                 "user.me",
+                 "email",
+                 %{vendor_metadata: [event_types_row]})
+    end
+  end
 end
