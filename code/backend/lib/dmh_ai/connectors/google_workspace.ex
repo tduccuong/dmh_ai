@@ -37,6 +37,11 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
     * 401 / `UNAUTHENTICATED` / `invalidCredentials` → `:unauthorised`
     * 403 / `PERMISSION_DENIED` (insufficient OAuth scope) → `:unauthorised`
     * `ALREADY_EXISTS` → `:duplicate`
+
+  Layer B (`discover_metadata/1` + `inspect_property/3`) lives in
+  `__MODULE__.LayerB` — this module is at the file-size ceiling and
+  delegates those two callbacks rather than carrying their bodies
+  inline.
   """
 
   use DmhAi.Connectors.MCPAdapter
@@ -82,6 +87,12 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
        %{url: "https://developers.google.com/people/api/rest",              title: "Google People API"}
      ]}
   end
+
+  @impl DmhAi.Connectors.Discoverable
+  defdelegate discover_metadata(user_id), to: __MODULE__.LayerB
+
+  @impl true
+  defdelegate inspect_property(function_name, path, ctx), to: __MODULE__.LayerB
 
   @impl true
   def mcp_slug, do: "google_workspace"

@@ -27,6 +27,7 @@ defmodule DmhAi.P03GoogleWorkspaceFunctionsTest do
 
   alias DmhAi.Connectors.Mock.Fixtures.GoogleWorkspace, as: GWFixtures
   alias DmhAi.Connectors.GoogleWorkspace
+  alias DmhAi.Connectors.GoogleWorkspace.LayerB
   alias DmhAi.Tools.Dispatcher
 
   @slug "google_workspace"
@@ -215,6 +216,122 @@ defmodule DmhAi.P03GoogleWorkspaceFunctionsTest do
              In manifest only: #{inspect(functions_in_manifest -- functions_in_fixtures)}
              In fixtures only: #{inspect(functions_in_fixtures -- functions_in_manifest)}
              """
+    end
+  end
+
+  describe "inspect_property/3 — Layer B reader" do
+    # Fixture rows mirror what `discover_metadata/1` writes — one row per
+    # cache path. The `path` + `schema` shape matches the runtime caller's
+    # `ctx[:vendor_metadata]` payload (see InspectFunctionProperty).
+    setup do
+      calendars_row = %{
+        path: "calendars",
+        schema: %{
+          "object_type" => "calendars",
+          "properties"  => [
+            %{"name" => "calendar_id", "type" => "string", "options" => [
+              %{"value" => "primary",                       "label" => "Cuong T"},
+              %{"value" => "abc@group.calendar.google.com", "label" => "Team"}
+            ]}
+          ]
+        }
+      }
+
+      labels_row = %{
+        path: "gmail.labels",
+        schema: %{
+          "object_type" => "gmail.labels",
+          "properties"  => [
+            %{"name" => "label_id", "type" => "string", "options" => [
+              %{"value" => "INBOX",     "label" => "INBOX"},
+              %{"value" => "Label_123", "label" => "Customers/VIP"}
+            ]}
+          ]
+        }
+      }
+
+      drives_row = %{
+        path: "drives",
+        schema: %{
+          "object_type" => "drives",
+          "properties"  => [
+            %{"name" => "drive_id", "type" => "string", "options" => [
+              %{"value" => "0AAAA", "label" => "Engineering Shared"},
+              %{"value" => "0BBBB", "label" => "Marketing Shared"}
+            ]}
+          ]
+        }
+      }
+
+      {:ok, %{calendars_row: calendars_row, labels_row: labels_row, drives_row: drives_row}}
+    end
+
+    test "gcal.list_events resolves calendar_id with the calendars enum",
+         %{calendars_row: calendars_row} do
+      assert {:ok, %{type: "string", enum: enum, source: :vendor_metadata}} =
+               LayerB.inspect_property(
+                 "gcal.list_events",
+                 "calendar_id",
+                 %{vendor_metadata: [calendars_row]})
+
+      assert enum == ["primary", "abc@group.calendar.google.com"]
+    end
+
+    test "gmail.search resolves label_id with the gmail.labels enum",
+         %{labels_row: labels_row} do
+      assert {:ok, %{type: "string", enum: enum, source: :vendor_metadata}} =
+               LayerB.inspect_property(
+                 "gmail.search",
+                 "label_id",
+                 %{vendor_metadata: [labels_row]})
+
+      assert enum == ["INBOX", "Label_123"]
+    end
+
+    test "drive.list resolves drive_id with the drives enum",
+         %{drives_row: drives_row} do
+      assert {:ok, %{type: "string", enum: enum, source: :vendor_metadata}} =
+               LayerB.inspect_property(
+                 "drive.list",
+                 "drive_id",
+                 %{vendor_metadata: [drives_row]})
+
+      assert enum == ["0AAAA", "0BBBB"]
+    end
+
+    test "cache miss (property not in row) returns :not_supported",
+         %{calendars_row: calendars_row} do
+      assert {:error, :not_supported} =
+               LayerB.inspect_property(
+                 "gcal.list_events",
+                 "nonexistent_field",
+                 %{vendor_metadata: [calendars_row]})
+    end
+
+    test "function not in @function_to_cache returns :not_supported" do
+      assert {:error, :not_supported} =
+               LayerB.inspect_property(
+                 "gmail.send",
+                 "to",
+                 %{vendor_metadata: []})
+    end
+
+    test "empty vendor_metadata returns :not_supported" do
+      assert {:error, :not_supported} =
+               LayerB.inspect_property(
+                 "gcal.list_events",
+                 "calendar_id",
+                 %{vendor_metadata: []})
+    end
+
+    test "top-level GoogleWorkspace.inspect_property/3 delegates to LayerB",
+         %{labels_row: labels_row} do
+      # Sanity: the parent module's defdelegate hits LayerB.
+      assert {:ok, %{type: "string", source: :vendor_metadata}} =
+               GoogleWorkspace.inspect_property(
+                 "gmail.label",
+                 "label_id",
+                 %{vendor_metadata: [labels_row]})
     end
   end
 end
