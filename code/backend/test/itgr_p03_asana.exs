@@ -56,7 +56,7 @@ defmodule DmhAi.P03AsanaTest do
       assert :ok = Manifest.validate(Asana.manifest())
     end
 
-    test "declares 16 functions at the Primitive 0.3 surface" do
+    test "declares 17 functions at the Primitive 0.3 surface" do
       functions = Asana.manifest().functions
 
       # Original 8
@@ -79,7 +79,16 @@ defmodule DmhAi.P03AsanaTest do
       assert Map.has_key?(functions, "subtask.find")
       assert Map.has_key?(functions, "subtask.create")
 
-      assert map_size(functions) == 16
+      # +1 identity pivot
+      assert Map.has_key?(functions, "user.find_by_email")
+
+      assert map_size(functions) == 17
+    end
+
+    test "identity_lookup pivots Asana user lookup to the user gid" do
+      assert %{function: "asana.user.find_by_email",
+               by_arg: :email,
+               emit_field: "gid"} = Asana.identity_lookup()
     end
 
     test "every write function is `callable_from: [:task]` (HARD Rule 2)" do

@@ -292,6 +292,24 @@ defmodule DmhAi.Connectors.Asana do
           scopes:  ["default"]
         },
 
+        # vendor: GET /users/{email}
+        # Identity pivot — Asana's `/users/{user_gid}` endpoint accepts
+        # an email as the path id, the API resolves it to a user gid
+        # server-side and returns the same Asana user resource. A
+        # separate verb (rather than overloading `user.find`) because
+        # `safe_path_id/1`'s whitelist rejects `@` + `.`; this verb
+        # routes the email through `URI.encode_www_form/1` instead.
+        "user.find_by_email" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "email" => %{type: :string, required: true, format: :email,
+                         provenance: %{kind: :from_user}}
+          },
+          returns: %{user: :map},
+          scopes:  ["default"]
+        },
+
         # vendor: GET /workspaces
         # Workspaces are the top-level container in Asana — every other
         # object lives under one. A read here is the natural seed for
@@ -431,12 +449,12 @@ defmodule DmhAi.Connectors.Asana do
   end
 
   @impl true
-  # Asana exposes `/users/{id}` keyed by gid OR email (`workspace`
-  # qualified), but a dedicated identity-pivot function is not yet in
-  # this manifest. Fix: add `user.find_by_email` and switch this to:
-  #   %{function: "asana.user.find_by_email",
-  #     by_arg: :email, emit_field: "gid"}
-  def identity_lookup, do: nil
+  # `user.find_by_email` hits Asana's `/users/{email}` lookup — Asana's
+  # `/users/{user_gid}` endpoint accepts an email as the path id, the
+  # API resolves it to a user gid server-side. Emits the user object's
+  # `gid` (Asana's id field is `"gid"`, not `"id"`).
+  def identity_lookup,
+    do: %{function: "asana.user.find_by_email", by_arg: :email, emit_field: "gid"}
 
   @impl true
   # Asana returns normal HTTP status codes with a JSON error body of
@@ -627,9 +645,9 @@ defmodule DmhAi.Connectors.Asana do
       %{
         id:           "directory",
         display_name: "Directory",
-        description:  "Look up Asana users.",
+        description:  "Look up Asana users (by gid or email — identity lookup).",
         scopes:       ["default"],
-        functions:    ["user.find"],
+        functions:    ["user.find", "user.find_by_email"],
         vendor_prereq: %{
           label:      "Asana OAuth app access",
           enable_url: "https://developers.asana.com/docs/oauth"

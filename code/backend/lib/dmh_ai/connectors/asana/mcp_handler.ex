@@ -21,10 +21,11 @@ defmodule DmhAi.Connectors.Asana.MCPHandler do
     task.assign    — PUT    /tasks/{task_id}
     task.complete  — PUT    /tasks/{task_id}
     task.delete    — DELETE /tasks/{task_id}
-    subtask.find   — GET    /tasks/{parent_task_id}/subtasks
-    subtask.create — POST   /tasks/{parent_task_id}/subtasks
-    story.create   — POST   /tasks/{task_id}/stories
-    user.find      — GET    /users/{user_id_or_me}
+    subtask.find       — GET    /tasks/{parent_task_id}/subtasks
+    subtask.create     — POST   /tasks/{parent_task_id}/subtasks
+    story.create       — POST   /tasks/{task_id}/stories
+    user.find          — GET    /users/{user_id_or_me}
+    user.find_by_email — GET    /users/{email}
 
   Fixed host (`https://app.asana.com/api/1.0`), no per-instance
   templating. Standard `Authorization: Bearer <token>` auth, which
@@ -134,6 +135,12 @@ defmodule DmhAi.Connectors.Asana.MCPHandler do
         url:     &user_find_url/1,
         response: &user_find_response/2,
         doc:     "Read a user (defaults to the authed user)."
+      },
+      "user.find_by_email" => %FunctionSpec{
+        method:  :get,
+        url:     &user_find_by_email_url/1,
+        response: &user_find_by_email_response/2,
+        doc:     "Look up an Asana user by email (GET /users/{email}). Identity pivot."
       },
       "workspace.find" => %FunctionSpec{
         method:  :get,
@@ -308,6 +315,24 @@ defmodule DmhAi.Connectors.Asana.MCPHandler do
     {:ok, %{"user" => unwrap_obj(body)}}
   end
 
+  # ─── user.find_by_email — GET /users/{email} ──────────────────────────
+
+  # vendor: GET /users/{email}
+  # docs:   https://developers.asana.com/reference/getuser
+  # Asana's `/users/{user_gid}` endpoint accepts an email as the path
+  # id and resolves it to a user gid server-side, returning the same
+  # `"data"`-wrapped Asana user resource. The email is URL-escaped via
+  # `URI.encode_www_form/1` rather than passed through the strict
+  # `safe_path_id/1` whitelist — the whitelist rejects `@` + `.` and
+  # broadening it for one verb would also broaden it for every
+  # gid-keyed verb.
+  defp user_find_by_email_url(args),
+    do: "#{@api_base}/users/#{safe_email_segment(args["email"])}"
+
+  defp user_find_by_email_response(s, body) when s in 200..299 do
+    {:ok, %{"user" => unwrap_obj(body)}}
+  end
+
   # ─── workspace.find — GET /workspaces ─────────────────────────────────
 
   defp workspace_find_request(args, _ctx) do
@@ -458,6 +483,14 @@ defmodule DmhAi.Connectors.Asana.MCPHandler do
       raise ArgumentError, "invalid asana id: #{inspect(id)}"
     end
   end
+
+  # Emails used as a path segment go through `URI.encode_www_form/1`
+  # rather than the strict `@path_id_re` whitelist — the whitelist
+  # rejects `@` and `.`, and broadening it for one verb would also
+  # broaden it for every gid-keyed verb. `@` + `.` are URI-safe so
+  # encoding is mostly a no-op, but `+` aliases (`klara+demo@…`) and
+  # any unicode local-parts get correctly percent-encoded.
+  defp safe_email_segment(email), do: URI.encode_www_form(to_string(email))
 
   defp maybe_put_kv(map, _k, nil), do: map
   defp maybe_put_kv(map, _k, ""),  do: map

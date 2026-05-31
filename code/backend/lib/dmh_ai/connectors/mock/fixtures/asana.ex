@@ -30,22 +30,23 @@ defmodule DmhAi.Connectors.Mock.Fixtures.Asana do
   @spec fixtures() :: %{required(String.t()) => (map() -> map()) | map()}
   def fixtures do
     %{
-      "project.find"   => &project_find/1,
-      "project.create" => &project_create/1,
-      "task.find"      => &task_find/1,
-      "task.create"    => &task_create/1,
-      "task.update"    => &task_update/1,
-      "task.complete"  => &task_complete/1,
-      "story.create"   => &story_create/1,
-      "user.find"      => &user_find/1,
-      "workspace.find" => &workspace_find/1,
-      "team.find"      => &team_find/1,
-      "section.find"   => &section_find/1,
-      "section.create" => &section_create/1,
-      "task.assign"    => &task_assign/1,
-      "task.delete"    => &task_delete/1,
-      "subtask.find"   => &subtask_find/1,
-      "subtask.create" => &subtask_create/1
+      "project.find"       => &project_find/1,
+      "project.create"     => &project_create/1,
+      "task.find"          => &task_find/1,
+      "task.create"        => &task_create/1,
+      "task.update"        => &task_update/1,
+      "task.complete"      => &task_complete/1,
+      "story.create"       => &story_create/1,
+      "user.find"          => &user_find/1,
+      "user.find_by_email" => &user_find_by_email/1,
+      "workspace.find"     => &workspace_find/1,
+      "team.find"          => &team_find/1,
+      "section.find"       => &section_find/1,
+      "section.create"     => &section_create/1,
+      "task.assign"        => &task_assign/1,
+      "task.delete"        => &task_delete/1,
+      "subtask.find"       => &subtask_find/1,
+      "subtask.create"     => &subtask_create/1
     }
   end
 
@@ -154,6 +155,28 @@ defmodule DmhAi.Connectors.Mock.Fixtures.Asana do
         "email" => email
       }
     }
+  end
+
+  # Identity pivot — sentinel email maps to a stable Asana user
+  # resource so chain tests can prove the lookup was wired without
+  # touching real Asana. Wrapped in `"data"` to match Asana's
+  # wire-shape contract (same as every other fixture in this module).
+  defp user_find_by_email(args) do
+    email = Map.get(args, "email", "")
+
+    case email do
+      "mock-user@example.com" ->
+        %{
+          "data" => %{
+            "gid"   => "MOCKASANAUSER001",
+            "name"  => "Mock User",
+            "email" => "mock-user@example.com"
+          }
+        }
+
+      _ ->
+        %{"data" => %{}}
+    end
   end
 
   defp workspace_find(_args) do
