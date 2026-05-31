@@ -40,6 +40,7 @@ defmodule DmhAi.Connectors.Mock.Fixtures.Zoom do
       "recording.get"             => &recording_get/1,
       "recording.delete"          => &recording_delete/1,
       "user.find"                 => &user_find/1,
+      "user.find_by_email"        => &user_find_by_email/1,
       "webinar.create"            => &webinar_create/1,
       "webinar.find"              => &webinar_find/1,
       "webinar.add_registrant"    => &webinar_add_registrant/1,
@@ -238,5 +239,27 @@ defmodule DmhAi.Connectors.Mock.Fixtures.Zoom do
 
   defp webinar_update(_args) do
     %{"webinar_id" => "updated"}
+  end
+
+  # Identity pivot — sentinel email maps to a stable Zoom user
+  # resource so chain tests can prove the lookup was wired without
+  # touching real Zoom.
+  defp user_find_by_email(args) do
+    email = Map.get(args, "email", "")
+
+    case email do
+      "mock-user@example.com" ->
+        %{
+          "user" => %{
+            "id"         => "MOCKZOOMUSER001",
+            "email"      => "mock-user@example.com",
+            "first_name" => "Mock",
+            "last_name"  => "User"
+          }
+        }
+
+      _ ->
+        %{"user" => %{}}
+    end
   end
 end

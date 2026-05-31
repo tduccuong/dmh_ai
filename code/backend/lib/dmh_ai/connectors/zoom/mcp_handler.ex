@@ -21,6 +21,7 @@ defmodule DmhAi.Connectors.Zoom.MCPHandler do
     recording.get             — GET    /meetings/{meeting_id}/recordings
     recording.delete          — DELETE /meetings/{meeting_id}/recordings
     user.find                 — GET    /users/{user_id_or_me}
+    user.find_by_email        — GET    /users/{email}
     webinar.create            — POST   /users/me/webinars
     webinar.find              — GET    /users/me/webinars
     webinar.add_registrant    — POST   /webinars/{webinar_id}/registrants
@@ -192,6 +193,12 @@ defmodule DmhAi.Connectors.Zoom.MCPHandler do
         request: &webinar_update_request/2,
         response: &webinar_update_response/2,
         doc:     "Patch webinar fields (topic, start_time, duration, …)."
+      },
+      "user.find_by_email" => %FunctionSpec{
+        method:  :get,
+        url:     &user_find_by_email_url/1,
+        response: &user_find_by_email_response/2,
+        doc:     "Look up a Zoom user by email (GET /users/{email}). Identity pivot."
       }
     }
   end
@@ -446,6 +453,21 @@ defmodule DmhAi.Connectors.Zoom.MCPHandler do
     {:ok, %{"webinar_id" => "updated"}}
   end
 
+  # ─── user.find_by_email — GET /users/{email} ──────────────────────────
+
+  # vendor: GET /v2/users/{email}
+  # docs:   https://developers.zoom.us/docs/api/users/
+  # Zoom's `/users/{id}` accepts the email as the path id (same
+  # endpoint as the numeric userId path) and returns the full Zoom
+  # user resource. The whole body is surfaced as `%{"user" => body}`
+  # so downstream `{{N.user.id}}` references pick up the Zoom user id.
+  defp user_find_by_email_url(args),
+    do: "#{@api_base}/users/#{safe_email_segment(args["email"])}"
+
+  defp user_find_by_email_response(s, body) when s in 200..299 do
+    {:ok, %{"user" => body}}
+  end
+
   # ─── helpers ──────────────────────────────────────────────────────────
 
   # Whitelist a path-param id to the Zoom id charset before
@@ -478,6 +500,14 @@ defmodule DmhAi.Connectors.Zoom.MCPHandler do
       URI.encode_www_form(str)
     end
   end
+
+  # Emails used as a path segment go through `URI.encode_www_form/1`
+  # rather than the strict `@path_id_re` whitelist — the whitelist
+  # rejects `@` and `.`, and broadening it for one verb would also
+  # broaden it for every numeric-id verb. `@` + `.` are URI-safe so
+  # encoding is mostly a no-op, but `+` aliases (`klara+demo@…`) and
+  # any unicode local-parts get correctly percent-encoded.
+  defp safe_email_segment(email), do: URI.encode_www_form(to_string(email))
 
   defp maybe_put_kv(map, _k, nil), do: map
   defp maybe_put_kv(map, _k, ""),  do: map

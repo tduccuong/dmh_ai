@@ -7,7 +7,7 @@ defmodule DmhAi.Connectors.Zoom do
   @moduledoc """
   Zoom connector (Universal Region, Case B — vendor MCP).
 
-  Sixteen functions at the SME-relevant slice of Zoom's REST API
+  Seventeen functions at the SME-relevant slice of Zoom's REST API
   (developers.zoom.us) — meetings, recordings, users, webinars:
 
     meeting.create            [write]  schedule a meeting for the authed user
@@ -22,6 +22,7 @@ defmodule DmhAi.Connectors.Zoom do
     recording.get             [read]   read recording files for one meeting
     recording.delete          [write]  trash / delete cloud recordings for one meeting
     user.find                 [read]   read a user (defaults to the authed user)
+    user.find_by_email        [read]   identity pivot — resolve email → Zoom user id
     webinar.create            [write]  schedule a webinar for the authed user
     webinar.find              [read]   list the authed user's webinars
     webinar.add_registrant    [write]  add a registrant to a webinar
@@ -400,18 +401,38 @@ defmodule DmhAi.Connectors.Zoom do
           returns: %{webinar_id: :string},
           errors:  [:unauthorised, :not_found, :rate_limited],
           scopes:  ["webinar:write"]
+        },
+
+        # vendor: GET /users/{email}
+        # docs:   https://developers.zoom.us/docs/api/users/
+        # Identity pivot — Zoom's `/users/{id}` endpoint accepts an
+        # email (or userId) as the path id, returning the Zoom user
+        # resource. `user:read:admin` is required for arbitrary-email
+        # lookup; the narrower `user:read` only resolves the authed
+        # user. The email path param is URL-escaped before
+        # interpolation (`@` + `.` are URI-safe but consistent
+        # encoding is cleaner; the same helper handles `+` aliases).
+        "user.find_by_email" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "email" => %{type: :string, required: true, format: :email,
+                         provenance: %{kind: :from_user}}
+          },
+          returns: %{user: :map},
+          scopes:  ["user:read:admin"]
         }
       }
     }
   end
 
   @impl true
-  # Zoom exposes `/users/{id}` keyed by email OR id, but a dedicated
-  # identity-pivot function is not yet in this manifest. Fix: add
-  # `user.find_by_email` and switch this to:
-  #   %{function: "zoom.user.find_by_email",
-  #     by_arg: :email, emit_field: "id"}
-  def identity_lookup, do: nil
+  # `user.find_by_email` hits Zoom's `/users/{email}` lookup — Zoom's
+  # `/users/{id}` endpoint accepts an email (or userId) as the path
+  # id and returns the Zoom user resource. Emits the user object's
+  # `id`, which is what downstream assignment fields expect.
+  def identity_lookup,
+    do: %{function: "zoom.user.find_by_email", by_arg: :email, emit_field: "id"}
 
   @impl true
   # Zoom returns normal HTTP status codes with a JSON error body of the
@@ -449,7 +470,9 @@ defmodule DmhAi.Connectors.Zoom do
       # 2024 — these classic scope names may need updating for live OAuth.
       # `report:read:admin` is the coarse admin scope the Reports API
       # demands (no narrower equivalent exists for
-      # `meeting.list_participants`).
+      # `meeting.list_participants`). `user:read:admin` is the
+      # arbitrary-email lookup scope for `user.find_by_email` — the
+      # narrower `user:read` only resolves the authed user.
       scopes: [
         "meeting:read",
         "meeting:write",
@@ -457,6 +480,7 @@ defmodule DmhAi.Connectors.Zoom do
         "recording:write",
         "report:read:admin",
         "user:read",
+        "user:read:admin",
         "webinar:read",
         "webinar:write"
       ],
@@ -560,12 +584,13 @@ defmodule DmhAi.Connectors.Zoom do
       %{
         id:           "users",
         display_name: "Users",
-        description:  "Look up Zoom users.",
-        scopes:       ["user:read"],
-        functions:    ["user.find"],
+        description:  "Look up Zoom users (by id or email — identity lookup).",
+        scopes:       ["user:read", "user:read:admin"],
+        functions:    ["user.find", "user.find_by_email"],
         vendor_prereq: %{
           label:      "Zoom OAuth app scopes (Users)",
-          enable_url: "https://developers.zoom.us/docs/integrations/oauth/"
+          enable_url: "https://developers.zoom.us/docs/integrations/oauth/",
+          help:       "user:read:admin is an admin-tier scope. Without it, arbitrary-email lookups against /users/{email} return 4xx (Zoom restricts the endpoint to admin-scoped contexts when keyed by anything other than the authed user). The narrower user:read scope only resolves /users/me."
         }
       },
       %{

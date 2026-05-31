@@ -53,7 +53,7 @@ defmodule DmhAi.P03ZoomTest do
       assert :ok = Manifest.validate(Zoom.manifest())
     end
 
-    test "declares 16 functions at the Primitive 0.3 surface" do
+    test "declares 17 functions at the Primitive 0.3 surface" do
       functions = Zoom.manifest().functions
 
       # Original 8
@@ -76,7 +76,16 @@ defmodule DmhAi.P03ZoomTest do
       assert Map.has_key?(functions, "webinar.add_registrant")
       assert Map.has_key?(functions, "webinar.update")
 
-      assert map_size(functions) == 16
+      # +1 identity pivot
+      assert Map.has_key?(functions, "user.find_by_email")
+
+      assert map_size(functions) == 17
+    end
+
+    test "identity_lookup pivots Zoom user lookup to the user id" do
+      assert %{function: "zoom.user.find_by_email",
+               by_arg: :email,
+               emit_field: "id"} = Zoom.identity_lookup()
     end
 
     test "every write function is `callable_from: [:task]` (HARD Rule 2)" do
