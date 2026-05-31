@@ -41,6 +41,11 @@ defmodule DmhAi.Connectors.M365 do
   generic `ErrorMap.classify/2` handles the long tail (incl. 403
   "API not enabled" / consent issues which become `:api_disabled`
   with actionable hint URLs).
+
+  Layer B (`discover_metadata/1` + `inspect_property/3`) lives in
+  `__MODULE__.LayerB` — this module is at the file-size ceiling and
+  delegates those two callbacks rather than carrying their bodies
+  inline.
   """
 
   use DmhAi.Connectors.MCPAdapter
@@ -74,6 +79,12 @@ defmodule DmhAi.Connectors.M365 do
 
   @impl DmhAi.Connectors.Discoverable
   def discover_functions, do: DmhAi.Connectors.Seed.read_priv_rows(mcp_slug())
+
+  @impl DmhAi.Connectors.Discoverable
+  defdelegate discover_metadata(user_id), to: __MODULE__.LayerB
+
+  @impl true
+  defdelegate inspect_property(function_name, path, ctx), to: __MODULE__.LayerB
 
   @impl true
   def manifest do

@@ -22,6 +22,7 @@ defmodule DmhAi.P03M365FunctionsTest do
 
   alias DmhAi.Connectors.Mock.Fixtures.M365, as: M365Fixtures
   alias DmhAi.Connectors.M365
+  alias DmhAi.Connectors.M365.LayerB
   alias DmhAi.Tools.Dispatcher
 
   @slug "m365"
@@ -197,6 +198,122 @@ defmodule DmhAi.P03M365FunctionsTest do
              In manifest only: #{inspect(functions_in_manifest -- functions_in_fixtures)}
              In fixtures only: #{inspect(functions_in_fixtures -- functions_in_manifest)}
              """
+    end
+  end
+
+  describe "inspect_property/3 — Layer B reader" do
+    # Fixture rows mirror what `discover_metadata/1` writes — one row per
+    # cache path. The `path` + `schema` shape matches the runtime caller's
+    # `ctx[:vendor_metadata]` payload (see InspectFunctionProperty).
+    setup do
+      folders_row = %{
+        path: "mail.folders",
+        schema: %{
+          "object_type" => "mail.folders",
+          "properties"  => [
+            %{"name" => "folder_id", "type" => "string", "options" => [
+              %{"value" => "AAAINBOX",   "label" => "Inbox"},
+              %{"value" => "AAAARCHIVE", "label" => "Archive"}
+            ]}
+          ]
+        }
+      }
+
+      calendars_row = %{
+        path: "calendars",
+        schema: %{
+          "object_type" => "calendars",
+          "properties"  => [
+            %{"name" => "calendar_id", "type" => "string", "options" => [
+              %{"value" => "BBBPRIMARY", "label" => "Calendar"},
+              %{"value" => "BBBSHARED",  "label" => "Team Shared"}
+            ]}
+          ]
+        }
+      }
+
+      teams_row = %{
+        path: "teams.joined",
+        schema: %{
+          "object_type" => "teams.joined",
+          "properties"  => [
+            %{"name" => "team_id", "type" => "string", "options" => [
+              %{"value" => "CCCENG",   "label" => "Engineering"},
+              %{"value" => "CCCSALES", "label" => "Sales"}
+            ]}
+          ]
+        }
+      }
+
+      {:ok, %{folders_row: folders_row, calendars_row: calendars_row, teams_row: teams_row}}
+    end
+
+    test "mail.move_to_folder resolves folder_id with the mail.folders enum",
+         %{folders_row: folders_row} do
+      assert {:ok, %{type: "string", enum: enum, source: :vendor_metadata}} =
+               LayerB.inspect_property(
+                 "mail.move_to_folder",
+                 "folder_id",
+                 %{vendor_metadata: [folders_row]})
+
+      assert enum == ["AAAINBOX", "AAAARCHIVE"]
+    end
+
+    test "cal.list_events resolves calendar_id with the calendars enum",
+         %{calendars_row: calendars_row} do
+      assert {:ok, %{type: "string", enum: enum, source: :vendor_metadata}} =
+               LayerB.inspect_property(
+                 "cal.list_events",
+                 "calendar_id",
+                 %{vendor_metadata: [calendars_row]})
+
+      assert enum == ["BBBPRIMARY", "BBBSHARED"]
+    end
+
+    test "teams.post_channel_message resolves team_id with the teams.joined enum",
+         %{teams_row: teams_row} do
+      assert {:ok, %{type: "string", enum: enum, source: :vendor_metadata}} =
+               LayerB.inspect_property(
+                 "teams.post_channel_message",
+                 "team_id",
+                 %{vendor_metadata: [teams_row]})
+
+      assert enum == ["CCCENG", "CCCSALES"]
+    end
+
+    test "cache miss (property not in row) returns :not_supported",
+         %{calendars_row: calendars_row} do
+      assert {:error, :not_supported} =
+               LayerB.inspect_property(
+                 "cal.list_events",
+                 "nonexistent_field",
+                 %{vendor_metadata: [calendars_row]})
+    end
+
+    test "function not in @function_to_cache returns :not_supported" do
+      assert {:error, :not_supported} =
+               LayerB.inspect_property(
+                 "mail.send",
+                 "to",
+                 %{vendor_metadata: []})
+    end
+
+    test "empty vendor_metadata returns :not_supported" do
+      assert {:error, :not_supported} =
+               LayerB.inspect_property(
+                 "cal.list_events",
+                 "calendar_id",
+                 %{vendor_metadata: []})
+    end
+
+    test "top-level M365.inspect_property/3 delegates to LayerB",
+         %{folders_row: folders_row} do
+      # Sanity: the parent module's defdelegate hits LayerB.
+      assert {:ok, %{type: "string", source: :vendor_metadata}} =
+               M365.inspect_property(
+                 "mail.search",
+                 "folder_id",
+                 %{vendor_metadata: [folders_row]})
     end
   end
 end
