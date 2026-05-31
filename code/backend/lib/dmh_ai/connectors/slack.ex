@@ -422,13 +422,8 @@ defmodule DmhAi.Connectors.Slack do
   end
 
   @impl true
-  # Slack exposes `users.lookupByEmail`, which IS an email-pivot, but
-  # the identity-probe contract emits a single vendor id field — wiring
-  # `user.find_by_email` (which returns the whole user map) into it is
-  # future work. Fix: switch this to:
-  #   %{function: "slack.user.find_by_email",
-  #     by_arg: :email, emit_field: "id"}
-  def identity_lookup, do: nil
+  def identity_lookup,
+    do: %{function: "slack.user.find_by_email", by_arg: :email, emit_field: "id"}
 
   @impl true
   # Slack answers HTTP 200 even on failure, with body

@@ -78,6 +78,11 @@ defmodule DmhAi.P03SlackTest do
       assert map_size(functions) == 16
     end
 
+    test "identity_lookup points at user.find_by_email" do
+      assert %{function: "slack.user.find_by_email", by_arg: :email, emit_field: "id"} =
+               Slack.identity_lookup()
+    end
+
     test "every write function is `callable_from: [:task]` (HARD Rule 2)" do
       Slack.manifest().functions
       |> Enum.filter(fn {_, v} -> v.permission == :write end)
