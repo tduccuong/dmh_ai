@@ -50,7 +50,7 @@ defmodule DmhAi.P03M365Test do
   describe "manifest" do
     test "validates clean", do: assert :ok = Manifest.validate(M365.manifest())
 
-    test "declares 22 functions across mail/cal/files/teams/todo/contacts/excel/onenote" do
+    test "declares 23 functions across mail/cal/files/teams/todo/contacts/excel/onenote/users" do
       functions = M365.manifest().functions
       # Original 14
       assert Map.has_key?(functions, "mail.send")
@@ -76,8 +76,10 @@ defmodule DmhAi.P03M365Test do
       assert Map.has_key?(functions, "teams.list_channels")
       assert Map.has_key?(functions, "teams.post_channel_message")
       assert Map.has_key?(functions, "todo.complete")
+      # +1 identity pivot
+      assert Map.has_key?(functions, "user.find_by_email")
 
-      assert map_size(functions) == 22
+      assert map_size(functions) == 23
     end
 
     test "every write is callable_from: [:task] with idempotency_key required" do
@@ -87,6 +89,12 @@ defmodule DmhAi.P03M365Test do
         assert v.callable_from == [:task], "write function #{name} must be task-only"
         assert v.idempotency_key == :required
       end)
+    end
+
+    test "identity_lookup pivots Graph user lookup to the user id" do
+      assert %{function: "m365.user.find_by_email",
+               by_arg: :email,
+               emit_field: "id"} = M365.identity_lookup()
     end
   end
 

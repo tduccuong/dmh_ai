@@ -496,19 +496,34 @@ defmodule DmhAi.Connectors.M365 do
           returns: %{task_id: :string},
           errors:  [:unauthorised, :not_found, :rate_limited],
           scopes:  ["Tasks.ReadWrite"]
+        },
+
+        # vendor: GET /v1.0/users/{email}
+        # docs:   https://learn.microsoft.com/graph/api/user-get
+        # Identity pivot — resolves an email to the Graph user
+        # resource so workflows binding `{{owner}}` can pick up the
+        # `id` (Graph user object id) for downstream assignment.
+        "user.find_by_email" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "email" => %{type: :string, required: true, format: :email,
+                         provenance: %{kind: :from_user}}
+          },
+          returns: %{user: :map},
+          scopes:  ["User.ReadBasic.All"]
         }
       }
     }
   end
 
   @impl true
-  # Primitive 0.9 — no /users?$filter=mail-eq function in this
-  # manifest yet, so workflows can't resolve `@user_N` against
-  # M365 directly. Fix: add `users.find_by_email` (GET
-  # /users?$filter=mail eq '<email>') and switch this to:
-  #   %{function: "m365.users.find_by_email",
-  #     by_arg: :email, emit_field: "id"}
-  def identity_lookup, do: nil
+  # `user.find_by_email` hits Graph's `/users/{email}` lookup —
+  # Microsoft accepts the userPrincipalName (commonly the email)
+  # directly as the path id. Emits the Graph user object's `id`,
+  # which is what downstream assignment fields expect.
+  def identity_lookup,
+    do: %{function: "m365.user.find_by_email", by_arg: :email, emit_field: "id"}
 
   @impl true
   def remap_error(%{"error" => %{"code" => code}}) do
@@ -564,7 +579,8 @@ defmodule DmhAi.Connectors.M365 do
         "Channel.ReadBasic.All",
         "ChannelMessage.Send",
         "offline_access",
-        "User.Read"
+        "User.Read",
+        "User.ReadBasic.All"
       ],
       # Identity capture lives in `fetch_userinfo/1` (see top of module).
       userinfo_endpoint:      nil,
@@ -708,6 +724,18 @@ defmodule DmhAi.Connectors.M365 do
         vendor_prereq: %{
           label:      "Microsoft Graph (Files permissions cover workbook reads + writes)",
           enable_url: "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade"
+        }
+      },
+      %{
+        id:           "users",
+        display_name: "Directory — Users",
+        description:  "Pivot a directory user by email to their Graph user id (identity lookup).",
+        scopes:       ["User.Read", "User.ReadBasic.All"],
+        functions:    ["user.find_by_email"],
+        vendor_prereq: %{
+          label:      "Microsoft Graph (User.ReadBasic.All requires tenant-admin consent at install)",
+          enable_url: "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade",
+          help:       "User.ReadBasic.All is an admin-consent scope. Tenant administrators must grant it via the Entra admin centre once at install — without it, directory lookups return 403."
         }
       },
       # ── Planned (vendor surface visible to admins, not yet built) ──

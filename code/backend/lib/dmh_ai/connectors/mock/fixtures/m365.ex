@@ -46,7 +46,8 @@ defmodule DmhAi.Connectors.Mock.Fixtures.M365 do
       "contacts.search" => &contacts_search/1,
       "excel.read_range"  => &excel_read_range/1,
       "excel.update_range" => &excel_update_range/1,
-      "onenote.read_page" => &onenote_read_page/1
+      "onenote.read_page" => &onenote_read_page/1,
+      "user.find_by_email" => &user_find_by_email/1
     }
   end
 
@@ -373,5 +374,27 @@ defmodule DmhAi.Connectors.Mock.Fixtures.M365 do
     %{
       "task_id" => Map.get(args, "task_id") || sentinel_id
     }
+  end
+
+  # Identity pivot — sentinel email maps to a stable Graph user
+  # resource so chain tests can prove the lookup was wired without
+  # touching real Graph.
+  defp user_find_by_email(args) do
+    email = Map.get(args, "email", "")
+
+    case email do
+      "mock-user@example.com" ->
+        %{
+          "user" => %{
+            "id"                => "MOCKM365USER001",
+            "displayName"       => "Mock User",
+            "mail"              => "mock-user@example.com",
+            "userPrincipalName" => "mock-user@example.com"
+          }
+        }
+
+      _ ->
+        %{"user" => %{}}
+    end
   end
 end

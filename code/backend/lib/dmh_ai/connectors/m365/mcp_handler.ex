@@ -170,6 +170,10 @@ defmodule DmhAi.Connectors.M365.MCPHandler do
       "todo.complete" => %FunctionSpec{
         handler: &todo_complete/2,
         doc:     "Mark a Microsoft To Do task as completed."
+      },
+      "user.find_by_email" => %FunctionSpec{
+        handler: &user_find_by_email/2,
+        doc:     "Look up a directory user by email (Graph GET /users/{email}). Identity pivot."
       }
     }
   end
@@ -992,6 +996,30 @@ defmodule DmhAi.Connectors.M365.MCPHandler do
     case RestBridge.raw_request(:patch, with_bearer([url: url, json: body], ctx)) do
       {:ok, status, resp} when status in 200..299 and is_map(resp) ->
         {:ok, %{"task_id" => to_string(resp["id"] || task_id)}}
+
+      {:ok, status, body} ->
+        {:error, {:http, status, body}}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  # ─── user.find_by_email — GET /users/{email} ─────────────────────────
+  # vendor: GET /v1.0/users/{email}
+  # docs:   https://learn.microsoft.com/graph/api/user-get
+  # Graph accepts the userPrincipalName (= email for most tenants)
+  # directly as the path id. The whole user resource is surfaced as
+  # `%{"user" => body}` so downstream `{{N.user.id}}` references
+  # pick up the Graph user object id.
+
+  defp user_find_by_email(args, ctx) do
+    email = safe_path_id(args["email"])
+    url   = "#{@graph_root}/users/#{email}"
+
+    case RestBridge.raw_request(:get, with_bearer([url: url], ctx)) do
+      {:ok, status, body} when status in 200..299 and is_map(body) ->
+        {:ok, %{"user" => body}}
 
       {:ok, status, body} ->
         {:error, {:http, status, body}}
