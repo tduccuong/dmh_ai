@@ -122,12 +122,21 @@ defmodule DmhAi.Tools.ProvisionSshIdentity do
         user   = %{id: user_id, email: user_email, role: user_role || ""}
         target = "ssh:" <> host_part
 
-        case Credentials.lookup(user_id, target, remote_user) do
-          %{kind: "ssh_identity", payload: %{"private_key" => priv, "public_key" => pub}} ->
-            existing_credential_outcome(user, remote_user, host_part, priv, pub)
+        with {:ok, username} <- sandbox_username(user),
+             :ok <- Sandbox.probe_dns(username, host_part) do
+          case Credentials.lookup(user_id, target, remote_user) do
+            %{kind: "ssh_identity", payload: %{"private_key" => priv, "public_key" => pub}} ->
+              existing_credential_outcome(user, remote_user, host_part, priv, pub)
 
-          _ ->
-            mint_new_identity(user, user_id, target, remote_user, host_part)
+            _ ->
+              mint_new_identity(user, user_id, target, remote_user, host_part)
+          end
+        else
+          {:error, dns_reason} when is_binary(dns_reason) ->
+            {:ok, unreachable_envelope(host_part, remote_user, dns_reason)}
+
+          err ->
+            err
         end
     end
   end
@@ -191,6 +200,26 @@ defmodule DmhAi.Tools.ProvisionSshIdentity do
       {:error, reason} ->
         {:error, "ssh-keygen failed: #{reason}"}
     end
+  end
+
+  # Build the `unreachable` tool result. Returned when a DNS pre-probe
+  # from inside the sandbox can't resolve `host_part` — the auth probe
+  # would fail the same way, so we short-circuit before minting a
+  # keypair the user can't use yet. The hint names the unblock input
+  # (routable address) rather than credentials so the model's blocker
+  # statement matches the actual gap.
+  defp unreachable_envelope(host_part, remote_user, probe_error) do
+    %{
+      status:      "unreachable",
+      host:        host_part,
+      remote_user: remote_user,
+      probe_error: String.slice(probe_error, 0, 200),
+      hint:
+        "Hostname #{inspect(host_part)} doesn't resolve from the sandbox. " <>
+          "The sandbox doesn't see LAN-only names (mDNS, host /etc/hosts). " <>
+          "Unblock by getting a routable IP or FQDN from the user — " <>
+          "credentials won't fix this. Re-call this tool with the resolvable host."
+    }
   end
 
   # Build the `needs_setup` tool result. `phase` is `:first_install`

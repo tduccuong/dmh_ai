@@ -114,6 +114,32 @@ defmodule DmhAi.Agent.Sandbox do
     e -> {:error, Exception.message(e)}
   end
 
+  @doc """
+  Resolve `host` from inside the sandbox container as the per-user
+  uid (mirrors `probe_ssh/4`'s execution context — same DNS view).
+  Returns `:ok` when `getent hosts <host>` exits 0, `{:error, reason}`
+  otherwise.
+
+  Run BEFORE any ssh / curl probe whose failure shape would otherwise
+  look like an auth problem: a DNS-unresolvable name fails ssh with
+  `Could not resolve hostname`, which models routinely misread as a
+  credentials gap. Pre-probing DNS lets the tool return an
+  `unreachable` envelope naming the routable-address gap directly.
+  """
+  @spec probe_dns(String.t(), String.t()) :: :ok | {:error, String.t()}
+  def probe_dns(username, host_part)
+      when is_binary(username) and is_binary(host_part) do
+    docker_args =
+      ["exec", "-u", username, container_name(), "getent", "hosts", host_part]
+
+    case System.cmd("docker", docker_args, stderr_to_stdout: true) do
+      {_out, 0} -> :ok
+      {out, code} -> {:error, "exit #{code}: " <> String.slice(out, 0, 200)}
+    end
+  rescue
+    e -> {:error, Exception.message(e)}
+  end
+
   # ── private ────────────────────────────────────────────────────────────
 
   defp inspect_container do

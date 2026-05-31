@@ -650,7 +650,7 @@ defmodule DmhAi.Tools.RunScript do
                String.slice(body, 0, @max_output)}
 
           true ->
-            {:error, "exit #{exit_code}: #{String.slice(body, 0, @max_output)}"}
+            {:error, classify_exit_error(exit_code, body)}
         end
 
       {:ok, output, _} ->
@@ -663,6 +663,47 @@ defmodule DmhAi.Tools.RunScript do
         {:error, "drain failed: #{inspect(reason)}"}
     end
   end
+
+  # Map a non-zero exit + stderr body onto a model-facing error string.
+  # Generic exits stay as-is; recognised network-class shapes (DNS
+  # resolution failure today) get a class tag + a hint naming the
+  # input that would unblock — for `dns_unresolved` that's a routable
+  # address, not credentials. Adding new classes is one cond branch.
+  defp classify_exit_error(exit_code, body) do
+    cond do
+      dns_unresolved?(body) ->
+        host = extract_dns_host(body)
+        "exit #{exit_code} — dns_unresolved: Hostname #{inspect(host)} doesn't resolve from the sandbox. " <>
+          "The sandbox can't see LAN-only names (mDNS, host /etc/hosts). " <>
+          "Unblock by getting a routable IP or FQDN from the user — credentials won't fix this. " <>
+          "Raw: #{String.slice(body, 0, @max_output)}"
+
+      true ->
+        "exit #{exit_code}: #{String.slice(body, 0, @max_output)}"
+    end
+  end
+
+  defp dns_unresolved?(body) when is_binary(body) do
+    body =~ ~r/Could not resolve hostname/i or
+      body =~ ~r/Name or service not known/i or
+      body =~ ~r/nodename nor servname provided/i or
+      body =~ ~r/Temporary failure in name resolution/i
+  end
+
+  defp dns_unresolved?(_), do: false
+
+  defp extract_dns_host(body) when is_binary(body) do
+    case Regex.run(~r/Could not resolve host(?:name)?[:\s]+([^\s:]+)/i, body) do
+      [_, h] -> h
+      _ ->
+        case Regex.run(~r/([\w.-]+):.*Name or service not known/i, body) do
+          [_, h] -> h
+          _      -> "<host>"
+        end
+    end
+  end
+
+  defp extract_dns_host(_), do: "<host>"
 
   defp parse_drained(output) do
     case String.split(output, "@@DMH_EXIT@@", parts: 2) do
