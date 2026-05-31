@@ -217,6 +217,21 @@ defmodule DmhAi.P03GoogleWorkspaceFunctionsTest do
              In fixtures only: #{inspect(functions_in_fixtures -- functions_in_manifest)}
              """
     end
+
+    test "declares 24 functions including the directory identity pivot" do
+      functions = GoogleWorkspace.manifest().functions
+
+      # +1 identity pivot
+      assert Map.has_key?(functions, "directory.users.find_by_email")
+
+      assert map_size(functions) == 24
+    end
+
+    test "identity_lookup pivots Directory user lookup to the user id" do
+      assert %{function: "google_workspace.directory.users.find_by_email",
+               by_arg: :email,
+               emit_field: "id"} = GoogleWorkspace.identity_lookup()
+    end
   end
 
   describe "inspect_property/3 — Layer B reader" do

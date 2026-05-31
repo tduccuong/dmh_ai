@@ -50,7 +50,8 @@ defmodule DmhAi.Connectors.Mock.Fixtures.GoogleWorkspace do
       "contacts.search" => &contacts_search/1,
       "sheets.read_range" => &sheets_read_range/1,
       "sheets.append_row" => &sheets_append_row/1,
-      "sheets.update_range" => &sheets_update_range/1
+      "sheets.update_range" => &sheets_update_range/1,
+      "directory.users.find_by_email" => &directory_users_find_by_email/1
     }
   end
 
@@ -388,5 +389,26 @@ defmodule DmhAi.Connectors.Mock.Fixtures.GoogleWorkspace do
       "event_id" => Map.get(args, "event_id"),
       "calendar_id" => Map.get(args, "calendar_id", "primary")
     }
+  end
+
+  # Identity pivot — sentinel email maps to a stable Directory user
+  # resource so chain tests can prove the lookup was wired without
+  # touching real Google. Surfaced at the top level (no `"data"`
+  # envelope — Directory's `users.get` returns the user resource
+  # flat, the FunctionSpec response wraps it in `%{"user" => body}`).
+  defp directory_users_find_by_email(args) do
+    email = Map.get(args, "email", "")
+
+    case email do
+      "mock-user@example.com" ->
+        %{
+          "id"           => "MOCKGWUSER001",
+          "primaryEmail" => "mock-user@example.com",
+          "name"         => %{"fullName" => "Mock User"}
+        }
+
+      _ ->
+        %{}
+    end
   end
 end

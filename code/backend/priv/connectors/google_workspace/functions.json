@@ -33,6 +33,33 @@
     },
     {
       "args": {
+        "email": {
+          "format": "email",
+          "provenance": {
+            "kind": "from_user"
+          },
+          "required": true,
+          "type": "string"
+        }
+      },
+      "callable_from": [
+        "chat",
+        "task"
+      ],
+      "error_classes": [],
+      "function_name": "directory.users.find_by_email",
+      "idempotency_key": "none",
+      "permission": "read",
+      "poll_trigger_capable": false,
+      "returns": {
+        "user": "map"
+      },
+      "scopes_required": [
+        "https://www.googleapis.com/auth/admin.directory.user.readonly"
+      ]
+    },
+    {
+      "args": {
         "document_id": {
           "provenance": {
             "kind": "lookup",

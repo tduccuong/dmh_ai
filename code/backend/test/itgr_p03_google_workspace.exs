@@ -50,7 +50,7 @@ defmodule DmhAi.P03GoogleWorkspaceTest do
   describe "manifest" do
     test "validates clean", do: assert :ok = Manifest.validate(GoogleWorkspace.manifest())
 
-    test "declares 23 functions across gmail/gcal/drive/sheets/docs/meet/tasks/contacts" do
+    test "declares 24 functions across gmail/gcal/drive/sheets/docs/meet/tasks/contacts/directory" do
       functions = GoogleWorkspace.manifest().functions
       # Original 15
       assert Map.has_key?(functions, "gmail.search")
@@ -77,8 +77,10 @@ defmodule DmhAi.P03GoogleWorkspaceTest do
       assert Map.has_key?(functions, "drive.download")
       assert Map.has_key?(functions, "drive.create_folder")
       assert Map.has_key?(functions, "gcal.delete_event")
+      # +1 identity pivot
+      assert Map.has_key?(functions, "directory.users.find_by_email")
 
-      assert map_size(functions) == 23
+      assert map_size(functions) == 24
     end
 
     test "every write is callable_from: [:task] with idempotency_key required" do

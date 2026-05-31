@@ -690,19 +690,38 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
           },
           returns: %{text: :string, title: :string},
           scopes:  ["https://www.googleapis.com/auth/documents.readonly"]
+        },
+
+        # vendor: GET https://admin.googleapis.com/admin/directory/v1/users/{userKey}
+        # docs:   https://developers.google.com/admin-sdk/directory/reference/rest/v1/users/get
+        # Identity pivot — resolves an email (acts as `userKey`) to
+        # the Directory user resource so workflows binding `@user_N`
+        # can pick up the user's numeric `id` for downstream
+        # assignment. The Directory API is admin-scoped — only a
+        # Workspace admin can grant `admin.directory.user.readonly`.
+        "directory.users.find_by_email" => %Function{
+          permission:    :read,
+          callable_from: [:chat, :task],
+          args: %{
+            "email" => %{type: :string, required: true, format: :email,
+                         provenance: %{kind: :from_user}}
+          },
+          returns: %{user: :map},
+          scopes:  ["https://www.googleapis.com/auth/admin.directory.user.readonly"]
         }
       }
     }
   end
 
   @impl true
-  # Primitive 0.9 — no Directory API function in this manifest yet,
-  # so workflows can't resolve `@user_N` against Google Workspace.
-  # Fix: add `directory.users.find_by_email` (GET
-  # /admin/directory/v1/users/{userKey}) and switch this to:
-  #   %{function: "google_workspace.directory.users.find_by_email",
-  #     by_arg: :email, emit_field: "id"}
-  def identity_lookup, do: nil
+  # `directory.users.find_by_email` hits the Directory API's
+  # `/users/{userKey}` lookup — Google accepts the primary email as
+  # `userKey` and returns the full Directory user resource. Emits the
+  # user object's `id` (the Directory numeric user id) for downstream
+  # assignment bindings.
+  def identity_lookup,
+    do: %{function: "google_workspace.directory.users.find_by_email",
+          by_arg: :email, emit_field: "id"}
 
   @impl true
   # Google APIs return errors as
@@ -776,7 +795,8 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
         "https://www.googleapis.com/auth/drive.readonly",
         "https://www.googleapis.com/auth/drive.file",
         "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/documents.readonly"
+        "https://www.googleapis.com/auth/documents.readonly",
+        "https://www.googleapis.com/auth/admin.directory.user.readonly"
       ],
       # Identity capture lives in `fetch_userinfo/1` (see top of module).
       userinfo_endpoint:      nil,
@@ -917,6 +937,18 @@ defmodule DmhAi.Connectors.GoogleWorkspace do
         vendor_prereq: %{
           label:      "People API",
           enable_url: "https://console.cloud.google.com/apis/library/people.googleapis.com"
+        }
+      },
+      %{
+        id:           "directory",
+        display_name: "Directory — Users",
+        description:  "Pivot a Workspace user by email to their Directory user id (identity lookup).",
+        scopes:       ["https://www.googleapis.com/auth/admin.directory.user.readonly"],
+        functions:    ["directory.users.find_by_email"],
+        vendor_prereq: %{
+          label:      "Admin SDK Directory API (admin.directory.user.readonly requires Workspace admin consent at install)",
+          enable_url: "https://console.cloud.google.com/apis/library/admin.googleapis.com",
+          help:       "admin.directory.user.readonly is an admin-consent scope. Only a Google Workspace admin can grant it; personal Gmail / @gmail.com accounts cannot. Without it, directory lookups return 401 even with a fresh token."
         }
       },
       %{
