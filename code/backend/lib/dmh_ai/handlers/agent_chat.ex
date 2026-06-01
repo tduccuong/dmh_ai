@@ -162,14 +162,14 @@ defmodule DmhAi.Handlers.AgentChat do
         |> prepend_unresolved_workflow_refs_block(unresolved_slugs)
         |> prepend_mentions_block(mentions)
 
-      # Slash-command intercept (`/index`, `/memo`). Runs BEFORE the
-      # LLM dispatch. Two outcomes:
+      # Slash-command intercept (`/index`, `/memo`, `/gettext`). Runs
+      # BEFORE the LLM dispatch. Two outcomes:
       #   * `{:handled, _}` — runtime took it. Persistence + ack done;
       #     no LLM dispatch. `user_ts` is echoed back so the FE
       #     patches its optimistic local copy.
       #   * `:not_a_command` — plain user message, continue.
       command_result =
-        DmhAi.Commands.dispatch(stored_content, session_id, user.id, request_lang(d))
+        DmhAi.Commands.dispatch(stored_content, session_id, user.id, request_lang(d), attachment_names)
 
       case command_result do
         {:handled, user_ts} ->
@@ -207,16 +207,40 @@ defmodule DmhAi.Handlers.AgentChat do
     files       = parse_files(d["files"])
     has_video   = d["hasVideo"] == true
 
-    has_payload = content != "" or images != [] or files != []
+    # Workspace attachments — set by the FE when the user attaches a
+    # file in Confidant mode that needs runtime handling (today: `/gettext`
+    # reads images from the workspace via the vision pipeline). The user
+    # message's persisted content stays clean (no `📎 workspace/<name>`
+    # markers — those are an Assistant-mode mechanism for surfacing
+    # attachments to the model). Confidant slash commands receive the
+    # list directly through `Commands.dispatch`'s 5th argument.
+    attachment_names =
+      d["attachmentNames"]
+      |> parse_string_list()
+      |> Enum.take(@max_attachments)
+      |> Enum.map(&sanitize_filename/1)
+
+    has_payload = content != "" or images != [] or files != [] or attachment_names != []
 
     if not has_payload do
       json(conn, 400, %{error: "Missing content"})
     else
+      # Safety net: attach-time uploads should already be on disk; wait a
+      # bounded window if they're not (same shape as the Assistant path).
+      if attachment_names != [] do
+        workspace = DmhAi.Constants.session_workspace_dir(user.email, session_id)
+        case wait_for_attachments(workspace, attachment_names) do
+          :ok -> :ok
+          :timeout ->
+            Logger.warning("[AgentChat] attachment wait timed out session=#{session_id}")
+        end
+      end
+
       # Slash-command intercept. Two outcomes:
       #   * `{:handled, _}` — runtime took it.
       #   * `:not_a_command` — plain user message, continue.
       command_result =
-        DmhAi.Commands.dispatch(content, session_id, user.id, request_lang(d))
+        DmhAi.Commands.dispatch(content, session_id, user.id, request_lang(d), attachment_names)
 
       case command_result do
         {:handled, user_ts} ->

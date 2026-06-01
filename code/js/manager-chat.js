@@ -1693,19 +1693,21 @@ UIManager.handleFileSelect = async function(files) {
                     .then(function(d) { imgEntry.id = d.id; })
                     .catch(function(e) { console.error('Image upload failed:', e); });
 
-                // Assistant mode: also upload scaled copy to <session>/workspace/ so it's
-                // ready for extract_content the moment the Assistant Loop runs. The scaled
-                // version (resizedFile) matches what the LLM vision API would consume anyway.
-                var attachMode = (self.currentSession && self.currentSession.mode) || 'confidant';
-                if (attachMode === 'assistant') {
-                    var wsFormData = new FormData();
-                    wsFormData.append('file', resizedFile, capturedImgName);
-                    wsFormData.append('sessionId', capturedImgSessionId);
+                // Always upload the scaled copy to <session>/workspace/ — Assistant
+                // mode reads it via extract_content during the chain loop; Confidant
+                // mode reads it via `/gettext` (vision OCR pipeline). The scaled
+                // version (resizedFile) is what either pipeline would consume.
+                // The promise lands on the entry so the send-time code can await
+                // all in-flight uploads before posting `/agent/chat` — otherwise a
+                // fast click races the upload and the attachmentName is still null.
+                var wsFormData = new FormData();
+                wsFormData.append('file', resizedFile, capturedImgName);
+                wsFormData.append('sessionId', capturedImgSessionId);
+                imgEntry._workspaceUploadPromise =
                     apiFetch('/upload-session-attachment', { method: 'POST', body: wsFormData })
                         .then(function(r) { return r.json(); })
                         .then(function(d) { if (d && d.name) imgEntry.attachmentName = d.name; })
                         .catch(function(e) { console.error('Image workspace upload failed:', e); });
-                }
 
                 // Fire description in background — does not gate the send button
                 apiFetch('/describe-image', {

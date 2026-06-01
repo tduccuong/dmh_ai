@@ -23,12 +23,6 @@ defmodule DmhAi.Commands.Pipelines.Gettext do
   alias DmhAi.Agent.{AgentSettings, LLM, UserAgentMessages}
   alias DmhAi.Constants
 
-  # `📎 workspace/<name>` is the marker the chat HTTP handler stamps into
-  # the persisted user content for each uploaded attachment. We re-parse
-  # it here instead of threading a new arg through `Commands.dispatch`
-  # so the command pipeline stays self-contained.
-  @attachment_marker_re ~r{^📎 workspace/(.+)$}m
-
   @image_exts ~w(.png .jpg .jpeg .gif .webp .bmp)
 
   # Magick resize ceiling — same value ExtractContent uses for its
@@ -61,15 +55,17 @@ defmodule DmhAi.Commands.Pipelines.Gettext do
   `payload` is the structured assistant-message attachment (the FE
   receives it on `messages[-1].gettext`).
 
-  `original_content` is the user's literal chat content (with the
-  `📎 workspace/<name>` markers). We parse the attachments back out of
-  it so the pipeline doesn't depend on a separate attachment list.
+  `attachment_names` is the list of files the FE uploaded to the
+  session workspace via `/upload-session-attachment` — passed in
+  directly so the command pipeline doesn't depend on the BE having
+  inlined `📎 workspace/<name>` markers into the stored content.
+  Confidant-mode messages keep their clean text; the marker pipeline
+  is assistant-mode-only.
   """
-  @spec run(String.t(), String.t(), String.t(), String.t()) ::
+  @spec run(String.t(), String.t(), String.t(), String.t(), [String.t()]) ::
           {:handled, non_neg_integer()}
-  def run(original_content, session_id, user_id, _lang) do
-    attachment_names = parse_attachments(original_content)
-    image_names = Enum.filter(attachment_names, &image_name?/1)
+  def run(original_content, session_id, user_id, _lang, attachment_names \\ []) do
+    image_names = Enum.filter(attachment_names || [], &image_name?/1)
 
     cond do
       image_names == [] ->
@@ -87,15 +83,7 @@ defmodule DmhAi.Commands.Pipelines.Gettext do
     end
   end
 
-  # ── attachment extraction ──────────────────────────────────────────────
-
-  defp parse_attachments(content) when is_binary(content) do
-    Regex.scan(@attachment_marker_re, content, capture: :all_but_first)
-    |> Enum.map(fn [name] -> String.trim(name) end)
-    |> Enum.reject(&(&1 == ""))
-  end
-
-  defp parse_attachments(_), do: []
+  # ── attachment helpers ─────────────────────────────────────────────────
 
   defp image_name?(name) when is_binary(name) do
     ext = name |> Path.extname() |> String.downcase()
