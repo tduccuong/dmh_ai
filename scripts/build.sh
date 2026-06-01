@@ -233,15 +233,15 @@ set -e
 DIST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODE="production"
     INSTALL_DIR="/opt/dmh_ai"
-# BE listen address — exposed for operators whose reverse proxy lives on
-# a different host. Default `127.0.0.1` keeps the BE private (nothing on
-# external NICs), which is correct for same-box nginx / Cloudflare Tunnel
-# setups. Off-box reverse proxies (firegate_shield on the LAN, etc.) need
-# the BE reachable on the LAN IP, so pass `--bind-host=0.0.0.0` (or a
-# specific NIC IP) at install time. The value lands in the systemd unit
-# as `Environment=DMHAI_BIND_HOST=<host>` for production, and is exported
-# before `docker compose up` for stage.
-BIND_HOST="127.0.0.1"
+# BE listen address. Mode-specific default — resolved after arg parsing:
+#   production → 0.0.0.0 (host firewall is the expected boundary; the
+#     reverse proxy may live on the same box OR on a separate LAN host
+#     such as firegate_shield, both of which need the BE reachable off
+#     loopback).
+#   stage      → 127.0.0.1 (developer workstation; nothing exposed on
+#     external NICs without explicit opt-in).
+# Override either with `--bind-host=<ip>` to pin to a specific NIC.
+BIND_HOST=""
 ORIG_ARGS=("$@")
 
 while [[ $# -gt 0 ]]; do
@@ -252,6 +252,15 @@ while [[ $# -gt 0 ]]; do
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
+
+# Apply mode-specific defaults if the operator didn't pass --bind-host.
+if [ -z "$BIND_HOST" ]; then
+    if [ "$MODE" = "stage" ]; then
+        BIND_HOST="127.0.0.1"
+    else
+        BIND_HOST="0.0.0.0"
+    fi
+fi
 
 #  Production mode: elevate to root 
 if [ "$MODE" = "production" ] && [ "$(id -u)" -ne 0 ]; then
