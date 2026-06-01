@@ -233,11 +233,22 @@ set -e
 DIST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODE="production"
     INSTALL_DIR="/opt/dmh_ai"
+# BE listen address — exposed for operators whose reverse proxy lives on
+# a different host. Default `127.0.0.1` keeps the BE private (nothing on
+# external NICs), which is correct for same-box nginx / Cloudflare Tunnel
+# setups. Off-box reverse proxies (firegate_shield on the LAN, etc.) need
+# the BE reachable on the LAN IP, so pass `--bind-host=0.0.0.0` (or a
+# specific NIC IP) at install time. The value lands in the systemd unit
+# as `Environment=DMHAI_BIND_HOST=<host>` for production, and is exported
+# before `docker compose up` for stage.
+BIND_HOST="127.0.0.1"
 ORIG_ARGS=("$@")
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --stage) MODE="stage"; shift ;;
+        --bind-host=*) BIND_HOST="${1#*=}"; shift ;;
+        --bind-host) BIND_HOST="$2"; shift 2 ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
@@ -375,8 +386,10 @@ COMPOSE
     fi
     sleep 1
 
-    #  Start server
-    docker compose -p dmh_ai -f docker-compose.yml up -d --remove-orphans
+    #  Start server — DMHAI_BIND_HOST forwarded into compose env so the
+    # `${DMHAI_BIND_HOST:-127.0.0.1}` interpolation picks up a non-default
+    # value when the operator passed `--bind-host=…`.
+    DMHAI_BIND_HOST="$BIND_HOST" docker compose -p dmh_ai -f docker-compose.yml up -d --remove-orphans
 
     sleep 3
 
@@ -537,6 +550,11 @@ RemainAfterExit=yes
 User=dmh_ai
 Group=dmh_ai
 WorkingDirectory=$INSTALL_DIR
+# BE listen address — set at install time via \`--bind-host=…\`. Keep
+# the default \`127.0.0.1\` for same-box reverse-proxy setups (nginx
+# locally, Cloudflare Tunnel); set to \`0.0.0.0\` (or a specific NIC
+# IP) when the reverse proxy lives on a different host on the LAN.
+Environment=DMHAI_BIND_HOST=$BIND_HOST
 # --volumes on every teardown path is required: SearXNG's upstream
 # image declares two VOLUMEs (/etc/searxng, /var/cache/searxng), and
 # without --volumes each restart cycle orphans two anonymous volumes
