@@ -296,14 +296,101 @@ const SettingsModal = {
         var titleKey = targetPage === 'page-conversation'  ? 'convSettings'
                      : targetPage === 'page-ai-models'     ? 'aiModelSettings'
                      : targetPage === 'page-services'      ? 'myServices'
+                     : targetPage === 'page-read-out-loud' ? 'readOutLoudSettings'
                      : 'sysSettings';
-        document.getElementById('settings-modal-title').textContent = t(titleKey);
+        var titleEl = document.getElementById('settings-modal-title');
+        var resolvedTitle = t(titleKey);
+        // Fallback when the i18n key isn't in the dictionary — t() returns
+        // the key verbatim, which would surface as "readOutLoudSettings"
+        // on the modal header. Hard-code the English label for that case.
+        if (resolvedTitle === titleKey && titleKey === 'readOutLoudSettings') {
+            resolvedTitle = 'Read-out-loud settings';
+        }
+        titleEl.textContent = resolvedTitle;
         document.getElementById('settings-overlay').classList.add('open');
 
         if (targetPage === 'page-services' && typeof MyServices !== 'undefined') {
             MyServices.init();
             MyServices.render();
         }
+        if (targetPage === 'page-read-out-loud' && typeof ReadOutLoud !== 'undefined') {
+            SettingsModal._initReadOutLoudPage();
+        }
+    },
+
+    _initReadOutLoudPage: function() {
+        var voiceSelect = document.getElementById('rol-voice-select');
+        var rateSlider = document.getElementById('rol-rate');
+        var rateValue = document.getElementById('rol-rate-value');
+        var testBtn = document.getElementById('rol-test-btn');
+        var saveBtn = document.getElementById('rol-save-btn');
+        var statusEl = document.getElementById('rol-save-status');
+        var noVoicesMsg = document.getElementById('rol-no-voices-msg');
+        if (!voiceSelect) return;
+
+        statusEl.style.display = 'none';
+        var settings = ReadOutLoud.getSettings();
+        rateSlider.value = settings.rate;
+        rateValue.textContent = (Math.round(settings.rate * 10) / 10).toFixed(1);
+        rateSlider.oninput = function() {
+            rateValue.textContent = (Math.round(parseFloat(rateSlider.value) * 10) / 10).toFixed(1);
+        };
+
+        function populate() {
+            var voices = ReadOutLoud.availableVoices();
+            voiceSelect.innerHTML = '';
+            if (voices.length === 0) {
+                noVoicesMsg.style.display = '';
+                voiceSelect.disabled = true;
+                testBtn.disabled = true;
+                saveBtn.disabled = true;
+                return;
+            }
+            noVoicesMsg.style.display = 'none';
+            voiceSelect.disabled = false;
+            testBtn.disabled = false;
+            saveBtn.disabled = false;
+            // Sort by lang then name so a long list is browsable.
+            voices.slice().sort(function(a, b) {
+                if (a.lang === b.lang) return a.name.localeCompare(b.name);
+                return a.lang.localeCompare(b.lang);
+            }).forEach(function(v) {
+                var opt = document.createElement('option');
+                opt.value = v.voiceURI;
+                opt.textContent = v.name + ' — ' + v.lang + (v.default ? ' (system default)' : '');
+                voiceSelect.appendChild(opt);
+            });
+            if (settings.voiceURI) {
+                voiceSelect.value = settings.voiceURI;
+            }
+        }
+        populate();
+        // Chrome populates voices async; re-render once they arrive.
+        try {
+            window.speechSynthesis.onvoiceschanged = populate;
+        } catch (e) {}
+
+        testBtn.onclick = function() {
+            ReadOutLoud.testVoice(voiceSelect.value, parseFloat(rateSlider.value));
+        };
+
+        saveBtn.onclick = function() {
+            ReadOutLoud.saveSettings({
+                voiceURI: voiceSelect.value,
+                rate: parseFloat(rateSlider.value)
+            });
+            statusEl.textContent = '✓ Saved.';
+            statusEl.style.display = '';
+            // If the user got here by clicking a speaker icon WITHOUT a
+            // saved voice, the deferred sentence speaks now and the modal
+            // closes so they hear the result immediately.
+            if (ReadOutLoud.hasSavedVoice()) {
+                setTimeout(function() {
+                    ReadOutLoud.flushPending();
+                    SettingsModal.close();
+                }, 250);
+            }
+        };
     },
     close: function() {
         document.getElementById('settings-overlay').classList.remove('open');

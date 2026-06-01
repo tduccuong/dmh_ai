@@ -714,6 +714,63 @@ function renderRequestInputForm(form, sessionId) {
 // form's `secret` flags). The form_response message itself is the
 // LLM-context payload; here we just show a one-line confirmation so
 // the timeline reads naturally without revealing values.
+// Render the `/gettext` payload — each extracted sentence as its own
+// row with a speaker icon. Click → ReadOutLoud.speak(sentence). When
+// the user has no saved voice, `speak()` opens the Read-out-loud
+// settings modal and defers the sentence until Save.
+function renderGettextPayload(gettext) {
+    var wrap = document.createElement('div');
+    wrap.className = 'gettext-block';
+
+    if (gettext.error === 'no_image_attached') {
+        var hint = document.createElement('div');
+        hint.className = 'gettext-hint';
+        hint.textContent = 'Attach an image first, then resend with /gettext.';
+        wrap.appendChild(hint);
+        return wrap;
+    }
+
+    var sentences = gettext.sentences || [];
+    var images = Array.isArray(gettext.images) ? gettext.images : [];
+
+    if (sentences.length === 0) {
+        var empty = document.createElement('div');
+        empty.className = 'gettext-hint';
+        var hadErrors = images.some(function(i) { return i.status === 'error'; });
+        empty.textContent = hadErrors
+            ? 'No text could be extracted (one or more images errored).'
+            : 'No readable text found in the attached image(s).';
+        wrap.appendChild(empty);
+        return wrap;
+    }
+
+    sentences.forEach(function(sentence) {
+        var row = document.createElement('div');
+        row.className = 'gettext-row';
+
+        var textSpan = document.createElement('span');
+        textSpan.className = 'gettext-text';
+        textSpan.textContent = sentence;
+
+        var btn = document.createElement('button');
+        btn.className = 'gettext-speak';
+        btn.type = 'button';
+        btn.setAttribute('aria-label', 'Read out loud');
+        btn.title = 'Read out loud';
+        btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>';
+        btn.addEventListener('click', function() {
+            if (typeof ReadOutLoud === 'undefined') return;
+            ReadOutLoud.speak(sentence);
+        });
+
+        row.appendChild(textSpan);
+        row.appendChild(btn);
+        wrap.appendChild(row);
+    });
+
+    return wrap;
+}
+
 function renderFormResponseSummary(formResponse) {
     var wrap = document.createElement('div');
     wrap.className = 'form-response-summary';
@@ -786,6 +843,14 @@ function buildMessageEntryNode(msg, sessionId, renderSession, progressRows) {
             // architecture.md §In-chain structured input.
             if (msg.form && typeof msg.form === 'object') {
                 body.appendChild(renderRequestInputForm(msg.form, sessionId));
+            }
+
+            // `/gettext` payload — one sentence per row + a speaker icon.
+            // Click reads the sentence via the Web Speech API
+            // (`ReadOutLoud.speak`); first click without a saved voice
+            // opens the Read-out-loud settings modal.
+            if (msg.gettext && Array.isArray(msg.gettext.sentences)) {
+                body.appendChild(renderGettextPayload(msg.gettext));
             }
         } else {
             // `form_response` user messages are the runtime's

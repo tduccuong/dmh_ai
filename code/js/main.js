@@ -575,6 +575,13 @@ const UIManager = {
             document.getElementById('user-dropdown').classList.remove('open');
             SettingsModal.open('page-conversation');
         });
+        document.getElementById('user-rol-settings-btn').addEventListener('click', function() {
+            document.getElementById('user-dropdown').classList.remove('open');
+            SettingsModal.open('page-read-out-loud');
+        });
+        if (typeof ReadOutLoud !== 'undefined' && typeof ReadOutLoud.init === 'function') {
+            ReadOutLoud.init();
+        }
         document.getElementById('user-external-connectors-btn').addEventListener('click', function() {
             document.getElementById('user-dropdown').classList.remove('open');
             Router.navigate('/connectors');
