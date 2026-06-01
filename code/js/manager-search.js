@@ -250,31 +250,33 @@ UIManager.sendMessage = async function() {
         self.setStatus('');
     }
 
-    // Wait for any in-flight workspace uploads to land before we POST.
-    // Without this, a fast click after an attach races the upload — the
-    // entry's `attachmentName` is still null at send time, the chat body
-    // ships with `attachmentNames: []`, and confidant `/gettext` reports
-    // "no image attached" even though the user did attach one.
-    var pendingWorkspaceUploads = (attachedAtSend || [])
-        .map(function(e) { return e._workspaceUploadPromise; })
+    // Wait for any in-flight upload promises before POSTing. A fast click
+    // after an attach races the upload — the entry's id / attachmentName
+    // would still be null at send time, the chat body would ship with
+    // `attachmentNames: []`, and confidant `/gettext` would report "no
+    // image attached" even though the user did attach one. Assistant mode
+    // races the workspace upload; Confidant mode races the /assets upload.
+    var pendingUploads = (attachedAtSend || [])
+        .map(function(e) { return e._workspaceUploadPromise || e._assetUploadPromise; })
         .filter(Boolean);
-    if (pendingWorkspaceUploads.length > 0) {
-        await Promise.all(pendingWorkspaceUploads);
+    if (pendingUploads.length > 0) {
+        await Promise.all(pendingUploads);
     }
 
-    // Collect filenames of attachments that were uploaded to <session>/workspace/.
-    // Both modes need this:
-    //   * Assistant mode — the model reads each attachment via an explicit
-    //     extract_content tool call (chain-loop pulls them lazily).
-    //   * Confidant mode — runtime slash commands (`/gettext`) read the
-    //     workspace files directly via the vision pipeline.
-    // For Assistant mode we ALSO clear the legacy inline-content fields
-    // (`images`, `files`) since the workspace path supersedes them. For
-    // Confidant we keep the legacy fields so ordinary (non-slash) chats
-    // continue feeding inline image base64 to the vision describer.
+    // Collect attachment names by mode:
+    //   * Assistant — `attachmentName` from /upload-session-attachment
+    //     (file at <session>/workspace/<name>; model reads via extract_content).
+    //   * Confidant — `id` from /assets (path-shaped: "uploaded/<unix_ms>_<name>";
+    //     /gettext reads via the vision OCR pipeline). The legacy inline-content
+    //     fields (`images`, `files`) stay populated so ordinary (non-slash)
+    //     confidant chats continue feeding inline base64 to the vision describer.
     var attachmentNamesForAssistant = [];
     (attachedAtSend || []).forEach(function(entry) {
-        if (entry.attachmentName) attachmentNamesForAssistant.push(entry.attachmentName);
+        if (sessionAtSend.mode === 'assistant') {
+            if (entry.attachmentName) attachmentNamesForAssistant.push(entry.attachmentName);
+        } else {
+            if (entry.id) attachmentNamesForAssistant.push(entry.id);
+        }
     });
     if (sessionAtSend.mode === 'assistant') {
         allImages = [];
@@ -406,15 +408,15 @@ UIManager._sendMidChainMessage = async function() {
     var filesForStorage  = [];
     var attachmentNamesForAssistant = [];
 
-    // Wait for any in-flight workspace uploads. Mid-chain sends race the
+    // Wait for any in-flight upload promises. Mid-chain sends race the
     // same way the initial send does — see the comment above in
-    // `sendMessage` for the failure shape (`/gettext` reports no image
-    // attached if the upload promise hasn't resolved at POST time).
-    var pendingWorkspaceUploadsMC = (attachedAtSend || [])
-        .map(function(e) { return e._workspaceUploadPromise; })
+    // `sendMessage` for the failure shape. Both modes are covered:
+    // assistant races the workspace upload, confidant races /assets.
+    var pendingUploadsMC = (attachedAtSend || [])
+        .map(function(e) { return e._workspaceUploadPromise || e._assetUploadPromise; })
         .filter(Boolean);
-    if (pendingWorkspaceUploadsMC.length > 0) {
-        await Promise.all(pendingWorkspaceUploadsMC);
+    if (pendingUploadsMC.length > 0) {
+        await Promise.all(pendingUploadsMC);
     }
 
     attachedAtSend.forEach(function(f) {
@@ -425,10 +427,13 @@ UIManager._sendMidChainMessage = async function() {
         } else if (f.type === 'text') {
             filesForStorage.push({ name: f.name, fileId: f.id, snippet: f.snippet });
         }
-        // Both modes need attachmentNames threaded through — Confidant
-        // for `/gettext`, Assistant for extract_content.
-        if (f.attachmentName) {
-            attachmentNamesForAssistant.push(f.attachmentName);
+        // Assistant uses workspace name; Confidant uses /assets id (path
+        // shaped `uploaded/<unix_ms>_<name>`). Both come back from their
+        // respective POSTs which we awaited above.
+        if (sessionAtSend.mode === 'assistant') {
+            if (f.attachmentName) attachmentNamesForAssistant.push(f.attachmentName);
+        } else {
+            if (f.id) attachmentNamesForAssistant.push(f.id);
         }
     });
 

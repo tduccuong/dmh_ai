@@ -1688,26 +1688,30 @@ UIManager.handleFileSelect = async function(files) {
                 var capturedImgName = file.name;
                 var capturedImgBase64 = resizedBase64;
                 var capturedImgSessionId = sessionId;
-                apiFetch('/assets', { method: 'POST', body: imgFormData })
-                    .then(function(r) { return r.json(); })
-                    .then(function(d) { imgEntry.id = d.id; })
-                    .catch(function(e) { console.error('Image upload failed:', e); });
-
-                // Always upload the scaled copy to <session>/workspace/ — Assistant
-                // mode reads it via extract_content during the chain loop; Confidant
-                // mode reads it via `/gettext` (vision OCR pipeline). The scaled
-                // version (resizedFile) is what either pipeline would consume.
-                // The promise lands on the entry so the send-time code can await
-                // all in-flight uploads before posting `/agent/chat` — otherwise a
-                // fast click races the upload and the attachmentName is still null.
-                var wsFormData = new FormData();
-                wsFormData.append('file', resizedFile, capturedImgName);
-                wsFormData.append('sessionId', capturedImgSessionId);
-                imgEntry._workspaceUploadPromise =
-                    apiFetch('/upload-session-attachment', { method: 'POST', body: wsFormData })
+                imgEntry._assetUploadPromise =
+                    apiFetch('/assets', { method: 'POST', body: imgFormData })
                         .then(function(r) { return r.json(); })
-                        .then(function(d) { if (d && d.name) imgEntry.attachmentName = d.name; })
-                        .catch(function(e) { console.error('Image workspace upload failed:', e); });
+                        .then(function(d) { imgEntry.id = d.id; })
+                        .catch(function(e) { console.error('Image upload failed:', e); });
+
+                // Assistant mode: scaled copy goes to <session>/workspace/ so the
+                // model can read it via extract_content during the chain loop.
+                // Confidant mode does NOT use the workspace path — the same file
+                // is already going to /assets (session_data_dir/uploaded/) below
+                // for permanent download, and `/gettext` reads from there via
+                // imgEntry.id. The promise lands on the entry so the send-time
+                // code can await all in-flight uploads before POSTing.
+                var attachMode = (self.currentSession && self.currentSession.mode) || 'confidant';
+                if (attachMode === 'assistant') {
+                    var wsFormData = new FormData();
+                    wsFormData.append('file', resizedFile, capturedImgName);
+                    wsFormData.append('sessionId', capturedImgSessionId);
+                    imgEntry._workspaceUploadPromise =
+                        apiFetch('/upload-session-attachment', { method: 'POST', body: wsFormData })
+                            .then(function(r) { return r.json(); })
+                            .then(function(d) { if (d && d.name) imgEntry.attachmentName = d.name; })
+                            .catch(function(e) { console.error('Image workspace upload failed:', e); });
+                }
 
                 // Fire description in background — does not gate the send button
                 apiFetch('/describe-image', {

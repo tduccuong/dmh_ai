@@ -43,11 +43,11 @@ defmodule DmhAi.Commands do
   """
   @spec dispatch(String.t(), String.t(), String.t(), String.t(), [String.t()]) ::
           {:handled, non_neg_integer()} | :not_a_command
-  def dispatch(content, session_id, user_id, lang \\ "en", attachment_names \\ []) when is_binary(content) do
+  def dispatch(content, session_id, user_id, lang \\ "en", image_paths \\ []) when is_binary(content) do
     case Parser.parse(content) do
       {:index, arg}   -> run_index(arg, content, session_id, user_id) |> finalize_command(session_id, user_id, content)
       {:memo, arg}    -> Memo.run(arg, content, session_id, user_id, lang)
-      {:gettext, _}   -> Gettext.run(content, session_id, user_id, lang, attachment_names)
+      {:gettext, _}   -> Gettext.run(content, session_id, user_id, lang, image_paths)
       _               -> :not_a_command
     end
   end

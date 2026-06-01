@@ -116,7 +116,10 @@ defmodule DmhAi.Handlers.AgentChat do
       json(conn, 400, %{error: "Missing content"})
     else
       # Safety net: attach-time uploads should already be on disk; wait a
-      # bounded window if they're not.
+      # bounded window if they're not. (The wait also happens inside
+      # `resolve_workspace_paths` further down for slash-command dispatch,
+      # but doing it here too keeps the stored-content path's `📎` marker
+      # consistent with what's actually on disk.)
       if attachment_names != [] do
         workspace = DmhAi.Constants.session_workspace_dir(user.email, session_id)
         case wait_for_attachments(workspace, attachment_names) do
@@ -168,8 +171,9 @@ defmodule DmhAi.Handlers.AgentChat do
       #     no LLM dispatch. `user_ts` is echoed back so the FE
       #     patches its optimistic local copy.
       #   * `:not_a_command` — plain user message, continue.
+      image_paths_for_cmd = resolve_workspace_paths(user.email, session_id, attachment_names)
       command_result =
-        DmhAi.Commands.dispatch(stored_content, session_id, user.id, request_lang(d), attachment_names)
+        DmhAi.Commands.dispatch(stored_content, session_id, user.id, request_lang(d), image_paths_for_cmd)
 
       case command_result do
         {:handled, user_ts} ->
@@ -207,40 +211,26 @@ defmodule DmhAi.Handlers.AgentChat do
     files       = parse_files(d["files"])
     has_video   = d["hasVideo"] == true
 
-    # Workspace attachments — set by the FE when the user attaches a
-    # file in Confidant mode that needs runtime handling (today: `/gettext`
-    # reads images from the workspace via the vision pipeline). The user
+    # Confidant attachments live in `<session>/data/uploaded/<unix_ms>_<name>`
+    # — the FE sends the `/assets`-returned id (`"uploaded/<unix_ms>_<name>"`)
+    # in `attachmentNames`. We resolve each id to an absolute path; runtime
+    # slash commands (`/gettext`) read those paths directly. The user
     # message's persisted content stays clean (no `📎 workspace/<name>`
     # markers — those are an Assistant-mode mechanism for surfacing
-    # attachments to the model). Confidant slash commands receive the
-    # list directly through `Commands.dispatch`'s 5th argument.
-    attachment_names =
-      d["attachmentNames"]
-      |> parse_string_list()
-      |> Enum.take(@max_attachments)
-      |> Enum.map(&sanitize_filename/1)
+    # attachments to the model).
+    attachment_ids = d["attachmentNames"] |> parse_string_list() |> Enum.take(@max_attachments)
+    image_paths = resolve_uploaded_paths(user.email, session_id, attachment_ids)
 
-    has_payload = content != "" or images != [] or files != [] or attachment_names != []
+    has_payload = content != "" or images != [] or files != [] or image_paths != []
 
     if not has_payload do
       json(conn, 400, %{error: "Missing content"})
     else
-      # Safety net: attach-time uploads should already be on disk; wait a
-      # bounded window if they're not (same shape as the Assistant path).
-      if attachment_names != [] do
-        workspace = DmhAi.Constants.session_workspace_dir(user.email, session_id)
-        case wait_for_attachments(workspace, attachment_names) do
-          :ok -> :ok
-          :timeout ->
-            Logger.warning("[AgentChat] attachment wait timed out session=#{session_id}")
-        end
-      end
-
       # Slash-command intercept. Two outcomes:
       #   * `{:handled, _}` — runtime took it.
       #   * `:not_a_command` — plain user message, continue.
       command_result =
-        DmhAi.Commands.dispatch(content, session_id, user.id, request_lang(d), attachment_names)
+        DmhAi.Commands.dispatch(content, session_id, user.id, request_lang(d), image_paths)
 
       case command_result do
         {:handled, user_ts} ->
@@ -339,6 +329,44 @@ defmodule DmhAi.Handlers.AgentChat do
   # Match the server-side sanitization in post_session_attachment so names align.
   defp sanitize_filename(name) when is_binary(name),
     do: Regex.replace(~r/[^\w.\-]/, name, "_")
+
+  # Resolve Assistant-mode `attachmentNames` (bare workspace filenames
+  # like `foo.jpg`) to absolute paths under `<session>/workspace/`. The
+  # final list is filtered to entries that landed on disk within the
+  # attachment-wait window — a slow upload that hasn't arrived gets
+  # dropped (the chain still runs, the model just doesn't see that file).
+  defp resolve_workspace_paths(_email, _session_id, []), do: []
+  defp resolve_workspace_paths(email, session_id, names) do
+    workspace = DmhAi.Constants.session_workspace_dir(email, session_id)
+    names = names |> Enum.take(@max_attachments) |> Enum.map(&sanitize_filename/1)
+
+    case wait_for_attachments(workspace, names) do
+      :ok -> :ok
+      :timeout ->
+        Logger.warning("[AgentChat] attachment wait timed out session=#{session_id}")
+    end
+
+    names
+    |> Enum.map(fn n -> Path.join(workspace, n) end)
+    |> Enum.filter(&File.regular?/1)
+  end
+
+  # Resolve Confidant-mode `attachmentNames` (path-shaped /assets ids
+  # like `"uploaded/<unix_ms>_<safe_name>"`) to absolute paths under
+  # `<session>/data/<id>`. The `/assets` POST has already returned by
+  # the time the FE sends, so the file is on disk; no wait needed.
+  # We path-validate to keep an attacker-controlled id from climbing
+  # out of the per-session uploaded directory.
+  defp resolve_uploaded_paths(_email, _session_id, []), do: []
+  defp resolve_uploaded_paths(email, session_id, ids) do
+    data_dir = DmhAi.Constants.session_data_dir(email, session_id) |> Path.expand()
+
+    ids
+    |> Enum.map(fn id -> Path.expand(Path.join(data_dir, id)) end)
+    |> Enum.filter(fn abs ->
+      (abs == data_dir or String.starts_with?(abs, data_dir <> "/")) and File.regular?(abs)
+    end)
+  end
 
   defp parse_images(nil), do: []
   defp parse_images(list) when is_list(list) do

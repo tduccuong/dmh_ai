@@ -21,7 +21,6 @@ defmodule DmhAi.Commands.Pipelines.Gettext do
   require Logger
 
   alias DmhAi.Agent.{AgentSettings, LLM, UserAgentMessages}
-  alias DmhAi.Constants
 
   @image_exts ~w(.png .jpg .jpeg .gif .webp .bmp)
 
@@ -55,49 +54,48 @@ defmodule DmhAi.Commands.Pipelines.Gettext do
   `payload` is the structured assistant-message attachment (the FE
   receives it on `messages[-1].gettext`).
 
-  `attachment_names` is the list of files the FE uploaded to the
-  session workspace via `/upload-session-attachment` — passed in
-  directly so the command pipeline doesn't depend on the BE having
-  inlined `📎 workspace/<name>` markers into the stored content.
-  Confidant-mode messages keep their clean text; the marker pipeline
-  is assistant-mode-only.
+  `image_paths` is the list of absolute file paths the agent_chat
+  handler resolved from the FE's `attachmentNames` — Assistant mode
+  builds them from `session_workspace_dir/<name>`, Confidant mode from
+  `session_data_dir/<id>` (since `/assets` writes there and Confidant
+  reuses that pipeline instead of a second workspace upload).
   """
   @spec run(String.t(), String.t(), String.t(), String.t(), [String.t()]) ::
           {:handled, non_neg_integer()}
-  def run(original_content, session_id, user_id, _lang, attachment_names \\ []) do
-    image_names = Enum.filter(attachment_names || [], &image_name?/1)
+  def run(original_content, session_id, user_id, _lang, image_paths \\ []) do
+    image_paths = Enum.filter(image_paths || [], &image_path?/1)
 
     cond do
-      image_names == [] ->
+      image_paths == [] ->
         finalize_with_payload(session_id, user_id, original_content,
           %{sentences: [], images: [], error: "no_image_attached"},
           "Attach an image, then `/gettext` will extract its text and offer Read-out-loud playback.")
 
       true ->
-        user_email = lookup_user_email(user_id)
-        workspace = Constants.session_workspace_dir(user_email, session_id)
-        {per_image, all_sentences} = extract_per_image(image_names, workspace)
+        {per_image, all_sentences} = extract_per_image(image_paths)
         gettext_payload = %{sentences: all_sentences, images: per_image}
         fallback = compose_fallback_text(per_image, all_sentences)
         finalize_with_payload(session_id, user_id, original_content, gettext_payload, fallback)
     end
   end
 
-  # ── attachment helpers ─────────────────────────────────────────────────
+  # ── path helpers ───────────────────────────────────────────────────────
 
-  defp image_name?(name) when is_binary(name) do
-    ext = name |> Path.extname() |> String.downcase()
+  defp image_path?(path) when is_binary(path) do
+    ext = path |> Path.extname() |> String.downcase()
     ext in @image_exts
   end
 
-  defp image_name?(_), do: false
+  defp image_path?(_), do: false
 
   # ── per-image extraction ───────────────────────────────────────────────
 
-  defp extract_per_image(image_names, workspace) do
+  defp extract_per_image(image_paths) do
     {per_image_rev, all_rev} =
-      Enum.reduce(image_names, {[], []}, fn name, {imgs, acc} ->
-        path = Path.join(workspace, name)
+      Enum.reduce(image_paths, {[], []}, fn path, {imgs, acc} ->
+        # Strip the `<unix_ms>_` prefix /assets adds, for display in the
+        # per-image status row. Vision call uses the absolute path directly.
+        name = path |> Path.basename() |> String.replace(~r/^\d+_/, "")
         case extract_one(path) do
           {:ok, sentences} ->
             entry = %{name: name, status: "ok", count: length(sentences)}
@@ -256,11 +254,4 @@ defmodule DmhAi.Commands.Pipelines.Gettext do
     }
   end
 
-  defp lookup_user_email(user_id) do
-    import Ecto.Adapters.SQL, only: [query!: 3]
-    case query!(DmhAi.Repo, "SELECT email FROM users WHERE id=?", [user_id]).rows do
-      [[email]] when is_binary(email) -> email
-      _ -> ""
-    end
-  end
 end
