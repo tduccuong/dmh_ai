@@ -177,12 +177,19 @@ defmodule DmhAi.Handlers.Data.Sessions do
                 trimmed = String.trim(content)
 
                 # /memo and /index are user intent for the KB layer, not
-                # conversation about a topic. Skip them so they don't
-                # bias the title.
-                if trimmed == "" or CommandParser.parse(content) != :not_a_command do
-                  []
-                else
-                  [String.slice(content, 0, 200)]
+                # conversation about a topic — skip so they don't bias
+                # the title. /tts IS conversation — the typed arg (or
+                # the user's literal request to read out loud whatever's
+                # attached) is the topical signal — so include the part
+                # after `/tts`. A bare `/tts` (image-only, no typed arg)
+                # has no naming signal in the user message; the OCR text
+                # lives in the assistant reply and isn't fetched here.
+                case {trimmed, CommandParser.parse(content)} do
+                  {"", _}              -> []
+                  {_, :not_a_command}  -> [String.slice(content, 0, 200)]
+                  {_, {:tts, ""}}      -> []
+                  {_, {:tts, arg}}     -> [String.slice(arg, 0, 200)]
+                  {_, _}               -> []
                 end
 
               _ ->
