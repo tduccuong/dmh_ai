@@ -48,22 +48,28 @@ defmodule DmhAi.Commands.Pipelines.Tts do
   @text_split_re ~r/(?<=[.!?])\s+(?=\p{Lu}|"|'|\(|„|»|«)/u
 
   @vision_prompt """
-  Extract every readable piece of human text from the image, in reading
-  order. Output STRICT JSON with one key:
+  Extract the prose from the image as complete, speakable sentences for
+  Read-out-loud playback. Output STRICT JSON with one key:
 
     {"sentences": ["First sentence.", "Second sentence."]}
 
-  Rules:
-    - One sentence per array element. Split on terminal punctuation
-      (. ! ?), line breaks that clearly end a thought, and paragraph
-      boundaries. Don't split on commas, semicolons, or mid-sentence
-      colons.
-    - Preserve the original language exactly — do NOT translate.
-    - If the image has bullet points or list items, each item is its
-      own sentence.
-    - If the image has no readable text, return {"sentences": []}.
-    - Do NOT add commentary, explanation, or markdown fences around
-      the JSON. The first character must be `{`.
+  Each array element is a sentence a person would naturally read aloud:
+    - a self-contained thought with a clear subject and predicate, the
+      kind a listener can follow without seeing the image
+    - prose typography — the shape of body paragraphs, captions,
+      dialogue, narration, or bulleted list items
+    - the original language, preserved exactly
+    - joined across line wraps so each element is one continuous
+      sentence; split at terminal punctuation (. ! ?) or paragraph
+      boundaries, not at commas, semicolons, or mid-sentence colons
+    - each bulleted or numbered list item becomes one sentence in
+      reading order
+
+  Output rules:
+    - The first character must be `{`. No commentary, no markdown
+      fences, no preamble.
+    - When the image holds no qualifying sentences, return
+      {"sentences": []}.
   """
 
   @doc """
