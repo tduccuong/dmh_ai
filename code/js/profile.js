@@ -350,16 +350,41 @@ const SettingsModal = {
             voiceSelect.disabled = false;
             testBtn.disabled = false;
             saveBtn.disabled = false;
-            // Sort by lang then name so a long list is browsable.
-            voices.slice().sort(function(a, b) {
-                if (a.lang === b.lang) return a.name.localeCompare(b.name);
-                return a.lang.localeCompare(b.lang);
-            }).forEach(function(v) {
-                var opt = document.createElement('option');
-                opt.value = v.voiceURI;
-                opt.textContent = v.name + ' — ' + v.lang + (v.default ? ' (system default)' : '');
-                voiceSelect.appendChild(opt);
-            });
+            // Resolve a BCP-47 language tag (`de-DE`) to a human-friendly
+            // name (`German`) via Intl.DisplayNames. Falls back to the raw
+            // tag on older browsers. Display in the user's UI language so
+            // a German UI shows "Deutsch (de-DE)", an English UI shows
+            // "German (de-DE)".
+            var langDN = null;
+            try {
+                if (typeof Intl !== 'undefined' && Intl.DisplayNames) {
+                    langDN = new Intl.DisplayNames([navigator.language || 'en'], { type: 'language' });
+                }
+            } catch (e) { langDN = null; }
+            function langName(code) {
+                if (!code) return '';
+                if (langDN) {
+                    try { return langDN.of(code) || code; } catch (e) { return code; }
+                }
+                return code;
+            }
+            // One option per voice, formatted `<Lang name> (<lang-code>) — <Voice name>`,
+            // sorted by language name then voice name. Long voice lists
+            // (mobile Safari, macOS) become browsable.
+            voices.slice()
+                .map(function(v) { return { v: v, lname: langName(v.lang) }; })
+                .sort(function(a, b) {
+                    if (a.lname === b.lname) return a.v.name.localeCompare(b.v.name);
+                    return a.lname.localeCompare(b.lname);
+                })
+                .forEach(function(row) {
+                    var v = row.v;
+                    var opt = document.createElement('option');
+                    opt.value = v.voiceURI;
+                    opt.textContent = row.lname + ' (' + v.lang + ') — ' + v.name
+                                    + (v.default ? ' · system default' : '');
+                    voiceSelect.appendChild(opt);
+                });
             if (settings.voiceURI) {
                 voiceSelect.value = settings.voiceURI;
             }

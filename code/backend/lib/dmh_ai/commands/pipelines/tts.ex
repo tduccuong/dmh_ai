@@ -3,19 +3,28 @@
 # See the LICENSE file in the repository root for full details.
 # For commercial inquiries, contact: tduccuong@gmail.com
 
-defmodule DmhAi.Commands.Pipelines.Gettext do
+defmodule DmhAi.Commands.Pipelines.Tts do
   @moduledoc """
-  `/gettext` runtime: vision-model OCR + sentence segmentation for each
-  image attached to the current Confidant message. Persists an assistant
-  message whose `gettext.sentences` field is the rendered Read-out-loud
-  payload (FE renders each sentence on its own line with a speaker icon
-  beside it).
+  `/tts [text]` runtime: turn an image (vision-OCR'd), a typed text
+  argument, or both into a sentence-per-row Read-out-loud panel. The
+  assistant message carries the structured payload on its `tts.sentences`
+  field (the FE renders each sentence with its own speaker / settings
+  controls).
+
+  Inputs:
+
+    * Image(s) only          → OCR each image, concatenate the
+                                 resulting sentences in attachment order.
+    * Text only              → split the user's typed text into sentences.
+    * Image(s) + text        → OCR first, then the typed text appended.
+    * Neither                → friendly "attach an image or type text"
+                                 hint, no LLM round-trip.
 
   Confidant-mode only — Assistant mode is intercepted upstream with a
   short hint redirecting the user to switch modes.
 
-  No LLM round-trip on the assistant model; one vision call per image
-  attachment in the user's message.
+  At most one vision call per attached image (the typed text is
+  segmented locally with a Unicode-aware regex; no LLM call needed).
   """
 
   require Logger
@@ -29,6 +38,14 @@ defmodule DmhAi.Commands.Pipelines.Gettext do
   # 1568 px is the published Anthropic guidance for Claude vision and
   # works fine across the gemma / Llava family too.
   @resize_max_dim 1568
+
+  # Sentence-terminator + uppercase-next regex for splitting plain text.
+  # Unicode-aware so non-ASCII alphabets (German, French, Cyrillic…) get
+  # the same treatment as Latin. Catches `." ?` ?(` openings too so the
+  # next sentence starts with a delimiter rather than the punctuation
+  # itself. Imperfect for abbreviations (Dr., Mr., etc.) — good enough
+  # for the v1 conversational text the user types at `/tts`.
+  @text_split_re ~r/(?<=[.!?])\s+(?=\p{Lu}|"|'|\(|„|»|«)/u
 
   @vision_prompt """
   Extract every readable piece of human text from the image, in reading
@@ -50,32 +67,45 @@ defmodule DmhAi.Commands.Pipelines.Gettext do
   """
 
   @doc """
-  Public entry. Returns `{:ok, payload}` for the command finalizer, where
-  `payload` is the structured assistant-message attachment (the FE
-  receives it on `messages[-1].gettext`).
+  Public entry. Returns `{:handled, user_ts}` for the chat HTTP entry.
 
-  `image_paths` is the list of absolute file paths the agent_chat
-  handler resolved from the FE's `attachmentNames` — Assistant mode
-  builds them from `session_workspace_dir/<name>`, Confidant mode from
-  `session_data_dir/<id>` (since `/assets` writes there and Confidant
-  reuses that pipeline instead of a second workspace upload).
+  Arguments:
+    * `original_content` — verbatim user message (`/tts <text>` or
+       `/tts`). Persisted as the user's stored message.
+    * `arg`              — the text after `/tts ` (may be empty).
+    * `image_paths`      — absolute file paths the agent_chat handler
+       resolved from the FE's `attachmentNames`.
+
+  Output sentences = (per-image OCR sentences, in attachment order)
+                  ++ (typed-text sentences, in reading order).
   """
-  @spec run(String.t(), String.t(), String.t(), String.t(), [String.t()]) ::
+  @spec run(String.t(), String.t(), String.t(), String.t(), String.t(), [String.t()]) ::
           {:handled, non_neg_integer()}
-  def run(original_content, session_id, user_id, _lang, image_paths \\ []) do
+  def run(original_content, arg, session_id, user_id, _lang, image_paths \\ []) do
     image_paths = Enum.filter(image_paths || [], &image_path?/1)
+    typed_text = String.trim(arg || "")
 
     cond do
-      image_paths == [] ->
+      image_paths == [] and typed_text == "" ->
         finalize_with_payload(session_id, user_id, original_content,
-          %{sentences: [], images: [], error: "no_image_attached"},
-          "Attach an image, then `/gettext` will extract its text and offer Read-out-loud playback.")
+          %{sentences: [], images: [], error: "no_input"},
+          "Attach an image or type some text after `/tts` — I'll render it as a sentence-per-row Read-out-loud panel.")
 
       true ->
-        {per_image, all_sentences} = extract_per_image(image_paths)
-        gettext_payload = %{sentences: all_sentences, images: per_image}
-        fallback = compose_fallback_text(per_image, all_sentences)
-        finalize_with_payload(session_id, user_id, original_content, gettext_payload, fallback)
+        {per_image, image_sentences} =
+          if image_paths == [], do: {[], []}, else: extract_per_image(image_paths)
+
+        text_sentences = split_text(typed_text)
+        all_sentences = image_sentences ++ text_sentences
+
+        tts_payload = %{
+          sentences: all_sentences,
+          images: per_image,
+          typed_chars: String.length(typed_text)
+        }
+
+        fallback = compose_fallback_text(per_image, all_sentences, typed_text)
+        finalize_with_payload(session_id, user_id, original_content, tts_payload, fallback)
     end
   end
 
@@ -87,6 +117,22 @@ defmodule DmhAi.Commands.Pipelines.Gettext do
   end
 
   defp image_path?(_), do: false
+
+  # ── text-only sentence segmentation ────────────────────────────────────
+
+  defp split_text(""), do: []
+
+  defp split_text(text) when is_binary(text) do
+    text
+    |> String.split(~r/\n\s*\n/, trim: true)
+    |> Enum.flat_map(fn paragraph ->
+      paragraph
+      |> String.replace(~r/\n+/, " ")
+      |> String.split(@text_split_re, trim: true)
+    end)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+  end
 
   # ── per-image extraction ───────────────────────────────────────────────
 
@@ -105,7 +151,7 @@ defmodule DmhAi.Commands.Pipelines.Gettext do
             {[%{name: name, status: "empty", count: 0} | imgs], acc}
 
           {:error, reason} ->
-            Logger.warning("[Gettext] image=#{name} err=#{inspect(reason)}")
+            Logger.warning("[Tts] image=#{name} err=#{inspect(reason)}")
             {[%{name: name, status: "error", error: to_string(reason), count: 0} | imgs], acc}
         end
       end)
@@ -119,7 +165,7 @@ defmodule DmhAi.Commands.Pipelines.Gettext do
         messages = [%{role: "user", content: @vision_prompt, images: [b64]}]
         case LLM.call(AgentSettings.vision_model(), messages, trace: vision_trace()) do
           {:ok, raw} when is_binary(raw) and raw != "" ->
-            parse_sentences(raw)
+            parse_vision_sentences(raw)
 
           other ->
             {:error, "vision_call_failed: #{inspect(other)}"}
@@ -133,7 +179,7 @@ defmodule DmhAi.Commands.Pipelines.Gettext do
   # ── vision JSON parsing ────────────────────────────────────────────────
 
   # Strip ``` fences a chatty model may emit even when told not to.
-  defp parse_sentences(raw) do
+  defp parse_vision_sentences(raw) do
     body = strip_fences(raw)
 
     case Jason.decode(body) do
@@ -167,7 +213,7 @@ defmodule DmhAi.Commands.Pipelines.Gettext do
         {:error, "image_missing: " <> Path.basename(path)}
 
       true ->
-        tmp = "/tmp/dmh_ai_gettext_#{System.unique_integer([:positive])}.jpg"
+        tmp = "/tmp/dmh_ai_tts_#{System.unique_integer([:positive])}.jpg"
 
         try do
           {_, code} =
@@ -200,7 +246,7 @@ defmodule DmhAi.Commands.Pipelines.Gettext do
 
   # ── persistence ────────────────────────────────────────────────────────
 
-  defp finalize_with_payload(session_id, user_id, original_content, gettext_payload, fallback_text) do
+  defp finalize_with_payload(session_id, user_id, original_content, tts_payload, fallback_text) do
     {:ok, user_ts} =
       UserAgentMessages.append(session_id, user_id, %{
         role: "user",
@@ -212,30 +258,38 @@ defmodule DmhAi.Commands.Pipelines.Gettext do
       UserAgentMessages.append(session_id, user_id, %{
         role: "assistant",
         content: fallback_text,
-        kind: "gettext",
-        gettext: gettext_payload
+        kind: "tts",
+        tts: tts_payload
       })
 
     {:handled, user_ts}
   end
 
   # Fallback `content` text — what shows when a FE renderer doesn't
-  # know the `gettext:` field (e.g. polling clients on an old build).
-  # The structured FE replaces this with the per-sentence layout.
-  defp compose_fallback_text(per_image, sentences) do
+  # know the `tts:` field (old polling clients). The structured FE
+  # replaces this with the per-sentence layout.
+  defp compose_fallback_text(per_image, sentences, typed_text) do
     ok_count = Enum.count(per_image, &(&1.status == "ok"))
     err_count = Enum.count(per_image, &(&1.status == "error"))
     n = length(sentences)
+    has_typed = typed_text != ""
 
     cond do
       n == 0 and err_count > 0 ->
         "Couldn't extract text from #{err_count} image(s)."
 
       n == 0 ->
-        "No text found in the attached image(s)."
+        "Nothing to read."
+
+      ok_count == 0 and has_typed ->
+        "Rendered #{n} sentence(s) from the typed text."
+
+      ok_count > 0 and not has_typed ->
+        "Extracted #{n} sentence(s) from #{ok_count} image(s)." <>
+          if(err_count > 0, do: " (#{err_count} image(s) errored.)", else: "")
 
       true ->
-        "Extracted #{n} sentence(s) from #{ok_count} image(s)." <>
+        "Rendered #{n} sentence(s) (#{ok_count} image(s) + typed text)." <>
           if(err_count > 0, do: " (#{err_count} image(s) errored.)", else: "")
     end
   end
@@ -245,13 +299,12 @@ defmodule DmhAi.Commands.Pipelines.Gettext do
   defp vision_trace do
     %{
       origin: "confidant",
-      path: "Commands.Pipelines.Gettext.extract_one",
-      role: "Gettext",
+      path: "Commands.Pipelines.Tts.extract_one",
+      role: "Tts",
       phase: "vision_ocr",
       session_id: nil,
       user_id: nil,
       tier: :vision
     }
   end
-
 end

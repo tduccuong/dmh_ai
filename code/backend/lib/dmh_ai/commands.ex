@@ -29,7 +29,7 @@ defmodule DmhAi.Commands do
 
   alias DmhAi.Agent.{Swift, UserAgentMessages}
   alias DmhAi.Commands.{Parser, Memo, Pipelines}
-  alias DmhAi.Commands.Pipelines.Gettext
+  alias DmhAi.Commands.Pipelines.Tts
 
   @doc """
   Parse + dispatch. Returns:
@@ -47,7 +47,7 @@ defmodule DmhAi.Commands do
     case Parser.parse(content) do
       {:index, arg}   -> run_index(arg, content, session_id, user_id) |> finalize_command(session_id, user_id, content)
       {:memo, arg}    -> Memo.run(arg, content, session_id, user_id, lang)
-      {:gettext, _}   -> Gettext.run(content, session_id, user_id, lang, image_paths)
+      {:tts, arg}     -> Tts.run(content, arg, session_id, user_id, lang, image_paths)
       _               -> :not_a_command
     end
   end

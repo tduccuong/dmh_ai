@@ -714,58 +714,79 @@ function renderRequestInputForm(form, sessionId) {
 // form's `secret` flags). The form_response message itself is the
 // LLM-context payload; here we just show a one-line confirmation so
 // the timeline reads naturally without revealing values.
-// Render the `/gettext` payload — each extracted sentence as its own
-// row with a speaker icon. Click → ReadOutLoud.speak(sentence). When
-// the user has no saved voice, `speak()` opens the Read-out-loud
-// settings modal and defers the sentence until Save.
-function renderGettextPayload(gettext) {
+// Render the `/tts` payload — each sentence becomes a `.tts-item`
+// with a text row above a control row. The control row carries a
+// 🔊 speaker button (reads the sentence via Web Speech API) and a
+// ⚙ settings button (shortcut to the Read-out-loud settings modal —
+// changing the voice there changes the global voice for every
+// subsequent speak). First speaker click without a saved voice opens
+// the same modal and auto-flushes the deferred sentence after Save.
+function renderTtsPayload(tts) {
     var wrap = document.createElement('div');
-    wrap.className = 'gettext-block';
+    wrap.className = 'tts-block';
 
-    if (gettext.error === 'no_image_attached') {
+    if (tts.error === 'no_input') {
         var hint = document.createElement('div');
-        hint.className = 'gettext-hint';
-        hint.textContent = 'Attach an image first, then resend with /gettext.';
+        hint.className = 'tts-hint';
+        hint.textContent = 'Attach an image or type some text after /tts, then resend.';
         wrap.appendChild(hint);
         return wrap;
     }
 
-    var sentences = gettext.sentences || [];
-    var images = Array.isArray(gettext.images) ? gettext.images : [];
+    var sentences = tts.sentences || [];
+    var images = Array.isArray(tts.images) ? tts.images : [];
 
     if (sentences.length === 0) {
         var empty = document.createElement('div');
-        empty.className = 'gettext-hint';
+        empty.className = 'tts-hint';
         var hadErrors = images.some(function(i) { return i.status === 'error'; });
         empty.textContent = hadErrors
             ? 'No text could be extracted (one or more images errored).'
-            : 'No readable text found in the attached image(s).';
+            : 'Nothing to read.';
         wrap.appendChild(empty);
         return wrap;
     }
 
     sentences.forEach(function(sentence) {
-        var row = document.createElement('div');
-        row.className = 'gettext-row';
+        var item = document.createElement('div');
+        item.className = 'tts-item';
 
-        var textSpan = document.createElement('span');
-        textSpan.className = 'gettext-text';
-        textSpan.textContent = sentence;
+        var textRow = document.createElement('div');
+        textRow.className = 'tts-text';
+        textRow.textContent = sentence;
 
-        var btn = document.createElement('button');
-        btn.className = 'gettext-speak';
-        btn.type = 'button';
-        btn.setAttribute('aria-label', 'Read out loud');
-        btn.title = 'Read out loud';
-        btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>';
-        btn.addEventListener('click', function() {
+        var controlRow = document.createElement('div');
+        controlRow.className = 'tts-controls';
+
+        var speakBtn = document.createElement('button');
+        speakBtn.className = 'tts-btn tts-speak';
+        speakBtn.type = 'button';
+        speakBtn.setAttribute('aria-label', 'Read out loud');
+        speakBtn.title = 'Read out loud';
+        speakBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>';
+        speakBtn.addEventListener('click', function() {
             if (typeof ReadOutLoud === 'undefined') return;
             ReadOutLoud.speak(sentence);
         });
 
-        row.appendChild(textSpan);
-        row.appendChild(btn);
-        wrap.appendChild(row);
+        var settingsBtn = document.createElement('button');
+        settingsBtn.className = 'tts-btn tts-settings';
+        settingsBtn.type = 'button';
+        settingsBtn.setAttribute('aria-label', 'Voice settings');
+        settingsBtn.title = 'Voice settings';
+        settingsBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>';
+        settingsBtn.addEventListener('click', function() {
+            if (typeof SettingsModal !== 'undefined' && typeof SettingsModal.open === 'function') {
+                SettingsModal.open('page-read-out-loud');
+            }
+        });
+
+        controlRow.appendChild(speakBtn);
+        controlRow.appendChild(settingsBtn);
+
+        item.appendChild(textRow);
+        item.appendChild(controlRow);
+        wrap.appendChild(item);
     });
 
     return wrap;
@@ -845,12 +866,14 @@ function buildMessageEntryNode(msg, sessionId, renderSession, progressRows) {
                 body.appendChild(renderRequestInputForm(msg.form, sessionId));
             }
 
-            // `/gettext` payload — one sentence per row + a speaker icon.
-            // Click reads the sentence via the Web Speech API
-            // (`ReadOutLoud.speak`); first click without a saved voice
-            // opens the Read-out-loud settings modal.
-            if (msg.gettext && Array.isArray(msg.gettext.sentences)) {
-                body.appendChild(renderGettextPayload(msg.gettext));
+            // `/tts` payload — one item per sentence, each with a text
+            // row above a control row (🔊 speaker + ⚙ settings). Speaker
+            // click reads the sentence via the Web Speech API; settings
+            // click is a shortcut to the Read-out-loud settings modal.
+            // First speaker click without a saved voice also opens the
+            // modal and auto-flushes the deferred sentence after Save.
+            if (msg.tts && Array.isArray(msg.tts.sentences)) {
+                body.appendChild(renderTtsPayload(msg.tts));
             }
         } else {
             // `form_response` user messages are the runtime's

@@ -10,9 +10,10 @@ defmodule DmhAi.Commands.Parser do
     * `/index <input>` — save into the global index (runtime, no LLM round-trip).
     * `/memo <input>`  — save OR query the user's memo store; runtime
       classifies via Oracle (see `DmhAi.Commands.Memo`).
-    * `/gettext`       — extract text from attached images via the vision
-      model; persist sentences for Read-out-loud rendering. Confidant-mode
-      only; no args; reads images from the message's attachments.
+    * `/tts [text]`    — render `text` (and/or OCR'd text from any attached
+      images) as a sentence-per-row Read-out-loud panel. `text` is
+      optional: with image only → OCR; with text only → split + render the
+      typed text; with both → OCR followed by the typed text. Confidant-mode.
 
   Workflow intent is NOT a slash command. Natural-language phrasing
   ("build a workflow that …", "run &<slug>", "edit &<slug> at node N")
@@ -27,16 +28,12 @@ defmodule DmhAi.Commands.Parser do
   @type result ::
           {:index, String.t()}
           | {:memo, String.t()}
-          | {:gettext, String.t()}
+          | {:tts, String.t()}
           | :not_a_command
 
   @spec parse(String.t()) :: result()
   def parse(content) when is_binary(content) do
     trimmed = String.trim_leading(content)
-    # /gettext stamps the message with `📎 workspace/...` lines for
-    # each attachment, so match the COMMAND token at the start regardless
-    # of trailing newlines + attachment paths.
-    head = trimmed |> String.split(~r/\r?\n/, parts: 2) |> List.first() |> String.trim()
 
     cond do
       String.starts_with?(trimmed, "/index ") -> {:index, after_prefix(trimmed, "/index ")}
@@ -45,7 +42,8 @@ defmodule DmhAi.Commands.Parser do
       String.starts_with?(trimmed, "/memo ")  -> {:memo, after_prefix(trimmed, "/memo ")}
       trimmed == "/memo"                      -> {:memo, ""}
 
-      head == "/gettext"                      -> {:gettext, ""}
+      String.starts_with?(trimmed, "/tts ")   -> {:tts, after_prefix(trimmed, "/tts ")}
+      trimmed == "/tts"                       -> {:tts, ""}
 
       true                                     -> :not_a_command
     end
