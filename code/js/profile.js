@@ -350,39 +350,59 @@ const SettingsModal = {
             voiceSelect.disabled = false;
             testBtn.disabled = false;
             saveBtn.disabled = false;
-            // Resolve a BCP-47 language tag (`de-DE`) to a human-friendly
-            // name (`German`) via Intl.DisplayNames. Falls back to the raw
-            // tag on older browsers. Display in the user's UI language so
-            // a German UI shows "Deutsch (de-DE)", an English UI shows
-            // "German (de-DE)".
-            var langDN = null;
+            // Resolve a locale tag (`de-DE`, sometimes also `bg_BG` with
+            // an underscore on Android) into "<Language name> (<Region
+            // name>)" — e.g. "German (Germany)", "Bulgarian (Bulgaria)".
+            // Intl.DisplayNames provides both 'language' and 'region'
+            // resolvers; the result is rendered in the user's UI locale
+            // (English UI → "German (Germany)"; German UI → "Deutsch
+            // (Deutschland)"). When the underlying voice has no region
+            // subtag (e.g. just `eo`), only the language name is shown.
+            // The voice's own name is intentionally NOT included — the
+            // user-facing label is the locale alone; the underlying
+            // SpeechSynthesisVoice is still keyed by voiceURI.
+            var langDN = null, regionDN = null;
             try {
                 if (typeof Intl !== 'undefined' && Intl.DisplayNames) {
-                    langDN = new Intl.DisplayNames([navigator.language || 'en'], { type: 'language' });
+                    var uiLocale = navigator.language || 'en';
+                    langDN   = new Intl.DisplayNames([uiLocale], { type: 'language' });
+                    regionDN = new Intl.DisplayNames([uiLocale], { type: 'region' });
                 }
-            } catch (e) { langDN = null; }
-            function langName(code) {
-                if (!code) return '';
-                if (langDN) {
-                    try { return langDN.of(code) || code; } catch (e) { return code; }
-                }
-                return code;
+            } catch (e) { langDN = null; regionDN = null; }
+            function safeOf(dn, code) {
+                if (!dn || !code) return code || '';
+                try { return dn.of(code) || code; } catch (e) { return code; }
             }
-            // One option per voice, formatted `<Lang name> (<lang-code>) — <Voice name>`,
-            // sorted by language name then voice name. Long voice lists
-            // (mobile Safari, macOS) become browsable.
+            function localeLabel(rawTag) {
+                if (!rawTag) return '';
+                var parts = rawTag.replace(/_/g, '-').split('-');
+                var langPart = parts[0];
+                var regionPart = null;
+                // Region subtag = ALPHA-2 or UN-M49 (3 digits); first match wins.
+                for (var i = 1; i < parts.length; i++) {
+                    if (/^[A-Za-z]{2}$/.test(parts[i]) || /^\d{3}$/.test(parts[i])) {
+                        regionPart = parts[i].toUpperCase();
+                        break;
+                    }
+                }
+                var lang = safeOf(langDN, langPart);
+                var region = regionPart ? safeOf(regionDN, regionPart) : null;
+                return region ? lang + ' (' + region + ')' : lang;
+            }
+            // One option per voice, formatted "<Lang> (<Region>)" sorted
+            // alphabetically. Duplicates (multiple voices for the same
+            // locale) collapse to identical labels; voiceURI keeps them
+            // separately selectable.
             voices.slice()
-                .map(function(v) { return { v: v, lname: langName(v.lang) }; })
+                .map(function(v) { return { v: v, label: localeLabel(v.lang) }; })
                 .sort(function(a, b) {
-                    if (a.lname === b.lname) return a.v.name.localeCompare(b.v.name);
-                    return a.lname.localeCompare(b.lname);
+                    if (a.label === b.label) return a.v.name.localeCompare(b.v.name);
+                    return a.label.localeCompare(b.label);
                 })
                 .forEach(function(row) {
-                    var v = row.v;
                     var opt = document.createElement('option');
-                    opt.value = v.voiceURI;
-                    opt.textContent = row.lname + ' (' + v.lang + ') — ' + v.name
-                                    + (v.default ? ' · system default' : '');
+                    opt.value = row.v.voiceURI;
+                    opt.textContent = row.label + (row.v.default ? ' · system default' : '');
                     voiceSelect.appendChild(opt);
                 });
             if (settings.voiceURI) {
