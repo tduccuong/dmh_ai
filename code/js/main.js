@@ -477,10 +477,22 @@ const UIManager = {
             rec.onerror = function(e) {
                 _voiceRecognition = null;
                 bar.classList.remove('visible');
-                var msg = (e.error === 'not-allowed' || e.error === 'service-not-allowed')
-                    ? t('voiceHttpError') : t('voiceNotSupported');
+                // `not-allowed` / `service-not-allowed` cover two distinct
+                // failures. On a non-secure context the browser refuses
+                // outright — fix is to load over HTTPS. On a secure
+                // context the browser asked for mic permission and the
+                // user (or a prior policy) denied — fix is in the site
+                // settings, not the URL scheme.
+                var msg;
+                if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+                    msg = window.isSecureContext
+                        ? t('voicePermissionDenied')
+                        : t('voiceHttpError');
+                } else {
+                    msg = t('voiceNotSupported');
+                }
                 self.setStatus(msg);
-                setTimeout(function() { self.setStatus(''); }, 5000);
+                setTimeout(function() { self.setStatus(''); }, 8000);
             };
             rec.start();
         }
