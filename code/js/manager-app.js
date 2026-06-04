@@ -61,11 +61,26 @@ UIManager.initializeApp = async function() {
             return s.mode === self._currentMode;
         });
         const lastForMode = this._modeSessionIds[this._currentMode];
-        if (filtered.length === 0) {
-            const defaultSession = await SessionStore.createSession(t('newChat'), this._currentMode);
-            await SessionStore.setCurrentState(this._currentMode, defaultSession.id);
-            this._modeSessionIds[this._currentMode] = defaultSession.id;
-            this.currentSession = defaultSession;
+
+        // Auto-fresh-on-idle: returning to the app after a long absence
+        // should land on a clean session — picking up an old conversation
+        // is rarely what the user wants the next morning. Threshold of
+        // 30 min matches the FE's idea of "still actively working." We
+        // only spawn a fresh chat when the prior landing already has
+        // user turns in it; an empty/unused session stays the landing so
+        // we don't accumulate ghost rows.
+        var IDLE_FRESH_SESSION_MS = 30 * 60 * 1000;
+        var lastActivityAt = parseInt(localStorage.getItem('lastActivityAt') || '0', 10) || 0;
+        var idleMs = lastActivityAt > 0 ? Date.now() - lastActivityAt : 0;
+        var priorLanding = lastForMode && filtered.find(function(s) { return s.id === lastForMode; });
+        var priorHasContent = priorLanding && (priorLanding.messages || []).some(function(m) { return m.role === 'user'; });
+        var shouldAutoFresh = idleMs > IDLE_FRESH_SESSION_MS && priorHasContent;
+
+        if (filtered.length === 0 || shouldAutoFresh) {
+            const freshSession = await SessionStore.createSession(t('newChat'), this._currentMode);
+            await SessionStore.setCurrentState(this._currentMode, freshSession.id);
+            this._modeSessionIds[this._currentMode] = freshSession.id;
+            this.currentSession = freshSession;
         } else {
             this.currentSession =
                 (lastForMode && filtered.find(function(s) { return s.id === lastForMode; }))
