@@ -20,7 +20,10 @@ defmodule DmhAi.Plugs.SecurityHeaders do
       even if HTTPS is broken).
     * **Permissions-Policy** — disables sensitive browser APIs the
       chat UI doesn't use. Reduces attack surface if XSS slips
-      through despite CSP.
+      through despite CSP. Microphone is permitted for our own
+      origin (`microphone=(self)`) because the chat UI uses Web
+      Speech API recognition for voice input + `/tts` playback;
+      it stays denied for any iframe a payload might inject.
     * **`x-frame-options`** — kept for older browsers that don't
       honor CSP `frame-ancestors`. Modern browsers ignore it when
       both are present and use the CSP value.
@@ -52,7 +55,7 @@ defmodule DmhAi.Plugs.SecurityHeaders do
   @permissions_policy [
     "geolocation=()",
     "camera=()",
-    "microphone=()",
+    "microphone=(self)",
     "payment=()",
     "usb=()",
     "magnetometer=()",
