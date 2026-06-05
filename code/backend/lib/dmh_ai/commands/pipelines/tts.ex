@@ -82,25 +82,36 @@ defmodule DmhAi.Commands.Pipelines.Tts do
     * `image_paths`      — absolute file paths the agent_chat handler
        resolved from the FE's `attachmentNames`.
 
-  If the arg matches a deictic reference (`above`, `previous`, `oben`,
-  `obig`, `trên`, …) and the session has a prior assistant reply, the
-  arg is replaced by that reply's content before sentence-splitting.
-  Falls back to verbatim arg when no prior reply exists.
+  Bare `/tts` with no image and no typed arg falls back to the most
+  recent natural assistant reply in this session — the user's typical
+  shortcut for "speak the model's last answer." When even that's
+  unavailable (fresh session), surfaces a friendly hint.
 
   Output sentences = (per-image OCR sentences, in attachment order)
-                  ++ (resolved-text sentences, in reading order).
+                  ++ (typed-or-resolved-text sentences, in reading order).
   """
   @spec run(String.t(), String.t(), String.t(), String.t(), String.t(), [String.t()]) ::
           {:handled, non_neg_integer()}
   def run(original_content, arg, session_id, user_id, _lang, image_paths \\ []) do
     image_paths = Enum.filter(image_paths || [], &image_path?/1)
-    typed_text  = resolve_reference(String.trim(arg || ""), session_id)
+    typed_text  = String.trim(arg || "")
+
+    {typed_text, source} =
+      cond do
+        typed_text != "" -> {typed_text, :typed}
+        image_paths != [] -> {"", :image_only}
+        true ->
+          case prior_assistant_reply(session_id) do
+            {:ok, content} -> {content, :prior_reply}
+            :none -> {"", :no_input}
+          end
+      end
 
     cond do
-      image_paths == [] and typed_text == "" ->
+      source == :no_input ->
         finalize_with_payload(session_id, user_id, original_content,
           %{sentences: [], images: [], error: "no_input"},
-          "Attach an image or type some text after `/tts` — I'll render it as a sentence-per-row Read-out-loud panel.")
+          "Attach an image, type some text after `/tts`, or send `/tts` alone after I've replied — I'll render it as a sentence-per-row Read-out-loud panel.")
 
       true ->
         {per_image, image_sentences} =
@@ -112,10 +123,11 @@ defmodule DmhAi.Commands.Pipelines.Tts do
         tts_payload = %{
           sentences: all_sentences,
           images: per_image,
-          typed_chars: String.length(typed_text)
+          typed_chars: String.length(typed_text),
+          source: Atom.to_string(source)
         }
 
-        fallback = compose_fallback_text(per_image, all_sentences, typed_text)
+        fallback = compose_fallback_text(per_image, all_sentences, typed_text, source)
         finalize_with_payload(session_id, user_id, original_content, tts_payload, fallback)
     end
   end
@@ -129,38 +141,11 @@ defmodule DmhAi.Commands.Pipelines.Tts do
 
   defp image_path?(_), do: false
 
-  # ── deictic-reference resolver ─────────────────────────────────────────
-  # When the user types something like `/tts the story above`, treat the
-  # arg as a reference to the previous assistant reply rather than the
-  # text to speak. Recognised by a small whitelist of unambiguous
-  # deictic keywords in the languages the operator base actually uses.
-  # `last` is intentionally excluded — too easy to false-positive on
-  # legitimate prose like `/tts last week's meeting notes`.
-  #
-  # Falls back to the verbatim arg when no prior assistant reply exists
-  # OR no keyword matches.
-
-  # Substring match (no word boundary) so suffixed variants land:
-  # "previously" / "previously discussed" / "vorherige" / "obigen Text".
-  # The arg-length gate is what protects against false-positives like
-  # `/tts I went to the meeting above the office` — long prose stays
-  # verbatim, short deictic phrases get resolved.
-  @reference_keywords ~r/(above|previous|prior|earlier|oben|vorherig|obig|précédent|dernière?|arriba|anterior|último[ao]?|trên|trước)/iu
-  @max_reference_arg_chars 50
-
-  defp resolve_reference("", _session_id), do: ""
-
-  defp resolve_reference(arg, session_id) when is_binary(arg) do
-    if String.length(arg) <= @max_reference_arg_chars and
-         Regex.match?(@reference_keywords, arg) do
-      case prior_assistant_reply(session_id) do
-        {:ok, content} -> content
-        :none -> arg
-      end
-    else
-      arg
-    end
-  end
+  # ── prior assistant reply lookup ───────────────────────────────────────
+  # Bare `/tts` (no image, no typed arg) means "speak the model's last
+  # natural reply." Looking up the message log here keeps the runtime
+  # path consistent with the typed/image paths — same render, same
+  # sentence-split, same controls.
 
   defp prior_assistant_reply(session_id) do
     import Ecto.Adapters.SQL, only: [query!: 3]
@@ -353,7 +338,7 @@ defmodule DmhAi.Commands.Pipelines.Tts do
   # Fallback `content` text — what shows when a FE renderer doesn't
   # know the `tts:` field (old polling clients). The structured FE
   # replaces this with the per-sentence layout.
-  defp compose_fallback_text(per_image, sentences, typed_text) do
+  defp compose_fallback_text(per_image, sentences, typed_text, source) do
     ok_count = Enum.count(per_image, &(&1.status == "ok"))
     err_count = Enum.count(per_image, &(&1.status == "error"))
     n = length(sentences)
@@ -365,6 +350,9 @@ defmodule DmhAi.Commands.Pipelines.Tts do
 
       n == 0 ->
         "Nothing to read."
+
+      source == :prior_reply ->
+        "Rendered #{n} sentence(s) from the previous reply."
 
       ok_count == 0 and has_typed ->
         "Rendered #{n} sentence(s) from the typed text."
