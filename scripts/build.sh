@@ -569,7 +569,7 @@ Environment=DMHAI_BIND_HOST=$BIND_HOST
 # without --volumes each restart cycle orphans two anonymous volumes
 # that compound on disk indefinitely. Same reason ExecReload does an
 # explicit down-then-up instead of --force-recreate (which preserves
-# anon vols and leaks just like a bare `down`).
+# anon vols and leaks just like a bare 'down').
 ExecStart=/usr/bin/docker compose -f $INSTALL_DIR/docker-compose.yml up -d --remove-orphans
 ExecStop=/usr/bin/docker compose -f $INSTALL_DIR/docker-compose.yml down --volumes
 ExecReload=/bin/sh -c '/usr/bin/docker compose -f $INSTALL_DIR/docker-compose.yml down --volumes && /usr/bin/docker compose -f $INSTALL_DIR/docker-compose.yml up -d --remove-orphans'
