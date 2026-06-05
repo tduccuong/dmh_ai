@@ -477,24 +477,61 @@ const UIManager = {
             rec.onerror = function(e) {
                 _voiceRecognition = null;
                 bar.classList.remove('visible');
-                // `not-allowed` / `service-not-allowed` cover two distinct
-                // failures. On a non-secure context the browser refuses
-                // outright — fix is to load over HTTPS. On a secure
-                // context the browser asked for mic permission and the
-                // user (or a prior policy) denied — fix is in the site
-                // settings, not the URL scheme.
+                // Capture full diagnostic to BE syslog so we can read the
+                // real Web Speech API error code from the server side —
+                // the user-facing message buckets multiple codes into one
+                // line and hides which path actually failed.
+                try {
+                    syslog('[VOICE] error code=' + (e && e.error)
+                        + ' message=' + ((e && e.message) || '')
+                        + ' isSecureContext=' + window.isSecureContext
+                        + ' protocol=' + location.protocol
+                        + ' host=' + location.host
+                        + ' lang=' + rec.lang
+                        + ' ua=' + navigator.userAgent);
+                } catch (_logErr) {}
+
+                // `not-allowed` ≠ `service-not-allowed`:
+                //   not-allowed         → permission was denied (mic perm or
+                //                          page is not a secure context).
+                //   service-not-allowed → browser can't reach the speech
+                //                          recognition backend (Chrome's
+                //                          cloud STT — network / proxy /
+                //                          extension blocking it).
+                //   network             → mid-stream connectivity loss.
+                //   audio-capture       → mic taken by another app / no
+                //                          input device available.
                 var msg;
-                if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+                if (e.error === 'not-allowed') {
                     msg = window.isSecureContext
                         ? t('voicePermissionDenied')
                         : t('voiceHttpError');
+                } else if (e.error === 'service-not-allowed' || e.error === 'network') {
+                    msg = t('voiceServiceUnreachable');
+                } else if (e.error === 'audio-capture') {
+                    msg = t('voiceAudioCaptureFailed');
                 } else {
                     msg = t('voiceNotSupported');
                 }
                 self.setStatus(msg);
                 setTimeout(function() { self.setStatus(''); }, 8000);
             };
-            rec.start();
+            try {
+                rec.start();
+                syslog('[VOICE] start lang=' + rec.lang
+                    + ' isSecureContext=' + window.isSecureContext
+                    + ' protocol=' + location.protocol);
+            } catch (startErr) {
+                try {
+                    syslog('[VOICE] start threw: ' + (startErr && startErr.message)
+                        + ' isSecureContext=' + window.isSecureContext
+                        + ' protocol=' + location.protocol);
+                } catch (_logErr) {}
+                _voiceRecognition = null;
+                bar.classList.remove('visible');
+                self.setStatus(t('voiceNotSupported'));
+                setTimeout(function() { self.setStatus(''); }, 8000);
+            }
         }
 
         document.getElementById('attach-voice').addEventListener('click', function() {
