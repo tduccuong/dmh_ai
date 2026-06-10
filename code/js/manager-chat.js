@@ -721,15 +721,55 @@ function renderRequestInputForm(form, sessionId) {
 // changing the voice there changes the global voice for every
 // subsequent speak). First speaker click without a saved voice opens
 // the same modal and auto-flushes the deferred sentence after Save.
+var TTS_SPEAKER_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>';
+var TTS_COG_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>';
+
+// One text row of a Read-out-loud panel.
+function buildTtsTextRow(text, cls) {
+    var row = document.createElement('div');
+    row.className = cls || 'tts-text';
+    row.textContent = text;
+    return row;
+}
+
+// The control row beneath a sentence: 🔊 speaker (runs `speakFn`) and
+// ⚙ settings (shortcut to the Read-out-loud settings modal — changing
+// the voice there changes the global voice for every subsequent speak).
+function buildTtsControls(speakFn) {
+    var controlRow = document.createElement('div');
+    controlRow.className = 'tts-controls';
+
+    var speakBtn = document.createElement('button');
+    speakBtn.className = 'tts-btn tts-speak';
+    speakBtn.type = 'button';
+    speakBtn.setAttribute('aria-label', 'Read out loud');
+    speakBtn.title = 'Read out loud';
+    speakBtn.innerHTML = TTS_SPEAKER_SVG;
+    speakBtn.addEventListener('click', speakFn);
+
+    var settingsBtn = document.createElement('button');
+    settingsBtn.className = 'tts-btn tts-settings';
+    settingsBtn.type = 'button';
+    settingsBtn.setAttribute('aria-label', 'Voice settings');
+    settingsBtn.title = 'Voice settings';
+    settingsBtn.innerHTML = TTS_COG_SVG;
+    settingsBtn.addEventListener('click', function() {
+        if (typeof SettingsModal !== 'undefined' && typeof SettingsModal.open === 'function') {
+            SettingsModal.open('page-read-out-loud');
+        }
+    });
+
+    controlRow.appendChild(speakBtn);
+    controlRow.appendChild(settingsBtn);
+    return controlRow;
+}
+
 function renderTtsPayload(tts) {
     var wrap = document.createElement('div');
     wrap.className = 'tts-block';
 
     if (tts.error === 'no_input') {
-        var hint = document.createElement('div');
-        hint.className = 'tts-hint';
-        hint.textContent = 'Attach an image or type some text after /tts, then resend.';
-        wrap.appendChild(hint);
+        wrap.appendChild(buildTtsTextRow(t('ttsNoInput'), 'tts-hint'));
         return wrap;
     }
 
@@ -737,55 +777,76 @@ function renderTtsPayload(tts) {
     var images = Array.isArray(tts.images) ? tts.images : [];
 
     if (sentences.length === 0) {
-        var empty = document.createElement('div');
-        empty.className = 'tts-hint';
         var hadErrors = images.some(function(i) { return i.status === 'error'; });
-        empty.textContent = hadErrors
-            ? 'No text could be extracted (one or more images errored).'
-            : 'Nothing to read.';
-        wrap.appendChild(empty);
+        wrap.appendChild(buildTtsTextRow(hadErrors ? t('ttsNoText') : t('ttsNothing'), 'tts-hint'));
         return wrap;
     }
 
     sentences.forEach(function(sentence) {
         var item = document.createElement('div');
         item.className = 'tts-item';
-
-        var textRow = document.createElement('div');
-        textRow.className = 'tts-text';
-        textRow.textContent = sentence;
-
-        var controlRow = document.createElement('div');
-        controlRow.className = 'tts-controls';
-
-        var speakBtn = document.createElement('button');
-        speakBtn.className = 'tts-btn tts-speak';
-        speakBtn.type = 'button';
-        speakBtn.setAttribute('aria-label', 'Read out loud');
-        speakBtn.title = 'Read out loud';
-        speakBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>';
-        speakBtn.addEventListener('click', function() {
+        item.appendChild(buildTtsTextRow(sentence, 'tts-text'));
+        item.appendChild(buildTtsControls(function() {
             if (typeof ReadOutLoud === 'undefined') return;
             ReadOutLoud.speak(sentence);
-        });
+        }));
+        wrap.appendChild(item);
+    });
 
-        var settingsBtn = document.createElement('button');
-        settingsBtn.className = 'tts-btn tts-settings';
-        settingsBtn.type = 'button';
-        settingsBtn.setAttribute('aria-label', 'Voice settings');
-        settingsBtn.title = 'Voice settings';
-        settingsBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>';
-        settingsBtn.addEventListener('click', function() {
-            if (typeof SettingsModal !== 'undefined' && typeof SettingsModal.open === 'function') {
-                SettingsModal.open('page-read-out-loud');
-            }
-        });
+    return wrap;
+}
 
-        controlRow.appendChild(speakBtn);
-        controlRow.appendChild(settingsBtn);
+// Render the `/duolang` payload — like the /tts panel, but each item
+// stacks the original sentence (the user's configured voice) above its
+// translation (spoken in the target language). Both rows carry the same
+// 🔊 / ⚙ controls. A row whose translation came back empty (translator
+// failure) shows the original alone.
+function renderDuolangPayload(duo) {
+    var wrap = document.createElement('div');
+    wrap.className = 'tts-block duolang-block';
 
-        item.appendChild(textRow);
-        item.appendChild(controlRow);
+    if (duo.error === 'unknown_language') {
+        wrap.appendChild(buildTtsTextRow(t('duolangPickLanguage'), 'tts-hint'));
+        return wrap;
+    }
+
+    if (duo.error === 'no_input') {
+        wrap.appendChild(buildTtsTextRow(t('duolangNoInput'), 'tts-hint'));
+        return wrap;
+    }
+
+    var items = Array.isArray(duo.items) ? duo.items : [];
+    var images = Array.isArray(duo.images) ? duo.images : [];
+
+    if (items.length === 0) {
+        var hadErrors = images.some(function(i) { return i.status === 'error'; });
+        wrap.appendChild(buildTtsTextRow(hadErrors ? t('ttsNoText') : t('ttsNothing'), 'tts-hint'));
+        return wrap;
+    }
+
+    var bcp47 = duo.target_bcp47 || '';
+
+    items.forEach(function(pair) {
+        var item = document.createElement('div');
+        item.className = 'tts-item duolang-item';
+
+        var original = pair.original || '';
+        var translation = pair.translation || '';
+
+        item.appendChild(buildTtsTextRow(original, 'tts-text'));
+        item.appendChild(buildTtsControls(function() {
+            if (typeof ReadOutLoud === 'undefined') return;
+            ReadOutLoud.speak(original);
+        }));
+
+        if (translation !== '') {
+            item.appendChild(buildTtsTextRow(translation, 'tts-text duolang-translation'));
+            item.appendChild(buildTtsControls(function() {
+                if (typeof ReadOutLoud === 'undefined') return;
+                ReadOutLoud.speakInLang(translation, bcp47);
+            }));
+        }
+
         wrap.appendChild(item);
     });
 
@@ -874,6 +935,14 @@ function buildMessageEntryNode(msg, sessionId, renderSession, progressRows) {
             // modal and auto-flushes the deferred sentence after Save.
             if (msg.tts && Array.isArray(msg.tts.sentences)) {
                 body.appendChild(renderTtsPayload(msg.tts));
+            }
+
+            // `/duolang` payload — one item per sentence, the original
+            // above its target-language translation, each row with its
+            // own 🔊 speaker + ⚙ settings controls (the translation
+            // speaks in the target language).
+            if (msg.duolang && Array.isArray(msg.duolang.items)) {
+                body.appendChild(renderDuolangPayload(msg.duolang));
             }
         } else {
             // `form_response` user messages are the runtime's

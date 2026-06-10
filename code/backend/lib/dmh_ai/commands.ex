@@ -5,7 +5,7 @@
 
 defmodule DmhAi.Commands do
   @moduledoc """
-  Slash-command runtime. Two commands, both intercepted by the chat
+  Slash-command runtime. Every command is intercepted by the chat
   HTTP entry BEFORE the agent loop runs:
 
     * `/index <text|url|file|folder>` — save into the global index.
@@ -18,6 +18,13 @@ defmodule DmhAi.Commands do
       Querying memos is conversational — the assistant uses
       `fetch_memo` from its tool catalog.
 
+    * `/tts [text]` — render text / OCR'd images / the previous reply as
+      a sentence-per-row Read-out-loud panel (`kind="tts"`).
+
+    * `/duolang <full-lang-name> [text]` — the `/tts` panel plus a
+      translation of each sentence into the target language, rendered
+      beneath the original (`kind="duolang"`).
+
   Workflow intent is NOT a slash command. The user speaks naturally
   ("run &<slug>", "edit &<slug> at node 3", "build a workflow that …")
   and the assistant's `<workflow_authoring>` system-prompt section
@@ -29,7 +36,7 @@ defmodule DmhAi.Commands do
 
   alias DmhAi.Agent.{Swift, UserAgentMessages}
   alias DmhAi.Commands.{Parser, Memo, Pipelines}
-  alias DmhAi.Commands.Pipelines.Tts
+  alias DmhAi.Commands.Pipelines.{Tts, Duolang}
 
   @doc """
   Parse + dispatch. Returns:
@@ -48,6 +55,7 @@ defmodule DmhAi.Commands do
       {:index, arg}   -> run_index(arg, content, session_id, user_id) |> finalize_command(session_id, user_id, content)
       {:memo, arg}    -> Memo.run(arg, content, session_id, user_id, lang)
       {:tts, arg}     -> Tts.run(content, arg, session_id, user_id, lang, image_paths)
+      {:duolang, arg} -> Duolang.run(content, arg, session_id, user_id, lang, image_paths)
       _               -> :not_a_command
     end
   end

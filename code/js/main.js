@@ -269,6 +269,7 @@ const UIManager = {
         var msgInput = document.getElementById('message-input');
         if (typeof MentionPicker !== 'undefined')  MentionPicker.attach(msgInput);
         if (typeof WorkflowPicker !== 'undefined') WorkflowPicker.attach(msgInput);
+        if (typeof DuolangPicker !== 'undefined')  DuolangPicker.attach(msgInput);
         msgInput.addEventListener('input', function() {
             this.style.height = 'auto';
             this.style.height = Math.min(this.scrollHeight, 100) + 'px';

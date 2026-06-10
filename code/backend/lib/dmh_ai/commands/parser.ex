@@ -14,6 +14,11 @@ defmodule DmhAi.Commands.Parser do
       images) as a sentence-per-row Read-out-loud panel. `text` is
       optional: with image only → OCR; with text only → split + render the
       typed text; with both → OCR followed by the typed text. Confidant-mode.
+    * `/duolang <full-lang-name> [text]` — same gathering as `/tts`, plus a
+      translation of every sentence into `<full-lang-name>` rendered beneath
+      its original. The leading language token is split out downstream by
+      `DmhAi.Commands.Languages`; the arg here is everything after
+      `/duolang `. Confidant-mode.
 
   Workflow intent is NOT a slash command. Natural-language phrasing
   ("build a workflow that …", "run &<slug>", "edit &<slug> at node N")
@@ -29,6 +34,7 @@ defmodule DmhAi.Commands.Parser do
           {:index, String.t()}
           | {:memo, String.t()}
           | {:tts, String.t()}
+          | {:duolang, String.t()}
           | :not_a_command
 
   @spec parse(String.t()) :: result()
@@ -44,6 +50,9 @@ defmodule DmhAi.Commands.Parser do
 
       String.starts_with?(trimmed, "/tts ")   -> {:tts, after_prefix(trimmed, "/tts ")}
       trimmed == "/tts"                       -> {:tts, ""}
+
+      String.starts_with?(trimmed, "/duolang ") -> {:duolang, after_prefix(trimmed, "/duolang ")}
+      trimmed == "/duolang"                     -> {:duolang, ""}
 
       true                                     -> :not_a_command
     end

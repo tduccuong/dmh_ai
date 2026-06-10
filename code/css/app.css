@@ -52,6 +52,8 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
 .tts-btn:hover { background: #2c2238; color: #f4ecf8; }
 .tts-btn:active { background: #382850; }
 .tts-hint { font-size: 13px; color: #d8c0a0; opacity: 0.8; padding: 6px 10px; background: #1a1428; border: 1px solid #2c2238; border-radius: 6px; }
+/* /duolang — translation row sits beneath its original, set off by a left accent. */
+.duolang-translation { margin-top: 6px; padding-left: 10px; border-left: 2px solid #5a4a8a; color: #d8ccf0; }
 .model-dropdown-menu { display: none; position: absolute; top: calc(100% + 4px); left: 0; right: 0; background: #140f20; border: 1px solid #382850; border-radius: 8px; z-index: 300; box-shadow: 0 8px 24px rgba(0,0,0,0.6); overflow: hidden; max-height: 60vh; overflow-y: auto; }
 .model-dropdown-menu.open { display: block; }
 .model-dropdown-section { padding: 6px 0 2px; }
@@ -1350,6 +1352,56 @@ body.view-external-connectors #external-connectors-view {
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+
+/* ─── /duolang language picker ─────────────────────────────────────────── */
+.duolang-popover {
+    position: fixed;
+    display: none;
+    background: #1a1530;
+    border: 1px solid rgba(168, 134, 240, 0.55);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+    color: #e8d8ff;
+    overflow: hidden;
+}
+.duolang-popover-head {
+    padding: 8px 10px;
+    border-bottom: 1px solid rgba(168, 134, 240, 0.25);
+}
+.duolang-popover-title {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #b0a0c8;
+    margin-bottom: 6px;
+}
+.duolang-filter {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 6px 8px;
+    border-radius: 6px;
+    border: 1px solid #382850;
+    background: #0a0612;
+    color: #fff;
+    font-size: 13px;
+    font-family: inherit;
+}
+.duolang-filter:focus { outline: none; border-color: rgba(168, 134, 240, 0.7); }
+.duolang-list { max-height: 240px; overflow-y: auto; padding: 4px 0; }
+.duolang-row {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 6px 14px;
+    cursor: pointer;
+    user-select: none;
+    font-size: 13px;
+}
+.duolang-row:hover,
+.duolang-row.active { background: rgba(168, 134, 240, 0.18); }
+.duolang-native { font-weight: 600; color: #c8a8ff; min-width: 100px; }
+.duolang-english { color: #b0a0c8; font-size: 12px; }
+.duolang-empty { padding: 8px 14px; color: #b0a0c8; font-size: 12px; }
 
 /* ─── /rwf workflow picker (Layer W) ──────────────────────────────────── */
 .wf-picker-overlay {
