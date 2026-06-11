@@ -245,25 +245,7 @@ UIManager.renderSessions = async function() {
         delBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>';
         delBtn.addEventListener('click', async function(e) {
             e.stopPropagation();
-            const ok = await Modal.confirm(t('deleteSession'), t('deleteConfirm1') + s.name + t('deleteConfirm2'), t('delete_'));
-            if (!ok) return;
-            await SessionStore.deleteSession(s.id);
-            var currentMode = self._currentMode;
-            var remaining = (await SessionStore.getSessions()).filter(function(r) {
-                return r.mode === currentMode;
-            });
-            var currentStillValid = remaining.some(function(r) {
-                return self.currentSession && r.id === self.currentSession.id;
-            });
-            if (!currentStillValid) {
-                var next = remaining.length > 0
-                    ? remaining[0]
-                    : await SessionStore.createSession(t('newChat'), currentMode);
-                await self.renderSessions();
-                await self.switchSession(next.id);
-            } else {
-                await self.renderSessions();
-            }
+            await self.deleteSessionFlow(s.id, s.name);
         });
 
         if (statsBtn) actions.appendChild(statsBtn);
@@ -275,6 +257,33 @@ UIManager.renderSessions = async function() {
 
     // Keep the topbar session-switcher label in sync with the current session.
     if (typeof SessionSwitcher !== 'undefined') SessionSwitcher.refreshLabel();
+};
+
+// Confirm + delete a session, then keep the view coherent: if the deleted
+// session was the current one, switch to the next remaining session (or a
+// fresh one). Shared by the sidebar list and the topbar session-switcher
+// modal. Returns true if the deletion went through, false if cancelled.
+UIManager.deleteSessionFlow = async function(id, name) {
+    const ok = await Modal.confirm(t('deleteSession'), t('deleteConfirm1') + name + t('deleteConfirm2'), t('delete_'));
+    if (!ok) return false;
+    await SessionStore.deleteSession(id);
+    var currentMode = this._currentMode;
+    var remaining = (await SessionStore.getSessions()).filter(function(r) {
+        return r.mode === currentMode;
+    });
+    var currentStillValid = remaining.some(function(r) {
+        return UIManager.currentSession && r.id === UIManager.currentSession.id;
+    });
+    if (!currentStillValid) {
+        var next = remaining.length > 0
+            ? remaining[0]
+            : await SessionStore.createSession(t('newChat'), currentMode);
+        await this.renderSessions();
+        await this.switchSession(next.id);
+    } else {
+        await this.renderSessions();
+    }
+    return true;
 };
 
 UIManager.createNewSession = async function() {
@@ -337,31 +346,11 @@ UIManager.switchSession = async function(id) {
     await SessionStore.setCurrentState(this._currentMode, id);
     if (typeof SessionSwitcher !== 'undefined') SessionSwitcher.refreshLabel();
 
-    // If the session we just switched into still has an in-flight chain
-    // (its `_streamMap` entry survived the away-and-back), restore an
-    // honest status phrase. The streamMap only tracks stream-buffer
-    // state (`hasContentFlag`) — we don't carry thinking/tool flags
-    // here. So:
-    //
-    //   hasContentFlag → "<Role> is streaming the answer..." (strict).
-    //   else            → "Waiting for <Role>..." (best-effort; the
-    //                     next pollTurnToCompletion tick refines to
-    //                     "thinking" within 0.5–2 s if thinking_buffer
-    //                     or running_tool_call is active, or leaves it
-    //                     as "Waiting for..." if neither — matching
-    //                     the strict state machine in
-    //                     manager-search.js's tick).
-    var streamEntry = this._streamMap && this._streamMap.get(id);
-    if (streamEntry) {
-        var streamMode = (this.currentSession.mode) || 'confidant';
-        var streamIcon = (typeof MODE_ICONS !== 'undefined' && MODE_ICONS[streamMode]) || '';
-        var streamLabel = streamMode === 'assistant' ? t('modeAssistant') : t('modeConfidant');
-        if (streamEntry.hasContentFlag) {
-            this.setStatusHtml(streamIcon + streamLabel + t('answering'));
-        } else {
-            this.setStatusHtml(t('waitingFor') + streamIcon + streamLabel + '...');
-        }
-    }
+    // If the switched-into session still has an in-flight chain, its
+    // `_streamMap` entry survived the away-and-back; renderChat (below)
+    // rebuilds the streaming placeholder from it, including the turn-status
+    // phrase under the DMH-AI header (entry.statusPhrase). No status-bar
+    // work needed — the phrase lives in the bubble now.
 
     // Reset Stop button — the new session's first /poll will re-source
     // the truth. Without this reset, the button would stick visible
@@ -372,15 +361,10 @@ UIManager.switchSession = async function(id) {
     this.renderChat();
     this._pinChatToBottom();
     this.startProgressPolling();
-    // Empty session → splash already speaks for itself, just focus
-    // the input. Non-empty → fire the mode-hint toast so the user is
-    // reminded of the other mode's role mid-conversation.
-    if (this.currentSession && (!this.currentSession.messages || this.currentSession.messages.length === 0)) {
-        var input = document.getElementById('message-input');
-        if (input) input.focus();
-    } else {
-        this.showModeHint();
-    }
+    // Always focus the composer so the user can start typing right away
+    // after switching to (or back to) a session.
+    var input = document.getElementById('message-input');
+    if (input) input.focus();
 };
 
 // Initial snapshot — fetches progress rows once (on session switch or
@@ -762,30 +746,38 @@ UIManager.autoNameSession = async function(session, opts) {
 // we were the ones who set it, so attachment / voice / iOS-hint
 // callers that set their own status aren't clobbered.
 UIManager._syncAutoStatus = function(chainInFlight, streamBuffer, thinkingBuffer, runningToolCall, hasPendingProgress) {
-    if (!this.currentSession) return;
-    var mode  = (this.currentSession.mode) || 'confidant';
-    var icon  = (typeof MODE_ICONS !== 'undefined' && MODE_ICONS[mode]) || '';
-    var label = mode === 'assistant' ? t('modeAssistant') : t('modeConfidant');
+    var sess = this.currentSession;
+    if (!sess) return;
 
-    // Same state machine as pollTurnToCompletion — see manager-search.js
-    // §"Status-bar state machine" for the rationale. `chain_in_flight`
-    // alone is too coarse (eclipses the "Waiting for…" prelude); we want
-    // the actual-activity signals.
-    if (chainInFlight) {
-        if (streamBuffer) {
-            this.setStatusHtml(icon + label + t('answering'));
-            this._autoStatusActive = true;
-        } else if (thinkingBuffer || runningToolCall || hasPendingProgress) {
-            this.setStatusHtml(icon + label + t('thinking'));
-            this._autoStatusActive = true;
-        } else if (this._autoStatusActive) {
-            // Chain is iterating but no visible activity yet — fall back
-            // to the prelude shape so the bar is honest about it.
-            this.setStatusHtml(t('waitingFor') + icon + label + '...');
-        }
-    } else if (this._autoStatusActive) {
-        this.setStatus('');
+    if (!chainInFlight) {
+        // Chain finished — drop a placeholder we created for a background /
+        // resumed chain so renderChat shows the persisted final message.
+        var done = this._streamMap && this._streamMap.get(sess.id);
+        if (done && done._bg) { this._streamMap.delete(sess.id); this.renderChat(); }
         this._autoStatusActive = false;
+        return;
+    }
+
+    // Page reload / silent pickup of a chain this tab didn't start: ensure a
+    // streaming placeholder bubble exists so the phrase + any streamed answer
+    // render under the DMH-AI header (same surface as a locally-sent turn).
+    var entry = this._streamMap && this._streamMap.get(sess.id);
+    if (!entry) {
+        entry = { content: '', searchWarning: '', session: sess, statusPhrase: '', _bg: true };
+        this._streamMap.set(sess.id, entry);
+        this.renderChat();
+    }
+    if (streamBuffer) this._updateStreamPlaceholder(sess, streamBuffer);
+    this._autoStatusActive = true;
+
+    // Turn-status phrase under the header — hidden during answer streaming
+    // or tool / web-search work (the body / progress rows take over).
+    if (streamBuffer || runningToolCall || hasPendingProgress) {
+        this._setTurnStatus(sess, null);
+    } else if (thinkingBuffer) {
+        this._setTurnStatus(sess, turnThinkingPhrase());
+    } else {
+        this._setTurnStatus(sess, turnWaitingPhrase());
     }
 };
 

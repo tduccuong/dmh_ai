@@ -47,7 +47,12 @@
     --btn-danger-fg-hover: #ff6a80;
     --btn-primary-bg: var(--accent);
     --btn-primary-bg-hover: var(--accent-hover);
-    --btn-primary-fg: #ffffff;
+    /* on-accent: text/icon on ANY saturated accent or status fill
+       (accent / danger / warning / success) — white in BOTH themes so the
+       contrast rule is the same everywhere. Filled buttons use this; only
+       text on theme-following surfaces uses the flipping --text-* tokens. */
+    --on-accent: #ffffff;
+    --btn-primary-fg: var(--on-accent);
     --btn-secondary-bg: #3a2a50;
     --btn-secondary-bg-hover: #5a3a80;
     --btn-secondary-fg: #e0c0ff;
@@ -108,8 +113,9 @@
     --text-secondary: var(--text-2);
     --text-muted: var(--text-3);
 
-    /* control widgets — recessed default bg, brighter bg on hover (both themes) */
-    --control-bg: var(--input-bg);
+    /* control widgets — transparent default so a widget shows its container's
+       background (topbar widgets read as the topbar colour); bg lifts on hover */
+    --control-bg: transparent;
     --control-bg-hover: var(--surface-2);
 
     /* component tints / shadows (translucent fills + drop shadows) */
@@ -124,14 +130,14 @@
 }
 
 :root[data-theme="light"] {
-    /* border — lavender, same hue family as dark */
-    --border-1: #ccc0e6;
-    --border-2: #dacfee;
-    --border-strong: #b4a4da;
-    --border-subtle: #e3daf3;
+    /* border — cool near-neutral gray (a whisper of the dark violet) */
+    --border-1: #e0dde8;
+    --border-2: #ebe9f1;
+    --border-strong: #c7c1d6;
+    --border-subtle: #eeecf3;
     --border-hover: var(--accent);
 
-    /* brand — accent stays warm in both themes */
+    /* brand — accent stays warm in both themes (carries the identity) */
     --accent: #c87830;
     --accent-bright: #806040;
     --accent-hover: #a86020;
@@ -143,74 +149,78 @@
     --btn-danger-fg-hover: #c02040;
     --btn-primary-bg: var(--accent);
     --btn-primary-bg-hover: var(--accent-hover);
-    --btn-primary-fg: #ffffff;
-    --btn-secondary-bg: #e6ddf5;
-    --btn-secondary-bg-hover: #d8caee;
-    --btn-secondary-fg: #4a2a7a;
+    /* white in light too — text on a saturated fill stays white in both themes */
+    --on-accent: #ffffff;
+    --btn-primary-fg: var(--on-accent);
+    --btn-secondary-bg: #ebe8f2;
+    --btn-secondary-bg-hover: #ded9ea;
+    --btn-secondary-fg: #4a3a6a;
 
     /* chat */
-    --chat-bg: #ece6f6;
-    --msg-assistant-bg: #faf8ff;
-    --msg-assistant-fg: #1f1426;
-    --msg-h-fg: #5a4080;
-    --msg-user-bg-from: #e8dff7;
-    --msg-user-bg-to: #ded3f1;
-    --msg-user-border: rgba(140, 95, 200, 0.22);
-    --msg-user-fg: #2a1a40;
+    --chat-bg: #f7f6fa;
+    --msg-assistant-bg: #ffffff;
+    --msg-assistant-fg: #1f1a28;
+    --msg-h-fg: #5a5072;
+    --msg-user-bg-from: #eeecf4;
+    --msg-user-bg-to: #e7e3ef;
+    --msg-user-border: rgba(120, 100, 170, 0.20);
+    --msg-user-fg: #1f1a28;
 
     /* input */
-    --input-bg: #faf8ff;
-    --input-border: #ccc0e6;
+    --input-bg: #ffffff;
+    --input-border: #e0dde8;
 
     /* overlay */
-    --backdrop: rgba(40, 30, 60, 0.45);
-    --purple-glow: rgba(150, 110, 220, 0.12);
-    --shadow-soft: rgba(60, 45, 90, 0.18);
+    --backdrop: rgba(30, 26, 42, 0.42);
+    --purple-glow: rgba(150, 120, 210, 0.10);
+    --shadow-soft: rgba(40, 34, 60, 0.16);
 
-    /* shell — WHITE canvas + topbar (header matches canvas); the purple
-       tone lives in the chrome (sidebar, buttons, borders), not the canvas */
+    /* shell — WHITE canvas + topbar (header matches canvas); the chrome is a
+       cool near-neutral gray, the orange accent does the brand work */
     --body-bg: #ffffff;
-    --body-fg: #1f1426;
-    --card-border: #d3c7ea;
+    --body-fg: #1f1a28;
+    --card-border: #e2dfea;
     --header-bg: var(--body-bg);
-    --header-border: #ccc0e6;
-    --main-fg: #1f1426;
-    --sidebar-bg: #ece5f7;
-    --sidebar-border: #d8cef0;
+    --header-border: #e2dfea;
+    --main-fg: #1f1a28;
+    --sidebar-bg: #f0eef5;
+    --sidebar-border: #e2dfea;
 
     /* status */
     --danger: #c02040;
     --success: #2a9050;
     --warning: #c87020;
 
-    /* surface — light lavender chrome (cards, composer, control buttons) */
-    --bg-deep: #ece5f6;
-    --bg-hover: #e3d9f2;
+    /* surface — cool near-neutral gray chrome (cards, composer, dropdowns) */
+    --bg-deep: #edeaf2;
+    --bg-hover: #e9e5f0;
     --surface-0: #ffffff;
-    --surface-1: #f6f2fc;
-    --surface-2: #f1ebf9;
-    --surface-3: #e6ddf6;
+    --surface-1: #f7f6fa;
+    --surface-2: #eeecf3;
+    --surface-3: #e7e4ef;
 
-    /* text — dark purple ink */
-    --text-1: #211636;
-    --text-2: #463566;
-    --text-3: #6b5a88;
-    --text-accent: #6a4a92;
-    --text-light: #2e2048;
-    --text-on-bright: #1f1426;
+    /* text — near-black with a faint cool cast */
+    --text-1: #1f1a28;
+    --text-2: #4a4458;
+    --text-3: #6e6880;
+    --text-accent: #5e5076;
+    --text-light: #2e2840;
+    --text-on-bright: #1f1a28;
     --text-warm: #806040;
 
-    /* control widgets — light default lifts to pure white on hover (brighter) */
-    --control-bg: var(--surface-3);
+    /* control widgets — transparent default so widgets read as the white
+       topbar; border defines them, bg lifts to white on hover */
+    --control-bg: transparent;
     --control-bg-hover: var(--surface-0);
 
-    /* component tints / shadows */
-    --shadow-1: rgba(40, 30, 60, 0.12);
-    --shadow-2: rgba(40, 30, 60, 0.22);
-    --glow-strong: rgba(120, 90, 200, 0.16);
-    --overlay-hover: rgba(40, 30, 60, 0.06);
-    --accent-tint: rgba(200, 120, 48, 0.14);
+    /* component tints / shadows — warmth shows only on the accent tint
+       (active / hover states), resting surfaces stay neutral */
+    --shadow-1: rgba(40, 34, 60, 0.10);
+    --shadow-2: rgba(40, 34, 60, 0.20);
+    --glow-strong: rgba(150, 120, 210, 0.16);
+    --overlay-hover: rgba(60, 50, 90, 0.06);
+    --accent-tint: rgba(200, 120, 48, 0.16);
     --success-tint: rgba(42, 144, 80, 0.12);
     --danger-tint: rgba(192, 32, 64, 0.10);
-    --warning-tint: rgba(200, 112, 32, 0.12);
+    --warning-tint: rgba(200, 112, 32, 0.14);
 }

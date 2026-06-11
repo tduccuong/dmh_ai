@@ -23,8 +23,7 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
 .session-dropdown-wrap { flex: 1; height: 38px; position: relative; min-width: 0; }
 .session-dropdown-trigger { width: 100%; padding: 0 10px; height: 100%; background: var(--control-bg); border: 1px solid var(--border-strong); border-radius: 8px; color: var(--text-1); font-size: 13px; cursor: pointer; display: flex; align-items: center; gap: 6px; text-align: left; transition: background 0.12s, border-color 0.12s, color 0.12s; }
 .session-dropdown-trigger:hover { background: var(--control-bg-hover); border-color: var(--border-hover); }
-.session-dropdown-icon { flex-shrink: 0; opacity: 0.6; }
-.session-dropdown-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-dropdown-label { flex: 1; min-width: 0; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ── Unified control widgets ──────────────────────────────────────────
    Single source for every icon / control button (topbar + composer):
@@ -58,18 +57,23 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
 .session-switch-overlay { position: fixed; inset: 0; background: var(--backdrop); display: none; align-items: flex-start; justify-content: center; z-index: 1300; }
 .session-switch-overlay.visible { display: flex; }
 .session-switch-modal { background: var(--surface-1); border: 1px solid var(--border-1); border-radius: 10px; width: 460px; max-width: 92vw; max-height: 80vh; margin-top: 8vh; display: flex; flex-direction: column; box-shadow: 0 16px 48px var(--shadow-soft); overflow: hidden; }
-.session-switch-header { display: flex; align-items: center; gap: 8px; padding: 16px 18px 10px; flex-shrink: 0; }
+.session-switch-header { display: flex; align-items: center; gap: 8px; padding: 14px 18px; flex-shrink: 0; border-bottom: 1px solid var(--border-1); background: var(--surface-2); }
 .session-switch-title { margin: 0; font-size: 16px; color: var(--text-1); }
 /* `+` sits right next to the title; margin-right:auto pushes the close (✕) to the far right. */
 .session-switch-new { margin-right: auto; }
 .session-switch-new, .session-switch-close { flex-shrink: 0; background: transparent; border: 1px solid var(--border-1); color: var(--text-warm); border-radius: 6px; width: 30px; height: 30px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; font-size: 15px; transition: background 0.15s, color 0.15s; }
 .session-switch-new:hover, .session-switch-close:hover { background: var(--border-2); color: var(--text-1); }
-.session-switch-filter { flex-shrink: 0; margin: 0 18px 10px; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border-1); background: var(--input-bg); color: var(--text-on-bright); font-size: 14px; font-family: inherit; }
+.session-switch-filter { flex-shrink: 0; margin: 14px 18px 10px; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border-1); background: var(--input-bg); color: var(--text-1); font-size: 14px; font-family: inherit; }
 .session-switch-filter:focus { outline: none; border-color: var(--border-hover); }
 .session-switch-list { flex: 1; min-height: 0; overflow-y: auto; padding: 0 10px 12px; }
-.session-switch-row { padding: 9px 12px; border-radius: 6px; cursor: pointer; color: var(--text-light); font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-left: 3px solid transparent; }
+.session-switch-row { display: flex; align-items: center; gap: 6px; padding: 9px 12px; border-radius: 6px; cursor: pointer; color: var(--text-light); font-size: 14px; border-left: 3px solid transparent; }
 .session-switch-row:hover { background: var(--overlay-hover); color: var(--text-on-bright); }
 .session-switch-row.active { background: var(--accent-tint); border-left-color: var(--accent); color: var(--text-on-bright); font-weight: 500; }
+.session-switch-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Per-row actions (stats + delete) reuse the sidebar's .session-actions /
+   .session-btn styling; reveal them on row hover or for the active row. */
+.session-switch-row:hover .session-actions,
+.session-switch-row.active .session-actions { opacity: 1; pointer-events: auto; }
 .session-switch-empty { padding: 12px; color: var(--text-3); font-size: 13px; }
 #mode-dropdown-wrap { flex: 1; }
 #mode-dropdown-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
@@ -176,6 +180,9 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
     white-space: nowrap;
 }
 .msg-header { font-size: 16px; color: var(--text-1); margin-bottom: 8px; font-weight: 500; }
+/* Turn-status phrase (spinner + text) shown while the answer is pending. */
+.msg-status { display: flex; align-items: center; gap: 7px; margin: 2px 0 6px; color: var(--text-3); font-size: 14px; font-style: italic; }
+.msg-status-spinner { flex-shrink: 0; width: 11px; height: 11px; border: 2px solid var(--surface-3); border-top-color: var(--border-strong); border-radius: 50%; animation: think-spin 0.9s linear infinite; }
 .input-area { background: var(--surface-2); display: flex; flex-direction: column; }
 .input-row { padding: 10px 20px; display: flex; gap: 10px; }
 .message-input-wrap { flex: 1; position: relative; display: flex; }
@@ -225,10 +232,10 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
 .mode-hint.fade-out { opacity: 0; }
 .mode-hint.success { background: var(--success-tint); color: var(--success); border-bottom-color: var(--success-tint); }
 .mode-hint.success strong { color: var(--success); }
-.error-banner { width: 100%; background: var(--danger); color: var(--text-on-bright); padding: 10px 20px; text-align: center; display: none; font-size: 14px; flex-shrink: 0; }
-.error-banner button { background: var(--text-on-bright); color: var(--danger); border: none; padding: 6px 14px; border-radius: 6px; cursor: pointer; margin-left: 15px; font-weight: 600; font-size: 13px; }
+.error-banner { width: 100%; background: var(--danger); color: var(--on-accent); padding: 10px 20px; text-align: center; display: none; font-size: 14px; flex-shrink: 0; }
+.error-banner button { background: var(--on-accent); color: var(--danger); border: none; padding: 6px 14px; border-radius: 6px; cursor: pointer; margin-left: 15px; font-weight: 600; font-size: 13px; }
 .pw-warning-banner { width: 100%; background: var(--warning-tint); color: var(--warning); padding: 9px 20px; text-align: center; display: none; font-size: 13px; flex-shrink: 0; }
-.pw-warning-banner button { background: var(--warning); color: var(--warning-tint); border: none; padding: 4px 12px; border-radius: 5px; cursor: pointer; margin-left: 12px; font-weight: 600; font-size: 12px; }
+.pw-warning-banner button { background: var(--warning); color: var(--on-accent); border: none; padding: 4px 12px; border-radius: 5px; cursor: pointer; margin-left: 12px; font-weight: 600; font-size: 12px; }
 .user-menu-wrap { position: relative; flex-shrink: 0; height: 38px; }
 .user-menu-btn { padding: 0 12px; }
 .user-dropdown { display: none; position: absolute; top: 100%; right: 0; background: var(--surface-1); border: 1px solid var(--border-1); border-radius: 8px; margin-top: 4px; z-index: 200; min-width: 220px; box-shadow: 0 8px 24px var(--shadow-soft); overflow: hidden; }
@@ -392,10 +399,10 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
 .attachment-chip { display: flex; align-items: center; gap: 5px; background: var(--input-bg); border: 1px solid var(--surface-2); border-radius: 5px; padding: 4px 8px; font-size: 12px; color: var(--text-warm); max-width: 200px; }
 .attachment-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .attachment-chip button { background: none; border: none; color: var(--text-1); cursor: pointer; font-size: 14px; line-height: 1; padding: 0; flex-shrink: 0; }
-/* Modal overlay sits ABOVE both .settings-overlay (z-index 1000) and
-   .mgr-overlay (1100) so confirm/alert dialogs invoked from inside
-   those panels render on top of them, not underneath. */
-.modal-overlay { position: fixed; inset: 0; background: var(--backdrop); display: none; align-items: center; justify-content: center; z-index: 1200; }
+/* Modal overlay is the topmost confirm/alert layer — above settings (1000),
+   mgr (1100) AND the session-switch modal (1300) — so a delete-confirm or
+   token-stats dialog invoked from inside any of those renders on top. */
+.modal-overlay { position: fixed; inset: 0; background: var(--backdrop); display: none; align-items: center; justify-content: center; z-index: 1400; }
 .modal-overlay.visible { display: flex; }
 /* Flex-column so .modal-message can flex: 1 and scroll while the
    title + input + actions stay anchored. max-height caps the modal
@@ -405,7 +412,7 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
    consent, OAuth catalog editor). Desktop: ~720px so width/height > 1
    against a typical body. Mobile: clamps to 92vw — near-full-width. */
 .modal.modal-wide { width: 720px; max-width: 92vw; }
-.modal-title { font-size: 15px; font-weight: 600; color: var(--text-on-bright); margin-bottom: 10px; flex: 0 0 auto; }
+.modal-title { font-size: 15px; font-weight: 600; color: var(--text-1); margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px solid var(--border-1); flex: 0 0 auto; }
 .modal-message { font-size: 14px; color: var(--text-light); line-height: 1.5; margin-bottom: 20px; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
 .modal-input { width: 100%; padding: 10px 12px; border-radius: 6px; border: 1px solid var(--border-1); background: var(--input-bg); color: var(--text-on-bright); font-size: 14px; margin-bottom: 20px; outline: none; box-sizing: border-box; flex: 0 0 auto; }
 .modal-input:focus { border-color: var(--border-hover); }
@@ -429,7 +436,7 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
 .modal-btn-cancel:hover { background: var(--surface-3); }
 .modal-btn-ok { background: var(--accent); color: var(--btn-primary-fg); }
 .modal-btn-ok:hover { background: var(--accent-hover); }
-.modal-btn-danger { background: var(--danger); color: var(--text-on-bright); }
+.modal-btn-danger { background: var(--danger); color: var(--on-accent); }
 .modal-btn-danger:hover { background: var(--danger); }
 .message.assistant p { margin-bottom: 12px; }
 .message.assistant p:last-child, .message.assistant ul:last-child, .message.assistant ol:last-child { margin-bottom: 0; }

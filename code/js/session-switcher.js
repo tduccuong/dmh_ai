@@ -111,11 +111,56 @@ const SessionSwitcher = {
         }
 
         var self = this;
+        // Per-row icons mirror the sidebar list: an admin-only stats button
+        // and a delete button, reusing the .session-actions / .session-btn
+        // styling and the shared UIManager.deleteSessionFlow / showTokenStats.
+        var STATS_SVG = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>';
+        var TRASH_SVG = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>';
+        var isAdmin = (typeof Auth !== 'undefined' && Auth.user && Auth.user.role === 'admin');
+
         rows.forEach(function(s) {
             var row = document.createElement('div');
             row.className = 'session-switch-row' + (s.id === curId ? ' active' : '');
-            row.textContent = s.name || fallback;
-            row.title = s.name || '';
+
+            var nameEl = document.createElement('span');
+            nameEl.className = 'session-switch-name';
+            nameEl.textContent = s.name || fallback;
+            nameEl.title = s.name || '';
+            row.appendChild(nameEl);
+
+            var actions = document.createElement('div');
+            actions.className = 'session-actions';
+
+            if (isAdmin) {
+                var statsBtn = document.createElement('button');
+                statsBtn.className = 'session-btn session-btn-stats';
+                statsBtn.title = 'Statistics';
+                statsBtn.innerHTML = STATS_SVG;
+                statsBtn.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    if (typeof UIManager !== 'undefined') UIManager.showTokenStats(s.id, s.name);
+                });
+                actions.appendChild(statsBtn);
+            }
+
+            var delBtn = document.createElement('button');
+            delBtn.className = 'session-btn session-btn-delete';
+            delBtn.title = (typeof t === 'function') ? t('delete_') : 'Delete';
+            delBtn.innerHTML = TRASH_SVG;
+            delBtn.addEventListener('click', async function(e) {
+                e.stopPropagation();
+                if (typeof UIManager === 'undefined') return;
+                var did = await UIManager.deleteSessionFlow(s.id, s.name);
+                if (!did) return;
+                // Refresh the modal list so the deleted row drops out and the
+                // (possibly new) current session is re-highlighted.
+                self._sessions = await SessionStore.getSessions();
+                var fEl = document.getElementById('session-switch-filter');
+                self._render(fEl ? fEl.value : '');
+            });
+            actions.appendChild(delBtn);
+
+            row.appendChild(actions);
             row.addEventListener('click', function() { self._select(s.id); });
             list.appendChild(row);
         });

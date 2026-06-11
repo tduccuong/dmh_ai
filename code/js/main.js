@@ -150,7 +150,7 @@ const UIManager = {
                     notice.innerHTML = '⚠ Response was interrupted (screen locked).';
                     var retryBtn = document.createElement('button');
                     retryBtn.textContent = 'Retry';
-                    retryBtn.style.cssText = 'padding:4px 12px;background:var(--accent);color:var(--text-on-bright);border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;flex-shrink:0;';
+                    retryBtn.style.cssText = 'padding:4px 12px;background:var(--accent);color:var(--on-accent);border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;flex-shrink:0;';
                     retryBtn.onclick = function() { self.retryLastMessage(); };
                     notice.appendChild(retryBtn);
                     var wlBody = document.getElementById('streaming-body') || self._activeBodyDiv;

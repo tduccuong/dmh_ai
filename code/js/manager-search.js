@@ -41,15 +41,8 @@ UIManager.sendMessage = async function() {
 
     this.isStreaming = true;   // set early to prevent double-send during awaits
     this.updateSendBtn();
-    function modeRole(session) {
-        return (session && session.mode === 'assistant') ? t('modeAssistant') : t('modeConfidant');
-    }
-    function modeRoleHtml(session) {
-        var mode = (session && session.mode) || 'confidant';
-        var icon = (typeof MODE_ICONS !== 'undefined' && MODE_ICONS[mode]) || '';
-        var label = mode === 'assistant' ? t('modeAssistant') : t('modeConfidant');
-        return icon + label;
-    }
+    // The model is presented to the user as "DMH-AI".
+    function modeRole() { return 'DMH-AI'; }
     // Cancel any in-flight naming call so it doesn't interfere
     if (this._namingController) {
         this._namingController.abort();
@@ -59,8 +52,9 @@ UIManager.sendMessage = async function() {
     const content = input.value.trim();
     if (!content && this.attachedFiles.length === 0) { this.isStreaming = false; this.updateSendBtn(); return; }
 
-    // Show status immediately — before any awaits
-    this.setStatusHtml(t('waitingFor') + modeRoleHtml(this.currentSession) + '...');
+    // The turn-status phrase ("Waiting for DMH-AI…") is rendered inside the
+    // assistant placeholder bubble (under the header), not the status bar —
+    // see the placeholder setup below + _setTurnStatus.
 
     // --- Collect attachments into API and storage buckets ---
     // Snapshot the current attachment list — this.attachedFiles may be cleared
@@ -158,6 +152,8 @@ UIManager.sendMessage = async function() {
     bodyDiv.id = 'streaming-body';
     assistantDiv.appendChild(bodyDiv);
     container.appendChild(assistantDiv);
+    // Turn-status phrase under the header, visible immediately on send.
+    this._renderTurnStatusInto(assistantDiv, turnWaitingPhrase());
 
     // Anchor the just-sent user message at the top of the viewport.
     // The scroll policy keeps it pinned while the answer streams below;
@@ -174,7 +170,7 @@ UIManager.sendMessage = async function() {
     this._acquireWakeLock();
     self._activeBodyDiv = bodyDiv;
     self._streamMap.clear();
-    self._streamMap.set(sessionAtSend.id, { content: '', searchWarning: '', session: sessionAtSend });
+    self._streamMap.set(sessionAtSend.id, { content: '', searchWarning: '', session: sessionAtSend, statusPhrase: turnWaitingPhrase() });
     const pipelineController = new AbortController();
     self._streamController = pipelineController;
     document.getElementById('send-btn').disabled = true;
@@ -677,14 +673,20 @@ UIManager.pollTurnToCompletion = function(sessionAtSend, onComplete, onError, ab
             if (self.currentSession && self.currentSession.id === sessionAtSend.id) {
                 var hasPendingProgress =
                     (sessionAtSend.progress || []).some(function(p) { return p && p.status === 'pending'; });
-                var statusMode  = (sessionAtSend.mode) || 'confidant';
-                var statusIcon  = (typeof MODE_ICONS !== 'undefined' && MODE_ICONS[statusMode]) || '';
-                var statusLabel = statusMode === 'assistant' ? t('modeAssistant') : t('modeConfidant');
 
+                // Turn-status phrase under the DMH-AI header (in the bubble):
+                //   answer streaming             → hide (the text is the signal)
+                //   tool / web search running    → hide (progress rows show)
+                //   chain-of-thought streaming   → "DMH-AI is thinking…"
+                //   nothing visible yet          → "Waiting for DMH-AI…"
                 if (data.stream_buffer) {
-                    self.setStatusHtml(statusIcon + statusLabel + t('answering'));
-                } else if (data.thinking_buffer || data.running_tool_call || hasPendingProgress) {
-                    self.setStatusHtml(statusIcon + statusLabel + t('thinking'));
+                    self._setTurnStatus(sessionAtSend, null);
+                } else if (data.running_tool_call || hasPendingProgress) {
+                    self._setTurnStatus(sessionAtSend, null);
+                } else if (data.thinking_buffer) {
+                    self._setTurnStatus(sessionAtSend, turnThinkingPhrase());
+                } else {
+                    self._setTurnStatus(sessionAtSend, turnWaitingPhrase());
                 }
             }
 
@@ -826,6 +828,52 @@ UIManager.pollTurnToCompletion = function(sessionAtSend, onComplete, onError, ab
 //      down by `renderChat`; the persisted message's static
 //      `<details>` block (built by `buildMessageEntryNode`) takes
 //      over with the same content.
+// ── Turn-status phrase (under the DMH-AI header, in the streaming bubble) ──
+// The model is named "DMH-AI" to the user. Phrases reuse the existing
+// `waitingFor` / `thinking` i18n fragments around that name.
+function turnWaitingPhrase() { return t('waitingFor') + 'DMH-AI...'; }
+function turnThinkingPhrase() { return 'DMH-AI' + t('thinking'); }
+
+// Ensure a `.msg-status` line (spinner + phrase) exists in `msgEl` reflecting
+// `phrase`, or remove it when `phrase` is falsy. The line sits just ABOVE the
+// answer body, so it reads BELOW any tool-call progress rows / thinking block
+// (natural chronological order: header → tool calls → "thinking…" → answer).
+UIManager._renderTurnStatusInto = function(msgEl, phrase) {
+    var el = msgEl.querySelector('.msg-status');
+    if (!phrase) { if (el) el.remove(); return; }
+    if (!el) {
+        el = document.createElement('div');
+        el.className = 'msg-status';
+        var sp = document.createElement('span');
+        sp.className = 'msg-status-spinner';
+        el.appendChild(sp);
+        var tx = document.createElement('span');
+        tx.className = 'msg-status-text';
+        el.appendChild(tx);
+    }
+    var body = msgEl.querySelector('.msg-body');
+    if (body) {
+        if (body.previousSibling !== el) msgEl.insertBefore(el, body);
+    } else if (el.parentNode !== msgEl) {
+        msgEl.appendChild(el);
+    }
+    var txEl = el.querySelector('.msg-status-text');
+    if (txEl && txEl.textContent !== phrase) txEl.textContent = phrase;
+};
+
+// Set the turn-status phrase for a session's streaming placeholder. The text
+// is stored on the `_streamMap` entry so renderChat can rebuild it on a
+// session switch-back. Pass null to hide it (answer streaming, or a
+// tool / web search is running — the body / progress rows take over).
+UIManager._setTurnStatus = function(sessionAtSend, phrase) {
+    var entry = this._streamMap && this._streamMap.get(sessionAtSend.id);
+    if (entry) entry.statusPhrase = phrase || '';
+    if (!this.currentSession || this.currentSession.id !== sessionAtSend.id) return;
+    var body = document.getElementById('streaming-body');
+    var msgEl = body ? body.closest('.message.assistant') : null;
+    if (msgEl) this._renderTurnStatusInto(msgEl, phrase);
+};
+
 UIManager._updateThinkingPlaceholder = function(sessionAtSend, thinkingBuffer, streamBuffer) {
     if (!this._streamMap) return;
     var entry = this._streamMap.get(sessionAtSend.id);

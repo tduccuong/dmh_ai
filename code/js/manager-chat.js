@@ -823,7 +823,7 @@ function buildMessageEntryNode(msg, sessionId, renderSession, progressRows) {
                     wrap.appendChild(el);
                     if (img.fileId) {
                         var dl = document.createElement('button');
-                        dl.style.cssText = 'display:inline-block;margin-top:5px;padding:3px 10px;background:var(--accent);color:var(--text-on-bright);font-size:11px;font-weight:600;border-radius:4px;border:none;cursor:pointer;';
+                        dl.style.cssText = 'display:inline-block;margin-top:5px;padding:3px 10px;background:var(--accent);color:var(--on-accent);font-size:11px;font-weight:600;border-radius:4px;border:none;cursor:pointer;';
                         dl.textContent = '⬇ Download';
                         (function(sid, fid, fname) {
                             dl.onclick = function() {
@@ -902,7 +902,7 @@ function buildMessageEntryNode(msg, sessionId, renderSession, progressRows) {
                     header.appendChild(nameSpan);
                     if (f.fileId) {
                         var dl = document.createElement('button');
-                        dl.style.cssText = 'padding:2px 8px;background:var(--accent);color:var(--text-on-bright);font-size:11px;font-weight:600;border-radius:4px;border:none;cursor:pointer;white-space:nowrap;';
+                        dl.style.cssText = 'padding:2px 8px;background:var(--accent);color:var(--on-accent);font-size:11px;font-weight:600;border-radius:4px;border:none;cursor:pointer;white-space:nowrap;';
                         dl.textContent = '⬇ Download';
                         (function(sid, fid, fname) {
                             dl.onclick = function() {
@@ -1199,6 +1199,10 @@ UIManager.renderChat = function() {
                 if (node) progContainer.appendChild(node);
             });
         }
+        // (Re)place the turn-status phrase BELOW any progress rows — just above
+        // the answer body — restoring it from the surviving streamEntry too.
+        var statusEntry = this._streamMap && this._streamMap.get(this.currentSession.id);
+        if (statusEntry) this._renderTurnStatusInto(activeStreamingMsg, statusEntry.statusPhrase || null);
     }
 
     UIManager._applyScrollPolicy();
