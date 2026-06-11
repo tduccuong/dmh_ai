@@ -43,7 +43,7 @@ defmodule DmhAi.Commands.Pipelines.Tts do
   @spec run(String.t(), String.t(), String.t(), String.t(), String.t(), [String.t()]) ::
           {:handled, non_neg_integer()}
   def run(original_content, arg, session_id, user_id, _lang, image_paths \\ []) do
-    %{sentences: sentences, per_image: per_image, source: source, typed_text: typed_text} =
+    %{text: text, image_sentences: image_sentences, per_image: per_image, source: source} =
       Sentences.gather(arg, image_paths, session_id)
 
     case source do
@@ -53,14 +53,16 @@ defmodule DmhAi.Commands.Pipelines.Tts do
           "Attach an image, type some text after `/tts`, or send `/tts` alone after I've replied — I'll render it as a sentence-per-row Read-out-loud panel.")
 
       _ ->
+        sentences = image_sentences ++ Sentences.segment(text)
+
         tts_payload = %{
           sentences: sentences,
           images: per_image,
-          typed_chars: String.length(typed_text),
+          typed_chars: String.length(text),
           source: Atom.to_string(source)
         }
 
-        fallback = compose_fallback_text(per_image, sentences, typed_text, source)
+        fallback = compose_fallback_text(per_image, sentences, text, source)
         finalize_with_payload(session_id, user_id, original_content, tts_payload, fallback)
     end
   end

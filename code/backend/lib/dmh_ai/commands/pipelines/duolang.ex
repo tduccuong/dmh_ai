@@ -14,12 +14,13 @@ defmodule DmhAi.Commands.Pipelines.Duolang do
 
     1. Peel the leading language name off the argument
        (`DmhAi.Commands.Languages.split_leading/1`). Unknown → usage hint.
-    2. Gather + segment the remaining content exactly like `/tts`
-       (`DmhAi.Commands.Pipelines.Sentences.gather/3`): typed text,
-       image OCR, or the previous assistant reply.
-    3. Translate the sentences in one Swift-tier batch call (per-sentence
-       fallback on a count mismatch / failure), pairing each original
-       with its translation.
+    2. Resolve the source via `Sentences.gather/3`: raw text (typed or
+       the previous reply) plus any image-OCR sentences.
+    3. Text → ONE Swift-tier call that cleans, segments, and translates
+       in a single round-trip (embedding the shared `Sentences.clean_rules/0`
+       so junk like `***` and "go deeper" sections never appear). Image
+       OCR sentences are already clean, so they're only translated. On
+       failure the text path degrades to segment-then-translate.
 
   The assistant message carries the structured payload on its
   `duolang` field (`kind="duolang"`); the FE renders the bilingual
@@ -64,7 +65,7 @@ defmodule DmhAi.Commands.Pipelines.Duolang do
           "I didn't catch the language. Supported: #{Languages.names_hint()}. Try `/duolang <language> <text>`.")
 
       {lang, rest} ->
-        %{sentences: sentences, per_image: per_image, source: source, typed_text: typed_text} =
+        %{text: text, image_sentences: image_sentences, per_image: per_image, source: source} =
           Sentences.gather(rest, image_paths, session_id)
 
         case source do
@@ -74,17 +75,23 @@ defmodule DmhAi.Commands.Pipelines.Duolang do
               "Type some text after the language, attach an image, or send `/duolang #{lang.english}` alone after I've replied — I'll translate each sentence into #{lang.english} beneath the original.")
 
           _ ->
-            items = translate_items(sentences, lang, %{session_id: session_id, user_id: user_id})
+            meta = %{session_id: session_id, user_id: user_id}
+
+            # Text → one clean+segment+translate call. Image OCR sentences
+            # are already clean, so they only need translating.
+            text_items = if text == "", do: [], else: segment_and_translate(text, lang, meta)
+            image_items = translate_items(image_sentences, lang, meta)
+            items = image_items ++ text_items
 
             payload =
               base_payload(items, lang)
               |> Map.merge(%{
                 images: per_image,
-                typed_chars: String.length(typed_text),
+                typed_chars: String.length(text),
                 source: Atom.to_string(source)
               })
 
-            fallback = compose_fallback_text(per_image, items, typed_text, source, lang)
+            fallback = compose_fallback_text(per_image, items, text, source, lang)
             finalize_with_payload(session_id, user_id, original_content, payload, fallback)
         end
     end
@@ -99,7 +106,77 @@ defmodule DmhAi.Commands.Pipelines.Duolang do
     }
   end
 
-  # ── translation ──────────────────────────────────────────────────────────
+  # ── text: clean + segment + translate in one call ──────────────────────
+
+  # The whole point of the combined prompt: /duolang spends a SINGLE model
+  # call on text (typed or the prior reply) — cleaning, segmenting, and
+  # translating together — instead of a segment call followed by a
+  # translate call. A valid empty result is trusted (all scaffolding). On
+  # failure it degrades to segment-then-translate (two calls, rare path).
+  defp segment_and_translate(text, lang, meta) do
+    case combined_call(text, lang, meta) do
+      {:ok, items} -> items
+      :error -> translate_items(Sentences.segment(text), lang, meta)
+    end
+  end
+
+  defp combined_call(text, lang, meta) do
+    msgs = [%{role: "system", content: combined_prompt(lang)}, %{role: "user", content: text}]
+
+    case LLM.call(AgentSettings.swift_model(), msgs,
+           options: %{temperature: 0}, trace: translate_trace(meta)) do
+      {:ok, raw} when is_binary(raw) and raw != "" ->
+        case Sentences.decode_llm_json(raw) do
+          {:ok, %{"pairs" => list}} when is_list(list) ->
+            {:ok, list |> Enum.map(&pair/1) |> Enum.reject(&(&1.original == ""))}
+
+          _ ->
+            :error
+        end
+
+      _ ->
+        :error
+    end
+  rescue
+    e ->
+      Logger.warning("[Duolang] combined_call raised: #{Exception.message(e)}")
+      :error
+  end
+
+  defp pair(%{} = p) do
+    %{
+      original: p |> Map.get("original", "") |> to_string() |> String.trim(),
+      translation: p |> Map.get("translation", "") |> to_string() |> String.trim()
+    }
+  end
+
+  defp pair(_), do: %{original: "", translation: ""}
+
+  defp combined_prompt(lang) do
+    """
+    You prepare text to be read aloud in two languages. First clean and
+    segment the text into speakable sentences, then translate each into
+    #{lang.english}.
+
+    Output STRICT JSON with one key:
+
+      {"pairs": [{"original": "…", "translation": "…"}]}
+
+    #{Sentences.clean_rules()}
+    For each kept sentence, `translation` is its faithful #{lang.english}
+    rendering — meaning, tone, and register preserved; proper nouns and
+    code-like tokens left as-is.
+
+    Output rules:
+      - The first character must be `{`. No commentary, no markdown fences.
+      - `original` stays in its source language exactly; only `translation`
+        is in #{lang.english}.
+      - When unsure whether a line is content, keep it.
+      - When there is no speakable prose, return {"pairs": []}.
+    """
+  end
+
+  # ── translating already-segmented sentences (image OCR + degrade path) ──
 
   # One batched call aligns translations to originals by index. A count
   # mismatch or a failed/unparseable reply falls back to per-sentence

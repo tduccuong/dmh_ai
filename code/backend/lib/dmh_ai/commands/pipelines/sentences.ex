@@ -5,27 +5,32 @@
 
 defmodule DmhAi.Commands.Pipelines.Sentences do
   @moduledoc """
-  Shared sentence-gathering for the Read-out-loud family of slash
+  Shared content-gathering for the Read-out-loud family of slash
   commands (`/tts`, `/duolang`). Resolves WHAT to read — typed text,
   vision-OCR'd image text, or (for a bare command) the session's most
-  recent natural assistant reply — and segments it into speakable
-  sentences. The command pipelines layer their own payload + render on
-  top of the result.
+  recent natural assistant reply. The command pipelines layer their own
+  segmentation, payload, and render on top of the result.
 
-  `gather/3` returns:
+  `gather/3` resolves the source and OCRs images, returning:
 
       %{
-        sentences:  [String.t()],   # image OCR (attachment order) ++ text sentences
-        per_image:  [map()],        # per-image status rows for the FE
-        source:     :typed | :image_only | :prior_reply | :no_input,
-        typed_text: String.t()      # the resolved text before splitting ("" for image-only)
+        text:            String.t(),   # raw resolved text (typed or prior reply); "" for image-only
+        image_sentences: [String.t()], # OCR'd sentences (already clean), attachment order
+        per_image:       [map()],      # per-image status rows for the FE
+        source:          :typed | :image_only | :prior_reply | :no_input
       }
 
-  `:no_input` (no typed arg, no images, no prior reply) short-circuits
-  before any vision call — the caller renders its own friendly hint.
+  Text is returned RAW. Callers segment it themselves so `/duolang` needs
+  only one model call: `/tts` calls `segment/1` (clean → sentences);
+  `/duolang` runs a single clean+segment+translate call (embedding the
+  shared `clean_rules/0`). Both strip markdown scaffolding (rules like
+  `***`, headings, bullet / emphasis markers) and drop trailing "go
+  deeper / suggestion" sections, so neither `***` nor the model's
+  follow-up prompts get read aloud. Image OCR uses one vision call per
+  image; its sentences are already clean.
 
-  At most one vision call per attached image (the typed text is
-  segmented locally with a Unicode-aware regex; no LLM call needed).
+  `:no_input` (no typed arg, no images, no prior reply) short-circuits
+  before any model call — the caller renders its own friendly hint.
   """
 
   require Logger
@@ -73,15 +78,60 @@ defmodule DmhAi.Commands.Pipelines.Sentences do
       {"sentences": []}.
   """
 
+  # Shared clean-and-segment rules — embedded both in @segment_prompt
+  # here (text → sentences for /tts) and in /duolang's single
+  # clean+segment+translate prompt, so the two paths filter identically.
+  @clean_rules """
+  Each kept sentence is one a person would naturally read aloud:
+    - substantive prose — the answer, story, or explanation itself
+    - a self-contained thought in the original language, wording
+      preserved exactly
+    - joined across line wraps into one continuous sentence; split at
+      terminal punctuation (. ! ?) or paragraph boundaries
+    - plain text only: strip markdown markers (**, *, #, backticks,
+      list bullets) while keeping the prose they wrapped
+
+  Leave out everything that is not speakable prose:
+    - horizontal rules and decorative lines (***, ---, ===)
+    - headers, labels, and bullet scaffolding that carry no prose
+    - trailing sections that suggest further topics, follow-up questions,
+      or ways to explore deeper — navigation aids, not content
+  """
+
+  @segment_prompt """
+  Break the text into complete, speakable sentences for Read-out-loud
+  playback. Output STRICT JSON with one key:
+
+    {"sentences": ["First sentence.", "Second sentence."]}
+
+  #{@clean_rules}
+  Output rules:
+    - The first character must be `{`. No commentary, no markdown fences.
+    - Preserve the original language exactly; never translate or rewrite.
+    - When unsure whether a line is content, keep it.
+    - When there is no speakable prose, return {"sentences": []}.
+  """
+
+  @doc """
+  The shared clean-and-segment rules, embedded in `/duolang`'s combined
+  clean+segment+translate prompt so both paths filter content identically.
+  """
+  @spec clean_rules() :: String.t()
+  def clean_rules, do: @clean_rules
+
   @type result :: %{
-          sentences: [String.t()],
+          text: String.t(),
+          image_sentences: [String.t()],
           per_image: [map()],
-          source: :typed | :image_only | :prior_reply | :no_input,
-          typed_text: String.t()
+          source: :typed | :image_only | :prior_reply | :no_input
         }
 
   @doc """
-  Resolve and segment the speakable content for a Read-out-loud command.
+  Resolve the speakable content for a Read-out-loud command: pick the
+  source (typed text, OCR'd images, or the prior reply) and OCR any
+  images. Text is returned RAW — the caller turns it into sentences
+  (`segment/1` for /tts, a combined clean+segment+translate call for
+  /duolang) so /duolang needs only one model call.
 
   `arg` is the text after the command (and, for `/duolang`, after the
   language token). `image_paths` are the absolute paths the chat handler
@@ -93,7 +143,7 @@ defmodule DmhAi.Commands.Pipelines.Sentences do
     image_paths = Enum.filter(image_paths || [], &image_path?/1)
     typed_text = String.trim(arg || "")
 
-    {typed_text, source} =
+    {text, source} =
       cond do
         typed_text != "" -> {typed_text, :typed}
         image_paths != [] -> {"", :image_only}
@@ -106,20 +156,13 @@ defmodule DmhAi.Commands.Pipelines.Sentences do
 
     case source do
       :no_input ->
-        %{sentences: [], per_image: [], source: :no_input, typed_text: ""}
+        %{text: "", image_sentences: [], per_image: [], source: :no_input}
 
       _ ->
         {per_image, image_sentences} =
           if image_paths == [], do: {[], []}, else: extract_per_image(image_paths)
 
-        text_sentences = split_text(typed_text)
-
-        %{
-          sentences: image_sentences ++ text_sentences,
-          per_image: per_image,
-          source: source,
-          typed_text: typed_text
-        }
+        %{text: text, image_sentences: image_sentences, per_image: per_image, source: source}
     end
   end
 
@@ -189,7 +232,59 @@ defmodule DmhAi.Commands.Pipelines.Sentences do
 
   defp natural_assistant_reply?(_), do: false
 
-  # ── text-only sentence segmentation ────────────────────────────────────
+  # ── text clean + segmentation ──────────────────────────────────────────
+  # One Swift-tier call turns raw text into speakable prose sentences,
+  # stripping markdown scaffolding and dropping "go deeper / suggestion"
+  # meta sections (so `***` and the model's follow-up prompts never get
+  # read aloud). A valid empty result is trusted (the content was all
+  # scaffolding → nothing to read). Only an LLM failure / unparseable
+  # reply degrades to the regex splitter, so a flaky model never strands
+  # the user with no output.
+
+  @doc """
+  Clean and segment raw text into speakable prose sentences (markdown
+  scaffolding stripped, "go deeper / suggestion" sections dropped). Used
+  by `/tts`. Falls back to the regex splitter only when the model call
+  fails — a valid empty result is trusted (all scaffolding → nothing to
+  read).
+  """
+  @spec segment(String.t()) :: [String.t()]
+  def segment(""), do: []
+
+  def segment(text) when is_binary(text) do
+    case llm_segment(text) do
+      {:ok, sentences} -> sentences
+      :error -> split_text(text)
+    end
+  end
+
+  defp llm_segment(text) do
+    messages = [
+      %{role: "system", content: @segment_prompt},
+      %{role: "user", content: text}
+    ]
+
+    case LLM.call(AgentSettings.swift_model(), messages,
+           options: %{temperature: 0}, trace: segment_trace()) do
+      {:ok, raw} when is_binary(raw) and raw != "" ->
+        case decode_llm_json(raw) do
+          {:ok, %{"sentences" => list}} when is_list(list) ->
+            {:ok, list |> Enum.map(&to_string/1) |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == ""))}
+
+          _ ->
+            :error
+        end
+
+      _ ->
+        :error
+    end
+  rescue
+    e ->
+      Logger.warning("[Sentences] llm_segment raised: #{Exception.message(e)}")
+      :error
+  end
+
+  # ── regex fallback segmentation ────────────────────────────────────────
 
   defp split_text(""), do: []
 
@@ -325,6 +420,18 @@ defmodule DmhAi.Commands.Pipelines.Sentences do
       session_id: nil,
       user_id: nil,
       tier: :vision
+    }
+  end
+
+  defp segment_trace do
+    %{
+      origin: "confidant",
+      path: "Commands.Pipelines.Sentences.llm_segment",
+      role: "Sentences",
+      phase: "segment",
+      session_id: nil,
+      user_id: nil,
+      tier: :swift
     }
   end
 end
