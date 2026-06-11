@@ -5,6 +5,37 @@
  * For commercial inquiries, contact: tduccuong@gmail.com
  */
 
+// ── Light / dark theme ───────────────────────────────────────────────
+// `data-theme` on <html> flips the CSS-variable set in theme.css.
+// Persisted in localStorage so reloads keep the user's choice.
+var THEME_ICONS = {
+    // Sun — shown in dark mode (click to go light).
+    dark:  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><line x1="12" y1="2" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="22"/><line x1="4.22" y1="4.22" x2="6.34" y2="6.34"/><line x1="17.66" y1="17.66" x2="19.78" y2="19.78"/><line x1="2" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="22" y2="12"/><line x1="4.22" y1="19.78" x2="6.34" y2="17.66"/><line x1="17.66" y1="6.34" x2="19.78" y2="4.22"/></svg>',
+    // Crescent moon — shown in light mode (click to go dark).
+    light: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>'
+};
+
+function applyTheme(theme) {
+    var resolved = theme === 'light' ? 'light' : 'dark';
+    document.documentElement.dataset.theme = resolved;
+    try { localStorage.setItem('theme', resolved); } catch (e) {}
+    var iconEl = document.getElementById('theme-toggle-icon');
+    if (iconEl) iconEl.innerHTML = THEME_ICONS[resolved] || '';
+}
+
+function wireThemeToggle() {
+    var btn = document.getElementById('theme-toggle-btn');
+    if (!btn) return;
+    btn.addEventListener('click', function() {
+        var next = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+        applyTheme(next);
+    });
+}
+
+// Apply the persisted theme immediately (this script is deferred, so the
+// DOM is parsed) — sets data-theme + the toggle icon before first paint.
+applyTheme(localStorage.getItem('theme') || 'dark');
+
 // Module-level helpers used by UIManager methods called outside init's closure
 function applyLanguage() {
     var langFlag = document.getElementById('lang-flag');
@@ -46,10 +77,10 @@ function applyLanguage() {
     document.getElementById('user-about-btn').lastChild.textContent = t('aboutBtn');
     document.getElementById('about-desc').textContent = t('aboutDesc');
     document.getElementById('about-legal-title').textContent = t('aboutLegalTitle');
-    document.getElementById('about-license-line').innerHTML = '<strong style="color:#c8b8e8;">' + t('aboutLicenseLabel') + '</strong> ' + t('aboutLicenseBody');
+    document.getElementById('about-license-line').innerHTML = '<strong style="color:var(--text-2);">' + t('aboutLicenseLabel') + '</strong> ' + t('aboutLicenseBody');
     document.getElementById('about-attrib-line').textContent = t('aboutAttrib');
-    document.getElementById('about-source-line').innerHTML = '<strong style="color:#c8b8e8;">' + t('aboutSourceLabel') + '</strong> <a href="https://github.com/tduccuong/dmh_ai" target="_blank" rel="noopener noreferrer" style="color:#e8d6f0;">GitHub Repository</a>';
-    document.getElementById('about-commercial-line').innerHTML = '<strong style="color:#c8b8e8;">' + t('aboutCommercialLabel') + '</strong> ' + t('aboutCommercialBody');
+    document.getElementById('about-source-line').innerHTML = '<strong style="color:var(--text-2);">' + t('aboutSourceLabel') + '</strong> <a href="https://github.com/tduccuong/dmh_ai" target="_blank" rel="noopener noreferrer" style="color:var(--text-light);">GitHub Repository</a>';
+    document.getElementById('about-commercial-line').innerHTML = '<strong style="color:var(--text-2);">' + t('aboutCommercialLabel') + '</strong> ' + t('aboutCommercialBody');
     document.getElementById('about-close').textContent = t('aboutClose');
 
     // Mode dropdown — items + the closed-trigger label both carry
@@ -115,11 +146,11 @@ const UIManager = {
             } else {
                 if (self._streamingWhenHidden && !self.isStreaming && self._activeBodyDiv) {
                     var notice = document.createElement('div');
-                    notice.style.cssText = 'margin-top:10px;padding:8px 12px;background:#2a1a10;border:1px solid #c87830;border-radius:6px;color:#d0a050;font-size:13px;display:flex;align-items:center;gap:10px;';
+                    notice.style.cssText = 'margin-top:10px;padding:8px 12px;background:var(--warning-tint);border:1px solid var(--accent);border-radius:6px;color:var(--warning);font-size:13px;display:flex;align-items:center;gap:10px;';
                     notice.innerHTML = '⚠ Response was interrupted (screen locked).';
                     var retryBtn = document.createElement('button');
                     retryBtn.textContent = 'Retry';
-                    retryBtn.style.cssText = 'padding:4px 12px;background:#c87830;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;flex-shrink:0;';
+                    retryBtn.style.cssText = 'padding:4px 12px;background:var(--accent);color:var(--text-on-bright);border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;flex-shrink:0;';
                     retryBtn.onclick = function() { self.retryLastMessage(); };
                     notice.appendChild(retryBtn);
                     var wlBody = document.getElementById('streaming-body') || self._activeBodyDiv;
@@ -271,6 +302,7 @@ const UIManager = {
         if (typeof WorkflowPicker !== 'undefined') WorkflowPicker.attach(msgInput);
         if (typeof DuolangPicker !== 'undefined')  DuolangPicker.attach(msgInput);
         if (typeof SessionSwitcher !== 'undefined') SessionSwitcher.init();
+        wireThemeToggle();
         msgInput.addEventListener('input', function() {
             this.style.height = 'auto';
             this.style.height = Math.min(this.scrollHeight, 100) + 'px';
@@ -728,13 +760,13 @@ const UIManager = {
     showUserProfiles: async function() {
         var overlay = document.getElementById('user-profiles-overlay');
         var content = document.getElementById('user-profiles-content');
-        content.innerHTML = '<div style="color:#cabae0;font-size:13px;padding:8px 0;">Loading...</div>';
+        content.innerHTML = '<div style="color:var(--text-3);font-size:13px;padding:8px 0;">Loading...</div>';
         overlay.classList.add('visible');
         try {
             var res = await fetch('/admin/user-profiles', { headers: { 'Authorization': 'Bearer ' + Auth.token } });
-            if (!res.ok) { content.innerHTML = '<div style="color:#e94560;font-size:13px;">Failed to load profiles.</div>'; return; }
+            if (!res.ok) { content.innerHTML = '<div style="color:var(--danger);font-size:13px;">Failed to load profiles.</div>'; return; }
             var users = await res.json();
-            if (!users.length) { content.innerHTML = '<div style="color:#cabae0;font-size:13px;font-style:italic;">No users found.</div>'; return; }
+            if (!users.length) { content.innerHTML = '<div style="color:var(--text-3);font-size:13px;font-style:italic;">No users found.</div>'; return; }
             content.innerHTML = '';
             users.forEach(function(u) {
                 var section = document.createElement('div');
@@ -759,7 +791,7 @@ const UIManager = {
                 content.appendChild(section);
             });
         } catch(e) {
-            content.innerHTML = '<div style="color:#e94560;font-size:13px;">Error loading profiles.</div>';
+            content.innerHTML = '<div style="color:var(--danger);font-size:13px;">Error loading profiles.</div>';
         }
     },
 
@@ -834,7 +866,7 @@ const UIManager = {
 
                     expandTr.querySelector('.mgr-pw-set-btn').addEventListener('click', async function() {
                         var pw = pwInput.value;
-                        msgEl.style.color = '#e94560';
+                        msgEl.style.color = 'var(--danger)';
                         if (!pw) { msgEl.textContent = 'Password required'; return; }
                         try {
                             var res = await apiFetch('/users/' + uid, {
@@ -845,7 +877,7 @@ const UIManager = {
                             var data = await res.json();
                             if (!res.ok) { msgEl.textContent = data.error || 'Failed'; return; }
                             pwInput.value = '';
-                            msgEl.style.color = '#60c080';
+                            msgEl.style.color = 'var(--success)';
                             msgEl.textContent = 'Password updated';
                             setTimeout(function() { expandTr.classList.remove('open'); msgEl.textContent = ''; }, 1800);
                         } catch(e) { msgEl.textContent = e.message; }

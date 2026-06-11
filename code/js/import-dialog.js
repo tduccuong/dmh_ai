@@ -105,13 +105,13 @@ const ImportDialog = {
             rows = JSON.parse(raw);
         } catch (e) {
             summaryEl.style.display = '';
-            summaryEl.innerHTML = '<div style="color:#e05080">Invalid JSON: ' + e.message + '</div>';
+            summaryEl.innerHTML = '<div style="color:var(--danger)">Invalid JSON: ' + e.message + '</div>';
             return;
         }
 
         if (!Array.isArray(rows)) {
             summaryEl.style.display = '';
-            summaryEl.innerHTML = '<div style="color:#e05080">Body must be a JSON array.</div>';
+            summaryEl.innerHTML = '<div style="color:var(--danger)">Body must be a JSON array.</div>';
             return;
         }
 
@@ -123,7 +123,7 @@ const ImportDialog = {
 
             var errs = summary.errors || [];
             if (errs.length) {
-                html += '<div style="margin-top:6px;color:#e05080">Errors:</div><ul style="color:#e05080;margin:4px 0 0 16px">';
+                html += '<div style="margin-top:6px;color:var(--danger)">Errors:</div><ul style="color:var(--danger);margin:4px 0 0 16px">';
                 errs.forEach(function(e) {
                     html += '<li>' + (e.slug || e.name || '?') + ': ' + e.error + '</li>';
                 });
@@ -132,7 +132,7 @@ const ImportDialog = {
             summaryEl.innerHTML = html;
         } catch (e) {
             summaryEl.style.display = '';
-            summaryEl.innerHTML = '<div style="color:#e05080">Request failed: ' + (e.message || e) + '</div>';
+            summaryEl.innerHTML = '<div style="color:var(--danger)">Request failed: ' + (e.message || e) + '</div>';
         }
     }
 };

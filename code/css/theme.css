@@ -1,0 +1,216 @@
+/* Global design tokens — the single source of truth for the system's
+   look & feel. Values mirror the boxed_flows palette so the two apps
+   stay visually consistent. Tweak a variable here to re-theme everything.
+
+   :root is the DARK theme (default); :root[data-theme="light"] overrides
+   the same variables for light. The topbar toggle flips `data-theme` on
+   <html> (see js/main.js applyTheme). Nothing in app.css hardcodes a
+   colour — every rule reads a variable from this file, so a mode switch
+   re-themes the entire app. */
+
+:root {
+    /* shape */
+    --border-radius-base: 6px;
+    --border-radius-card: 8px;
+    --border-radius-pill: 999px;
+    --border-width: 1px;
+    --border-width-strong: 2px;
+
+    /* typography */
+    --font-size-base: 13px;
+    --font-size-lg: 16px;
+    --font-size-md: 14px;
+    --font-size-sm: 12px;
+    --font-size-xl: 20px;
+    --font-size-xs: 11px;
+    --font-weight-bold: 700;
+    --font-weight-medium: 500;
+    --font-weight-normal: 400;
+    --font-weight-semibold: 600;
+
+    /* border */
+    --border-1: #463a62;
+    --border-2: #2c2238;
+    --border-strong: #6a4e90;
+    --border-subtle: #2a2142;
+    --border-hover: #e8a24e;
+
+    /* brand */
+    --accent: #c87830;
+    --accent-bright: #f0d8b0;
+    --accent-hover: #a86020;
+
+    /* button */
+    --btn-danger-bg: #5a2020;
+    --btn-danger-bg-hover: #7a3030;
+    --btn-danger-border: #a04040;
+    --btn-danger-fg-hover: #ff6a80;
+    --btn-primary-bg: var(--accent);
+    --btn-primary-bg-hover: var(--accent-hover);
+    --btn-primary-fg: #ffffff;
+    --btn-secondary-bg: #3a2a50;
+    --btn-secondary-bg-hover: #5a3a80;
+    --btn-secondary-fg: #e0c0ff;
+
+    /* chat */
+    --chat-bg: #050308;
+    --msg-assistant-bg: #070510;
+    --msg-assistant-fg: #ffffff;
+    --msg-h-fg: #c8b8e8;
+    --msg-user-bg-from: #180a38;
+    --msg-user-bg-to: #100630;
+    --msg-user-border: rgba(140, 95, 200, 0.6);
+    --msg-user-fg: #7df8ff;
+
+    /* input */
+    --input-bg: #0a0612;
+    --input-border: #382850;
+
+    /* overlay */
+    --backdrop: rgba(0, 0, 0, 0.65);
+    --purple-glow: rgba(168, 134, 240, 0.18);
+    --shadow-soft: rgba(0, 0, 0, 0.6);
+
+    /* shell — header matches the canvas (body-bg) */
+    --body-bg: #0a0612;
+    --body-fg: #f4ecf8;
+    --card-border: #312550;
+    --header-bg: var(--body-bg);
+    --header-border: #0a0612;
+    --main-fg: #f4ecf8;
+    --sidebar-bg: #140f20;
+    --sidebar-border: #1c1430;
+
+    /* status */
+    --danger: #e94560;
+    --success: #7ad99c;
+    --warning: #e09040;
+
+    /* surface */
+    --bg-deep: #0e0a14;
+    --bg-hover: #271a3c;
+    --surface-0: #050308;
+    --surface-1: #140f20;
+    --surface-2: #1c1430;
+    --surface-3: #1a1428;
+
+    /* text */
+    --text-1: #f4ecf8;
+    --text-2: #d3c8e0;
+    --text-3: #b5a8c7;
+    --text-accent: #c0a8d8;
+    --text-light: #e8d6f0;
+    --text-on-bright: #ffffff;
+    --text-warm: #d8c0a0;
+
+    /* semantic aliases (resolve to the theme-aware tokens above) */
+    --text-strong: var(--text-1);
+    --text-secondary: var(--text-2);
+    --text-muted: var(--text-3);
+
+    /* control widgets — recessed default bg, brighter bg on hover (both themes) */
+    --control-bg: var(--input-bg);
+    --control-bg-hover: var(--surface-2);
+
+    /* component tints / shadows (translucent fills + drop shadows) */
+    --shadow-1: rgba(0, 0, 0, 0.5);
+    --shadow-2: rgba(0, 0, 0, 0.78);
+    --glow-strong: rgba(168, 134, 240, 0.35);
+    --overlay-hover: rgba(255, 255, 255, 0.06);
+    --accent-tint: rgba(200, 120, 48, 0.18);
+    --success-tint: rgba(122, 217, 156, 0.14);
+    --danger-tint: rgba(233, 69, 96, 0.16);
+    --warning-tint: rgba(224, 144, 64, 0.15);
+}
+
+:root[data-theme="light"] {
+    /* border — lavender, same hue family as dark */
+    --border-1: #ccc0e6;
+    --border-2: #dacfee;
+    --border-strong: #b4a4da;
+    --border-subtle: #e3daf3;
+    --border-hover: var(--accent);
+
+    /* brand — accent stays warm in both themes */
+    --accent: #c87830;
+    --accent-bright: #806040;
+    --accent-hover: #a86020;
+
+    /* button */
+    --btn-danger-bg: #f4d4d4;
+    --btn-danger-bg-hover: #ecbcbc;
+    --btn-danger-border: #c02040;
+    --btn-danger-fg-hover: #c02040;
+    --btn-primary-bg: var(--accent);
+    --btn-primary-bg-hover: var(--accent-hover);
+    --btn-primary-fg: #ffffff;
+    --btn-secondary-bg: #e6ddf5;
+    --btn-secondary-bg-hover: #d8caee;
+    --btn-secondary-fg: #4a2a7a;
+
+    /* chat */
+    --chat-bg: #ece6f6;
+    --msg-assistant-bg: #faf8ff;
+    --msg-assistant-fg: #1f1426;
+    --msg-h-fg: #5a4080;
+    --msg-user-bg-from: #e8dff7;
+    --msg-user-bg-to: #ded3f1;
+    --msg-user-border: rgba(140, 95, 200, 0.22);
+    --msg-user-fg: #2a1a40;
+
+    /* input */
+    --input-bg: #faf8ff;
+    --input-border: #ccc0e6;
+
+    /* overlay */
+    --backdrop: rgba(40, 30, 60, 0.45);
+    --purple-glow: rgba(150, 110, 220, 0.12);
+    --shadow-soft: rgba(60, 45, 90, 0.18);
+
+    /* shell — WHITE canvas + topbar (header matches canvas); the purple
+       tone lives in the chrome (sidebar, buttons, borders), not the canvas */
+    --body-bg: #ffffff;
+    --body-fg: #1f1426;
+    --card-border: #d3c7ea;
+    --header-bg: var(--body-bg);
+    --header-border: #ccc0e6;
+    --main-fg: #1f1426;
+    --sidebar-bg: #ece5f7;
+    --sidebar-border: #d8cef0;
+
+    /* status */
+    --danger: #c02040;
+    --success: #2a9050;
+    --warning: #c87020;
+
+    /* surface — light lavender chrome (cards, composer, control buttons) */
+    --bg-deep: #ece5f6;
+    --bg-hover: #e3d9f2;
+    --surface-0: #ffffff;
+    --surface-1: #f6f2fc;
+    --surface-2: #f1ebf9;
+    --surface-3: #e6ddf6;
+
+    /* text — dark purple ink */
+    --text-1: #211636;
+    --text-2: #463566;
+    --text-3: #6b5a88;
+    --text-accent: #6a4a92;
+    --text-light: #2e2048;
+    --text-on-bright: #1f1426;
+    --text-warm: #806040;
+
+    /* control widgets — light default lifts to pure white on hover (brighter) */
+    --control-bg: var(--surface-3);
+    --control-bg-hover: var(--surface-0);
+
+    /* component tints / shadows */
+    --shadow-1: rgba(40, 30, 60, 0.12);
+    --shadow-2: rgba(40, 30, 60, 0.22);
+    --glow-strong: rgba(120, 90, 200, 0.16);
+    --overlay-hover: rgba(40, 30, 60, 0.06);
+    --accent-tint: rgba(200, 120, 48, 0.14);
+    --success-tint: rgba(42, 144, 80, 0.12);
+    --danger-tint: rgba(192, 32, 64, 0.10);
+    --warning-tint: rgba(200, 112, 32, 0.12);
+}

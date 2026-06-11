@@ -467,7 +467,7 @@ const SettingsModal = {
             var row = document.createElement('div');
             row.className = 'settings-add-row';
             row.style.alignItems = 'center';
-            row.style.borderBottom = '1px solid var(--border, rgba(127,127,127,0.2))';
+            row.style.borderBottom = '1px solid var(--border-1)';
             row.style.padding = '6px 0';
 
             var label = document.createElement('div');

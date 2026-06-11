@@ -238,7 +238,7 @@ UIManager.sendMessage = async function() {
             var errMsg = hasVideo
                 ? '⚠ ' + modeRole(sessionAtSend) + " doesn't support video input. Please switch to another one."
                 : '⚠ ' + (err && err.message ? err.message : 'No response received — please try again.');
-            errBody.innerHTML = '<em style="color:#e05060;">' + errMsg + '</em>';
+            errBody.innerHTML = '<em style="color:var(--danger);">' + errMsg + '</em>';
         }
         self._streamMap.delete(sessionAtSend.id);
         self._streamController = null;

@@ -19,6 +19,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap">
+    <link rel="stylesheet" href="/css/theme.css">
     <link rel="stylesheet" href="/css/app.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" crossorigin="anonymous">
     <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" crossorigin="anonymous"></script>
@@ -33,7 +34,7 @@
     <div class="sidebar" id="sidebar">
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:15px;">
             <img src="/logo.png" style="height:32px;width:32px;border-radius:6px;object-fit:contain;flex-shrink:0;">
-            <h2 style="color:#e09040;letter-spacing:0.04em;white-space:nowrap;flex:1;">DMH-AI</h2>
+            <h2 style="color:var(--warning);letter-spacing:0.04em;white-space:nowrap;flex:1;">DMH-AI</h2>
             <button id="sidebar-close-btn" class="sidebar-close-btn">&#x2715;</button>
         </div>
         <button class="new-session-btn" id="new-session-btn">+ New Session</button>
@@ -51,7 +52,7 @@
         <div class="header">
             <img id="header-logo" src="/logo.png" style="display:none;height:36px;width:36px;border-radius:4px;object-fit:contain;flex-shrink:0;align-self:center;">
             <button class="sidebar-toggle" id="sidebar-toggle">☰</button>
-            <button class="new-chat-btn" id="header-new-chat-btn" title="New chat"><svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#4caf72" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>
+            <button class="new-chat-btn" id="header-new-chat-btn" title="New chat"><svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" style="color:var(--success)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>
             <div class="lang-wrap" id="lang-wrap">
                 <button class="lang-flag" id="lang-flag"></button>
                 <div class="lang-dropdown" id="lang-dropdown"></div>
@@ -64,6 +65,7 @@
                     <svg class="mode-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
                 </button>
             </div>
+            <button class="theme-toggle-btn" id="theme-toggle-btn" title="Toggle light / dark theme" aria-label="Toggle theme"><span id="theme-toggle-icon"></span></button>
             <div class="user-menu-wrap" id="user-menu-wrap">
                 <button class="user-menu-btn" id="user-menu-btn" title="Account">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
@@ -186,9 +188,9 @@
         </table>
         <div class="mgr-add-title">Add user</div>
         <div class="mgr-row">
-            <div style="display:flex;align-items:center;flex:1;min-width:120px;background:#0a0612;border:1px solid #382850;border-radius:6px;overflow:hidden;">
+            <div style="display:flex;align-items:center;flex:1;min-width:120px;background:var(--input-bg);border:1px solid var(--border-1);border-radius:6px;overflow:hidden;">
                 <input class="mgr-input" id="mgr-email" type="text" placeholder="Username" style="flex:1;min-width:0;border:none;background:transparent;">
-                <span style="padding:0 10px 0 2px;color:#d8c8e8;font-size:13px;white-space:nowrap;user-select:none;">@dmhai.local</span>
+                <span style="padding:0 10px 0 2px;color:var(--text-2);font-size:13px;white-space:nowrap;user-select:none;">@dmhai.local</span>
             </div>
             <input class="mgr-input" id="mgr-name" type="text" placeholder="Name (optional)">
         </div>
@@ -213,15 +215,15 @@
 <div class="modal-overlay" id="about-overlay">
     <div class="modal about-modal">
         <div class="modal-title" style="font-size:1.3em;margin-bottom:4px;">DMH-AI</div>
-        <div style="font-size:13px;color:#d8c8e8;margin-bottom:20px;">Version 1.0.0</div>
+        <div style="font-size:13px;color:var(--text-2);margin-bottom:20px;">Version 1.0.0</div>
         <div id="about-desc" class="modal-message" style="margin-bottom:20px;line-height:1.7;">A self-hosted, multi-user AI chat platform supporting local and cloud LLMs, real-time web search with answer synthesis, voice input, and rich document and image attachments — designed for private deployment.</div>
-        <div style="border-top:1px solid #1c1430;padding-top:16px;margin-bottom:20px;">
-            <div id="about-legal-title" style="font-size:13px;font-weight:600;color:#c8b8e8;margin-bottom:12px;">Legal &amp; License</div>
-            <div style="font-size:13px;color:#a898b8;line-height:1.8;">
-                <div id="about-license-line" style="margin-bottom:10px;"><strong style="color:#c8b8e8;">License:</strong> Licensed under the GNU Affero General Public License v3 (AGPL-3.0).</div>
+        <div style="border-top:1px solid var(--border-1);padding-top:16px;margin-bottom:20px;">
+            <div id="about-legal-title" style="font-size:13px;font-weight:600;color:var(--text-2);margin-bottom:12px;">Legal &amp; License</div>
+            <div style="font-size:13px;color:var(--text-3);line-height:1.8;">
+                <div id="about-license-line" style="margin-bottom:10px;"><strong style="color:var(--text-2);">License:</strong> Licensed under the GNU Affero General Public License v3 (AGPL-3.0).</div>
                 <div id="about-attrib-line" style="margin-bottom:10px;">Pursuant to the Additional Terms (Section 7b), any redistribution or derivative of this software must maintain this attribution and link to the original source.</div>
-                <div id="about-source-line" style="margin-bottom:10px;"><strong style="color:#c8b8e8;">Source Code:</strong> <a href="https://github.com/tduccuong/dmh_ai" target="_blank" rel="noopener noreferrer" style="color:#b098d8;">GitHub Repository</a></div>
-                <div id="about-commercial-line"><strong style="color:#c8b8e8;">Commercial Licensing:</strong> For inquiries regarding commercial use or proprietary licensing, please contact Cuong Truong at tduccuong@gmail.com.</div>
+                <div id="about-source-line" style="margin-bottom:10px;"><strong style="color:var(--text-2);">Source Code:</strong> <a href="https://github.com/tduccuong/dmh_ai" target="_blank" rel="noopener noreferrer" style="color:var(--text-accent);">GitHub Repository</a></div>
+                <div id="about-commercial-line"><strong style="color:var(--text-2);">Commercial Licensing:</strong> For inquiries regarding commercial use or proprietary licensing, please contact Cuong Truong at tduccuong@gmail.com.</div>
             </div>
         </div>
         <div class="modal-actions">
@@ -237,7 +239,7 @@
             <input id="cpw-new" type="password" placeholder="New password" class="modal-input" style="margin-bottom:8px;">
             <input id="cpw-confirm" type="password" placeholder="Confirm new password" class="modal-input" style="margin-bottom:0;">
         </div>
-        <div id="cpw-error" style="display:none;background:#3a1020;border:1px solid #e94560;color:#ff7090;font-size:13px;padding:8px 12px;border-radius:6px;margin-bottom:12px;"></div>
+        <div id="cpw-error" style="display:none;background:var(--danger-tint);border:1px solid var(--danger);color:var(--danger);font-size:13px;padding:8px 12px;border-radius:6px;margin-bottom:12px;"></div>
         <div class="modal-actions">
             <button class="modal-btn modal-btn-cancel" id="cpw-cancel">Cancel</button>
             <button class="modal-btn modal-btn-ok" id="cpw-ok">Change</button>
@@ -316,7 +318,7 @@
                                 <button class="settings-add-btn" id="pools-add-btn">+ Add pool</button>
                                 <button class="settings-add-btn" id="pools-import-btn">Import…</button>
                             </div>
-                            <div id="pools-error" class="settings-msg" style="display:none;color:#e05060;"></div>
+                            <div id="pools-error" class="settings-msg" style="display:none;color:var(--danger);"></div>
                         </div>
                     </div>
                 </div>
@@ -538,7 +540,7 @@
                     <div class="pool-field"><label>Cooldown (s)</label><input id="pool-form-cooldown" type="number" value="300"></div>
                     <div class="pool-field"><label>num_ctx <span style="opacity:.6">(Ollama only)</span></label><input id="pool-form-num-ctx" type="number" placeholder="blank = server default"></div>
                 </div>
-                <div id="pool-form-error" class="settings-msg" style="display:none;color:#e05060;margin-top:10px;"></div>
+                <div id="pool-form-error" class="settings-msg" style="display:none;color:var(--danger);margin-top:10px;"></div>
                 <div class="pool-form-actions">
                     <button class="pool-btn" id="pool-form-cancel">Cancel</button>
                     <button class="pool-btn pool-btn-primary" id="pool-form-create">Create</button>

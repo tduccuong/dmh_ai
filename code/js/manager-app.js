@@ -20,7 +20,7 @@ UIManager.initializeApp = async function() {
         localStorage.setItem('iosCertHintShown', '1');
         var certUrl = 'http://' + location.hostname + ':8080/dmh-ai.crt';
         var statusEl = document.getElementById('status-bar');
-        statusEl.innerHTML = '<a href="' + certUrl + '" style="color:#c87830">' + t('iosCertHint') + '</a>';
+        statusEl.innerHTML = '<a href="' + certUrl + '" style="color:var(--accent)">' + t('iosCertHint') + '</a>';
         statusEl.classList.add('visible');
         setTimeout(function() { statusEl.classList.remove('visible'); statusEl.innerHTML = ''; }, 15000);
     }
@@ -332,15 +332,10 @@ UIManager.switchSession = async function(id) {
         el.classList.toggle('active', el.dataset.id === id);
     });
     this.currentSession = await SessionStore.getSession(id);
-    // Adopt the loaded session's mode as the current top-level mode (the
-    // user just navigated into that mode's surface by clicking the session)
-    // and pin this session as last-active for that mode.
-    if (this.currentSession && this.currentSession.mode) {
-        this._currentMode = this.currentSession.mode;
-        this._modeSessionIds[this._currentMode] = id;
-        this._updateModeLabel();
-    }
+    // Pin this session as the user's last-active session and sync the
+    // topbar session-switcher label to the newly-focused session.
     await SessionStore.setCurrentState(this._currentMode, id);
+    if (typeof SessionSwitcher !== 'undefined') SessionSwitcher.refreshLabel();
 
     // If the session we just switched into still has an in-flight chain
     // (its `_streamMap` entry survived the away-and-back), restore an
@@ -684,18 +679,18 @@ UIManager.showTokenStats = async function(sessionId, sessionName) {
         const globalTotal  = data.global_total  || 0;
 
         var rows =
-            '<tr><td style="padding:4px 8px 4px 0;color:#d0d0d0;">Global total</td>' +
+            '<tr><td style="padding:4px 8px 4px 0;color:var(--text-2);">Global total</td>' +
             '<td colspan="2" style="text-align:right;font-weight:600;">' + fmt(globalTotal) + '</td></tr>' +
-            '<tr><td style="padding:4px 8px 4px 0;color:#d0d0d0;">This session total</td>' +
+            '<tr><td style="padding:4px 8px 4px 0;color:var(--text-2);">This session total</td>' +
             '<td colspan="2" style="text-align:right;font-weight:600;">' + fmt(sessionTotal) + '</td></tr>' +
-            '<tr><td colspan="3" style="padding:6px 0 2px 0;border-bottom:1px solid rgba(255,255,255,0.12);"></td></tr>' +
-            '<tr><td style="padding:4px 8px 4px 0;color:#888;font-size:11px;">Tier</td>' +
-            '<td style="text-align:right;color:#888;font-size:11px;">Tx</td>' +
-            '<td style="text-align:right;color:#888;font-size:11px;">Rx</td></tr>';
+            '<tr><td colspan="3" style="padding:6px 0 2px 0;border-bottom:1px solid var(--overlay-hover);"></td></tr>' +
+            '<tr><td style="padding:4px 8px 4px 0;color:var(--text-3);font-size:11px;">Tier</td>' +
+            '<td style="text-align:right;color:var(--text-3);font-size:11px;">Tx</td>' +
+            '<td style="text-align:right;color:var(--text-3);font-size:11px;">Rx</td></tr>';
 
         visibleTiers.forEach(function(tier) {
             rows +=
-                '<tr><td style="padding:3px 8px 3px 0;color:#d0d0d0;">' + tier + '</td>' +
+                '<tr><td style="padding:3px 8px 3px 0;color:var(--text-2);">' + tier + '</td>' +
                 '<td style="text-align:right;">' + fmt(txOf(s, tier)) + '</td>' +
                 '<td style="text-align:right;">' + fmt(rxOf(s, tier)) + '</td></tr>';
         });

@@ -823,7 +823,7 @@ function buildMessageEntryNode(msg, sessionId, renderSession, progressRows) {
                     wrap.appendChild(el);
                     if (img.fileId) {
                         var dl = document.createElement('button');
-                        dl.style.cssText = 'display:inline-block;margin-top:5px;padding:3px 10px;background:#c87830;color:#fff;font-size:11px;font-weight:600;border-radius:4px;border:none;cursor:pointer;';
+                        dl.style.cssText = 'display:inline-block;margin-top:5px;padding:3px 10px;background:var(--accent);color:var(--text-on-bright);font-size:11px;font-weight:600;border-radius:4px;border:none;cursor:pointer;';
                         dl.textContent = '⬇ Download';
                         (function(sid, fid, fname) {
                             dl.onclick = function() {
@@ -849,14 +849,14 @@ function buildMessageEntryNode(msg, sessionId, renderSession, progressRows) {
             if (msg.videos && msg.videos.length > 0) {
                 msg.videos.forEach(function(vid) {
                     var wrap = document.createElement('div');
-                    wrap.style.cssText = 'margin-top:8px;border:1px solid #1c1430;border-radius:6px;overflow:hidden;max-width:280px;';
+                    wrap.style.cssText = 'margin-top:8px;border:1px solid var(--surface-2);border-radius:6px;overflow:hidden;max-width:280px;';
                     var header = document.createElement('div');
-                    header.style.cssText = 'background:#1c1430;padding:4px 10px;font-size:12px;color:#d8c0a0;display:flex;justify-content:space-between;align-items:center;';
+                    header.style.cssText = 'background:var(--surface-2);padding:4px 10px;font-size:12px;color:var(--text-warm);display:flex;justify-content:space-between;align-items:center;';
                     var nameSpan = document.createElement('span');
                     nameSpan.textContent = '🎥 ' + (vid.name || 'video');
                     header.appendChild(nameSpan);
                     var dl = document.createElement('button');
-                    dl.style.cssText = 'background:none;border:none;color:#c87830;font-size:11px;font-weight:600;cursor:pointer;padding:0;flex-shrink:0;';
+                    dl.style.cssText = 'background:none;border:none;color:var(--accent);font-size:11px;font-weight:600;cursor:pointer;padding:0;flex-shrink:0;';
                     if (vid.fileId) {
                         dl.textContent = t('download');
                         (function(sid, fid, fname) {
@@ -884,7 +884,7 @@ function buildMessageEntryNode(msg, sessionId, renderSession, progressRows) {
                     } else {
                         dl.textContent = 'Uploading…';
                         dl.disabled = true;
-                        dl.style.color = '#806040';
+                        dl.style.color = 'var(--text-warm)';
                     }
                     header.appendChild(dl);
                     wrap.appendChild(header);
@@ -894,15 +894,15 @@ function buildMessageEntryNode(msg, sessionId, renderSession, progressRows) {
             if (msg.files && msg.files.length > 0) {
                 msg.files.forEach(function(f) {
                     var wrap = document.createElement('div');
-                    wrap.style.cssText = 'margin-top:8px;border:1px solid #1c1430;border-radius:6px;overflow:hidden;max-width:420px;';
+                    wrap.style.cssText = 'margin-top:8px;border:1px solid var(--surface-2);border-radius:6px;overflow:hidden;max-width:420px;';
                     var header = document.createElement('div');
-                    header.style.cssText = 'background:#1c1430;padding:4px 10px;font-size:12px;color:#d8c0a0;display:flex;justify-content:space-between;align-items:center;';
+                    header.style.cssText = 'background:var(--surface-2);padding:4px 10px;font-size:12px;color:var(--text-warm);display:flex;justify-content:space-between;align-items:center;';
                     var nameSpan = document.createElement('span');
                     nameSpan.textContent = '📄 ' + f.name;
                     header.appendChild(nameSpan);
                     if (f.fileId) {
                         var dl = document.createElement('button');
-                        dl.style.cssText = 'padding:2px 8px;background:#c87830;color:#fff;font-size:11px;font-weight:600;border-radius:4px;border:none;cursor:pointer;white-space:nowrap;';
+                        dl.style.cssText = 'padding:2px 8px;background:var(--accent);color:var(--text-on-bright);font-size:11px;font-weight:600;border-radius:4px;border:none;cursor:pointer;white-space:nowrap;';
                         dl.textContent = '⬇ Download';
                         (function(sid, fid, fname) {
                             dl.onclick = function() {
@@ -922,7 +922,7 @@ function buildMessageEntryNode(msg, sessionId, renderSession, progressRows) {
                     wrap.appendChild(header);
                     if (f.snippet) {
                         var pre = document.createElement('pre');
-                        pre.style.cssText = 'margin:0;padding:8px 10px;font-size:11px;color:#f0e0f0;overflow:hidden;white-space:pre-wrap;word-break:break-all;';
+                        pre.style.cssText = 'margin:0;padding:8px 10px;font-size:11px;color:var(--text-1);overflow:hidden;white-space:pre-wrap;word-break:break-all;';
                         pre.textContent = f.snippet;
                         wrap.appendChild(pre);
                     }
