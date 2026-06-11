@@ -272,6 +272,9 @@ UIManager.renderSessions = async function() {
         item.appendChild(actions);
         container.appendChild(item);
     });
+
+    // Keep the topbar session-switcher label in sync with the current session.
+    if (typeof SessionSwitcher !== 'undefined') SessionSwitcher.refreshLabel();
 };
 
 UIManager.createNewSession = async function() {

@@ -270,6 +270,7 @@ const UIManager = {
         if (typeof MentionPicker !== 'undefined')  MentionPicker.attach(msgInput);
         if (typeof WorkflowPicker !== 'undefined') WorkflowPicker.attach(msgInput);
         if (typeof DuolangPicker !== 'undefined')  DuolangPicker.attach(msgInput);
+        if (typeof SessionSwitcher !== 'undefined') SessionSwitcher.init();
         msgInput.addEventListener('input', function() {
             this.style.height = 'auto';
             this.style.height = Math.min(this.scrollHeight, 100) + 'px';
