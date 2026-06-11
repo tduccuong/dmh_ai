@@ -27,33 +27,9 @@ defmodule DmhAi.Adapters.Http do
 
   @behaviour DmhAi.Agent.Adapter
 
-  alias DmhAi.Agent.{AssistantCommand, ConfidantCommand, UserAgent}
+  alias DmhAi.Agent.{ConfidantCommand, UserAgent}
 
   @default_timeout :timer.minutes(5)
-
-  # ─── Dispatch (Assistant path) ────────────────────────────────────────────
-
-  @doc """
-  Build an AssistantCommand from HTTP request data and dispatch it.
-  Returns :ok immediately; the caller should follow up with receive_stream/1.
-  """
-  @spec dispatch_assistant(String.t(), String.t(), String.t(), pid(), keyword()) ::
-          :ok | {:error, term()}
-  def dispatch_assistant(user_id, session_id, content, reply_pid, opts \\ []) do
-    command = %AssistantCommand{
-      type:             :chat,
-      content:          content,
-      session_id:       session_id,
-      reply_pid:        reply_pid,
-      attachment_names: Keyword.get(opts, :attachment_names, []),
-      files:            Keyword.get(opts, :files, []),
-      metadata:         Keyword.get(opts, :metadata, %{}),
-      timezone:         Keyword.get(opts, :timezone),
-      local_date:       Keyword.get(opts, :local_date)
-    }
-
-    UserAgent.dispatch_assistant(user_id, command)
-  end
 
   # ─── Dispatch (Confidant path) ────────────────────────────────────────────
 

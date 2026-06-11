@@ -52,18 +52,12 @@ docker build $BUILD_ARGS \
   -f "$ROOT_DIR/code/Dockerfile" \
   "$ROOT_DIR/code"
 
-echo "Building sandbox Docker image..."
-docker build $BUILD_ARGS \
-  -t dmh-ai-sandbox:latest \
-  -f "$ROOT_DIR/code/sandbox/Dockerfile" \
-  "$ROOT_DIR/code/sandbox"
-
 echo "Pulling SearXNG image..."
 docker pull searxng/searxng:latest
 
 echo ""
 echo "Docker images:"
-docker images --format "  {{.Repository}}:{{.Tag}}  {{.Size}}" | grep -E "dmh-ai|dmh-ai-sandbox|searxng/searxng"
+docker images --format "  {{.Repository}}:{{.Tag}}  {{.Size}}" | grep -E "dmh-ai|searxng/searxng"
 
 #  NIF smoke test
 # Cross-build catastrophe-stop. The master image carries two
@@ -130,8 +124,6 @@ else
     echo "Saving images to dist/images/ (may take a minute)..."
     docker save dmh-ai:latest          | gzip > "$DIST_DIR/images/dmh-ai.tar.gz"
     echo "  dmh-ai.tar.gz           $(du -sh "$DIST_DIR/images/dmh-ai.tar.gz" | cut -f1)"
-    docker save dmh-ai-sandbox:latest  | gzip > "$DIST_DIR/images/dmh-ai-sandbox.tar.gz"
-    echo "  dmh-ai-sandbox.tar.gz  $(du -sh "$DIST_DIR/images/dmh-ai-sandbox.tar.gz" | cut -f1)"
     docker save searxng/searxng:latest | gzip > "$DIST_DIR/images/dmh-ai-searxng.tar.gz"
     echo "  dmh-ai-searxng.tar.gz  $(du -sh "$DIST_DIR/images/dmh-ai-searxng.tar.gz" | cut -f1)"
 fi
@@ -150,12 +142,9 @@ services:
       - ${DMHAI_HOME:-.}/user_assets:/data/user_assets
       - ${DMHAI_HOME:-.}/user_workspaces:/data/user_workspaces
       - ${DMHAI_HOME:-.}/system_logs:/data/system_logs
-      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       searxng:
         condition: service_healthy
-      sandbox:
-        condition: service_started
     environment:
       - DEPLOY_ENV=__DEPLOY_ENV__
       # HTTP/HTTPS bind interface. Default 127.0.0.1 keeps the BE
@@ -164,44 +153,6 @@ services:
       # README's "phone on same Wi-Fi" feature) export
       # `DMHAI_BIND_HOST=0.0.0.0` before `dmh_ai start`.
       - DMHAI_BIND_HOST=${DMHAI_BIND_HOST:-127.0.0.1}
-      # Primitive 0.3 stage demos / UAT — process toggles + ports.
-      # The in-process MCP REST translator boots unconditionally on
-      # DMH_AI_REAL_MCP_PORT (default 8087) and hosts every
-      # connector that ships an `mcp_handler_module/0` (Google
-      # Workspace today). Vendor-hosted Case-B connectors don't
-      # use it. The mock vendor MCP is the only opt-in subprocess:
-      #   DMH_AI_ENABLE_VENDOR_MOCKS=true → boot the per-connector
-      #     mock server(s) at 127.0.0.1:DMH_AI_GW_MOCK_PORT (etc.)
-      #     for deterministic demos. Off in production.
-      # Connector details (client_id / secret / mcp_url) are never
-      # set here — admin pastes them into External Connectors.
-      # See arch_wiki/dmh_ai/sme/layer-0.md §0.3.2.
-      - DMH_AI_ENABLE_VENDOR_MOCKS=${DMH_AI_ENABLE_VENDOR_MOCKS:-false}
-      - DMH_AI_GW_MOCK_PORT=${DMH_AI_GW_MOCK_PORT:-8086}
-      - DMH_AI_REAL_MCP_PORT=${DMH_AI_REAL_MCP_PORT:-8087}
-
-  sandbox:
-    image: dmh-ai-sandbox:latest
-    container_name: __SANDBOX_NAME__
-    # Sandbox is OFF host networking — the iptables fence in
-    # /sandbox-start.sh REJECTs RFC1918 outbound for non-admin UIDs.
-    # Default bridge networking gives the container its own netns.
-    restart: unless-stopped
-    cap_add:
-      - NET_ADMIN
-    volumes:
-      # Two-tree split per arch_wiki/dmh_ai/isolation.md.
-      # user_assets is mounted read-only (uploads + _keystore live
-      # here); user_workspaces is the only writable surface for
-      # sandbox processes. Both mounts use the SAME container path as
-      # the master side (/data/user_assets, /data/user_workspaces) so
-      # a path string built on master is consumable inside the sandbox
-      # without translation.
-      - ${DMHAI_HOME:-.}/user_assets:/data/user_assets:ro
-      - ${DMHAI_HOME:-.}/user_workspaces:/data/user_workspaces
-    # /sandbox-start.sh sets sysctl + iptables, then `tail -f /dev/null`.
-    # Scripts arrive via `docker exec -u dmh_ai-u<uid> -w
-    # /data/user_workspaces/<email>/<session>/`.
 
   searxng:
     image: searxng/searxng:latest
@@ -289,9 +240,7 @@ if [ "$MODE" = "stage" ]; then
 
     #  Set up install directory
     # Pre-create all bind-mount targets so docker compose doesn't
-    # auto-create them as root — the existing dirs would otherwise
-    # work but the browser-daemon socket dir MUST exist before the
-    # sandbox container starts (the daemon binds the socket on boot).
+    # auto-create them as root.
     mkdir -p "$INSTALL_DIR"
     mkdir -p "$INSTALL_DIR/db" "$INSTALL_DIR/user_assets" "$INSTALL_DIR/user_workspaces" \
              "$INSTALL_DIR/system_logs"
@@ -316,38 +265,15 @@ services:
       - ${INSTALL_DIR}/user_assets:/data/user_assets
       - ${INSTALL_DIR}/user_workspaces:/data/user_workspaces
       - ${INSTALL_DIR}/system_logs:/data/system_logs
-      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       searxng:
         condition: service_healthy
-      sandbox:
-        condition: service_started
     environment:
       - DEPLOY_ENV=stage
       # Stage default: bind to loopback. The host's localhost:8080
       # reaches the BE; nothing is exposed on external NICs without
       # the operator opting in via env (DMHAI_BIND_HOST=0.0.0.0).
       - DMHAI_BIND_HOST=\${DMHAI_BIND_HOST:-127.0.0.1}
-      # Primitive 0.3 — process toggles + ports. In-process MCP
-      # REST translator boots unconditionally on DMH_AI_REAL_MCP_PORT
-      # (default 8087). The mock vendor MCP is opt-in via
-      # DMH_AI_ENABLE_VENDOR_MOCKS=true (binds to DMH_AI_GW_MOCK_PORT
-      # for the GW mock). Connector details (client_id / secret /
-      # mcp_url) are admin-set via External Connectors, never here.
-      # See demo/layer-0.3/google_workspace/01_assistant.md.
-      - DMH_AI_ENABLE_VENDOR_MOCKS=\${DMH_AI_ENABLE_VENDOR_MOCKS:-false}
-      - DMH_AI_GW_MOCK_PORT=\${DMH_AI_GW_MOCK_PORT:-8086}
-      - DMH_AI_REAL_MCP_PORT=\${DMH_AI_REAL_MCP_PORT:-8087}
-
-  sandbox:
-    image: dmh-ai-sandbox:latest
-    container_name: dmh_ai-assistant-sandbox
-    restart: unless-stopped
-    cap_add:
-      - NET_ADMIN
-    volumes:
-      - ${INSTALL_DIR}/user_assets:/data/user_assets:ro
-      - ${INSTALL_DIR}/user_workspaces:/data/user_workspaces
 
   searxng:
     image: searxng/searxng:latest
@@ -498,7 +424,7 @@ else
     else
         echo "No image tarballs in $DIST/images/ — checking local Docker registry..."
         MISSING=""
-        for img in dmh-ai:latest dmh-ai-sandbox:latest searxng/searxng:latest; do
+        for img in dmh-ai:latest searxng/searxng:latest; do
             if ! docker image inspect "$img" >/dev/null 2>&1; then
                 MISSING="$MISSING $img"
             fi
@@ -538,7 +464,6 @@ else
     #  Configure docker-compose
     sed -i \
         -e "s/__CONTAINER_NAME__/dmh_ai-master/g" \
-        -e "s/__SANDBOX_NAME__/dmh_ai-assistant-sandbox/g" \
         -e "s/__SEARXNG_NAME__/dmh_ai-searxng/g" \
         -e "s/__DEPLOY_ENV__/production/g" \
         "$DIST/docker-compose.yml"

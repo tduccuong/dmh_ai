@@ -119,7 +119,8 @@ UIManager.initializeApp = async function() {
 // stored mode preference within the first turn. The seed exists so any code
 // path that reads `_currentMode` before init completes (defensive — should
 // not happen in practice) gets a sensible value rather than `undefined`.
-UIManager._currentMode = 'assistant';
+// Confidant-only build: mode is collapsed to a single surface.
+UIManager._currentMode = 'confidant';
 UIManager._modeSessionIds = { confidant: null, assistant: null };
 
 var MODE_ICONS = {
@@ -183,29 +184,6 @@ UIManager.switchMode = async function(mode) {
         this.startProgressPolling();
     }
 };
-
-// Splash-card "switch to other mode" — distinct from `switchMode`
-// (dropdown), which prefers the first existing session of the target
-// mode. The splash variant explicitly prefers an EMPTY session (so
-// the user lands on the OTHER mode's splash, not on whatever they
-// were last working on); falls back to creating a fresh empty
-// session of the target mode. Current session is left untouched.
-UIManager.splashSwitchToMode = async function(mode) {
-    var sessions = await SessionStore.getSessions();
-    var target = sessions.find(function(s) {
-        return s.mode === mode &&
-               (!s.messages || s.messages.length === 0);
-    });
-    if (!target) {
-        target = await SessionStore.createSession(t('newChat'), mode);
-        this._modeSessionIds[mode] = target.id;
-    }
-    this._currentMode = mode;
-    this._updateModeLabel();
-    await this.renderSessions();
-    await this.switchSession(target.id);
-};
-
 
 UIManager._updateModeLabel = function() {
     var label = document.getElementById('mode-dropdown-label');
@@ -837,29 +815,9 @@ UIManager.showToast = function(html, kind) {
     }, 5000);
 };
 
-// Mode-hint toast — fires only on a NON-empty session (empty
-// sessions show the splash, which already explains the mode). Picks
-// `hintAssistant` or `hintConfidant` from the i18n table; both are
-// HTML strings (with <strong> tags). 5 s show + 400 ms fade-out.
-UIManager.showModeHint = function() {
-    var el = document.getElementById('mode-hint');
-    if (!el) return;
-    if (!this.currentSession ||
-        !this.currentSession.messages || this.currentSession.messages.length === 0) {
-        el.style.display = 'none';
-        return;
-    }
-    var key = this.currentSession.mode === 'assistant' ? 'hintAssistant' : 'hintConfidant';
-    el.innerHTML = t(key);
-    el.classList.remove('fade-out');
-    el.style.display = 'block';
-    var self = this;
-    clearTimeout(self._modeHintTimer);
-    self._modeHintTimer = setTimeout(function() {
-        el.classList.add('fade-out');
-        setTimeout(function() { el.style.display = 'none'; el.classList.remove('fade-out'); }, 400);
-    }, 5000);
-};
+// Confidant-only build: there is no other mode to hint toward, so this
+// is a no-op (the shared toast container is reused by `showToast`).
+UIManager.showModeHint = function() {};
 
 UIManager.retryLastMessage = function() {
     if (!this.currentSession) return;

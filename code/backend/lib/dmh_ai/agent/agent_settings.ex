@@ -20,21 +20,18 @@ defmodule DmhAi.Agent.AgentSettings do
   # Two-tier model layout (see specs/architecture.md §Model tiers):
   #
   #   confidantModel — Confidant answer. Conversational, image-capable.
-  #   assistantModel — Assistant answer. Tool-using, image-capable.
   #   swiftModel     — Swift tier. Short, single-shot decisions:
   #                    Swift.localize, Web.Search query planner,
   #                    session naming. Cheapest model — latency
   #                    dominates over quality.
   #   oracleModel    — Oracle tier. Long, dense content processing:
-  #                    context compaction, web result synthesis,
-  #                    profile extraction + condensation. Strong
-  #                    general model.
+  #                    web result synthesis, profile extraction +
+  #                    condensation. Strong general model.
   #   visionModel    — Vision/OCR. Image describe, video describe,
   #                    PDF OCR. Must be image-capable.
-  #   kbEmbeddingModel — Vector KB embedder. See specs/vector_kb.md.
+  #   kbEmbeddingModel — Memo vector embedder. See specs/vector_kb.md.
   @defaults %{
     "confidantModel"   => "ollama-cloud::gemma4:31b-cloud",
-    "assistantModel"   => "ollama-cloud::gemma4:31b-cloud",
     "swiftModel"       => "ollama-cloud::ministral-3:14b-cloud",
     "oracleModel"      => "ollama-cloud::gemma4:31b-cloud",
     "visionModel"      => "ollama-cloud::gemma4:31b-cloud",
@@ -357,7 +354,6 @@ defmodule DmhAi.Agent.AgentSettings do
 
   @doc "Shortcut accessors."
   def confidant_model,    do: model_for("confidantModel")
-  def assistant_model,    do: model_for("assistantModel")
   def swift_model,        do: model_for("swiftModel")
   def oracle_model,       do: model_for("oracleModel")
   def vision_model,       do: model_for("visionModel")

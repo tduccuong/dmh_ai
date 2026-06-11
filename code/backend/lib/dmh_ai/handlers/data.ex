@@ -12,7 +12,7 @@ defmodule DmhAi.Handlers.Data do
   The router calls this module directly — every public function
   declared here is the routable surface. The actual implementations
   live in sub-modules under `__MODULE__.{Sessions, SessionProgress,
-  Descriptions, Assets, FormSubmission, TokenStats, Settings}`; this
+  Descriptions, Assets, TokenStats, Settings}`; this
   shell only owns:
 
   * `json/3` — the generic JSON-response helper every sub-module uses.
@@ -28,7 +28,6 @@ defmodule DmhAi.Handlers.Data do
   alias __MODULE__.{
     Assets,
     Descriptions,
-    FormSubmission,
     Sessions,
     SessionProgress,
     TokenStats
@@ -82,9 +81,6 @@ defmodule DmhAi.Handlers.Data do
   defdelegate get_asset(conn, user, session_id, rest), to: Assets
   defdelegate post_asset(conn, user), to: Assets
   defdelegate post_session_attachment(conn, user), to: Assets
-
-  # Form submission
-  defdelegate submit_input(conn, user, session_id, token), to: FormSubmission
 
   # Token stats (admin)
   defdelegate get_token_stats(conn, user, session_id), to: TokenStats

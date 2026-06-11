@@ -130,49 +130,18 @@ defmodule DmhAi.Handlers.Data.SessionProgress do
           %{"role" => "user"} -> true
           _                    -> false
         end
-        # Orphan-cleanup: a `session_progress` row stays `pending`
-        # only while a tool is actively running. If the chain isn't
-        # iterating any more (chain_in_flight=false) AND a pending
-        # row is older than 30 s AND it isn't backed by a live
-        # `RunningTools` entry, the chain almost certainly died and
-        # the row is stale. Auto-flip to `done` with an
-        # `[orphan-cleanup]` marker so:
-        #   • the FE's spinner on that row stops spinning
-        #   • `has_pending_progress?` stops keeping `is_working` true
-        # Without this, a one-time chain crash leaves a stuck
-        # spinner + perpetual "thinking..." status across reloads.
-        chain_in_flight? = DmhAi.Agent.ChainInFlight.in_flight?(session_id)
-        bg_pipeline_active? = DmhAi.Agent.BackgroundPipelines.active?(session_id)
-
-        # Skip cleanup while a chain is iterating OR a background
-        # pipeline (e.g. /index URL crawl) is registered. Each
-        # crawl-emitted row stays pending much longer than the
-        # 30-s threshold while the cloud embedder works through
-        # the page's chunks — without this guard, the sweeper
-        # would tag every legitimate in-flight row with
-        # `[orphan-cleanup]`.
-        if not chain_in_flight? and not bg_pipeline_active? do
-          DmhAi.Agent.SessionProgress.cleanup_stale_pending(session_id, 30_000)
-        end
+        # Orphan-cleanup: a `session_progress` row (e.g. a Confidant
+        # web-search step) stays `pending` only while the step runs. A
+        # pending row older than 30 s is stale — auto-flip it to `done`
+        # with an `[orphan-cleanup]` marker so the FE spinner stops and
+        # `is_working` clears after a one-off crash.
+        DmhAi.Agent.SessionProgress.cleanup_stale_pending(session_id, 30_000)
 
         has_pending_progress? = DmhAi.Agent.SessionProgress.has_pending?(session_id)
         is_working =
           is_binary(stream_buffer)
           or has_unanswered_user_msg?
           or has_pending_progress?
-
-        running_tool_call =
-          case DmhAi.Agent.RunningTools.lookup(session_id) do
-            %{tool_call_id: tcid, started_at_ms: started} = entry ->
-              %{
-                tool_call_id:    tcid,
-                progress_row_id: Map.get(entry, :progress_row_id),
-                started_at_ms:   started
-              }
-
-            _ ->
-              nil
-          end
 
         # Per-session Stop button gate. The Stop call cancels whichever
         # turn the user has in flight (only one inline turn is allowed
@@ -191,8 +160,6 @@ defmodule DmhAi.Handlers.Data.SessionProgress do
           stream_buffer:     stream_buffer,
           thinking_buffer:   thinking_buffer,
           is_working:        is_working,
-          chain_in_flight:   chain_in_flight?,
-          running_tool_call: running_tool_call,
           agent_busy:        agent_busy
         })
 

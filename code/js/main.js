@@ -346,9 +346,6 @@ const UIManager = {
         document.getElementById('about-overlay').addEventListener('click', function(e) {
             if (e.target === this) this.style.display = 'none';
         });
-        document.getElementById('workflow-modal-btn').addEventListener('click', function() {
-            if (typeof WorkflowModal !== 'undefined') WorkflowModal.open();
-        });
         document.getElementById('clear-session-btn').addEventListener('click', function() {
             UIManager.clearSession();
         });
@@ -632,15 +629,6 @@ const UIManager = {
         if (typeof ReadOutLoud !== 'undefined' && typeof ReadOutLoud.init === 'function') {
             ReadOutLoud.init();
         }
-        document.getElementById('user-external-connectors-btn').addEventListener('click', function() {
-            document.getElementById('user-dropdown').classList.remove('open');
-            Router.navigate('/connectors');
-        });
-        document.getElementById('user-services-btn').addEventListener('click', function() {
-            document.getElementById('user-dropdown').classList.remove('open');
-            SettingsModal.open('page-services');
-        });
-
         // Manage users close
         document.getElementById('mgr-close').addEventListener('click', function() {
             document.getElementById('mgr-overlay').classList.remove('visible');
@@ -703,9 +691,6 @@ const UIManager = {
             // admin-only sections inside the page self-gate via
             // `data-admin-only="true"` and the SettingsModal.open hook.
             document.getElementById('user-conv-settings-btn').style.display = '';
-            document.getElementById('user-external-connectors-btn').style.display = isAdmin ? '' : 'none';
-            // My Services is visible to all authenticated users (sales staff
-            // self-connect Google etc. without needing admin assistance).
             // Conv Settings is visible to all, so the separator above
             // it (between About and the settings block) must show too.
             document.getElementById('user-settings-sep').style.display = '';

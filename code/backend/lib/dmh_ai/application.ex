@@ -40,23 +40,7 @@ defmodule DmhAi.Application do
       # table for stream_buffer + thinking_buffer. See
       # arch_wiki/dmh_ai/architecture.md §Streaming state lives in
       # ETS, not the DB. Must boot before any process that streams.
-      DmhAi.Agent.EphemeralCache,
-      # Layer W — workflow trigger poller. Wakes every 60s, dispatches
-      # armed schedule/poll triggers to fire as silent tasks. See
-      # arch_wiki/dmh_ai/sme/layer-0.md §Primitive 0.8 (Trigger ingress)
-      # and `lib/dmh_ai/workflows/poller.ex`.
-      DmhAi.Workflows.Poller,
-      # Layer W — retention sweeper. Hourly tick; archives completed
-      # run_state + step trace older than the retention window
-      # (default 30d) to per-workflow JSONL files, deletes from DB.
-      DmhAi.Workflows.Sweeper,
-      # Background re-fetch of stale KB sources triggered by every
-      # fetch_index call. See specs/vector_kb.md §Auto-relearn.
-      DmhAi.VectorDB.Relearn,
-      # Primitive 0.2 — per-source BG refresh workers spawned by
-      # `Tools.FetchIndex`. One Task per (org_id, source_id);
-      # debounced via `AgentSettings.bg_refresh_min_interval_s/0`.
-      {Task.Supervisor, name: DmhAi.Ingest.BgRefreshSupervisor}
+      DmhAi.Agent.EphemeralCache
     ] ++
       (if Application.get_env(:dmh_ai, :start_http, true) do
         [{Bandit, plug: DmhAi.Router, scheme: :http, ip: bind_ip(), port: 8080}]
@@ -81,40 +65,8 @@ defmodule DmhAi.Application do
       {:ok, pid} ->
         if Application.get_env(:dmh_ai, :run_startup_check, true), do: DmhAi.StartupCheck.run()
         DmhAi.DomainBlocker.load_from_db()
-        DmhAi.Agent.ChainInFlight.init()
-        DmhAi.Agent.BackgroundPipelines.init()
-        DmhAi.Agent.RunningTools.init()
-        DmhAi.Connectors.Discovery.init()
         DmhAi.GeoIP.init()
-        # Primitive 0.3 — register Universal Region connectors with
-        # the Dispatcher. Manifest validation runs here; a connector
-        # whose manifest fails the 4-rule contract is logged + left
-        # unreachable.
-        DmhAi.Connectors.Registry.register_universal()
-        # Seed oauth_catalog + mcp_catalog rows for every connector
-        # that exposes descriptors. Idempotent: re-seeds on every boot
-        # so a code-side descriptor change ripples to the DB without
-        # operator action. Closes I2 + #373 generically.
-        DmhAi.Connectors.Bootstrap.seed_all()
-        # First-deploy seed for the DB-backed function manifest. For
-        # each slug that has zero rows in `connector_functions`, load
-        # `priv/connectors/<slug>/functions.json` once. Subsequent
-        # boots are no-ops; refresh happens via admin Discover click.
-        DmhAi.Connectors.Seed.seed_all()
-        # Stage / demo / UAT opt-in: when DMH_AI_ENABLE_VENDOR_MOCKS=true,
-        # start mock vendor MCP servers for every connector that exposes
-        # `mock_descriptor/0`. Lets operators walk the real Caller path
-        # end-to-end without setting up a real Google Cloud / HubSpot /
-        # … OAuth app. No-op when the flag is off (production default).
-        DmhAi.Connectors.Bootstrap.start_vendor_mocks_if_enabled()
-        # In-process MCP REST translator: always on. Hosts every
-        # connector that exports `mcp_handler_module/0` (Google
-        # Workspace today; Calendly + others later) at its slug
-        # path. Vendor-hosted Case-B connectors don't appear here;
-        # their admins paste the vendor URL into the FE instead.
-        DmhAi.Connectors.Bootstrap.start_real_mcp_server()
         attach_finch_telemetry()
-        Logger.info("Sessions API on :3000")
         {:ok, pid}
 
       error ->

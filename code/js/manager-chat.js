@@ -560,160 +560,7 @@ UIManager._pinChatToBottom = function() {
     this._applyScrollPolicy();
 };
 
-// Build the inline form widget for a `request_input` assistant
-// message. Three states drive rendering:
-//   1. Submitted (form.submitted === true): show a "✓ Submitted"
-//      summary derived from `values_meta` (label + length, secrets
-//      shown as `••• (N chars)`). No live inputs.
-//   2. Expired (!submitted && expires_at < now): show "Form expired"
-//      banner; render disabled inputs for visual continuity.
-//   3. Pending: live inputs + submit button. POSTs to
-//      `/sessions/:id/inputs/:token` on submit; on 200, polling will
-//      pick up the BE-rewritten message and re-render in submitted
-//      state.
-function renderRequestInputForm(form, sessionId) {
-    var wrap = document.createElement('div');
-    wrap.className = 'request-input-form';
 
-    var token = form.token;
-    var submitted = form.submitted === true;
-    var now = Date.now();
-    var expiresAt = typeof form.expires_at === 'number' ? form.expires_at : 0;
-    var expired = !submitted && expiresAt > 0 && expiresAt < now;
-    var fields = Array.isArray(form.fields) ? form.fields : [];
-
-    if (submitted) {
-        var head = document.createElement('div');
-        head.className = 'request-input-state-submitted';
-        head.textContent = '✓ Submitted';
-        wrap.appendChild(head);
-        return wrap;
-    }
-
-    if (expired) {
-        var banner = document.createElement('div');
-        banner.className = 'request-input-state-expired';
-        banner.textContent = 'This form expired. Ask the assistant to redo if you still want to provide.';
-        wrap.appendChild(banner);
-    }
-
-    var inputsByName = {};
-    fields.forEach(function(f) {
-        var row = document.createElement('div');
-        row.className = 'request-input-field';
-
-        var label = document.createElement('label');
-        label.className = 'request-input-label';
-        label.textContent = f.label || f.name;
-        row.appendChild(label);
-
-        var input;
-        if (f.type === 'select' && Array.isArray(f.options)) {
-            input = document.createElement('select');
-            input.className = 'request-input-input';
-            f.options.forEach(function(opt) {
-                var o = document.createElement('option');
-                o.value = (opt && typeof opt === 'object') ? (opt.value || '') : String(opt);
-                o.textContent = (opt && typeof opt === 'object') ? (opt.label || opt.value || '') : String(opt);
-                input.appendChild(o);
-            });
-            if (typeof f.default === 'string' && f.default !== '') {
-                input.value = f.default;
-            }
-        } else {
-            input = document.createElement('input');
-            input.type = (f.type === 'password') ? 'password' : 'text';
-            input.className = 'request-input-input';
-        }
-        input.disabled = expired;
-        input.dataset.fieldName = f.name;
-        inputsByName[f.name] = input;
-        row.appendChild(input);
-        wrap.appendChild(row);
-    });
-
-    var btn = document.createElement('button');
-    btn.className = 'request-input-submit';
-    btn.textContent = form.submit_label || 'Submit';
-    btn.disabled = expired;
-    wrap.appendChild(btn);
-
-    var errEl = document.createElement('div');
-    errEl.className = 'request-input-error';
-    errEl.style.display = 'none';
-    wrap.appendChild(errEl);
-
-    btn.addEventListener('click', async function() {
-        btn.disabled = true;
-        Object.keys(inputsByName).forEach(function(n) { inputsByName[n].disabled = true; });
-        errEl.style.display = 'none';
-
-        var values = {};
-        var anyEmpty = false;
-        fields.forEach(function(f) {
-            var v = inputsByName[f.name].value || '';
-            values[f.name] = v;
-            if (!v) anyEmpty = true;
-        });
-
-        if (anyEmpty) {
-            errEl.textContent = 'Please fill in all fields.';
-            errEl.style.display = 'block';
-            btn.disabled = false;
-            Object.keys(inputsByName).forEach(function(n) { inputsByName[n].disabled = false; });
-            return;
-        }
-
-        try {
-            var res = await apiFetch('/sessions/' + encodeURIComponent(sessionId) + '/inputs/' + encodeURIComponent(token), {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ values: values })
-            });
-
-            if (!res.ok) {
-                var detail = '';
-                try { detail = (await res.json()).error || ''; } catch (e) {}
-                errEl.textContent = detail || ('Submit failed (' + res.status + ')');
-                errEl.style.display = 'block';
-                btn.disabled = false;
-                Object.keys(inputsByName).forEach(function(n) { inputsByName[n].disabled = false; });
-                return;
-            }
-            // Success: mutate the form object in-place (it's a live
-            // reference to msg.form on the rendered message) and
-            // re-render. /poll is a delta-by-ts fetch; submit_input
-            // mutates the message without bumping ts so the FE would
-            // otherwise never see the submitted state until the next
-            // full session load.
-            form.submitted = true;
-            try { UIManager.renderChat(); } catch (e) {}
-
-            // Force an immediate poll. For `connect_service_setup`
-            // forms the BE work runs async (MCP handshake takes a few
-            // seconds); a fresh poll picks up the pending
-            // session_progress row right away so the status bar
-            // shows "Assistant is …" instead of staying silent until
-            // the next idle 5 s tick.
-            try { UIManager.startProgressPolling(); } catch (e) {}
-            return;
-        } catch (e) {
-            errEl.textContent = 'Network error — please retry.';
-            errEl.style.display = 'block';
-            btn.disabled = false;
-            Object.keys(inputsByName).forEach(function(n) { inputsByName[n].disabled = false; });
-        }
-    });
-
-    return wrap;
-}
-
-// Render the user-side post-submit summary for a `form_response`
-// message. The assistant's ORIGINAL request_input message already
-// shows a "✓ Submitted" summary (with secret masking driven by the
-// form's `secret` flags). The form_response message itself is the
-// LLM-context payload; here we just show a one-line confirmation so
-// the timeline reads naturally without revealing values.
 // Render the `/tts` payload — each sentence becomes a `.tts-item`
 // with a text row above a control row. The control row carries a
 // 🔊 speaker button (reads the sentence via Web Speech API) and a
@@ -923,9 +770,6 @@ function buildMessageEntryNode(msg, sessionId, renderSession, progressRows) {
             // submit button; post-submit: redacted "✓ Submitted"
             // summary; expired: disabled with banner. See
             // architecture.md §In-chain structured input.
-            if (msg.form && typeof msg.form === 'object') {
-                body.appendChild(renderRequestInputForm(msg.form, sessionId));
-            }
 
             // `/tts` payload — one item per sentence, each with a text
             // row above a control row (🔊 speaker + ⚙ settings). Speaker
@@ -1931,14 +1775,9 @@ UIManager.renderAttachments = function() {
 // The switch link does NOT mutate the current session's mode. It
 // jumps to (or creates) an empty session in the target mode, leaving
 // any existing in-progress sessions of either mode alone.
-UIManager._buildSplashEl = function(mode) {
-    var key = mode === 'assistant' ? 'splashAssistant' : 'splashConfidant';
-    var data = t(key);
+UIManager._buildSplashEl = function(_mode) {
+    var data = t('splashConfidant');
     if (!data || typeof data !== 'object') return null;
-
-    var targetMode = mode === 'assistant' ? 'confidant' : 'assistant';
-    var targetLabelKey = targetMode === 'assistant' ? 'modeAssistant' : 'modeConfidant';
-    var targetLabel = t(targetLabelKey);
 
     var wrap = document.createElement('div');
     wrap.className = 'session-splash';
@@ -1965,23 +1804,6 @@ UIManager._buildSplashEl = function(mode) {
         });
         wrap.appendChild(ul);
     }
-
-    var switchDiv = document.createElement('div');
-    switchDiv.className = 'splash-switch';
-    // Mobile uses a shorter variant of the cross-promote prompt to
-    // keep the splash compact on narrow screens. 768 px matches the
-    // breakpoint used elsewhere (e.g. message-input placeholder).
-    var promptText = (window.innerWidth <= 768 && data.switchPromptShort) ? data.switchPromptShort : (data.switchPrompt || '');
-    switchDiv.appendChild(document.createTextNode('💡 ' + promptText + ' '));
-    var a = document.createElement('a');
-    a.textContent = targetLabel;
-    a.addEventListener('click', function(e) {
-        e.preventDefault();
-        UIManager.splashSwitchToMode(targetMode);
-    });
-    switchDiv.appendChild(a);
-    switchDiv.appendChild(document.createTextNode('.'));
-    wrap.appendChild(switchDiv);
 
     return wrap;
 };

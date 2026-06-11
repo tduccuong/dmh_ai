@@ -5,18 +5,10 @@
 
 defmodule DmhAi.Agent.UserAgent.SessionIO do
   @moduledoc """
-  Session-row DB read/write helpers plus the in-loop message splicing
-  and rolling tool-result flush.
+  Session-row DB read/write helpers.
 
-  * `load_session/2` — single-row read used by the dispatch task to
-    determine `mode` before invoking Confidant vs Assistant.
+  * `load_session/2` — single-row read used by the dispatch task.
   * `append_session_message/3` — BE-stamps `ts` and persists.
-  * `splice_mid_chain_user_msgs/2` — fold any user msgs that arrived
-    while the chain was mid-flight into the next LLM call.
-  * `flush_stale_tool_results/2` — rolling replacement of old tool
-    bodies with a placeholder, keeping the call/result pairing intact.
-  * `compact_if_needed/3` — call into `Agent.Compactor` and merge any
-    new context back into the in-memory session map.
   """
 
   require Logger
@@ -59,17 +51,17 @@ defmodule DmhAi.Agent.UserAgent.SessionIO do
   end
 
   @doc """
-  Load `sessions.{model, messages, context, mode}` for the user.
+  Load `sessions.{model, messages, context}` for the user.
   Returns `{:ok, model, session_map}` or `{:error, reason}`.
   """
   def load_session(session_id, user_id) do
     try do
       result =
-        query!(Repo, "SELECT model, messages, context, mode FROM sessions WHERE id=? AND user_id=?",
+        query!(Repo, "SELECT model, messages, context FROM sessions WHERE id=? AND user_id=?",
                [session_id, user_id])
 
       case result.rows do
-        [[model, msgs_json, ctx_json, mode]] ->
+        [[model, msgs_json, ctx_json]] ->
           messages = Jason.decode!(msgs_json || "[]")
 
           context =
@@ -81,8 +73,7 @@ defmodule DmhAi.Agent.UserAgent.SessionIO do
           {:ok, model || "",
            %{"id" => session_id,
              "messages" => messages,
-             "context" => context,
-             "mode" => mode || "confidant"}}
+             "context" => context}}
 
         _ ->
           {:error, "Session not found"}
@@ -171,30 +162,4 @@ defmodule DmhAi.Agent.UserAgent.SessionIO do
     end
   end
 
-  @doc """
-  Hand `(session_id, user_id)` to `Agent.Compactor`. On a compaction
-  pass, re-read `sessions.context` and merge it into the in-memory
-  session map; otherwise return `session_data` unchanged.
-  """
-  def compact_if_needed(session_id, user_id, session_data) do
-    case DmhAi.Agent.Compactor.maybe_compact(session_id, user_id) do
-      {:compacted, _kept_chars} ->
-        ctx =
-          case query!(Repo, "SELECT context FROM sessions WHERE id=?", [session_id]) do
-            %{rows: [[ctx_json]]} ->
-              case Jason.decode(ctx_json || "{}") do
-                {:ok, m} when is_map(m) -> m
-                _ -> %{}
-              end
-
-            _ ->
-              %{}
-          end
-
-        Map.put(session_data, "context", ctx)
-
-      _ ->
-        session_data
-    end
-  end
 end

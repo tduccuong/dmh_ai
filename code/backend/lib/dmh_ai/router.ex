@@ -7,16 +7,12 @@ defmodule DmhAi.Router do
   use Plug.Router
   import Plug.Conn
   alias DmhAi.AuthPlug
-  alias DmhAi.Handlers.{AdminIdentities, AdminKbSources, OrgUsers}
-  alias DmhAi.Handlers.AdminConnectors
-  alias DmhAi.Handlers.MeServices
+  alias DmhAi.Handlers.OrgUsers
   alias DmhAi.Handlers.AdminPools
   alias DmhAi.Handlers.Auth
   alias DmhAi.Handlers.Data
-  alias DmhAi.Handlers.KbQuery
   alias DmhAi.Handlers.Media
   alias DmhAi.Handlers.Proxy
-  alias DmhAi.Handlers.Tools
   alias DmhAi.Handlers.AgentChat
   alias DmhAi.Agent.UserAgent
 
@@ -249,40 +245,7 @@ defmodule DmhAi.Router do
     end
   end
 
-  # ── KB sources (Primitive 0.2) ───────────────────────────────────────
-  # Admin-only: list & remove org-scoped KB sources. Underpins the
-  # future admin UI's "manage KB" panel. See
-  # `DmhAi.Handlers.AdminKbSources` for status.
-
-  get "/admin/kb-sources" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      AdminKbSources.list(conn, user)
-    end
-  end
-
-  post "/admin/kb-sources/remove" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      AdminKbSources.remove(conn, user)
-    end
-  end
-
-  # Primitive 0.9 — manual-override surface for connector_identities.
-  # Admin maps a DMH-AI user_id to a connector's native external_id
-  # when the email-pivot can't (different work email across SaaS,
-  # vendor lookup unreliable, etc.).
-  post "/admin/identities" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      AdminIdentities.put(conn, user)
-    end
-  end
-
-  get "/admin/identities" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      AdminIdentities.list(conn, user)
-    end
-  end
-
-  # Layer W — @-mention picker. Returns up to 10 same-org users
+  # @-mention picker. Returns up to 10 same-org users
   # matching the prefix. Authenticated; no role gate (every member
   # can see the org directory; that's how Slack-style mentions work).
   get "/org/users" do
@@ -297,99 +260,6 @@ defmodule DmhAi.Router do
     end
   end
 
-  # ── Connectors (Primitive 0.3) — consolidated admin view + probe ──────
-
-  get "/admin/connectors" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      AdminConnectors.list(conn, user)
-    end
-  end
-
-  post "/admin/connectors/:slug/test" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      AdminConnectors.test(conn, user, slug)
-    end
-  end
-
-  post "/admin/connectors/:slug/save" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      AdminConnectors.save(conn, user, slug)
-    end
-  end
-
-  get "/admin/connectors/:slug/discovery_state" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      AdminConnectors.discovery_state(conn, user, slug)
-    end
-  end
-
-  post "/admin/connectors/:slug/discover/:layer" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      AdminConnectors.discover(conn, user, slug, layer)
-    end
-  end
-
-  # ── Workflow viewer (Layer W) ─────────────────────────────────────────
-  #
-  # The chat reply renders saved workflows as markdown links like
-  # `[customer_onboarding · v3](/workflows/customer_onboarding/3)`;
-  # the FE intercepts the click and opens a modal that fetches one of
-  # the endpoints below. Read-only — saving / arming / running live
-  # in the LLM tool surface (`upsert_workflow`, future
-  # `arm_workflow` / `workflow.invoke`).
-
-  get "/workflows" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      DmhAi.Handlers.Workflows.list(conn, user)
-    end
-  end
-
-  get "/workflows/:slug/:version" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      DmhAi.Handlers.Workflows.show(conn, user, slug, version)
-    end
-  end
-
-  # ── Workflow run viewer (Layer W) ─────────────────────────────────────
-  # Renders the executor's actual output (status + emits + trigger
-  # payload) for one run. The model returns `run_url: "/runs/<id>"`
-  # from `invoke_workflow`; the FE intercepts the click and opens a
-  # modal that fetches this endpoint.
-  get "/runs/:run_id" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      DmhAi.Handlers.Runs.show(conn, user, run_id)
-    end
-  end
-
-  # ── Workflow webhook ingress (Layer W) ────────────────────────────────
-  # External M2M endpoint. NO auth header (the token IS the auth) —
-  # this is the URL the user pastes into the external SaaS's webhook
-  # configuration (HubSpot, Stripe, Calendly, etc). Three-layer
-  # validation lives in the handler.
-  post "/wf/webhook/:workflow_id/:token" do
-    DmhAi.Handlers.WfWebhook.receive(conn, workflow_id, token)
-  end
-
-  # ── Per-user services view (Primitive 0.3) ────────────────────────────
-
-  get "/me/services" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      MeServices.list(conn, user)
-    end
-  end
-
-  post "/me/services/disconnect" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      MeServices.disconnect(conn, user)
-    end
-  end
-
-  post "/me/services/connect/:slug" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      MeServices.connect(conn, user, slug)
-    end
-  end
-
   get "/model-labels" do
     with {:ok, conn, user} <- check_auth(conn) do
       Proxy.get_model_labels(conn, user)
@@ -399,12 +269,6 @@ defmodule DmhAi.Router do
   get "/admin/test-endpoint" do
     with {:ok, conn, user} <- check_auth(conn) do
       Proxy.get_test_endpoint(conn, user)
-    end
-  end
-
-  get "/tools" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      Tools.get_tools(conn, user)
     end
   end
 
@@ -454,24 +318,6 @@ defmodule DmhAi.Router do
     end
   end
 
-  # POST /sessions/:session_id/inputs/:token — submit an in-chat form
-  # rendered by the model's `request_input` tool. Body: {"values": ...}.
-  # Single-use token; submission marks the source assistant message
-  # `form.submitted = true` and synthesises a user-role message that
-  # auto-resumes the chain.
-  post "/sessions/:session_id/inputs/:token" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      Data.submit_input(conn, user, session_id, token)
-    end
-  end
-
-  # GET /oauth/callback?code=…&state=…
-  # OAuth callback for `connect_mcp`. Unauthenticated — the state
-  # token (single-use, TTL-bounded) ties the request back to a
-  # specific user_id + session_id + connection alias. See specs/mcp.md.
-  get "/oauth/callback" do
-    DmhAi.Handlers.OAuthCallback.callback(conn)
-  end
 
   get "/image-descriptions/:session_id" do
     with {:ok, conn, user} <- check_auth(conn) do
@@ -568,20 +414,6 @@ defmodule DmhAi.Router do
   post "/agent/chat" do
     with {:ok, conn, user} <- check_auth(conn) do
       AgentChat.post_chat(conn, user)
-    end
-  end
-
-  # KB query (partial Primitive 0.6 — REST API). Org-scoped per the
-  # calling user's org_id. See `DmhAi.Handlers.KbQuery` for status.
-  post "/kb/query" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      KbQuery.query(conn, user)
-    end
-  end
-
-  post "/tools/execute" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      Tools.post_execute(conn, user)
     end
   end
 
@@ -716,30 +548,6 @@ defmodule DmhAi.Router do
     with {:ok, conn, user} <- check_auth(conn) do
       Data.delete_video_descriptions(conn, user, session_id)
     end
-  end
-
-  # ─── SPA-fallback routes (FE owns the URL space) ─────────────────────────────
-  #
-  # The FE has a small client-side router (`code/js/router.js`).
-  # Paths the FE handles need a BE route that serves the SPA shell
-  # so a refresh / direct-link / browser-back doesn't 404. Each FE
-  # route gets ONE explicit entry below — a catch-all would mask
-  # typos in API URLs (`/admin/connectorss` would silently return
-  # HTML), so the trade is more typing for better debugability.
-
-  get "/connectors" do
-    serve_spa(conn)
-  end
-
-  get "/connectors/:_slug" do
-    serve_spa(conn)
-  end
-
-  defp serve_spa(conn) do
-    conn
-    |> put_resp_header("cache-control", "no-store")
-    |> put_resp_content_type("text/html")
-    |> send_file(200, "/app/static/index.html")
   end
 
   # ─── Catch-all ────────────────────────────────────────────────────────────────

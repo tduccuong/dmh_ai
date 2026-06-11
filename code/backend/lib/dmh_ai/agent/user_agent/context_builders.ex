@@ -12,13 +12,9 @@ defmodule DmhAi.Agent.UserAgent.ContextBuilders do
   * Image / video description loads for the session
   * Effective-images decision (skip already-described attachments)
   * Web-context formatting from the search engine's `%{snippets, pages}`
-  * Form-extraction from execution results + fallback narration
-  * `emit_chain_end/2` (progress row + profile reset)
-  * `session_cancelled?/1` (cooperative cancellation poll)
   """
 
   alias DmhAi.Agent.AgentSettings
-  alias DmhAi.Agent.UserAgent.ProfileResolution
   alias DmhAi.Repo
   import Ecto.Adapters.SQL, only: [query!: 3]
 
@@ -196,29 +192,4 @@ defmodule DmhAi.Agent.UserAgent.ContextBuilders do
 
   def compose_blocker_message(_, blocker) when is_map(blocker),
     do: blocker[:reason] || blocker["reason"] || ""
-
-  @doc """
-  Emit the chain-end progress row AND reset the session's active
-  profiles to `[]` so the next chain starts at core-only.
-  """
-  def emit_chain_end(ctx, cause) when is_binary(cause) do
-    progress_ctx = %{session_id: Map.get(ctx, :session_id), user_id: Map.get(ctx, :user_id)}
-    _ = DmhAi.Agent.SessionProgress.append_chain_end(progress_ctx, cause)
-    _ = ProfileResolution.reset_active_profiles(ctx)
-    :ok
-  end
-
-  @doc "Cooperative cancellation poll — read `sessions.cancelled_at`."
-  def session_cancelled?(%{session_id: session_id}) when is_binary(session_id) do
-    try do
-      case query!(Repo, "SELECT cancelled_at FROM sessions WHERE id=?", [session_id]) do
-        %{rows: [[nil]]} -> false
-        %{rows: [[_ts]]} -> true
-        _ -> false
-      end
-    rescue
-      _ -> false
-    end
-  end
-  def session_cancelled?(_), do: false
 end

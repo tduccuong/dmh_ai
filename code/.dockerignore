@@ -1,0 +1,11 @@
+# Host build artifacts must never enter the image: the builder compiles
+# deps fresh against the alpine/musl toolchain (Dockerfile `mix deps.get`
+# + `deps.compile`). Copying a host-compiled `deps/` / `_build/` over them
+# clobbers the musl NIFs with glibc ones (sqlite3_nif.so / vec0.so),
+# producing a `symbol not found` relocation crash at runtime.
+backend/deps/
+backend/_build/
+backend/erl_crash.dump
+backend/dmhai.db
+backend/dmhai.db-*
+backend/tmp/

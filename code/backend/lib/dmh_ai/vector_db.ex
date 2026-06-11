@@ -219,19 +219,18 @@ defmodule DmhAi.VectorDB do
   end
 
   @doc """
-  Chunk → embed → tag → (semantic-merge for inline text) → upsert.
-  Synchronous: returns only after the embedder pool has produced
-  vectors and the meta+vec rows are inserted. Used by `/index` paths
-  and the `save_memo` Assistant tool. The slash-command `/memo` path
-  uses the async variant `ingest_memo_async/1` to avoid blocking the
-  user-visible ack on the embedder HTTP call.
+  Chunk → embed → tag → upsert a `:memo` source. Synchronous: returns
+  only after the embedder pool has produced vectors and the meta+vec
+  rows are inserted. The slash-command `/memo` path uses the async
+  variant `ingest_memo_async/1` to avoid blocking the user-visible ack
+  on the embedder HTTP call.
 
   `attrs` shape:
     %{
-      scope:       :knowledge | :memo,
-      org_id:      String.t(),         # required (both scopes); FK organizations.id
-      user_id:     String.t() | nil,   # required for :memo, ignored for :knowledge
-      source_kind: "text" | "file" | "url" | "folder",
+      scope:       :memo,
+      org_id:      String.t(),         # FK organizations.id
+      user_id:     String.t(),
+      source_kind: "text",
       source_ref:  String.t(),
       title:       String.t() | nil
     }
@@ -241,21 +240,9 @@ defmodule DmhAi.VectorDB do
   """
   @spec ingest(map(), String.t()) :: {:ok, map()} | {:error, term()}
   def ingest(attrs, body) when is_binary(body) do
-    scope = attrs[:scope] || attrs["scope"]
-
-    case scope do
-      :knowledge ->
-        # Knowledge ingest owns Primitive 0.2's three guarantees
-        # (idempotent / fresh / removable). The full pipeline —
-        # content-hash gate, chunk + embed + tag, atomic replace —
-        # lives in DmhAi.Ingest. VectorDB just forwards.
-        DmhAi.Ingest.upsert_kb_source(attrs, body)
-
-      :memo ->
-        ingest_memo(attrs, body)
-
-      _ ->
-        {:error, :unknown_scope}
+    case attrs[:scope] || attrs["scope"] do
+      :memo -> ingest_memo(attrs, body)
+      _ -> {:error, :unknown_scope}
     end
   end
 

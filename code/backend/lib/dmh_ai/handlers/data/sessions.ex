@@ -13,7 +13,7 @@ defmodule DmhAi.Handlers.Data.Sessions do
   * DELETE /sessions/:id
 
   Also owns `owns_session?/2` — the shared "does this user own this
-  session id" check used by `Assets` and `FormSubmission`.
+  session id" check used by `Assets`.
   """
 
   import Plug.Conn
@@ -25,18 +25,11 @@ defmodule DmhAi.Handlers.Data.Sessions do
   alias DmhAi.Handlers.Data.Settings
   import Ecto.Adapters.SQL, only: [query!: 3]
 
-  # Default mode for a brand-new user with no persisted preference. Mode is a
-  # top-level FE/BE preference (assistant ↔ confidant) — never inferred from a
-  # session's `mode` column, never seeded from a hardcoded fallback at a
-  # write-site.
-  @default_mode "assistant"
-  @valid_modes ["confidant", "assistant"]
-
   # GET /sessions
   def get_sessions(conn, user) do
     result =
       query!(Repo, """
-      SELECT id, name, messages, context, created_at, updated_at, mode
+      SELECT id, name, messages, context, created_at, updated_at
       FROM sessions WHERE user_id=?
       ORDER BY COALESCE(updated_at, created_at) DESC
       """, [user.id])
@@ -47,22 +40,17 @@ defmodule DmhAi.Handlers.Data.Sessions do
     Data.json(conn, 200, sessions)
   end
 
-  # GET /sessions/current — returns the user's top-level mode preference AND
-  # the last-active session id PER mode. Two modes (confidant / assistant) are
-  # fully separate surfaces: switching modes restores that mode's own last
-  # session, not the other mode's.
+  # GET /sessions/current — returns the user's last-active session id.
   def get_current_session(conn, user) do
-    mode = Settings.read_setting("current_mode_#{user.id}") || @default_mode
-    conf = Settings.read_setting("current_session_#{user.id}_confidant")
-    asst = Settings.read_setting("current_session_#{user.id}_assistant")
-    Data.json(conn, 200, %{mode: mode, sessions: %{confidant: conf, assistant: asst}})
+    session = Settings.read_setting("current_session_#{user.id}")
+    Data.json(conn, 200, %{session: session})
   end
 
   # GET /sessions/:id
   def get_session(conn, user, session_id) do
     result =
       query!(Repo, """
-      SELECT id, name, messages, context, created_at, updated_at, mode
+      SELECT id, name, messages, context, created_at, updated_at
       FROM sessions WHERE id=? AND user_id=?
       """, [session_id, user.id])
 
@@ -100,44 +88,33 @@ defmodule DmhAi.Handlers.Data.Sessions do
       not (is_binary(d["id"]) and byte_size(d["id"]) > 0) ->
         Data.json(conn, 400, %{error: "id missing or empty — session id must be a non-empty string"})
 
-      d["mode"] not in @valid_modes ->
-        Data.json(conn, 400, %{error: "invalid mode", valid: @valid_modes})
-
       true ->
         query!(Repo, """
-        INSERT INTO sessions (id, name, messages, created_at, updated_at, user_id, mode)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO sessions (id, name, messages, created_at, updated_at, user_id)
+        VALUES (?, ?, ?, ?, ?, ?)
         """, [
           d["id"],
           d["name"],
           Jason.encode!(d["messages"] || []),
           d["createdAt"],
           now,
-          user.id,
-          d["mode"]
+          user.id
         ])
 
         Data.json(conn, 200, d)
     end
   end
 
-  # PUT /sessions/current — writes BOTH the mode preference and (optionally)
-  # the last-active session id for that mode. Accepts `{mode}` to switch mode
-  # only, or `{mode, id}` to also pin a session as last-active for that mode.
+  # PUT /sessions/current — pin the user's last-active session id.
   def put_current_session(conn, user) do
     {:ok, body, conn} = read_body(conn)
     d = Jason.decode!(body || "{}")
-    mode = d["mode"]
 
-    unless mode in @valid_modes do
-      Data.json(conn, 400, %{error: "invalid mode", valid: @valid_modes})
-    else
-      Settings.write_setting("current_mode_#{user.id}", mode)
-      if is_binary(d["id"]) do
-        Settings.write_setting("current_session_#{user.id}_#{mode}", d["id"])
-      end
-      Data.json(conn, 200, d)
+    if is_binary(d["id"]) do
+      Settings.write_setting("current_session_#{user.id}", d["id"])
     end
+
+    Data.json(conn, 200, d)
   end
 
   # POST /sessions/:id/name — call LLM to generate and persist a session name.
@@ -176,8 +153,8 @@ defmodule DmhAi.Handlers.Data.Sessions do
               %{"role" => "user", "content" => content} when is_binary(content) ->
                 trimmed = String.trim(content)
 
-                # /memo and /index are user intent for the KB layer, not
-                # conversation about a topic — skip so they don't bias
+                # /memo is user intent for the memo store, not
+                # conversation about a topic — skip so it doesn't bias
                 # the title. /tts IS conversation — the typed arg (or
                 # the user's literal request to read out loud whatever's
                 # attached) is the topical signal — so include the part
@@ -273,7 +250,6 @@ defmodule DmhAi.Handlers.Data.Sessions do
     query!(Repo, "DELETE FROM video_descriptions WHERE session_id=?", [session_id])
     query!(Repo, "DELETE FROM session_token_stats WHERE session_id=?", [session_id])
     query!(Repo, "DELETE FROM session_progress WHERE session_id=?", [session_id])
-    query!(Repo, "DELETE FROM session_services WHERE session_id=?", [session_id])
 
     session_dir = DmhAi.Constants.session_root(user.email, session_id)
     if File.dir?(session_dir) do
@@ -351,18 +327,13 @@ defmodule DmhAi.Handlers.Data.Sessions do
   end
 
   defp parse_session_row([id, name, messages, context, created_at, updated_at]) do
-    parse_session_row([id, name, messages, context, created_at, updated_at, "confidant"])
-  end
-
-  defp parse_session_row([id, name, messages, context, created_at, updated_at, mode]) do
     %{
       "id" => id,
       "name" => name,
       "messages" => Jason.decode!(messages || "[]"),
       "context" => Jason.decode!(context || "null"),
       "createdAt" => created_at,
-      "updatedAt" => updated_at,
-      "mode" => mode || "confidant"
+      "updatedAt" => updated_at
     }
   end
 end

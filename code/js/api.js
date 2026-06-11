@@ -7,19 +7,23 @@
 
 const SessionStore = {
     BASE: '/sessions',
+    // Mode was removed from the product — this is a Confidant-only build.
+    // The session UI still tracks a single "confidant" surface, so the
+    // store tags every session with that constant; the BE neither stores
+    // nor returns a mode.
     getSessions: async function() {
         const res = await apiFetch(this.BASE);
         if (!res.ok) return [];
-        return res.json();
+        const list = await res.json();
+        return Array.isArray(list)
+            ? list.map(function(s) { s.mode = 'confidant'; return s; })
+            : list;
     },
-    createSession: async function(name, mode) {
-        if (mode !== 'confidant' && mode !== 'assistant') {
-            throw new Error('SessionStore.createSession: mode must be "confidant" or "assistant", got: ' + mode);
-        }
+    createSession: async function(name) {
         const session = {
             id: Date.now().toString(),
             name: name || 'New Session',
-            mode: mode,
+            mode: 'confidant',
             messages: [],
             context: { summary: null, summaryUpToIndex: -1, needsNaming: true },
             createdAt: Date.now()
@@ -56,26 +60,23 @@ const SessionStore = {
     deleteSession: async function(id) {
         await apiFetch(this.BASE + '/' + id, { method: 'DELETE' });
     },
-    // Two modes (confidant / assistant) are fully separate surfaces, each
-    // with its own last-active session. The BE persists both per-mode IDs
-    // plus the user's top-level mode preference; returns them all in one
-    // shot so the FE can hydrate `_currentMode` + the right session id
-    // BEFORE the empty-state branch decides what to render.
+    // The BE returns the user's last-active session id (`{session}`). The
+    // session UI still expects a `{mode, sessions}` shape, so adapt to the
+    // single Confidant surface.
     getCurrentState: async function() {
         const res = await apiFetch(this.BASE + '/current');
-        if (!res.ok) return { mode: null, sessions: { confidant: null, assistant: null } };
-        return res.json();
+        if (!res.ok) return { mode: 'confidant', sessions: { confidant: null, assistant: null } };
+        const data = await res.json();
+        return { mode: 'confidant', sessions: { confidant: data.session || null, assistant: null } };
     },
-    // Persists the user's mode preference and (optionally) pins a session
-    // as last-active for that mode. Pass `id` whenever the FE switches to
-    // a session; pass just `{mode}` when switching modes without picking a
-    // specific session yet.
+    // Pin a session as the user's last-active session. (`mode` is vestigial
+    // FE state; the BE ignores it.)
     setCurrentState: async function(mode, id) {
-        const body = id ? { mode: mode, id: id } : { mode: mode };
+        if (!id) return;
         await apiFetch(this.BASE + '/current', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body)
+            body: JSON.stringify({ id: id })
         });
     }
 };
