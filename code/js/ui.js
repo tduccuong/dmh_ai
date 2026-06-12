@@ -390,13 +390,13 @@ function addCopyButtons(el) {
         var btn = document.createElement('button');
         btn.className = 'code-copy-btn';
         btn.type = 'button';
-        btn.innerHTML = '<span class="code-copy-label">Copy</span>' + COPY_ICON;
+        btn.title = 'Copy';
+        btn.innerHTML = COPY_ICON;
         btn.addEventListener('click', function() {
             navigator.clipboard.writeText(raw).then(function() {
-                btn.innerHTML = '<span class="code-copy-label">Copied</span>' + CHECK_ICON;
-                setTimeout(function() {
-                    btn.innerHTML = '<span class="code-copy-label">Copy</span>' + COPY_ICON;
-                }, 3000);
+                btn.innerHTML = CHECK_ICON;
+                btn.title = 'Copied';
+                setTimeout(function() { btn.innerHTML = COPY_ICON; btn.title = 'Copy'; }, 3000);
             });
         });
 
