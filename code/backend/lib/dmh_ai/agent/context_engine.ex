@@ -32,6 +32,7 @@ defmodule DmhAi.Agent.ContextEngine do
     web_context        = Keyword.get(opts, :web_context)
     user_facts         = Keyword.get(opts, :user_facts, "")
     user_memos         = Keyword.get(opts, :user_memos, "")
+    deliverable        = Keyword.get(opts, :deliverable, false)
     timezone           = Keyword.get(opts, :timezone)
     local_date         = Keyword.get(opts, :local_date)
 
@@ -45,14 +46,14 @@ defmodule DmhAi.Agent.ContextEngine do
                    )}
 
     {prefix, history_llm, relevant_msgs, last_msgs} =
-      build_core(session_data, images, files, web_context, user_facts, user_memos)
+      build_core(session_data, images, files, web_context, user_facts, user_memos, deliverable)
 
     [system_msg] ++ prefix ++ history_llm ++ relevant_msgs ++ last_msgs
   end
 
   # ─── Private ──────────────────────────────────────────────────────────────
 
-  defp build_core(session_data, images, files, web_context, user_facts, user_memos) do
+  defp build_core(session_data, images, files, web_context, user_facts, user_memos, deliverable) do
     messages =
       (session_data["messages"] || [])
       |> Enum.reject(&(&1["_archived"] == true))
@@ -84,7 +85,7 @@ defmodule DmhAi.Agent.ContextEngine do
 
     {history, last_msgs} =
       case Enum.split(recent, -1) do
-        {h, [last]} -> {h, [build_current_msg(last, images, files, web_context, user_facts, user_memos)]}
+        {h, [last]} -> {h, [build_current_msg(last, images, files, web_context, user_facts, user_memos, deliverable)]}
         {h, []}     -> {h, []}
       end
 
@@ -93,7 +94,7 @@ defmodule DmhAi.Agent.ContextEngine do
     {prefix, history_llm, relevant_msgs, last_msgs}
   end
 
-  defp build_current_msg(msg, images, files, web_context, user_facts, user_memos) do
+  defp build_current_msg(msg, images, files, web_context, user_facts, user_memos, deliverable) do
     base = msg["content"] || msg[:content] || ""
 
     attachments_block =
@@ -126,7 +127,7 @@ defmodule DmhAi.Agent.ContextEngine do
       end)
 
     content =
-      [base, attachments_block, facts_block, memos_block, web_block, file_blocks, confidant_runtime_instruction()]
+      [base, attachments_block, facts_block, memos_block, web_block, file_blocks, confidant_runtime_instruction(deliverable)]
       |> Enum.reject(&(&1 == ""))
       |> Enum.join("\n\n")
 
@@ -145,12 +146,20 @@ defmodule DmhAi.Agent.ContextEngine do
     if images != [], do: Map.put(llm_msg, :images, images), else: llm_msg
   end
 
-  defp confidant_runtime_instruction do
-    """
+  defp confidant_runtime_instruction(deliverable) do
+    base = """
     <runtime_instruction>
     Craft the most accurate, comprehensive answer to the user based on the ongoing conversation. Focus on the topic emerging from the most recent turns of the conversation — when the user's latest message refers implicitly to a subject already raised, it extends the prior topic; bridge them in your answer rather than treating the latest message as a fresh, isolated question. If <augmented_facts> blocks appear above, use their content as reference material to ground specific facts, figures, and names. Even when the augmented_facts cover only one side of the bridged topic, still relate your answer to the broader thread rather than restricting yourself to what the augmented_facts describe.
-    </runtime_instruction>\
     """
+
+    deliverable_directive =
+      if deliverable do
+        "\nThis turn is a DELIVERABLE request: reply with ONLY the finished text the user asked for, wrapped in a fenced code block — the opening ``` on its own line, the text on the lines below, the closing ``` on its own line — and nothing else. No preamble, no commentary, no closing suggestions.\n"
+      else
+        ""
+      end
+
+    base <> deliverable_directive <> "</runtime_instruction>"
   end
 
   defp retrieve_relevant(_old, ""), do: []

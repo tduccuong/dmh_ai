@@ -8,14 +8,14 @@ defmodule DmhAi.Web.Search do
   Web search implementation for the Confidant pipeline.
 
   Exposes:
-    generate_search_queries/3  — one LLM call: decides whether to search, picks the
-                                 SearXNG category, and generates optimised keyword queries.
-                                 Returns `{:no_search} | {:search, category, queries}`.
-                                 The trailing `meta` map (session_id + user_id) threads
-                                 through to the LLM trace so the swift-tier call lands
-                                 on the right token-stats row.
+    plan_turn/3                — one swift LLM call per user message: web-search decision +
+                                 category + keyword queries, a distilled memory-lookup query
+                                 for facts/memos retrieval, and a copy-ready-deliverable flag.
+                                 Returns `%{search:, memory_query:, deliverable:}`. The trailing
+                                 `meta` map (session_id + user_id) threads through to the LLM
+                                 trace so the swift-tier call lands on the right token-stats row.
     call_search_engine/3       — SearXNG search + page fetching via Web.Fetcher.
-    search/3                   — generate_search_queries |> call_search_engine.
+    search/3                   — plan_turn |> call_search_engine.
   """
 
   alias DmhAi.Agent.{AgentSettings, LLM}
@@ -83,16 +83,26 @@ defmodule DmhAi.Web.Search do
   - 4-8 words per query; keep all proper names, brand names, product names exactly as-is
   - Add time context only where needed: "today" for live info, "this week"/"last week" for recent events, %{month} %{year} for general recency
 
-  Output — exactly one of these two formats, no other text:
+  Step 5 — Memory lookup query (ALWAYS, independent of the search decision).
+  Distil the new message into a short keyword query used to look up THIS USER's own saved facts and notes. Resolve any pronoun or implicit reference against the recent turns, and strip chatter / filler — keep the core subject, entities, and attributes. If the message is pure chit-chat with nothing to look up, just repeat its main nouns.
+
+  Step 6 — Deliverable (ALWAYS).
+  YES if the new message asks you to PRODUCE a finished piece of text for the user to copy and use elsewhere — translate something, rewrite / refine / rephrase given text, draft a message or email, or compose a story / poem / post. NO for questions, discussion, advice, explanations, or anything that is not a take-away text artifact.
+
+  Output — no other text. ALWAYS end with the MEMORY and DELIVER lines:
 
   SEARCH: NO
+  MEMORY: keywords here
+  DELIVER: <YES|NO>
 
-  or:
+  or, when searching:
 
   SEARCH: YES
   CATEGORY: <NEWS|IT|GENERAL>
   LANG:xx keywords here
   LANG:xx more keywords
+  MEMORY: keywords here
+  DELIVER: <YES|NO>
   """
 
   @max_raw_results 10
@@ -102,34 +112,39 @@ defmodule DmhAi.Web.Search do
   # ---------------------------------------------------------------------------
 
   @doc """
-  One LLM call that decides whether to search, picks the SearXNG category,
-  and generates optimised keyword queries.
+  One swift LLM call that plans the turn — already seeing the recent user
+  messages, so the memory query and follow-up expansion resolve pronouns
+  against context. Decides whether to web-search (+ category + keyword
+  queries), distils a memory-lookup query for facts/memos retrieval, and
+  flags whether the turn is a copy-ready deliverable.
 
-  Returns:
-    * `{:no_search}`                      — search not needed (Confidant only)
-    * `{:search, category, queries}`      — `category` is "news"|"it"|"news,general";
-                                            `queries` is `[%{text, lang}]`
+  Returns `%{search: {:no_search} | {:search, category, queries},
+             memory_query: String.t(), deliverable: boolean()}`. On LLM
+  error it degrades to no-search / no memory query / not-deliverable.
   """
-  @spec generate_search_queries(String.t(), [String.t()], map()) ::
-          {:no_search} | {:search, String.t(), [%{text: String.t(), lang: String.t()}]}
-  def generate_search_queries(content, recent_msgs \\ [], meta \\ %{}) do
+  @spec plan_turn(String.t(), [String.t()], map()) :: %{
+          search: {:no_search} | {:search, String.t(), [%{text: String.t(), lang: String.t()}]},
+          memory_query: String.t(),
+          deliverable: boolean()
+        }
+  def plan_turn(content, recent_msgs \\ [], meta \\ %{}) do
     model  = AgentSettings.swift_model()
     prompt = build_prompt(content, recent_msgs)
 
     trace = %{
-      origin: "system", path: "Web.Search.generate_queries",
-      role: "WebQueryPlanner", phase: "plan",
+      origin: "system", path: "Web.Search.plan_turn",
+      role: "TurnPlanner", phase: "plan",
       session_id: Map.get(meta, :session_id),
       user_id:    Map.get(meta, :user_id),
       tier:       :swift
     }
     case LLM.call(model, [%{role: "user", content: prompt}], options: %{temperature: 0}, trace: trace) do
       {:ok, response} ->
-        parse_response(response, content)
+        parse_plan(response, content)
 
       {:error, reason} ->
-        Logger.warning("[Web.Search] generate_search_queries error: #{inspect(reason)}")
-        {:no_search}
+        Logger.warning("[Web.Search] plan_turn error: #{inspect(reason)}")
+        %{search: {:no_search}, memory_query: "", deliverable: false}
     end
   end
 
@@ -280,7 +295,7 @@ defmodule DmhAi.Web.Search do
       user_id:    Keyword.get(opts, :user_id)
     }
 
-    case generate_search_queries(content, recent_msgs, meta) do
+    case plan_turn(content, recent_msgs, meta).search do
       {:no_search} ->
         Logger.info("[Web.Search] no search needed")
         :no_search
@@ -324,23 +339,30 @@ defmodule DmhAi.Web.Search do
     |> String.replace("%{now}", now_str)
   end
 
-  defp parse_response(response, fallback) do
+  defp parse_plan(response, fallback) do
     lines = response |> String.trim() |> String.split("\n") |> Enum.map(&String.trim/1)
 
-    search_line = Enum.find(lines, fn l ->
-      String.upcase(l) |> String.starts_with?("SEARCH:")
-    end)
-
-    decision =
-      case search_line do
-        nil  -> "NO"
-        line -> line |> String.split(":") |> Enum.at(1, "") |> String.trim() |> String.upcase()
+    search =
+      if String.upcase(line_value(lines, "SEARCH:")) == "YES" do
+        {:search, extract_category(lines), extract_queries(lines, fallback)}
+      else
+        {:no_search}
       end
 
-    if decision == "YES" do
-      {:search, extract_category(lines), extract_queries(lines, fallback)}
-    else
-      {:no_search}
+    %{
+      search: search,
+      memory_query: line_value(lines, "MEMORY:"),
+      deliverable: String.upcase(line_value(lines, "DELIVER:")) == "YES"
+    }
+  end
+
+  # Value after the first `PREFIX:` line (case-insensitive), "" if absent.
+  defp line_value(lines, prefix) do
+    up = String.upcase(prefix)
+
+    case Enum.find(lines, fn l -> String.upcase(l) |> String.starts_with?(up) end) do
+      nil  -> ""
+      line -> line |> String.split(":", parts: 2) |> Enum.at(1, "") |> String.trim()
     end
   end
 

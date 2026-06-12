@@ -262,44 +262,29 @@ defmodule DmhAi.Agent.UserAgent do
     user_id = state.user_id
     model   = AgentSettings.confidant_model()
 
-    {web_context, facts_block, memos_block} =
+    {web_context, facts_block, memos_block, deliverable?} =
       if command.content != "" do
         user_msgs = SessionIO.extract_user_messages(session_data)
-        {facts_block, memos_block} = DmhAi.Kb.Query.blocks(user_id, command.content)
 
-        web_task =
-          Task.async(fn ->
-            case WebSearchEngine.generate_search_queries(command.content, user_msgs,
-                                                         %{session_id: session_id, user_id: user_id}) do
-              {:no_search} ->
-                nil
+        # One swift call understands the turn: web-search decision, a
+        # context-resolved memory-lookup query, and whether the reply is a
+        # copy-ready deliverable. Memory retrieval + web search then run in
+        # parallel off that plan; the raw message is the fallback query.
+        plan = WebSearchEngine.plan_turn(command.content, user_msgs,
+                 %{session_id: session_id, user_id: user_id})
 
-              {:search, category, queries} ->
-                DmhAi.SysLog.log("[SEARCH] category=#{category} queries=#{inspect(Enum.map(queries, & &1.text))}")
+        mem_q = if plan.memory_query != "", do: plan.memory_query, else: command.content
 
-                progress_ctx = %{session_id: session_id, user_id: user_id}
-                label_preview = "WebSearch → " <> String.slice(command.content, 0, 80)
-                {:ok, row} =
-                  DmhAi.Agent.SessionProgress.append(
-                    progress_ctx, "confidant_websearch", label_preview, status: "pending")
-
-                t0 = System.monotonic_time(:millisecond)
-
-                result =
-                  WebSearchEngine.call_search_engine(
-                    queries, category, progress_row_id: row.id)
-
-                DmhAi.Agent.SessionProgress.mark_tool_done(
-                  row.id, System.monotonic_time(:millisecond) - t0)
-
-                ContextBuilders.build_web_context(command.content, result, nil)
-            end
-          end)
+        kb_task  = Task.async(fn -> DmhAi.Kb.Query.blocks(user_id, mem_q) end)
+        web_task = Task.async(fn -> run_web_search(plan.search, command.content, session_id, user_id) end)
 
         pre_timeout = AgentSettings.confidant_pre_step_timeout_ms()
-        {Task.await(web_task, pre_timeout), facts_block, memos_block}
+        {facts_block, memos_block} = Task.await(kb_task, pre_timeout)
+        web_context = Task.await(web_task, pre_timeout)
+
+        {web_context, facts_block, memos_block, plan.deliverable}
       else
-        {nil, "", ""}
+        {nil, "", "", false}
       end
 
     image_descriptions = ContextBuilders.load_image_descriptions(session_id)
@@ -317,6 +302,7 @@ defmodule DmhAi.Agent.UserAgent do
         web_context:        web_context,
         user_facts:         facts_block,
         user_memos:         memos_block,
+        deliverable:        deliverable?,
         timezone:           command.timezone,
         local_date:         command.local_date
       )
@@ -358,5 +344,25 @@ defmodule DmhAi.Agent.UserAgent do
     end
 
     :ok
+  end
+
+  # Run the web-search leg from the turn plan: SearXNG + page fetch, with a
+  # progress row the FE renders. Returns the formatted web context, or nil.
+  defp run_web_search({:no_search}, _content, _session_id, _user_id), do: nil
+
+  defp run_web_search({:search, category, queries}, content, session_id, user_id) do
+    DmhAi.SysLog.log("[SEARCH] category=#{category} queries=#{inspect(Enum.map(queries, & &1.text))}")
+
+    progress_ctx = %{session_id: session_id, user_id: user_id}
+    label_preview = "WebSearch → " <> String.slice(content, 0, 80)
+    {:ok, row} =
+      DmhAi.Agent.SessionProgress.append(
+        progress_ctx, "confidant_websearch", label_preview, status: "pending")
+
+    t0 = System.monotonic_time(:millisecond)
+    result = WebSearchEngine.call_search_engine(queries, category, progress_row_id: row.id)
+    DmhAi.Agent.SessionProgress.mark_tool_done(row.id, System.monotonic_time(:millisecond) - t0)
+
+    ContextBuilders.build_web_context(content, result, nil)
   end
 end
