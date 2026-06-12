@@ -101,7 +101,7 @@ class Page:
 
     def eval(self, expr, await_promise=False):
         r = self.cmd("Runtime.evaluate", expression=expr, returnByValue=True,
-                     awaitPromise=await_promise, userGesture=True)
+                     awaitPromise=await_promise)
         if r.get("exceptionDetails"):
             raise RuntimeError("JS exception: " + json.dumps(r["exceptionDetails"])[:400])
         return r.get("result", {}).get("value")

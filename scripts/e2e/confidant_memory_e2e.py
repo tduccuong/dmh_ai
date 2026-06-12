@@ -110,6 +110,13 @@ def login(p):
     return p.wait_for("!!document.getElementById('message-input')", timeout=20)
 
 
+def wait_session_ready(p):
+    # A current session must exist before the first send (else it races a
+    # null session). Wait generously, then settle.
+    p.wait_for("!!(window.UIManager && UIManager.currentSession)", timeout=25)
+    time.sleep(1.5)
+
+
 def _acount(p):
     return p.eval("document.querySelectorAll('.message.assistant').length")
 
@@ -132,24 +139,17 @@ def _streaming(p):
     return bool(p.eval("typeof UIManager !== 'undefined' && !!UIManager.isStreaming"))
 
 
-def wait_reply(p, prev, timeout=90):
-    """Wait until the turn fully completes — a new assistant bubble exists,
-    streaming has stopped, and its text is non-empty.
-
-    Gating on `isStreaming == false` is essential: returning mid-stream
-    makes the next send take the mid-chain path (no fresh placeholder),
-    which strands the conversation. An LLM turn flips `isStreaming` true
-    then false; a `/memo` command renders its ack instantly without
-    streaming — the leading grace covers both.
+def wait_reply(p, prev, timeout=120):
+    """Wait until the turn completes: a new assistant bubble, streaming
+    stopped, non-empty text. Gating on `isStreaming == false` keeps the
+    next send out of the mid-chain path.
     """
-    time.sleep(1.5)  # let an LLM turn flip isStreaming true before we poll
+    time.sleep(1.5)
     end = time.time() + timeout
     while time.time() < end:
-        if not _streaming(p) and _acount(p) > prev:
-            t = _last_assistant(p)
-            if t:
-                return t
-        time.sleep(1.0)
+        if _acount(p) > prev and not _streaming(p) and _last_assistant(p):
+            return _last_assistant(p)
+        time.sleep(1.5)
     return _last_assistant(p)
 
 
@@ -168,6 +168,7 @@ def main():
     try:
         p = Page()
         check("login", login(p))
+        wait_session_ready(p)
         p.shot("01_login_done")
 
         for m in FACTS:
