@@ -1809,6 +1809,13 @@ UIManager._buildSplashEl = function(_mode) {
         wrap.appendChild(ul);
     }
 
+    if (data.outro) {
+        var outro = document.createElement('p');
+        outro.className = 'splash-outro';
+        outro.textContent = data.outro;
+        wrap.appendChild(outro);
+    }
+
     return wrap;
 };
 
