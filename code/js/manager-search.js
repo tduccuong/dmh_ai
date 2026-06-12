@@ -22,6 +22,12 @@ function digestThinking(raw, final) {
 UIManager.sendMessage = async function() {
     const self = this;
 
+    // No active session yet (e.g. send fired before the session finished
+    // loading) — there's nothing to attach the message to. Bail BEFORE
+    // touching streaming state, so a stray early send can't throw on a null
+    // session and leave the UI wedged in a "streaming" state.
+    if (!this.currentSession) return;
+
     // Phase 2 mid-chain send: if a chain is already streaming, take the
     // fast path — POST the message, let the BE queue it (the already-
     // running `pollTurnToCompletion` will pick up both the user message
