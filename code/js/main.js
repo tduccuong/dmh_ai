@@ -70,10 +70,6 @@ function applyLanguage() {
     document.getElementById('settings-video-detail-label').textContent = t('videoDetailLabel');
     var vdSel = document.getElementById('settings-video-detail');
     if (vdSel) { vdSel.options[0].textContent = t('videoDetailLow'); vdSel.options[1].textContent = t('videoDetailMedium'); vdSel.options[2].textContent = t('videoDetailHigh'); }
-    var extConnectorsLabel = document.getElementById('user-external-connectors-label');
-    if (extConnectorsLabel) extConnectorsLabel.textContent = t('externalConnectors');
-    var servicesLabel = document.getElementById('user-services-label');
-    if (servicesLabel) servicesLabel.textContent = t('myServices');
     document.getElementById('user-about-btn').lastChild.textContent = t('aboutBtn');
     document.getElementById('about-desc').textContent = t('aboutDesc');
     document.getElementById('about-legal-title').textContent = t('aboutLegalTitle');
@@ -648,34 +644,7 @@ const UIManager = {
             if (e.target === e.currentTarget) document.getElementById('mgr-overlay').classList.remove('visible');
         });
 
-        this._initRouter();
         this.checkAuthAndInit();
-    },
-
-    // Register client-side routes and run the initial dispatch.
-    // Called once at boot, AFTER all event wiring is in place.
-    // The matching handler runs against the URL the page loaded on
-    // — so a refresh of /connectors/google_workspace lands on the
-    // right view without a flicker through chat.
-    _initRouter: function() {
-        if (typeof Router === 'undefined' || typeof ExternalConnectors === 'undefined') return;
-
-        Router.on('/connectors', function() {
-            ExternalConnectors.show(null);
-        });
-        Router.on('/connectors/:slug', function(p) {
-            ExternalConnectors.show(p.slug);
-        });
-        Router.fallback(function() {
-            // Anything else → chat. Hide the external-connectors view
-            // if it was showing; the existing chat DOM stays intact
-            // since we only toggle a body class.
-            if (typeof ExternalConnectors !== 'undefined') {
-                ExternalConnectors.hide();
-            }
-        });
-
-        Router.init();
     },
 
     showLoginScreen: function() {
@@ -867,89 +836,9 @@ const UIManager = {
     }
 };
 
-// `?services=connected&slug=<slug>` lands here after the BE's
-// connector_oauth callback meta-refreshes the browser back into the
-// app. Pop a green toast, refresh the My Services overlay if it's
-// open, and strip the query so a reload doesn't re-fire. Also wired
-// to `visibilitychange` for the iOS PWA case where the user runs
-// the OAuth dance in Safari and reopens the home-screen icon —
-// we re-check whenever the PWA regains visibility.
-function handleConnectorOauthReturn() {
-    try {
-        var p = new URLSearchParams(window.location.search);
-        if (p.get('services') !== 'connected') return;
-        var slug = (p.get('slug') || '').replace(/[^a-z0-9_]/gi, '');
-        if (!slug) return;
-
-        // Strip the query so a reload doesn't re-fire.
-        var url = window.location.pathname + window.location.hash;
-        window.history.replaceState({}, '', url);
-
-        showOauthResultToast('connected', slug, null);
-    } catch (e) { /* benign */ }
-}
-
-// Surface an OAuth-flow outcome to the user. Handles both the
-// new-tab BroadcastChannel path (called by the listener below)
-// AND the same-tab `?services=connected` fallback path (called
-// by handleConnectorOauthReturn above). Slug may be null for
-// errors where the OAuth state row had already expired and the
-// callback couldn't resolve which connector failed.
-function showOauthResultToast(status, slug, message) {
-    if (typeof UIManager === 'undefined' || !UIManager.showToast) return;
-
-    if (status === 'connected' && slug) {
-        var label = slug.split('_').map(function(w) {
-            return w.charAt(0).toUpperCase() + w.slice(1);
-        }).join(' ');
-        UIManager.showToast('✓ <strong>' + label + '</strong> connected', 'success');
-    } else if (status === 'connected') {
-        UIManager.showToast('✓ Service connected', 'success');
-    } else if (slug) {
-        var labelE = slug.split('_').map(function(w) {
-            return w.charAt(0).toUpperCase() + w.slice(1);
-        }).join(' ');
-        UIManager.showToast(
-            '✗ <strong>' + labelE + '</strong> OAuth failed — try again from My Services',
-            'info'
-        );
-    } else {
-        UIManager.showToast(
-            '✗ OAuth failed' + (message ? ': ' + escapeHtml(message) : '') +
-            ' — try again from My Services',
-            'info'
-        );
-    }
-    // MyServices.render() re-fetches /me/services on every open, so
-    // the next overlay open will see the updated rows. Nothing to
-    // invalidate here.
-}
-
-// Cross-tab signal from a new-tab OAuth flow. The BE's callback
-// page posts `{type: "oauth_result", status, slug, message}` on
-// the `dmh-ai-oauth` BroadcastChannel right before `window.close()`.
-// This chat tab listens; on receive, fires the same toast UX as
-// the same-tab `?services=connected` path.
-function setupOauthBroadcastChannel() {
-    if (!('BroadcastChannel' in window)) return;
-    try {
-        var bc = new BroadcastChannel('dmh-ai-oauth');
-        bc.onmessage = function(ev) {
-            if (!ev.data || ev.data.type !== 'oauth_result') return;
-            var slug = (ev.data.slug || '').replace(/[^a-z0-9_]/gi, '');
-            showOauthResultToast(ev.data.status, slug || null, ev.data.message || null);
-        };
-    } catch (e) { /* BroadcastChannel unavailable — benign */ }
-}
-
 document.addEventListener('DOMContentLoaded', function() {
     Lightbox.init();
     UIManager.init();
-    handleConnectorOauthReturn();
-    setupOauthBroadcastChannel();
-    document.addEventListener('visibilitychange', function() {
-        if (document.visibilityState === 'visible') handleConnectorOauthReturn();
-    });
     // Third-tier language fallback. Runs only when neither localStorage
     // nor navigator.languages produced a supported language; resolves
     // async and re-applies the UI strings if the BE returns a hint.
