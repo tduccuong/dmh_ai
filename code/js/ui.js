@@ -342,20 +342,31 @@ var COPY_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" str
 var CHECK_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
 
 // Wrap each fenced block in a `.code-block` with a header bar carrying a
-// "Copy <icon>" button on the right. Idempotent — skips blocks already wrapped
-// (re-render during streaming rebuilds the <pre>, so it re-wraps cleanly).
+// "Copy <icon>" button. Idempotent — skips blocks already wrapped (a
+// re-render during streaming rebuilds the <pre>, so it re-wraps cleanly).
+//
+// A plain / `text` / `md` fence is a prose DELIVERABLE (a translation, draft,
+// story…): its content is rendered as markdown so formatting shows, while Copy
+// still yields the raw source. A language-tagged fence (```python, …) is real
+// code and stays verbatim + monospace.
+var CODE_PROSE_LANGS = { '': 1, text: 1, txt: 1, plain: 1, plaintext: 1, markdown: 1, md: 1, deliverable: 1 };
+
 function addCopyButtons(el) {
     el.querySelectorAll('pre').forEach(function(pre) {
         if (pre.parentElement && pre.parentElement.classList.contains('code-block')) return;
+
+        var code = pre.querySelector('code');
+        var raw = (code || pre).textContent;
+        var lang = '';
+        if (code) { var m = (code.className || '').match(/language-([\w-]+)/); if (m) lang = m[1].toLowerCase(); }
+        var isProse = !!CODE_PROSE_LANGS[lang];
 
         var btn = document.createElement('button');
         btn.className = 'code-copy-btn';
         btn.type = 'button';
         btn.innerHTML = '<span class="code-copy-label">Copy</span>' + COPY_ICON;
         btn.addEventListener('click', function() {
-            var code = pre.querySelector('code');
-            var text = (code || pre).textContent;
-            navigator.clipboard.writeText(text).then(function() {
+            navigator.clipboard.writeText(raw).then(function() {
                 btn.innerHTML = '<span class="code-copy-label">Copied</span>' + CHECK_ICON;
                 setTimeout(function() {
                     btn.innerHTML = '<span class="code-copy-label">Copy</span>' + COPY_ICON;
@@ -368,10 +379,20 @@ function addCopyButtons(el) {
         header.appendChild(btn);
 
         var wrap = document.createElement('div');
-        wrap.className = 'code-block';
+        wrap.className = 'code-block' + (isProse ? ' deliverable' : '');
         pre.parentNode.insertBefore(wrap, pre);
         wrap.appendChild(header);
-        wrap.appendChild(pre);
+
+        if (isProse && typeof renderWithMath === 'function') {
+            var bodyDiv = document.createElement('div');
+            bodyDiv.className = 'deliverable-body';
+            try { bodyDiv.innerHTML = renderWithMath(raw); }
+            catch (e) { bodyDiv.textContent = raw; }
+            wrap.appendChild(bodyDiv);
+            pre.remove();
+        } else {
+            wrap.appendChild(pre);
+        }
     });
 }
 
