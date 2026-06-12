@@ -10,9 +10,26 @@ if config_env() != :test do
     pool_size: 5,
     busy_timeout: 5000,
     load_extensions: [SqliteVec.path()]
+
+  # Confidant memory stores live alongside chat.db. Each loads vec0 + spellfix1.
+  kb_dir = Path.dirname(db_path)
+
+  config :dmh_ai, DmhAi.FactsRepo,
+    database: Path.join(kb_dir, "facts.db"),
+    pool_size: 3,
+    busy_timeout: 5000,
+    load_extensions: [SqliteVec.path(), DmhAi.SpellFix.path()]
+
+  config :dmh_ai, DmhAi.MemosRepo,
+    database: Path.join(kb_dir, "memos.db"),
+    pool_size: 3,
+    busy_timeout: 5000,
+    load_extensions: [SqliteVec.path(), DmhAi.SpellFix.path()]
 else
-  # Tests still need the extension loaded so vec0 virtual tables work.
+  # Tests still need the extensions loaded so vec0 + spellfix1 work.
   config :dmh_ai, DmhAi.Repo, load_extensions: [SqliteVec.path()]
+  config :dmh_ai, DmhAi.FactsRepo, load_extensions: [SqliteVec.path(), DmhAi.SpellFix.path()]
+  config :dmh_ai, DmhAi.MemosRepo, load_extensions: [SqliteVec.path(), DmhAi.SpellFix.path()]
 end
 
 # HTTP/HTTPS bind interface — defaults to loopback so a fresh install

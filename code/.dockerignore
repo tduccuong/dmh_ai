@@ -9,3 +9,6 @@ backend/erl_crash.dump
 backend/dmhai.db
 backend/dmhai.db-*
 backend/tmp/
+
+# Compiled in the musl builder; never ship a host (glibc) build.
+backend/priv/spellfix1.so

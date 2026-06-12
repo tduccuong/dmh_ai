@@ -12,7 +12,6 @@ defmodule DmhAi.Agent.ProgressLabel do
 
       RunScript → #!/bin/bash Scan the local network for devices that might …
       WebFetch → https://vnexpress.net/hai-a-hau-miss-world-vietnam-ve-que-…
-      FetchIndex → quarterly revenue figures
 
   Shape:
     - Tool name → PascalCase

@@ -10,15 +10,15 @@ defmodule DmhAi.Agent.TokenTracker do
   Every LLM call site reports `(rx, tx)` against a tier atom:
 
       :master    — the user-facing assistant chain
-      :swift     — short single-shot calls (Compactor, Swift.localize,
-                   session-naming, query planner, link scorer, KB tagger)
-      :oracle    — ProfileExtractor and friends
+      :swift     — short single-shot calls (Compactor, fact extraction,
+                   session-naming, query planner, /tts + /duolang segmentation)
+      :oracle    — long, dense content processing (web result synthesis)
       :vision    — image / video / OCR describers
       :embedding — embedding endpoint usage (kb_embedding_model)
 
   Reports land in `session_token_stats`. A session-scoped call writes
-  to the row keyed by its `session_id`; a session-less call (e.g.
-  ProfileExtractor or KB ingest tagging that runs at user-global
+  to the row keyed by its `session_id`; a session-less call (e.g. the
+  background fact extractor that runs at user-global
   scope) writes to a sentinel row keyed by `@user_global_sentinel`.
   `get_session_stats/1` exposes the per-session totals; `get_global_stats/1`
   sums across ALL rows for the user, including the sentinel row.
@@ -41,9 +41,9 @@ defmodule DmhAi.Agent.TokenTracker do
   @tiers [:master, :swift, :oracle, :vision, :embedding]
 
   # Sentinel session_id for LLM calls that have no session context
-  # (ProfileExtractor extraction, KB ingest tagging, etc). Same row
-  # shape as a real session — the FE never displays it under a session
-  # name; only `get_global_stats/1` reads it.
+  # (background fact extraction, etc). Same row shape as a real
+  # session — the FE never displays it under a session name; only
+  # `get_global_stats/1` reads it.
   @user_global_sentinel "_user_global"
 
   @doc "The canonical list of tier atoms understood by `add/5`."

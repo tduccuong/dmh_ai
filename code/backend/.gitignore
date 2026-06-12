@@ -24,3 +24,4 @@ Thumbs.db
 
 # Dialyzer
 /priv/plts/
+priv/spellfix1.so

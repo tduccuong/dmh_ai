@@ -21,15 +21,16 @@ defmodule DmhAi.Agent.AgentSettings do
   #
   #   confidantModel — Confidant answer. Conversational, image-capable.
   #   swiftModel     — Swift tier. Short, single-shot decisions:
-  #                    Swift.localize, Web.Search query planner,
-  #                    session naming. Cheapest model — latency
-  #                    dominates over quality.
+  #                    fact extraction, Web.Search query planner,
+  #                    session naming, /tts + /duolang segmentation.
+  #                    Cheapest model — latency dominates over quality.
   #   oracleModel    — Oracle tier. Long, dense content processing:
-  #                    web result synthesis, profile extraction +
-  #                    condensation. Strong general model.
+  #                    web result synthesis. Strong general model.
   #   visionModel    — Vision/OCR. Image describe, video describe,
   #                    PDF OCR. Must be image-capable.
-  #   kbEmbeddingModel — Memo vector embedder. See specs/vector_kb.md.
+  #   kbEmbeddingModel — Embedder for the confidant memory stores
+  #                    (facts.db / memos.db). See
+  #                    arch_wiki/dmh_ai/facts_memos.md.
   @defaults %{
     "confidantModel"   => "ollama-cloud::gemma4:31b-cloud",
     "swiftModel"       => "ollama-cloud::ministral-3:14b-cloud",
@@ -134,18 +135,6 @@ defmodule DmhAi.Agent.AgentSettings do
   # §Rolling tool-result flush.
   @tool_result_retention_turns_default 1
 
-  # ProfileExtractor batching. The extractor walks unprocessed user
-  # messages across all of a user's sessions and fires its single LLM
-  # call once `profile_extract_batch_size` messages have accumulated
-  # past the per-user `last_profile_extracted_msg_ts` watermark. The
-  # call returns the FULL UPDATED PROFILE (merge happens inside the
-  # LLM, not in code) — no separate condense pass.
-  # `profile_max_bullets` is a soft size cap injected into the prompt
-  # when the existing profile is large; the LLM is asked to merge
-  # near-dup keys and drop lowest-signal values to stay under it.
-  @profile_extract_batch_size_default 5
-  @profile_max_bullets_default 42
-
   # Auto session naming. The Data handler's `post_name_session` pulls
   # the last N user messages (slash commands skipped) and feeds them
   # to a swift-tier LLM. On a refresh-rename it also passes the
@@ -199,15 +188,6 @@ defmodule DmhAi.Agent.AgentSettings do
   # row when something is genuinely wedged.
   @confidant_pre_step_timeout_ms_default 60_000
 
-  # Path to the deployment-wide memo master key file — see
-  # specs/memo_encryption.md. Default lives one level OUT of /data/db/
-  # so operators backing up the DB don't pick up the key by accident
-  # (defeating the encryption-at-rest claim). Generated lazily on
-  # first BE start if missing; persistent across restarts. Override
-  # via `DMHAI_MEMO_MASTER_KEY` env var (base64-encoded 32 bytes) if
-  # the operator prefers an externally-supplied key.
-  @memo_master_key_path_default "/data/secrets/dmh_ai_master.key"
-
   # Output-token ceiling (num_predict) passed to every assistant-mode
   # LLM.stream call. `num_predict` is a ceiling, NOT a prepaid budget
   # — unused headroom has no cost. Set far above any practical
@@ -248,87 +228,23 @@ defmodule DmhAi.Agent.AgentSettings do
   # tells the model to focus on relevant facts and ignore noise.
   @web_results_max_chars_default 12_000
 
-  # Vector knowledge base — see specs/vector_kb.md. Chunk size targets
-  # the embedding model's recall sweet spot (256–512 tokens for dense
-  # retrieval). qwen3-embedding-0.6b emits 1024-dim vectors; changing
-  # `kb_embedding_dim` requires a full reindex (the SQLite-blob backend
-  # rejects mismatched rows on insert).
-  # Knowledge-scope (`/index`) chunking — long curated documents.
-  @kb_chunk_tokens_default 400
-  @kb_chunk_overlap_tokens_default 60
-
-  # `/index <url>` BFS crawl. v1 was single-page; v2 (#178) walks
-  # same-prefix pages up to a depth + page cap, indexing each. The
-  # caps are conservative defaults for typical doc sites; raise
-  # `learn_url_max_pages` for a deep API reference, lower
-  # `learn_url_max_depth` for a flat marketing site.
-  @learn_url_max_depth_default 5
-  @learn_url_max_pages_default 200
-  @learn_url_concurrency_default 1
-
-  # Ad-hoc `web_crawl` tool (Layer-1 Q&A; ephemeral, not KB-indexed).
-  # Defaults are conservative — the result lands inline in the LLM's
-  # tool-result message, so 20 × 3000 = ~60 KB plain text. The hard
-  # caps prevent a runaway from exhausting context.
-  @web_crawl_max_pages_default        20
-  @web_crawl_max_pages_hard_cap       50
-  @web_crawl_max_depth_default        2
-  @web_crawl_max_depth_hard_cap       4
-  @web_crawl_max_chars_per_page_default 3000
-  @web_crawl_per_fetch_delay_ms_default 300
-  @web_crawl_total_timeout_ms_default   30_000
-  @web_crawl_branch_factor_default      4    # top-K links to follow per depth boundary
-
-  # Memo-scope (`/memo`) chunking — much smaller. Users typically
-  # save 2-sentence facts (~30–40 tokens) and rarely exceed 20
-  # sentences (~300–400 tokens). At ~50 tokens / chunk, a typical
-  # 2-sentence memo stays as a single sharp chunk while longer
-  # memos split into ~3-sentence units. Sharper chunks → query
-  # vectors align tightly with the matching fact-bearing chunk
-  # → higher cosine scores → the 0.55 threshold becomes a clean
-  # signal of "actually about this topic". See specs/vector_kb.md.
-  @kb_memo_chunk_tokens_default 50
-  @kb_memo_chunk_overlap_tokens_default 10
-  @kb_top_n_default 8
-
-  # Maximum Marginal Relevance — diversification on retrieval.
-  # The vector store returns the top-`pool_size` candidates by raw
-  # cosine; we then MMR-pick the final `top_n` so near-duplicate
-  # chunks (e.g. identical boilerplate error blocks copied across
-  # many docs) drop out and the model sees diverse context.
-  # Lambda controls the balance — 1.0 = pure relevance (no
-  # diversification), 0.0 = pure novelty. 0.6 favours relevance
-  # while still penalising near-duplicates.
-  # See specs/vector_kb.md §retrieval.
-  @kb_mmr_pool_size_default 30
-  @kb_mmr_lambda_default 0.6
-
+  # Embedding model output dim + request batching for the confidant
+  # memory stores (facts.db / memos.db). qwen3-embedding-0.6b emits
+  # 1024-dim vectors; changing `kb_embedding_dim` requires a full
+  # reindex (the SQLite-blob store rejects mismatched rows on insert).
   @kb_embedding_dim_default 1024
   @kb_embedding_batch_size_default 32
 
-  # Cap on memo hits attached to the `<augmented_facts type="memo">`
-  # block in Confidant's auto-retrieve pre-step. The score threshold already
-  # filters out weak hits; this is a safety against a user whose
-  # memo store has many similar entries (e.g. twenty bank-related
-  # notes) so the prompt doesn't bloat. See specs/commands.md
-  # §Confidant memo auto-retrieve.
-  @memo_context_top_k_default 5
-
-  # Inline-text /index semantic-merge gate — a new body whose centroid
-  # is at-or-above this cosine score against an existing source merges
-  # into that source instead of creating a new one. High enough that
-  # distinct topics don't collapse, low enough that "same content with
-  # a typo fix / extra paragraph" merges.
-  @kb_text_merge_threshold_default 0.92
-
-  # Background relearn supervisor — caps simultaneous re-fetches.
-  @kb_relearn_concurrency_default 4
-
-  # Primitive 0.2 — minimum seconds between BG refreshes for the same
-  # source_id. A query storm on a hot topic collapses to one upstream
-  # HEAD-check per source per window. Per-org tunable; the default
-  # balances freshness vs upstream load.
-  @bg_refresh_min_interval_s_default 600
+  # Confidant memory (facts.db / memos.db) — see arch_wiki/dmh_ai/facts_memos.md.
+  # Max spellfix1 edit distance for a typo-repaired query token. spellfix1's
+  # metric is scaled (~10 per single-char edit, ~40 for a longer-word typo,
+  # 256 for unrelated); 200 accepts genuine typos and rejects noise.
+  @kb_spellfix_max_distance_default 200
+  # Unprocessed-user-message batch before the swift fact extractor fires.
+  @fact_extract_batch_size_default 3
+  # Top-K facts / memos surfaced into the <user_facts> / <user_memos> blocks.
+  @user_facts_top_k_default 5
+  @user_memos_top_k_default 5
 
   @doc """
   Get the model string for a given agent role. Returns the default if
@@ -404,16 +320,6 @@ defmodule DmhAi.Agent.AgentSettings do
   @spec write_failure_budget_per_chain() :: pos_integer()
   def write_failure_budget_per_chain,
     do: int_setting("writeFailureBudgetPerChain", @write_failure_budget_per_chain_default)
-
-  @doc "Number of unprocessed user messages required before ProfileExtractor fires one LLM call."
-  @spec profile_extract_batch_size() :: pos_integer()
-  def profile_extract_batch_size,
-    do: int_setting("profileExtractBatchSize", @profile_extract_batch_size_default)
-
-  @doc "Soft upper bound (bullet count) on the merged profile. Injected as a size hint into the extractor prompt."
-  @spec profile_max_bullets() :: pos_integer()
-  def profile_max_bullets,
-    do: int_setting("profileMaxBullets", @profile_max_bullets_default)
 
   @doc "Number of recent user messages fed to the auto session-namer LLM call."
   @spec session_namer_user_msg_count() :: pos_integer()
@@ -567,11 +473,6 @@ defmodule DmhAi.Agent.AgentSettings do
   def confidant_pre_step_timeout_ms,
     do: int_setting("confidantPreStepTimeoutMs", @confidant_pre_step_timeout_ms_default)
 
-  @doc "Filesystem path to the deployment's memo master key file."
-  @spec memo_master_key_path() :: String.t()
-  def memo_master_key_path,
-    do: string_setting("memoMasterKeyPath", @memo_master_key_path_default)
-
   @doc """
   Output-token ceiling (`num_predict`) applied to every assistant-mode
   LLM.stream call. A ceiling, not a reservation: unused headroom has
@@ -645,104 +546,23 @@ defmodule DmhAi.Agent.AgentSettings do
   def web_results_max_chars,
     do: int_setting("webResultsMaxChars", @web_results_max_chars_default)
 
-  @doc "Target chunk size (tokens) for `/index` (knowledge-scope) ingestion."
-  @spec kb_chunk_tokens() :: pos_integer()
-  def kb_chunk_tokens, do: int_setting("kbChunkTokens", @kb_chunk_tokens_default)
+  @doc "Max spellfix1 edit distance for a typo-repaired query token (facts/memos)."
+  @spec kb_spellfix_max_distance() :: pos_integer()
+  def kb_spellfix_max_distance,
+    do: int_setting("kbSpellfixMaxDistance", @kb_spellfix_max_distance_default)
 
-  @doc "Overlap (tokens) between adjacent `/index` chunks."
-  @spec kb_chunk_overlap_tokens() :: pos_integer()
-  def kb_chunk_overlap_tokens, do: int_setting("kbChunkOverlapTokens", @kb_chunk_overlap_tokens_default)
+  @doc "Unprocessed-user-message batch before the swift fact extractor fires."
+  @spec fact_extract_batch_size() :: pos_integer()
+  def fact_extract_batch_size,
+    do: int_setting("factExtractBatchSize", @fact_extract_batch_size_default)
 
-  @doc """
-  Target chunk size (tokens) for `/memo` (memo-scope) ingestion.
-  Much smaller than `kb_chunk_tokens` because memos are short
-  personal facts, not long documents — see the @kb_memo_chunk_*
-  comment block above.
-  """
-  @spec kb_memo_chunk_tokens() :: pos_integer()
-  def kb_memo_chunk_tokens, do: int_setting("kbMemoChunkTokens", @kb_memo_chunk_tokens_default)
+  @doc "Top-K facts surfaced into the <user_facts> block each LLM call."
+  @spec user_facts_top_k() :: pos_integer()
+  def user_facts_top_k, do: int_setting("userFactsTopK", @user_facts_top_k_default)
 
-  @doc "Overlap (tokens) between adjacent `/memo` chunks."
-  @spec kb_memo_chunk_overlap_tokens() :: pos_integer()
-  def kb_memo_chunk_overlap_tokens, do: int_setting("kbMemoChunkOverlapTokens", @kb_memo_chunk_overlap_tokens_default)
-
-  @doc "Default top-N for retrieve_knowledge / retrieve_memo searches."
-  @spec kb_top_n() :: pos_integer()
-  def kb_top_n, do: int_setting("kbTopN", @kb_top_n_default)
-
-  @doc "Maximum BFS depth for `/index <url>` deep-crawl. Start URL is depth 0."
-  @spec learn_url_max_depth() :: pos_integer()
-  def learn_url_max_depth, do: int_setting("learnUrlMaxDepth", @learn_url_max_depth_default)
-
-  @doc "Maximum total pages indexed per `/index <url>` invocation."
-  @spec learn_url_max_pages() :: pos_integer()
-  def learn_url_max_pages, do: int_setting("learnUrlMaxPages", @learn_url_max_pages_default)
-
-  @doc "Parallel page fetches per crawl. Default 1 (strict sequential — one progress row at a time on the FE)."
-  @spec learn_url_concurrency() :: pos_integer()
-  def learn_url_concurrency, do: int_setting("learnUrlConcurrency", @learn_url_concurrency_default)
-
-  # ── web_crawl tool ──────────────────────────────────────────────────
-
-  @doc "Default `max_pages` for `web_crawl`; hard-capped by `web_crawl_max_pages_hard_cap/0`."
-  @spec web_crawl_max_pages_default() :: pos_integer()
-  def web_crawl_max_pages_default,
-    do: int_setting("webCrawlMaxPagesDefault", @web_crawl_max_pages_default)
-
-  @doc "Absolute upper bound on `max_pages` regardless of caller arg — protects context."
-  @spec web_crawl_max_pages_hard_cap() :: pos_integer()
-  def web_crawl_max_pages_hard_cap,
-    do: int_setting("webCrawlMaxPagesHardCap", @web_crawl_max_pages_hard_cap)
-
-  @doc "Default `max_depth` for `web_crawl`; hard-capped by `web_crawl_max_depth_hard_cap/0`."
-  @spec web_crawl_max_depth_default() :: pos_integer()
-  def web_crawl_max_depth_default,
-    do: int_setting("webCrawlMaxDepthDefault", @web_crawl_max_depth_default)
-
-  @doc "Absolute upper bound on `max_depth`."
-  @spec web_crawl_max_depth_hard_cap() :: pos_integer()
-  def web_crawl_max_depth_hard_cap,
-    do: int_setting("webCrawlMaxDepthHardCap", @web_crawl_max_depth_hard_cap)
-
-  @doc "Per-page text truncation cap for `web_crawl` results."
-  @spec web_crawl_max_chars_per_page() :: pos_integer()
-  def web_crawl_max_chars_per_page,
-    do: int_setting("webCrawlMaxCharsPerPage", @web_crawl_max_chars_per_page_default)
-
-  @doc "Delay between successive fetches in `web_crawl` (politeness to remote sites)."
-  @spec web_crawl_per_fetch_delay_ms() :: non_neg_integer()
-  def web_crawl_per_fetch_delay_ms,
-    do: int_setting("webCrawlPerFetchDelayMs", @web_crawl_per_fetch_delay_ms_default)
-
-  @doc "Total wall-clock budget per `web_crawl` invocation; returns what's been fetched at deadline."
-  @spec web_crawl_total_timeout_ms() :: pos_integer()
-  def web_crawl_total_timeout_ms,
-    do: int_setting("webCrawlTotalTimeoutMs", @web_crawl_total_timeout_ms_default)
-
-  @doc "Top-K outbound links followed per `web_crawl` depth boundary (the focused-crawl pruning factor)."
-  @spec web_crawl_branch_factor() :: pos_integer()
-  def web_crawl_branch_factor,
-    do: int_setting("webCrawlBranchFactor", @web_crawl_branch_factor_default)
-
-  @doc """
-  Cap on memo hits included in the `<augmented_facts type="memo">`
-  block injected into Confidant prompts (auto-retrieve pre-step). Top-K is the
-  ONLY gate — no score floor (the downstream LLM judges relevance
-  from content, see specs/commands.md § Confidant memo auto-retrieve).
-  This is a safety against
-  many-similar-entry memo stores bloating the prompt.
-  """
-  @spec memo_context_top_k() :: pos_integer()
-  def memo_context_top_k,
-    do: int_setting("memoContextTopK", @memo_context_top_k_default)
-
-  @doc "MMR candidate pool size — how many top-cosine hits get considered before MMR-picking the final `kb_top_n`."
-  @spec kb_mmr_pool_size() :: pos_integer()
-  def kb_mmr_pool_size, do: int_setting("kbMmrPoolSize", @kb_mmr_pool_size_default)
-
-  @doc "MMR diversity / relevance trade-off in [0.0, 1.0]. 1.0 = pure relevance, 0.0 = pure novelty."
-  @spec kb_mmr_lambda() :: float()
-  def kb_mmr_lambda, do: float_setting("kbMmrLambda", @kb_mmr_lambda_default)
+  @doc "Top-K memos surfaced into the <user_memos> block each LLM call."
+  @spec user_memos_top_k() :: pos_integer()
+  def user_memos_top_k, do: int_setting("userMemosTopK", @user_memos_top_k_default)
 
   @doc "Embedding vector dimension. Must match the embedding model's output. Changing this requires reindex."
   @spec kb_embedding_dim() :: pos_integer()
@@ -751,19 +571,6 @@ defmodule DmhAi.Agent.AgentSettings do
   @doc "How many texts the embedder packs into a single /embeddings request."
   @spec kb_embedding_batch_size() :: pos_integer()
   def kb_embedding_batch_size, do: int_setting("kbEmbeddingBatchSize", @kb_embedding_batch_size_default)
-
-  @doc "Cosine threshold above which two inline-text sources merge into one. See specs/vector_kb.md."
-  @spec kb_text_merge_threshold() :: float()
-  def kb_text_merge_threshold, do: float_setting("kbTextMergeThreshold", @kb_text_merge_threshold_default)
-
-  @doc "Cap on concurrent background relearn jobs."
-  @spec kb_relearn_concurrency() :: pos_integer()
-  def kb_relearn_concurrency, do: int_setting("kbRelearnConcurrency", @kb_relearn_concurrency_default)
-
-  @doc "Minimum seconds between BG refreshes for the same kb_sources row (Primitive 0.2 debounce)."
-  @spec bg_refresh_min_interval_s() :: pos_integer()
-  def bg_refresh_min_interval_s,
-    do: int_setting("bgRefreshMinIntervalSecs", @bg_refresh_min_interval_s_default)
 
   @doc "User's chosen video detail level from admin settings. Returns 'low', 'medium', or 'high'."
   @spec video_detail() :: String.t()
@@ -797,20 +604,6 @@ defmodule DmhAi.Agent.AgentSettings do
     settings = load()
     case settings[key] do
       s when is_binary(s) and s != "" -> s
-      _ -> default
-    end
-  end
-
-  defp float_setting(key, default) do
-    settings = load()
-    case settings[key] do
-      n when is_float(n) and n > 0 -> n
-      n when is_integer(n) and n > 0 -> n * 1.0
-      s when is_binary(s) ->
-        case Float.parse(s) do
-          {n, _} when n > 0 -> n
-          _ -> default
-        end
       _ -> default
     end
   end

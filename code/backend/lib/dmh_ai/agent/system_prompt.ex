@@ -17,14 +17,12 @@ defmodule DmhAi.Agent.SystemPrompt do
   System prompt for the Confidant pipeline.
 
   opts:
-    - `:profile`            — user profile text. Injected silently.
     - `:has_video`          — true when the current message carries video frames.
     - `:image_descriptions` — list of %{name, description} from the DB.
     - `:video_descriptions` — list of %{name, description} from the DB.
   """
   @spec generate_confidant(keyword()) :: String.t()
   def generate_confidant(opts \\ []) do
-    profile            = Keyword.get(opts, :profile, "")
     has_video          = Keyword.get(opts, :has_video, false)
     image_descriptions = Keyword.get(opts, :image_descriptions, [])
     video_descriptions = Keyword.get(opts, :video_descriptions, [])
@@ -36,8 +34,7 @@ defmodule DmhAi.Agent.SystemPrompt do
       time_context_section(timezone, local_date),
       if(has_video, do: video_hint(), else: ""),
       if(image_descriptions != [], do: image_descriptions_section(image_descriptions), else: ""),
-      if(video_descriptions != [], do: video_descriptions_section(video_descriptions), else: ""),
-      if(profile != "", do: profile_section(profile), else: "")
+      if(video_descriptions != [], do: video_descriptions_section(video_descriptions), else: "")
     ]
     |> IO.iodata_to_binary()
   end
@@ -46,9 +43,8 @@ defmodule DmhAi.Agent.SystemPrompt do
   # ─── Private ──────────────────────────────────────────────────────────────
 
   defp confidant_base do
-    # Core persona and formatting rules. Structurally mirrors the
-    # Assistant prompt's XML-tag layout for consistency, even though
-    # Confidant has no tools or runtime monitors.
+    # Core persona and formatting rules. XML-tag layout; Confidant
+    # answers in a single streaming turn with no tools or runtime monitors.
     """
     <system_purpose>
     You are DMH-AI — created by Cuong Truong.
@@ -75,6 +71,14 @@ defmodule DmhAi.Agent.SystemPrompt do
     - **Read the ask.** Distinguish between a user who is "processing" (needs space and nuance) and one who "wants to fix it" (needs speed and mechanics).
     - **Direct under stress.** If the user is frustrated or anxious, provide high-value substance. Don't just soothe; help.
     </presence>
+
+    <user_memory>
+    Each turn you may receive a <user_facts> block (facts continuously learned about this user — their preferences, interests, life events, past purchases, things they have asked about) and a <user_memos> block (notes the user explicitly saved). Treat both as trusted background about THIS user.
+
+    - Use whatever is relevant to personalise and ground your answer — silently. Let the knowledge shape the reply; never quote the tags or say things like "based on your saved facts" or "since you like X".
+    - Ignore entries that are not relevant to the current question.
+    - If the user explicitly asks what you know or remember about them, you may summarise these entries directly.
+    </user_memory>
 
     <formatting>
     The "shape" of your response should match the depth of the inquiry:
@@ -152,14 +156,4 @@ defmodule DmhAi.Agent.SystemPrompt do
     end
   end
 
-  defp profile_section(profile) do
-    # Profile is used to personalise answers silently — model must never quote it
-    "\n\nWhat you know about this person:\n#{profile}\n\n" <>
-      "Use this silently to sharpen your answers — factor in their facts, such as " <>
-      "location, background, or interests, where relevant, but never quote, reference, " <>
-      "or mention this profile in your response. Never say things like " <>
-      "\"given your love for X\" or \"since you enjoy Y\". No postscripts, side notes, " <>
-      "or personal asides referencing their details. Just use it invisibly. " <>
-      "If they explicitly ask what you know about them, then list it directly."
-  end
 end

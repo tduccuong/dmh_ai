@@ -7,6 +7,10 @@ defmodule DmhAi.MixProject do
       version: "0.1.0",
       elixir: "~> 1.16",
       start_permanent: Mix.env() == :prod,
+      # Builds priv/spellfix1.so (typo-tolerant FTS) via the Makefile on
+      # every compile; bundled into the release. See facts_memos.md.
+      compilers: [:elixir_make] ++ Mix.compilers(),
+      make_clean: ["clean"],
       deps: deps(),
       test_load_filters: [~r/itgr_.*\.exs$/, ~r/F\d{2}_.*\.exs$/, ~r/R\d{2}_.*\.exs$/],
       test_ignore_filters: [~r/sandbox_case\.exs$/, ~r/flow_helper\.exs$/]
@@ -35,7 +39,8 @@ defmodule DmhAi.MixProject do
       {:floki, "~> 0.36"},
       {:jason, "~> 1.4"},
       {:hammer, "~> 6.1"},
-      {:sqlite_vec, "~> 0.1"}
+      {:sqlite_vec, "~> 0.1"},
+      {:elixir_make, "~> 0.8", runtime: false}
     ]
   end
 end

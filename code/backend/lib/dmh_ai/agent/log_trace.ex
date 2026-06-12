@@ -16,7 +16,7 @@ defmodule DmhAi.Agent.LogTrace do
     [Origin: <origin>]  — top-level context: confidant, assistant, system, search
     [Path:   <path>]    — module.function of the call site
     [Role:   <role>]    — what this LLM call does: assistant, confidant, ImageDescriber,
-                          VideoDescriber, Compactor, Summarizer, WebSearch, ProfileExtractor,
+                          VideoDescriber, Compactor, Summarizer, WebSearch, FactExtractor,
                           Namer, etc.
     [Model:  <model>]   — pool::model string
     [Phase:  <phase>]   — turn / classify / compact / detect / describe / etc.

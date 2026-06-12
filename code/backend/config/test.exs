@@ -9,6 +9,10 @@ config :dmh_ai, DmhAi.Repo,
   database: db_path,
   pool_size: 1
 
+# Confidant memory stores — sibling temp files in the test env.
+config :dmh_ai, DmhAi.FactsRepo, database: db_path <> ".facts", pool_size: 1
+config :dmh_ai, DmhAi.MemosRepo, database: db_path <> ".memos", pool_size: 1
+
 # Write test syslogs to a temp file instead of the production path.
 config :dmh_ai, :syslog_path, "/tmp/dmh_ai_test_syslog.log"
 

@@ -15,6 +15,5 @@ defmodule DmhAi.Schemas.User do
     field :created_at, :integer
     field :password_changed, :integer, default: 0
     field :deleted, :integer, default: 0
-    field :profile, :string, default: ""
   end
 end

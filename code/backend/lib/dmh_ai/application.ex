@@ -22,6 +22,11 @@ defmodule DmhAi.Application do
     children = [
       DmhAi.Repo,
       DmhAi.DB.SchemaInit,
+      # Confidant memory stores (facts.db / memos.db) + their schema init,
+      # before any DB-touching child. See arch_wiki/dmh_ai/facts_memos.md.
+      DmhAi.FactsRepo,
+      DmhAi.MemosRepo,
+      DmhAi.Kb.SchemaInit,
       DmhAi.SysLog,
       DmhAi.DomainBlocker,
       {Finch,

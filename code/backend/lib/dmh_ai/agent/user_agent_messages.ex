@@ -45,7 +45,7 @@ defmodule DmhAi.Agent.UserAgentMessages do
               {:ok, existing_ts}
 
             :no_match ->
-              now  = System.os_time(:millisecond)
+              now  = monotonic_ts(msgs)
               stamped = Map.put(message, :ts, now)
               updated = Jason.encode!(msgs ++ [stamped])
               query!(Repo, "UPDATE sessions SET messages=?, updated_at=? WHERE id=?",
@@ -62,6 +62,24 @@ defmodule DmhAi.Agent.UserAgentMessages do
         Logger.error("[UserAgentMessages] append failed: #{Exception.message(e)}")
         {:error, :exception}
     end
+  end
+
+  # Strictly-increasing per-session ts. The FE poll's `msg_since` is
+  # exclusive (`ts > msg_since`), so two messages sharing a millisecond
+  # would make the poll skip the second — e.g. a `/memo` command and its
+  # instant `command_ack` persisted back-to-back, which left the turn
+  # "Waiting for DMH-AI…" forever. Stamping max(now, latest+1) guarantees
+  # every appended message is strictly newer than all prior ones.
+  defp monotonic_ts(msgs) do
+    now = System.os_time(:millisecond)
+
+    max_ts =
+      Enum.reduce(msgs, 0, fn m, acc ->
+        ts = m["ts"] || m[:ts]
+        if is_integer(ts) and ts > acc, do: ts, else: acc
+      end)
+
+    max(now, max_ts + 1)
   end
 
   # When `message` carries a `client_msg_id`, walk the existing messages

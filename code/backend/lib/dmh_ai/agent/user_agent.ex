@@ -28,7 +28,7 @@ defmodule DmhAi.Agent.UserAgent do
   require Logger
 
   alias DmhAi.Agent.{AgentSettings, ConfidantCommand, ContextEngine,
-                     LLM, ProfileExtractor, StreamBuffer, ThinkingBuffer,
+                     LLM, StreamBuffer, ThinkingBuffer,
                      Supervisor}
   alias DmhAi.Web.Search, as: WebSearchEngine
   alias DmhAi.Repo
@@ -36,7 +36,6 @@ defmodule DmhAi.Agent.UserAgent do
 
   alias __MODULE__.{
     ContextBuilders,
-    Memo,
     SessionIO,
     StreamCollectors
   }
@@ -45,10 +44,7 @@ defmodule DmhAi.Agent.UserAgent do
     :user_id,
     # current inline task: nil | {task_ref, task_pid, reply_pid, session_id}
     current_task: nil,
-    platform_state: %{},
-    # 32-byte raw MMK — lazy loaded from DB on first :get_memo_key /
-    # :ensure_memo_key call. Wiped on logout, idle timeout, restart.
-    memo_key: nil
+    platform_state: %{}
   ]
 
   # ─── Client API ───────────────────────────────────────────────────────────
@@ -104,37 +100,6 @@ defmodule DmhAi.Agent.UserAgent do
     end
   end
 
-  @doc "Read the user's MMK. Lazy-loaded from DB on cache miss."
-  @spec get_memo_key(String.t()) :: binary() | nil
-  def get_memo_key(user_id) when is_binary(user_id) do
-    with {:ok, pid} <- Supervisor.ensure_started(user_id) do
-      try do
-        GenServer.call(pid, :get_memo_key, 5_000)
-      catch
-        :exit, _ -> nil
-      end
-    else
-      _ -> nil
-    end
-  end
-
-  @doc "Ensure a memo key exists for the user; generate one if not."
-  @spec ensure_memo_key(String.t()) :: {:ok, binary()} | {:error, term()}
-  def ensure_memo_key(user_id) when is_binary(user_id) do
-    with {:ok, pid} <- Supervisor.ensure_started(user_id) do
-      GenServer.call(pid, :ensure_memo_key, 5_000)
-    end
-  end
-
-  @doc "Drop the in-memory MMK cache (admin password reset)."
-  @spec wipe_memo_key(String.t()) :: :ok
-  def wipe_memo_key(user_id) when is_binary(user_id) do
-    case Registry.lookup(DmhAi.Agent.Registry, user_id) do
-      [{pid, _}] -> GenServer.cast(pid, :wipe_memo_key)
-      []         -> :ok
-    end
-  end
-
   # ─── Load-session pass-through ────────────────────────────────────────────
   #
   # Historical public surface: callers (router / handlers / tests) may
@@ -166,55 +131,6 @@ defmodule DmhAi.Agent.UserAgent do
 
   def handle_call({:get_platform_state, platform}, _from, state) do
     {:reply, Map.get(state.platform_state, platform), state, @idle_timeout}
-  end
-
-  def handle_call(:get_memo_key, _from, state) do
-    case state.memo_key do
-      mmk when is_binary(mmk) ->
-        {:reply, mmk, state, @idle_timeout}
-
-      nil ->
-        case Memo.lazy_load_memo_key(state.user_id) do
-          {:ok, mmk} ->
-            {:reply, mmk, %{state | memo_key: mmk}, @idle_timeout}
-
-          {:error, :bad_master_key} ->
-            Logger.warning(
-              "[UserAgent] master-key mismatch on read for user=#{state.user_id} — auto-rotating memo wrap."
-            )
-            Memo.wipe_user_memo_state(state.user_id)
-            mint_mmk_reply(state)
-
-          {:error, _r} ->
-            {:reply, nil, state, @idle_timeout}
-        end
-    end
-  end
-
-  def handle_call(:ensure_memo_key, _from, state) do
-    case state.memo_key do
-      mmk when is_binary(mmk) ->
-        {:reply, {:ok, mmk}, state, @idle_timeout}
-
-      nil ->
-        case Memo.lazy_load_memo_key(state.user_id) do
-          {:ok, mmk} ->
-            {:reply, {:ok, mmk}, %{state | memo_key: mmk}, @idle_timeout}
-
-          {:error, :no_wrap} ->
-            mint_mmk_reply(state)
-
-          {:error, :bad_master_key} ->
-            Logger.warning(
-              "[UserAgent] master-key mismatch for user=#{state.user_id} — auto-rotating memo wrap."
-            )
-            Memo.wipe_user_memo_state(state.user_id)
-            mint_mmk_reply(state)
-
-          {:error, reason} ->
-            {:reply, {:error, reason}, state, @idle_timeout}
-        end
-    end
   end
 
   def handle_call(:cancel_current_turn, _from, state) do
@@ -269,10 +185,6 @@ defmodule DmhAi.Agent.UserAgent do
      @idle_timeout}
   end
 
-  def handle_cast(:wipe_memo_key, state) do
-    {:noreply, %{state | memo_key: nil}, @idle_timeout}
-  end
-
   # Inline turn completed — just clear the slot.
   @impl true
   def handle_info({ref, _result}, %{current_task: {ref, _task_pid, _reply_pid, _session_id}} = state) do
@@ -321,19 +233,6 @@ defmodule DmhAi.Agent.UserAgent do
   defp safe_reply(pid, msg) when is_pid(pid), do: send(pid, msg)
   defp safe_reply(_, _), do: :ok
 
-  # Bridge between `Memo.generate_and_persist_mmk/1` (pure persist) and
-  # the GenServer reply tuple shape — the caller pattern in the two
-  # memo-key handlers needs both the new state and the reply value.
-  defp mint_mmk_reply(state) do
-    case Memo.generate_and_persist_mmk(state.user_id) do
-      {:ok, mmk} ->
-        {:reply, {:ok, mmk}, %{state | memo_key: mmk}, @idle_timeout}
-
-      {:error, reason} ->
-        {:reply, {:error, reason}, state, @idle_timeout}
-    end
-  end
-
   defp dispatch_run(command, state, run_fn) do
     reply_pid = command.reply_pid
 
@@ -363,14 +262,14 @@ defmodule DmhAi.Agent.UserAgent do
     user_id = state.user_id
     model   = AgentSettings.confidant_model()
 
-    {web_context, memo_context} =
+    {web_context, facts_block, memos_block} =
       if command.content != "" do
         user_msgs = SessionIO.extract_user_messages(session_data)
-        {memo_context, memo_hits} = Memo.build_memo_context(command.content, user_msgs, user_id)
+        {facts_block, memos_block} = DmhAi.Kb.Query.blocks(user_id, command.content)
 
         web_task =
           Task.async(fn ->
-            case WebSearchEngine.generate_search_queries(command.content, user_msgs, :confidant, memo_hits,
+            case WebSearchEngine.generate_search_queries(command.content, user_msgs,
                                                          %{session_id: session_id, user_id: user_id}) do
               {:no_search} ->
                 nil
@@ -398,12 +297,11 @@ defmodule DmhAi.Agent.UserAgent do
           end)
 
         pre_timeout = AgentSettings.confidant_pre_step_timeout_ms()
-        {Task.await(web_task, pre_timeout), memo_context}
+        {Task.await(web_task, pre_timeout), facts_block, memos_block}
       else
-        {nil, nil}
+        {nil, "", ""}
       end
 
-    profile            = ContextBuilders.load_user_profile(user_id)
     image_descriptions = ContextBuilders.load_image_descriptions(session_id)
     video_descriptions = ContextBuilders.load_video_descriptions(session_id)
 
@@ -411,19 +309,19 @@ defmodule DmhAi.Agent.UserAgent do
 
     llm_messages =
       ContextEngine.build_confidant_messages(session_data,
-        profile:            profile,
         has_video:          images != [] and command.has_video,
         images:             images,
         files:              command.files,
         image_descriptions: image_descriptions,
         video_descriptions: video_descriptions,
         web_context:        web_context,
-        memo_context:       memo_context,
+        user_facts:         facts_block,
+        user_memos:         memos_block,
         timezone:           command.timezone,
         local_date:         command.local_date
       )
 
-    DmhAi.SysLog.log("[CONFIDANT] user=#{user_id} session=#{session_id} msg=#{String.slice(command.content, 0, 200)} web_search=#{web_context != nil} memo_context=#{memo_context != nil}")
+    DmhAi.SysLog.log("[CONFIDANT] user=#{user_id} session=#{session_id} msg=#{String.slice(command.content, 0, 200)} web_search=#{web_context != nil} facts=#{facts_block != ""} memos=#{memos_block != ""}")
 
     collector = StreamCollectors.spawn_confidant_stream_collector(session_id, user_id)
 
@@ -446,7 +344,7 @@ defmodule DmhAi.Agent.UserAgent do
         StreamBuffer.clear(session_id, user_id)
         ThinkingBuffer.clear(session_id, user_id)
 
-        Task.start(fn -> ProfileExtractor.extract_and_merge(user_id) end)
+        Task.start(fn -> DmhAi.Agent.FactExtractor.extract(user_id) end)
 
       {:ok, ""} ->
         StreamBuffer.clear(session_id, user_id)

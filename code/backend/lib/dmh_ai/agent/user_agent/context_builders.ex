@@ -8,7 +8,7 @@ defmodule DmhAi.Agent.UserAgent.ContextBuilders do
   Small read/query/format helpers the chain loop and the Confidant
   pipeline lean on:
 
-  * User-row lookups: profile / email / role
+  * User-row lookups: email / role
   * Image / video description loads for the session
   * Effective-images decision (skip already-described attachments)
   * Web-context formatting from the search engine's `%{snippets, pages}`
@@ -101,20 +101,6 @@ defmodule DmhAi.Agent.UserAgent.ContextBuilders do
   end
 
   # ── user-row lookups ────────────────────────────────────────────────────
-
-  @doc "Read `users.profile` (string, empty on miss)."
-  def load_user_profile(user_id) do
-    try do
-      result = query!(Repo, "SELECT profile FROM users WHERE id=?", [user_id])
-
-      case result.rows do
-        [[profile] | _] -> profile || ""
-        _               -> ""
-      end
-    rescue
-      _ -> ""
-    end
-  end
 
   @doc "Read `users.email` (empty string on miss)."
   def lookup_user_email(user_id) do

@@ -24,20 +24,19 @@ defmodule DmhAi.Agent.ContextEngine do
 
   @spec build_confidant_messages(map(), keyword()) :: [map()]
   def build_confidant_messages(session_data, opts \\ []) do
-    profile            = Keyword.get(opts, :profile, "")
     has_video          = Keyword.get(opts, :has_video, false)
     images             = Keyword.get(opts, :images, [])
     files              = Keyword.get(opts, :files, [])
     image_descriptions = Keyword.get(opts, :image_descriptions, [])
     video_descriptions = Keyword.get(opts, :video_descriptions, [])
     web_context        = Keyword.get(opts, :web_context)
-    memo_context       = Keyword.get(opts, :memo_context)
+    user_facts         = Keyword.get(opts, :user_facts, "")
+    user_memos         = Keyword.get(opts, :user_memos, "")
     timezone           = Keyword.get(opts, :timezone)
     local_date         = Keyword.get(opts, :local_date)
 
     system_msg = %{role: "system",
                    content: SystemPrompt.generate_confidant(
-                     profile:            profile,
                      has_video:          has_video,
                      image_descriptions: image_descriptions,
                      video_descriptions: video_descriptions,
@@ -46,14 +45,14 @@ defmodule DmhAi.Agent.ContextEngine do
                    )}
 
     {prefix, history_llm, relevant_msgs, last_msgs} =
-      build_core(session_data, images, files, web_context, memo_context)
+      build_core(session_data, images, files, web_context, user_facts, user_memos)
 
     [system_msg] ++ prefix ++ history_llm ++ relevant_msgs ++ last_msgs
   end
 
   # ─── Private ──────────────────────────────────────────────────────────────
 
-  defp build_core(session_data, images, files, web_context, memo_context) do
+  defp build_core(session_data, images, files, web_context, user_facts, user_memos) do
     messages =
       (session_data["messages"] || [])
       |> Enum.reject(&(&1["_archived"] == true))
@@ -85,7 +84,7 @@ defmodule DmhAi.Agent.ContextEngine do
 
     {history, last_msgs} =
       case Enum.split(recent, -1) do
-        {h, [last]} -> {h, [build_current_msg(last, images, files, web_context, memo_context)]}
+        {h, [last]} -> {h, [build_current_msg(last, images, files, web_context, user_facts, user_memos)]}
         {h, []}     -> {h, []}
       end
 
@@ -94,7 +93,7 @@ defmodule DmhAi.Agent.ContextEngine do
     {prefix, history_llm, relevant_msgs, last_msgs}
   end
 
-  defp build_current_msg(msg, images, files, web_context, memo_context) do
+  defp build_current_msg(msg, images, files, web_context, user_facts, user_memos) do
     base = msg["content"] || msg[:content] || ""
 
     attachments_block =
@@ -107,12 +106,9 @@ defmodule DmhAi.Agent.ContextEngine do
           "<attachments>\n#{names}\n</attachments>"
       end
 
-    memo_block =
-      if is_binary(memo_context) and memo_context != "" do
-        ~s|<augmented_facts type="memo">\n| <> memo_context <> "\n</augmented_facts>"
-      else
-        ""
-      end
+    # Pre-formatted <user_facts> / <user_memos> blocks from Kb.Query.blocks.
+    facts_block = if is_binary(user_facts) and user_facts != "", do: user_facts, else: ""
+    memos_block = if is_binary(user_memos) and user_memos != "", do: user_memos, else: ""
 
     web_block =
       if is_binary(web_context) and web_context != "" do
@@ -130,7 +126,7 @@ defmodule DmhAi.Agent.ContextEngine do
       end)
 
     content =
-      [base, attachments_block, memo_block, web_block, file_blocks, confidant_runtime_instruction()]
+      [base, attachments_block, facts_block, memos_block, web_block, file_blocks, confidant_runtime_instruction()]
       |> Enum.reject(&(&1 == ""))
       |> Enum.join("\n\n")
 

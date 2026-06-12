@@ -167,27 +167,9 @@ defmodule DmhAi.Router do
     end
   end
 
-  get "/user/profile" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      Auth.get_user_profile(conn, user)
-    end
-  end
-
-  get "/admin/user-profiles" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      Auth.get_admin_user_profiles(conn, user)
-    end
-  end
-
   get "/users/prefs" do
     with {:ok, conn, user} <- check_auth(conn) do
       Auth.get_user_prefs(conn, user)
-    end
-  end
-
-  get "/user/fact-counts" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      Auth.get_user_fact_counts(conn, user)
     end
   end
 
@@ -369,12 +351,6 @@ defmodule DmhAi.Router do
     end
   end
 
-  post "/user/track-facts" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      Auth.post_track_facts(conn, user)
-    end
-  end
-
   post "/image-descriptions" do
     with {:ok, conn, user} <- check_auth(conn) do
       Data.post_image_description(conn, user)
@@ -443,21 +419,9 @@ defmodule DmhAi.Router do
     end
   end
 
-  put "/user/profile" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      Auth.put_user_profile(conn, user)
-    end
-  end
-
   put "/users/prefs" do
     with {:ok, conn, user} <- check_auth(conn) do
       Auth.put_user_prefs(conn, user)
-    end
-  end
-
-  put "/user/fact-counts" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      Auth.put_user_fact_counts(conn, user)
     end
   end
 

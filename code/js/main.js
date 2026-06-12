@@ -53,9 +53,16 @@ function applyLanguage() {
     document.getElementById('modal-cancel').textContent = t('cancel');
     document.getElementById('pw-warning-text').textContent = t('pwWarning');
     document.getElementById('pw-warning-btn').textContent = t('pwWarningBtn');
-    document.getElementById('settings-modal-title').textContent = t('sysSettings');
     var userSettingsLabel = document.getElementById('user-settings-label');
-    if (userSettingsLabel) userSettingsLabel.textContent = t('sysSettings');
+    if (userSettingsLabel) userSettingsLabel.textContent = t('settings');
+    var tabPools = document.getElementById('tab-pools-label');
+    if (tabPools) tabPools.textContent = t('settingsTabPools');
+    var tabModels = document.getElementById('tab-models-label');
+    if (tabModels) tabModels.textContent = t('settingsTabModels');
+    var tabConv = document.getElementById('tab-conversation-label');
+    if (tabConv) tabConv.textContent = t('settingsTabConversation');
+    var tabRead = document.getElementById('tab-read-aloud-label');
+    if (tabRead) tabRead.textContent = t('settingsTabReadAloud');
     document.getElementById('settings-chat-section-title').textContent = t('settingsChatSection');
     document.getElementById('settings-compact-turns-label').textContent = t('settingsCompactLabel');
     document.getElementById('settings-keep-recent-label').textContent = t('settingsKeepRecentLabel');
@@ -63,13 +70,6 @@ function applyLanguage() {
     document.getElementById('settings-video-detail-label').textContent = t('videoDetailLabel');
     var vdSel = document.getElementById('settings-video-detail');
     if (vdSel) { vdSel.options[0].textContent = t('videoDetailLow'); vdSel.options[1].textContent = t('videoDetailMedium'); vdSel.options[2].textContent = t('videoDetailHigh'); }
-    document.getElementById('settings-profile-section-title').textContent = t('profileSection');
-    document.getElementById('settings-condense-facts-label').textContent = t('profileCondenseLabel');
-    document.getElementById('settings-profile-clear-btn').textContent = t('profileClear');
-    var convSettingsLabel = document.getElementById('user-conv-settings-label');
-    if (convSettingsLabel) convSettingsLabel.textContent = t('convSettings');
-    var aiSettingsLabel = document.getElementById('user-ai-settings-label');
-    if (aiSettingsLabel) aiSettingsLabel.textContent = t('aiModelSettings');
     var extConnectorsLabel = document.getElementById('user-external-connectors-label');
     if (extConnectorsLabel) extConnectorsLabel.textContent = t('externalConnectors');
     var servicesLabel = document.getElementById('user-services-label');
@@ -390,16 +390,6 @@ const UIManager = {
             userDropdown.classList.remove('open');
             self.showManageUsers();
         });
-        document.getElementById('user-profiles-btn').addEventListener('click', function() {
-            userDropdown.classList.remove('open');
-            self.showUserProfiles();
-        });
-        document.getElementById('user-profiles-close').addEventListener('click', function() {
-            document.getElementById('user-profiles-overlay').classList.remove('visible');
-        });
-        document.getElementById('user-profiles-overlay').addEventListener('click', function(e) {
-            if (e.target === this) this.classList.remove('visible');
-        });
         document.getElementById('user-signout-btn').addEventListener('click', async function() {
             userDropdown.classList.remove('open');
             await Auth.logout();
@@ -647,18 +637,6 @@ const UIManager = {
             document.getElementById('user-dropdown').classList.remove('open');
             SettingsModal.open();
         });
-        document.getElementById('user-ai-settings-btn').addEventListener('click', function() {
-            document.getElementById('user-dropdown').classList.remove('open');
-            SettingsModal.open('page-ai-models');
-        });
-        document.getElementById('user-conv-settings-btn').addEventListener('click', function() {
-            document.getElementById('user-dropdown').classList.remove('open');
-            SettingsModal.open('page-conversation');
-        });
-        document.getElementById('user-rol-settings-btn').addEventListener('click', function() {
-            document.getElementById('user-dropdown').classList.remove('open');
-            SettingsModal.open('page-read-out-loud');
-        });
         if (typeof ReadOutLoud !== 'undefined' && typeof ReadOutLoud.init === 'function') {
             ReadOutLoud.init();
         }
@@ -716,17 +694,9 @@ const UIManager = {
             var isAdmin = user.role === 'admin';
             document.getElementById('user-manage-btn').style.display = isAdmin ? '' : 'none';
             document.getElementById('user-manage-sep').style.display = isAdmin ? '' : 'none';
-            document.getElementById('user-profiles-btn').style.display = isAdmin ? '' : 'none';
-            document.getElementById('user-settings-btn').style.display = isAdmin ? '' : 'none';
-            document.getElementById('user-ai-settings-btn').style.display = isAdmin ? '' : 'none';
-            // Conversation Settings is visible to ALL users — non-admins
-            // see only the Token Saving section (per-user preferences);
-            // admin-only sections inside the page self-gate via
-            // `data-admin-only="true"` and the SettingsModal.open hook.
-            document.getElementById('user-conv-settings-btn').style.display = '';
-            // Conv Settings is visible to all, so the separator above
-            // it (between About and the settings block) must show too.
-            document.getElementById('user-settings-sep').style.display = '';
+            // Single "Settings" entry is visible to ALL users. Admin-only
+            // tabs (Pools, Models) hide inside the modal; non-admins land
+            // on the Conversation tab. See SettingsModal.open.
         }
         this.updatePwWarning();
     },
@@ -755,44 +725,6 @@ const UIManager = {
         document.getElementById('cpw-confirm').value = '';
         setCpwError('');
         setTimeout(function() { document.getElementById('cpw-current').focus(); }, 50);
-    },
-
-    showUserProfiles: async function() {
-        var overlay = document.getElementById('user-profiles-overlay');
-        var content = document.getElementById('user-profiles-content');
-        content.innerHTML = '<div style="color:var(--text-3);font-size:13px;padding:8px 0;">Loading...</div>';
-        overlay.classList.add('visible');
-        try {
-            var res = await fetch('/admin/user-profiles', { headers: { 'Authorization': 'Bearer ' + Auth.token } });
-            if (!res.ok) { content.innerHTML = '<div style="color:var(--danger);font-size:13px;">Failed to load profiles.</div>'; return; }
-            var users = await res.json();
-            if (!users.length) { content.innerHTML = '<div style="color:var(--text-3);font-size:13px;font-style:italic;">No users found.</div>'; return; }
-            content.innerHTML = '';
-            users.forEach(function(u) {
-                var section = document.createElement('div');
-                section.className = 'profile-section';
-                var header = document.createElement('div');
-                header.className = 'profile-section-header';
-                var badge = document.createElement('span');
-                badge.className = 'profile-role-badge' + (u.role === 'admin' ? ' admin' : '');
-                badge.textContent = u.role;
-                header.textContent = (u.name || u.email) + ' ';
-                header.appendChild(badge);
-                var body = document.createElement('div');
-                if (u.profile && u.profile.trim()) {
-                    body.className = 'profile-body';
-                    body.innerHTML = marked.parse(u.profile);
-                } else {
-                    body.className = 'profile-body empty';
-                    body.textContent = 'No profile built yet.';
-                }
-                section.appendChild(header);
-                section.appendChild(body);
-                content.appendChild(section);
-            });
-        } catch(e) {
-            content.innerHTML = '<div style="color:var(--danger);font-size:13px;">Error loading profiles.</div>';
-        }
     },
 
     showManageUsers: async function() {

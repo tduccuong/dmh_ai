@@ -16,10 +16,17 @@ config :dmh_ai, DmhAi.Repo,
   # hygiene for the SQLite writer slot.
   busy_timeout: 5000
 
+# Confidant memory stores — their own SQLite files so spellfix1 loads
+# per-connection. Paths overridden in runtime.exs (derived from DB_PATH);
+# load_extensions (vec0 + spellfix1) is also set there. See
+# arch_wiki/dmh_ai/facts_memos.md.
+config :dmh_ai, DmhAi.FactsRepo, database: "/data/db/facts.db", pool_size: 3, busy_timeout: 5000
+config :dmh_ai, DmhAi.MemosRepo, database: "/data/db/memos.db", pool_size: 3, busy_timeout: 5000
+
 # load_extensions for sqlite-vec is set in runtime.exs because
 # `SqliteVec.path/0` isn't loaded until deps are compiled.
 
-config :dmh_ai, ecto_repos: [DmhAi.Repo]
+config :dmh_ai, ecto_repos: [DmhAi.Repo, DmhAi.FactsRepo, DmhAi.MemosRepo]
 
 config :dmh_ai, :worker,
   # Inline-summarise tool results larger than this (chars) using the compactor model.

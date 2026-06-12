@@ -161,10 +161,10 @@
     --msg-assistant-bg: #ffffff;
     --msg-assistant-fg: #1f1a28;
     --msg-h-fg: #5a5072;
-    --msg-user-bg-from: #eeecf4;
-    --msg-user-bg-to: #e7e3ef;
-    --msg-user-border: rgba(120, 100, 170, 0.20);
-    --msg-user-fg: #1f1a28;
+    --msg-user-bg-from: #f5f3fb;
+    --msg-user-bg-to: #eeedf7;
+    --msg-user-border: rgba(14, 116, 144, 0.20);
+    --msg-user-fg: #0e7490;
 
     /* input */
     --input-bg: #ffffff;

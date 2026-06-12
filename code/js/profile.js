@@ -13,7 +13,6 @@ const Settings = {
     _modelDefaults: {},
     _compactTurns: 90,
     _keepRecent: 0,
-    _condenseFacts: 50,
     _videoDetail: 'medium',
     _modelLabels: {},
     get pools() { return PoolsAdmin._pools; },
@@ -41,13 +40,11 @@ const Settings = {
     // the @defaults value baked into AgentSettings". See
     // specs/architecture.md §Model tiers.
     _confidantModel: '',
-    _assistantModel: '',
     _swiftModel: '',         // Swift  — short fast classifier work
     _oracleModel: '',        // Oracle — long-context summarisers
     _visionModel: '',        // image / video / OCR
     _kbEmbeddingModel: '',
     get confidantModel() { return this._confidantModel; },
-    get assistantModel() { return this._assistantModel; },
     get swiftModel() { return this._swiftModel; },
     get oracleModel() { return this._oracleModel; },
     get visionModel() { return this._visionModel; },
@@ -66,10 +63,9 @@ const Settings = {
             body: JSON.stringify({
                 cloudModels: this._cloudModels,
                 compactTurns: this._compactTurns,
-                keepRecent: this._keepRecent, condenseFacts: this._condenseFacts,
+                keepRecent: this._keepRecent,
                 videoDetail: this._videoDetail, modelLabels: this._modelLabels,
                 confidantModel: this._confidantModel,
-                assistantModel: this._assistantModel,
                 swiftModel: this._swiftModel,
                 oracleModel: this._oracleModel,
                 visionModel: this._visionModel,
@@ -97,9 +93,6 @@ const Settings = {
                 if (d.keepRecent !== undefined) {
                     this._keepRecent = parseInt(d.keepRecent) || 0;
                 }
-                if (d.condenseFacts !== undefined) {
-                    this._condenseFacts = parseInt(d.condenseFacts) || 50;
-                }
                 if (d.videoDetail && ['low','medium','high'].indexOf(d.videoDetail) !== -1) {
                     this._videoDetail = d.videoDetail;
                 }
@@ -108,7 +101,6 @@ const Settings = {
                 }
                 // Agent model settings
                 if (d.confidantModel)   this._confidantModel   = d.confidantModel;
-                if (d.assistantModel)   this._assistantModel   = d.assistantModel;
                 if (d.swiftModel)       this._swiftModel       = d.swiftModel;
                 if (d.oracleModel)      this._oracleModel      = d.oracleModel;
                 if (d.visionModel)      this._visionModel      = d.visionModel;
@@ -181,60 +173,17 @@ const ConnectedAccounts = {
     }
 };
 
-const UserFactTracker = {
-    // Receive candidate topic labels from LLM; backend handles normalization, threshold, and profile merge.
-    track: async function(candidates) {
-        if (!candidates || !candidates.length) return;
-        apiFetch('/user/track-facts', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ candidates: candidates })
-        }).catch(function() {});
-    }
-};
-
-const UserProfile = {
-    _facts: '',  // plain text bullet list
-
-    load: async function() {
-        try {
-            const res = await apiFetch('/user/profile');
-            if (res && res.ok) {
-                const d = await res.json();
-                this._facts = d.profile || '';
-                syslog('[PROFILE] loaded ' + this._facts.split('\n').filter(function(l){return l.trim();}).length + ' fact(s)');
-            }
-        } catch(e) { syslog('[PROFILE] load error: ' + e); }
-    },
-
-    save: async function() {
-        try {
-            await apiFetch('/user/profile', {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ profile: this._facts })
-            });
-        } catch(e) {}
-    },
-
-    clear: async function() {
-        this._facts = '';
-        await this.save();
-    },
-
-};
-
 const SettingsModal = {
     // All BE model tiers that have a picker in the AI Model Settings page.
     // Keep in sync with the HTML sections in `page-ai-models` and with
     // `AgentSettings.model_for/1` keys on the BE.
     _ROLES: [
-        'assistant', 'confidant',
+        'confidant',
         'swift', 'oracle', 'vision',
         'kbEmbedding'
     ],
     _roleField: function(role) {
-        // 'assistant' → '_assistantModel', 'swift' → '_swiftModel'
+        // 'confidant' → '_confidantModel', 'swift' → '_swiftModel'
         return '_' + role + 'Model';
     },
     // Format a stored "<pool>::<model>" string for display as
@@ -253,10 +202,14 @@ const SettingsModal = {
         var isAdmin = Auth.user && Auth.user.role === 'admin';
         var self = this;
 
+        // Admin-only tabs (API pools + model selection). Conversation
+        // and Read-aloud are available to every user.
+        document.getElementById('tab-pools').classList.toggle('hidden', !isAdmin);
+        document.getElementById('tab-models').classList.toggle('hidden', !isAdmin);
+
         // Admin-only data fetches. Skip for non-admins so the
-        // Conversation Settings page (which they're allowed to open
-        // for the Token Saving toggle) doesn't hit `/admin/*` and
-        // log 403s into the console.
+        // Conversation tab (which they're allowed to open for the
+        // per-user preferences) doesn't hit `/admin/*` and log 403s.
         if (isAdmin) {
             await Settings.load();
             PoolsAdmin.render();
@@ -268,10 +221,9 @@ const SettingsModal = {
             this._ROLES.forEach(function(r) { self._renderRoleCurrent(r); });
         }
 
-        // Per-section admin gate. Sections inside `page-conversation`
-        // tagged `data-admin-only="true"` (Chat / Multimedia / Companion
-        // Memory) tweak the global `admin_cloud_settings` blob and stay
-        // hidden from non-admins.
+        // Per-section admin gate. Sections tagged `data-admin-only="true"`
+        // tweak the global `admin_cloud_settings` blob and stay hidden
+        // from non-admins.
         document.querySelectorAll('[data-admin-only="true"]').forEach(function(el) {
             el.style.display = isAdmin ? '' : 'none';
         });
@@ -288,31 +240,23 @@ const SettingsModal = {
         document.getElementById('settings-keep-recent').value = Settings._keepRecent > 0 ? Settings._keepRecent : '';
         document.getElementById('settings-max-tool-result-chars').value = Settings._maxToolResultChars;
         document.getElementById('settings-log-trace').checked = Settings._logTrace;
-        document.getElementById('settings-condense-facts').value = Settings._condenseFacts;
         document.getElementById('settings-video-detail').value = Settings._videoDetail;
-        var targetPage = page || 'page-model';
-        document.querySelectorAll('.settings-page').forEach(function(p) { p.classList.remove('active'); });
-        document.getElementById(targetPage).classList.add('active');
-        var titleKey = targetPage === 'page-conversation'  ? 'convSettings'
-                     : targetPage === 'page-ai-models'     ? 'aiModelSettings'
-                     : targetPage === 'page-services'      ? 'myServices'
-                     : targetPage === 'page-read-out-loud' ? 'readOutLoudSettings'
-                     : 'sysSettings';
-        var titleEl = document.getElementById('settings-modal-title');
-        var resolvedTitle = t(titleKey);
-        // Fallback when the i18n key isn't in the dictionary — t() returns
-        // the key verbatim, which would surface as "readOutLoudSettings"
-        // on the modal header. Hard-code the English label for that case.
-        if (resolvedTitle === titleKey && titleKey === 'readOutLoudSettings') {
-            resolvedTitle = 'Read-out-loud settings';
-        }
-        titleEl.textContent = resolvedTitle;
-        document.getElementById('settings-overlay').classList.add('open');
 
-        if (targetPage === 'page-services' && typeof MyServices !== 'undefined') {
-            MyServices.init();
-            MyServices.render();
-        }
+        // Default tab: first one visible to this user.
+        var targetPage = page || (isAdmin ? 'page-model' : 'page-conversation');
+        this._showPage(targetPage);
+        document.getElementById('settings-overlay').classList.add('open');
+    },
+
+    // Activate one page + its matching tab. Lazily inits the Read-aloud
+    // voice page the first time it's shown in a session.
+    _showPage: function(targetPage) {
+        document.querySelectorAll('.settings-page').forEach(function(p) {
+            p.classList.toggle('active', p.id === targetPage);
+        });
+        document.querySelectorAll('.settings-tab').forEach(function(tab) {
+            tab.classList.toggle('active', tab.getAttribute('data-page') === targetPage);
+        });
         if (targetPage === 'page-read-out-loud' && typeof ReadOutLoud !== 'undefined') {
             SettingsModal._initReadOutLoudPage();
         }
@@ -616,6 +560,12 @@ const SettingsModal = {
         document.getElementById('settings-overlay').addEventListener('click', function(e) {
             if (e.target === e.currentTarget) self.close();
         });
+        // Tab bar — each tab switches the active page via its data-page.
+        document.querySelectorAll('.settings-tab').forEach(function(tab) {
+            tab.addEventListener('click', function() {
+                self._showPage(tab.getAttribute('data-page'));
+            });
+        });
         // API Pools UI — bind once at init; render lazily on open.
         PoolsAdmin.init();
         // Role-picker search (all BE roles in AI Model Settings page).
@@ -642,13 +592,6 @@ const SettingsModal = {
             Settings._keepRecent = val;
             Settings._persist();
         });
-        // Condense facts threshold save
-        document.getElementById('settings-condense-facts-save').addEventListener('click', function() {
-            var val = parseInt(document.getElementById('settings-condense-facts').value);
-            if (!val || val < 10) return;
-            Settings._condenseFacts = val;
-            Settings._persist();
-        });
         // Video detail save
         document.getElementById('settings-video-detail').addEventListener('change', function() {
             var val = document.getElementById('settings-video-detail').value;
@@ -665,12 +608,6 @@ const SettingsModal = {
         document.getElementById('settings-log-trace').addEventListener('change', function() {
             Settings._logTrace = this.checked;
             Settings._persist();
-        });
-
-        document.getElementById('settings-profile-clear-btn').addEventListener('click', async function() {
-            var ok = await Modal.confirm(t('profileClearTitle') || 'Clear profile', t('profileClearConfirm'), t('clear') || 'Clear');
-            if (!ok) return;
-            await UserProfile.clear();
         });
     }
 };

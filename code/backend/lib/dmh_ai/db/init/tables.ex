@@ -66,11 +66,7 @@ defmodule DmhAi.DB.Init.Tables do
       role TEXT NOT NULL DEFAULT 'user',       -- install-level superuser flag: 'admin' = admin of the deployment itself; 'user' = regular user. Distinct from org_role.
       org_id TEXT NOT NULL,                    -- FK organizations.id; never NULL (Primitive 0.1)
       org_role TEXT NOT NULL DEFAULT 'member', -- role within their org: 'member' | 'manager' | 'admin'
-      profile TEXT DEFAULT '',
       preferences TEXT,                       -- per-user JSON blob: token-saving toggle, future personal prefs
-      last_profile_extracted_msg_ts INTEGER,  -- ProfileExtractor watermark
-      memo_kdf_salt BLOB,                     -- per-user PBKDF2 salt for the memo wrap-key
-      memo_wrapped_mmk BLOB,                  -- master memo key wrapped under the wrap-key (0x01 ‖ iv ‖ tag ‖ ct)
       unix_uid INTEGER,                       -- per-user Linux UID inside the sandbox (≥ 10001); allocated lazily
       password_changed INTEGER DEFAULT 0,
       deleted INTEGER DEFAULT 0,
@@ -106,15 +102,6 @@ defmodule DmhAi.DB.Init.Tables do
     """)
 
     query!(Repo, """
-    CREATE TABLE IF NOT EXISTS user_fact_counts (
-      user_id TEXT NOT NULL,
-      topic TEXT NOT NULL,
-      count INTEGER NOT NULL DEFAULT 1,
-      PRIMARY KEY (user_id, topic)
-    )
-    """)
-
-    query!(Repo, """
     CREATE TABLE IF NOT EXISTS image_descriptions (
       session_id TEXT NOT NULL,
       file_id TEXT NOT NULL,
@@ -142,8 +129,8 @@ defmodule DmhAi.DB.Init.Tables do
 
     # Per-tier token accounting. One row per (session_id, user_id) pair,
     # plus one synthetic per-user row keyed by the sentinel session_id
-    # `_user_global` for LLM calls made outside a session (ProfileExtractor,
-    # KB ingest tagger). `get_global_stats/1` sums across ALL rows for the
+    # `_user_global` for LLM calls made outside a session (the background
+    # fact extractor). `get_global_stats/1` sums across ALL rows for the
     # user — including the sentinel — to give a complete user-global total.
     # Tier names are the atoms `:master | :swift | :oracle | :vision |
     # :embedding`; TokenTracker.add/5 picks the column pair by atom.
@@ -217,70 +204,6 @@ defmodule DmhAi.DB.Init.Tables do
 
     query!(Repo,
       "CREATE INDEX IF NOT EXISTS idx_model_behavior_stats_model ON model_behavior_stats (model, count DESC)")
-
-
-    # Per-user encrypted memo store. Querying is conversational —
-    # Confidant runs an automatic memo-retrieval pre-step before each
-    # turn. Three tables:
-    #     memo_sources       — memo ingest registry; carries org_id + user_id (both NOT NULL).
-    #     memo_chunks_meta   — chunk metadata for memos; rowid 1:1 to kb_vec_memo.
-    #     kb_vec_memo        — vec0 virtual table for memo vectors.
-    #     memo_fts           — FTS5 inverted index over memo chunk_text.
-    query!(Repo, """
-    CREATE TABLE IF NOT EXISTS memo_sources (
-      id           INTEGER PRIMARY KEY AUTOINCREMENT,
-      org_id       TEXT NOT NULL,                 -- audit context; the user's org at memo creation
-      user_id      TEXT NOT NULL,                 -- the only reader; memo is encrypted per-user
-      source_kind  TEXT NOT NULL,
-      source_id    TEXT NOT NULL,                 -- natural key (sha256 of text)
-      title        TEXT,
-      raw_text     TEXT,
-      centroid     BLOB,
-      tags         TEXT,
-      indexed_at   INTEGER NOT NULL,
-      UNIQUE(user_id, source_id)
-    )
-    """)
-    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_memo_sources_user ON memo_sources (user_id)")
-    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_memo_sources_org ON memo_sources (org_id)")
-
-    query!(Repo, """
-    CREATE TABLE IF NOT EXISTS memo_chunks_meta (
-      id           INTEGER PRIMARY KEY AUTOINCREMENT,
-      org_id       TEXT NOT NULL,
-      user_id      TEXT NOT NULL,
-      source_id    INTEGER NOT NULL REFERENCES memo_sources(id) ON DELETE CASCADE,
-      chunk_idx    INTEGER NOT NULL,
-      chunk_text   TEXT NOT NULL,
-      indexed_at   INTEGER NOT NULL
-    )
-    """)
-    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_memo_chunks_meta_source ON memo_chunks_meta (source_id)")
-    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_memo_chunks_meta_user ON memo_chunks_meta (user_id)")
-
-    # vec0 virtual tables. Dimension is hard-coded; distance metric
-    # is cosine (semantic similarity, magnitude-invariant — see
-    # specs/vector_kb.md). Distance metric is fixed at table creation.
-    # `kb_vec_memo.rowid` mirrors `memo_chunks_meta.id`.
-    query!(Repo, "CREATE VIRTUAL TABLE IF NOT EXISTS kb_vec_memo      USING vec0(embedding float[1024] distance_metric=cosine)")
-
-    # FTS5 inverted indexes over chunk_text — feed the BM25 leg of
-    # hybrid search. Contentless tables (text not duplicated; we
-    # already have it in *_chunks_meta); rowid mirrors the
-    # corresponding chunks_meta.id. `contentless_delete=1` lets us
-    # issue plain `DELETE FROM <fts> WHERE rowid=?` on chunk delete.
-    # Tokenizer `unicode61` handles diacritics + case-folding for
-    # multilingual content (Vietnamese / German / etc.) — the
-    # default tokenizer is ASCII-only and would index "đỏ" as
-    # something useless.
-    query!(Repo, """
-    CREATE VIRTUAL TABLE IF NOT EXISTS memo_fts USING fts5(
-      chunk_text,
-      content='',
-      contentless_delete=1,
-      tokenize='unicode61 remove_diacritics 2'
-    )
-    """)
 
     # Audit log — every permission denial + cross-user / cross-org
     # access lands here. Per Primitive 0.1 (audit history visible to

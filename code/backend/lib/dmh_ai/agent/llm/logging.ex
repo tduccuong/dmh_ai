@@ -72,8 +72,8 @@ defmodule DmhAi.Agent.LLM.Logging do
   # Derive a TokenTracker callback from the trace meta when the caller
   # didn't pass an explicit `:on_tokens`. Auto-wire fires only when
   # the trace carries `tier`, `user_id`, and `session_id` (session_id
-  # may be `nil` for user-global calls like ProfileExtractor — the
-  # tracker writes the sentinel row in that case). Anything else
+  # may be `nil` for user-global calls like the background fact
+  # extractor — the tracker writes the sentinel row in that case). Anything else
   # → no callback (the adapter sees a nil and skips the credit).
   def auto_token_tracker(%{tier: tier, user_id: user_id, session_id: session_id})
       when is_atom(tier) and is_binary(user_id) do

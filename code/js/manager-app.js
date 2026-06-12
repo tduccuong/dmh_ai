@@ -39,7 +39,6 @@ UIManager.initializeApp = async function() {
     } else {
         OllamaAPI.setEndpoint('http://127.0.0.1:11434');
     }
-    await UserProfile.load();
 
     // Initialize mode selector
     this.initModeSelector();
@@ -77,10 +76,17 @@ UIManager.initializeApp = async function() {
         var shouldAutoFresh = idleMs > IDLE_FRESH_SESSION_MS && priorHasContent;
 
         if (filtered.length === 0 || shouldAutoFresh) {
-            const freshSession = await SessionStore.createSession(t('newChat'), this._currentMode);
-            await SessionStore.setCurrentState(this._currentMode, freshSession.id);
-            this._modeSessionIds[this._currentMode] = freshSession.id;
-            this.currentSession = freshSession;
+            // Never keep more than one empty "new" chat: if an empty session
+            // already exists, land on it instead of spawning another (the
+            // cause of duplicate new chats appearing when a user returns
+            // after an idle period). Only create when there's genuinely none.
+            var emptyExisting = filtered.find(function(s) {
+                return !s.messages || s.messages.length === 0;
+            });
+            const landing = emptyExisting || await SessionStore.createSession(t('newChat'), this._currentMode);
+            await SessionStore.setCurrentState(this._currentMode, landing.id);
+            this._modeSessionIds[this._currentMode] = landing.id;
+            this.currentSession = landing;
         } else {
             this.currentSession =
                 (lastForMode && filtered.find(function(s) { return s.id === lastForMode; }))
@@ -93,7 +99,7 @@ UIManager.initializeApp = async function() {
         await this.renderSessions();
         this.renderChat();
         this.startProgressPolling();
-        document.getElementById('message-input').focus();
+        document.getElementById('message-input').focus({ preventScroll: true });
 
         // Non-empty landing → mode-hint toast; empty landing → splash
         // already explains the mode, no toast needed.
@@ -290,7 +296,7 @@ UIManager.createNewSession = async function() {
     // If already in an empty session, just focus input. No hint toast
     // — splash is already showing.
     if (this.currentSession && (!this.currentSession.messages || this.currentSession.messages.length === 0)) {
-        document.getElementById('message-input').focus();
+        document.getElementById('message-input').focus({ preventScroll: true });
         return;
     }
     // Reuse an existing empty session of the same mode if one exists
@@ -318,7 +324,7 @@ UIManager.createNewSession = async function() {
     // reach the FE, because the delta-polling that would fetch it is dead.
     this.startProgressPolling();
     // New session is empty by definition → splash, no hint toast.
-    document.getElementById('message-input').focus();
+    document.getElementById('message-input').focus({ preventScroll: true });
 };
 
 UIManager.switchSession = async function(id) {
@@ -363,8 +369,12 @@ UIManager.switchSession = async function(id) {
     this.startProgressPolling();
     // Always focus the composer so the user can start typing right away
     // after switching to (or back to) a session.
+    // preventScroll: on a tablet, focusing the bottom composer makes the
+    // browser scroll the input into view, pushing the fixed topbar off the
+    // top (it only re-pins after scrolling back up). preventScroll keeps the
+    // cursor in the box without moving the viewport.
     var input = document.getElementById('message-input');
-    if (input) input.focus();
+    if (input) input.focus({ preventScroll: true });
 };
 
 // Initial snapshot — fetches progress rows once (on session switch or
@@ -627,7 +637,7 @@ UIManager.clearSession = async function() {
     this.startProgressPolling();
     // Cleared session is empty by definition → splash, no hint toast.
     var clearedInput = document.getElementById('message-input');
-    if (clearedInput) clearedInput.focus();
+    if (clearedInput) clearedInput.focus({ preventScroll: true });
 };
 
 UIManager.showTokenStats = async function(sessionId, sessionName) {

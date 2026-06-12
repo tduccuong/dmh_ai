@@ -3,7 +3,7 @@
 # See the LICENSE file in the repository root for full details.
 # For commercial inquiries, contact: tduccuong@gmail.com
 
-defmodule DmhAi.VectorDB.Embedder do
+defmodule DmhAi.Kb.Embedder do
   @moduledoc """
   HTTP client for the embedding endpoint resolved via
   `DmhAi.LLM.Pools` from `AgentSettings.kb_embedding_model()` (default

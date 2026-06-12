@@ -5,17 +5,17 @@
 
 defmodule DmhAi.Web.Search do
   @moduledoc """
-  Shared web search implementation for Confidant and Assistant pipelines.
+  Web search implementation for the Confidant pipeline.
 
   Exposes:
-    generate_search_queries/5  — one LLM call: decides whether to search, picks the
+    generate_search_queries/3  — one LLM call: decides whether to search, picks the
                                  SearXNG category, and generates optimised keyword queries.
                                  Returns `{:no_search} | {:search, category, queries}`.
                                  The trailing `meta` map (session_id + user_id) threads
                                  through to the LLM trace so the swift-tier call lands
                                  on the right token-stats row.
     call_search_engine/3       — SearXNG search + page fetching via Web.Fetcher.
-    search/4                   — generate_search_queries |> call_search_engine.
+    search/3                   — generate_search_queries |> call_search_engine.
   """
 
   alias DmhAi.Agent.{AgentSettings, LLM}
@@ -30,13 +30,10 @@ defmodule DmhAi.Web.Search do
   @confidant_prompt """
   Today's date and time: %{now}.
 
-  %{context_block}%{memo_block}New message: "%{content}"
+  %{context_block}New message: "%{content}"
 
   Step 1 — Decide if a live web search is needed.
   Search is EXPENSIVE. Efficiency is priority, but accuracy on time-sensitive facts is mandatory.
-
-  ### RULE 0: SAVED MEMO COVERAGE
-  If a `[saved memos]` block above contains a fact that already answers the user's question (same person, same animal, same object, same property — even if the user wrote without diacritics or with typos), return `SEARCH: NO` immediately. The user's saved memo is authoritative for personal facts; do not search the web for something the user has already told us.
 
   ### RULE 1: EXPLICIT REQUEST
   If the user explicitly asks for a search (e.g., "search the web", "look up", "check online", "find recent news") → YES.
@@ -98,31 +95,6 @@ defmodule DmhAi.Web.Search do
   LANG:xx more keywords
   """
 
-  # Assistant: the worker has already decided to search — just pick category and optimise queries.
-  @assistant_prompt """
-  Task intent: "%{content}"
-
-  Pick the SearXNG category and generate optimised keyword queries for this search intent.
-
-  Category:
-  - NEWS   : breaking news, sports, stock/crypto prices, weather, live events
-  - IT     : code, programming, technical docs, GitHub, StackOverflow, library questions
-  - GENERAL: everything else needing fresh or current data
-
-  Queries — generate 1-3:
-  - One query in the dominant language of the intent
-  - One English query if the topic has significant English-language sources
-  - One per additional explicitly relevant language
-  - Keyword-style only: NO sentences, NO filler words
-  - 4-8 words; keep all proper names, brand names, product names exactly as-is
-  - Add time context only where needed: "today" for live, "this week" for recent, %{month} %{year} for general recency
-
-  Output — no other text:
-  CATEGORY: <NEWS|IT|GENERAL>
-  LANG:xx keywords here
-  LANG:xx more keywords
-  """
-
   @max_raw_results 10
 
   # ---------------------------------------------------------------------------
@@ -133,26 +105,16 @@ defmodule DmhAi.Web.Search do
   One LLM call that decides whether to search, picks the SearXNG category,
   and generates optimised keyword queries.
 
-  `memo_hits` — optional list of `%{chunk_text: String.t()}` decrypted
-  memo snippets (Confidant-only). When non-empty, the planner sees
-  them in a `[saved memos]` block in its prompt and is instructed
-  (RULE 0) to return `SEARCH: NO` when a saved memo already answers
-  the question. This is how Confidant defers to the user's memo
-  store for personal-fact questions instead of falling through to
-  web search. Empty / unset = today's behaviour (Assistant pipeline
-  always passes empty; Confidant passes hits when the upstream memo
-  retrieval found any).
-
   Returns:
     * `{:no_search}`                      — search not needed (Confidant only)
     * `{:search, category, queries}`      — `category` is "news"|"it"|"news,general";
                                             `queries` is `[%{text, lang}]`
   """
-  @spec generate_search_queries(String.t(), [String.t()], :confidant | :assistant, [map()], map()) ::
+  @spec generate_search_queries(String.t(), [String.t()], map()) ::
           {:no_search} | {:search, String.t(), [%{text: String.t(), lang: String.t()}]}
-  def generate_search_queries(content, recent_msgs \\ [], pipeline \\ :confidant, memo_hits \\ [], meta \\ %{}) do
+  def generate_search_queries(content, recent_msgs \\ [], meta \\ %{}) do
     model  = AgentSettings.swift_model()
-    prompt = build_prompt(content, recent_msgs, pipeline, memo_hits)
+    prompt = build_prompt(content, recent_msgs)
 
     trace = %{
       origin: "system", path: "Web.Search.generate_queries",
@@ -163,15 +125,11 @@ defmodule DmhAi.Web.Search do
     }
     case LLM.call(model, [%{role: "user", content: prompt}], options: %{temperature: 0}, trace: trace) do
       {:ok, response} ->
-        parse_response(response, pipeline, content)
+        parse_response(response, content)
 
       {:error, reason} ->
         Logger.warning("[Web.Search] generate_search_queries error: #{inspect(reason)}")
-        if pipeline == :confidant do
-          {:no_search}
-        else
-          {:search, "news,general", [%{text: content, lang: "auto"}]}
-        end
+        {:no_search}
     end
   end
 
@@ -311,9 +269,9 @@ defmodule DmhAi.Web.Search do
   Full pipeline: generate queries (with search decision) → search → fetch pages.
   Returns `%{snippets: [], pages: []}` when search is not needed.
   """
-  @spec search(String.t(), [String.t()], :confidant | :assistant, keyword()) ::
+  @spec search(String.t(), [String.t()], keyword()) ::
           :no_search | %{snippets: [map()], pages: [map()]}
-  def search(content, recent_msgs \\ [], pipeline \\ :confidant, opts \\ []) do
+  def search(content, recent_msgs \\ [], opts \\ []) do
     reply_pid = Keyword.get(opts, :reply_pid)
     if reply_pid, do: send(reply_pid, {:chunk, ""})
 
@@ -322,7 +280,7 @@ defmodule DmhAi.Web.Search do
       user_id:    Keyword.get(opts, :user_id)
     }
 
-    case generate_search_queries(content, recent_msgs, pipeline, [], meta) do
+    case generate_search_queries(content, recent_msgs, meta) do
       {:no_search} ->
         Logger.info("[Web.Search] no search needed")
         :no_search
@@ -337,7 +295,7 @@ defmodule DmhAi.Web.Search do
   # Private
   # ---------------------------------------------------------------------------
 
-  defp build_prompt(content, recent_msgs, pipeline, memo_hits) do
+  defp build_prompt(content, recent_msgs) do
     now   = DateTime.utc_now()
     date  = DateTime.to_date(now)
     month = month_name(date.month)
@@ -348,51 +306,25 @@ defmodule DmhAi.Web.Search do
     # training-cutoff intuition.
     now_str = Calendar.strftime(now, "%A, %B %-d, %Y, %H:%M UTC")
 
-    template =
-      case pipeline do
-        :assistant -> @assistant_prompt
-        _          -> @confidant_prompt
-      end
+    template = @confidant_prompt
 
     context_block =
-      if pipeline == :confidant and recent_msgs != [] do
+      if recent_msgs != [] do
         lines = Enum.map_join(recent_msgs, "\n", fn m -> "- #{m}" end)
         "Recent user messages (oldest to newest):\n#{lines}\n\n"
       else
         ""
       end
 
-    # Saved memos — only injected for the Confidant pipeline. Each
-    # hit's `chunk_text` is a decrypted plaintext snippet from the
-    # user's memo store, ranked by cosine similarity and bounded by
-    # `memo_context_top_k`. RULE 0 of the prompt template tells the
-    # planner to judge whether any of these memos answers the user's
-    # question and short-circuit web search when so. Empty list /
-    # Assistant pipeline → empty string, no `[saved memos]` block.
-    memo_block =
-      if pipeline == :confidant and memo_hits != [] do
-        bullets =
-          memo_hits
-          |> Enum.map_join("\n", fn h ->
-            text = Map.get(h, :chunk_text) || Map.get(h, "chunk_text") || ""
-            "- " <> String.replace(text, "\n", " ")
-          end)
-
-        "[saved memos]\nThese facts the user has already saved with /memo:\n#{bullets}\n[/saved memos]\n\n"
-      else
-        ""
-      end
-
     template
     |> String.replace("%{context_block}", context_block)
-    |> String.replace("%{memo_block}", memo_block)
     |> String.replace("%{content}", content)
     |> String.replace("%{month}", month)
     |> String.replace("%{year}", year)
     |> String.replace("%{now}", now_str)
   end
 
-  defp parse_response(response, :confidant, fallback) do
+  defp parse_response(response, fallback) do
     lines = response |> String.trim() |> String.split("\n") |> Enum.map(&String.trim/1)
 
     search_line = Enum.find(lines, fn l ->
@@ -410,11 +342,6 @@ defmodule DmhAi.Web.Search do
     else
       {:no_search}
     end
-  end
-
-  defp parse_response(response, :assistant, fallback) do
-    lines = response |> String.trim() |> String.split("\n") |> Enum.map(&String.trim/1)
-    {:search, extract_category(lines), extract_queries(lines, fallback)}
   end
 
   defp extract_category(lines) do

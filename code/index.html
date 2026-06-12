@@ -81,22 +81,10 @@
                         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
                         About
                     </button>
-                    <div class="user-dropdown-sep" id="user-settings-sep" style="display:none"></div>
-                    <button class="user-dropdown-item" id="user-settings-btn" style="display:none">
+                    <div class="user-dropdown-sep" id="user-settings-sep"></div>
+                    <button class="user-dropdown-item" id="user-settings-btn">
                         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
                         <span id="user-settings-label">Settings</span>
-                    </button>
-                    <button class="user-dropdown-item" id="user-ai-settings-btn" style="display:none">
-                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>
-                        <span id="user-ai-settings-label">AI Model Settings</span>
-                    </button>
-                    <button class="user-dropdown-item" id="user-conv-settings-btn" style="display:none">
-                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
-                        <span id="user-conv-settings-label">Conversation Settings</span>
-                    </button>
-                    <button class="user-dropdown-item" id="user-rol-settings-btn">
-                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
-                        <span id="user-rol-settings-label">Read-out-loud settings</span>
                     </button>
                     <div class="user-dropdown-sep"></div>
                     <button class="user-dropdown-item" id="user-change-pw-btn">
@@ -107,10 +95,6 @@
                     <button class="user-dropdown-item" id="user-manage-btn" style="display:none">
                         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
                         Manage users
-                    </button>
-                    <button class="user-dropdown-item" id="user-profiles-btn" style="display:none">
-                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8" y1="21" x2="16" y2="21"/></svg>
-                        Built user profiles
                     </button>
                     <div class="user-dropdown-sep"></div>
                     <button class="user-dropdown-item" id="user-signout-btn">
@@ -245,15 +229,6 @@
         </div>
     </div>
 </div>
-<div class="modal-overlay" id="user-profiles-overlay">
-    <div class="modal user-profiles-modal">
-        <div class="modal-title">Built user profiles</div>
-        <div id="user-profiles-content" class="user-profiles-content"></div>
-        <div class="modal-actions">
-            <button class="modal-btn modal-btn-ok" id="user-profiles-close">Close</button>
-        </div>
-    </div>
-</div>
 <div class="modal-overlay" id="modal-overlay">
     <div class="modal">
         <div class="modal-title" id="modal-title"></div>
@@ -300,7 +275,12 @@
     <div class="settings-overlay" id="settings-overlay">
         <div class="settings-modal">
             <div class="settings-hdr">
-                <span class="settings-hdr-title" id="settings-modal-title">Settings</span>
+                <div class="settings-tabs" id="settings-tabs">
+                    <button class="settings-tab" data-page="page-model" id="tab-pools"><span id="tab-pools-label">Pools</span></button>
+                    <button class="settings-tab" data-page="page-ai-models" id="tab-models"><span id="tab-models-label">Models</span></button>
+                    <button class="settings-tab" data-page="page-conversation" id="tab-conversation"><span id="tab-conversation-label">Conversation</span></button>
+                    <button class="settings-tab" data-page="page-read-out-loud" id="tab-read-aloud"><span id="tab-read-aloud-label">Read aloud</span></button>
+                </div>
                 <button class="settings-close-btn" id="settings-close-btn">✕</button>
             </div>
             <div class="settings-body">
@@ -325,19 +305,6 @@
                 <div class="settings-page" id="page-ai-models">
                     <div class="settings-section">
                         <div class="settings-section-title">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-                            Assistant
-                        </div>
-                        <div class="settings-subsection">
-                            <div class="role-picker-current" id="assistant-model-current"></div>
-                            <div class="settings-search-wrap">
-                                <input id="assistant-model-search" class="settings-input" placeholder="Search model name...">
-                                <div class="settings-suggestions" id="assistant-model-suggestions"></div>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="settings-section">
-                        <div class="settings-section-title">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
                             Confidant
                         </div>
@@ -355,7 +322,7 @@
                             Swift — short, fast actions
                         </div>
                         <div class="settings-subsection settings-subsection-help">
-                            Used for: anchor-pivot classify, runtime message localisation, web-search query planning, session naming. Cheapest model — latency dominates over quality.
+                            Used for: background fact extraction, web-search query planning, session naming, /tts + /duolang segmentation. Cheapest model — latency dominates over quality.
                         </div>
                         <div class="settings-subsection">
                             <div class="role-picker-current" id="swift-model-current"></div>
@@ -371,7 +338,7 @@
                             Oracle — long, dense content
                         </div>
                         <div class="settings-subsection settings-subsection-help">
-                            Used for: context compaction, web-result synthesis, profile extraction + condensation. Strong general model.
+                            Used for: context compaction, web-result synthesis. Strong general model.
                         </div>
                         <div class="settings-subsection">
                             <div class="role-picker-current" id="oracle-model-current"></div>
@@ -493,23 +460,6 @@
                                     <option value="high">High (12 frames)</option>
                                 </select>
                             </div>
-                        </div>
-                    </div>
-                    <!-- Section: Companion Memory -->
-                    <div class="settings-section" data-admin-only="true">
-                        <div class="settings-section-title">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
-                            <span id="settings-profile-section-title">Companion Memory</span>
-                        </div>
-                        <div class="settings-subsection">
-                            <div class="settings-add-row">
-                                <label id="settings-condense-facts-label" class="settings-row-label">Condense after facts</label>
-                                <input id="settings-condense-facts" class="settings-input settings-num-sm" type="number" min="10" max="500">
-                                <button class="settings-add-btn" id="settings-condense-facts-save">Save</button>
-                            </div>
-                        </div>
-                        <div class="settings-subsection">
-                            <button class="settings-add-btn settings-add-btn-danger" id="settings-profile-clear-btn">Clear memory</button>
                         </div>
                     </div>
                 </div>

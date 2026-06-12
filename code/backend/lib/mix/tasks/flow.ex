@@ -21,9 +21,8 @@ defmodule Mix.Tasks.Flow do
       from `test/flow_tapes/<flow_id>.tape.json`. Deterministic, fast,
       no network.
     * `llm` — real LLM calls against the ollama-cloud pool, pinned to
-      `ministral-3:14b` (swiftModel) and `devstral-small-2:24b`
-      (assistantModel). Requires the pool to be configured with at
-      least one valid api_key.
+      `ministral-3:14b` (swiftModel) and the confidantModel tier.
+      Requires the pool to be configured with at least one valid api_key.
 
   `--record` is only meaningful with `--profile llm`. The captured
   tape replaces the existing tape file for the named flow; useful when
