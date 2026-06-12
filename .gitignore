@@ -19,6 +19,9 @@ mocks/*.log
 __pycache__/
 *.py[cod]
 
+# Browser e2e screenshot output
+scripts/e2e/shots/
+
 # IDE
 .idea/
 .vscode/
