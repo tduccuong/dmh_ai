@@ -338,21 +338,40 @@ function wrapTables(el) {
     });
 }
 
+var COPY_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+var CHECK_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+
+// Wrap each fenced block in a `.code-block` with a header bar carrying a
+// "Copy <icon>" button on the right. Idempotent — skips blocks already wrapped
+// (re-render during streaming rebuilds the <pre>, so it re-wraps cleanly).
 function addCopyButtons(el) {
     el.querySelectorAll('pre').forEach(function(pre) {
-        if (pre.querySelector('.code-copy-btn')) return;
+        if (pre.parentElement && pre.parentElement.classList.contains('code-block')) return;
+
         var btn = document.createElement('button');
         btn.className = 'code-copy-btn';
-        btn.textContent = '⧉';
+        btn.type = 'button';
+        btn.innerHTML = '<span class="code-copy-label">Copy</span>' + COPY_ICON;
         btn.addEventListener('click', function() {
             var code = pre.querySelector('code');
             var text = (code || pre).textContent;
             navigator.clipboard.writeText(text).then(function() {
-                btn.textContent = '✓';
-                setTimeout(function() { btn.textContent = '⧉'; }, 5000);
+                btn.innerHTML = '<span class="code-copy-label">Copied</span>' + CHECK_ICON;
+                setTimeout(function() {
+                    btn.innerHTML = '<span class="code-copy-label">Copy</span>' + COPY_ICON;
+                }, 3000);
             });
         });
-        pre.appendChild(btn);
+
+        var header = document.createElement('div');
+        header.className = 'code-block-header';
+        header.appendChild(btn);
+
+        var wrap = document.createElement('div');
+        wrap.className = 'code-block';
+        pre.parentNode.insertBefore(wrap, pre);
+        wrap.appendChild(header);
+        wrap.appendChild(pre);
     });
 }
 
