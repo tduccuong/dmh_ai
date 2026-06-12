@@ -133,10 +133,8 @@ defmodule DmhAi.Agent.SessionProgress do
   preserved — it represents chronological position in the chat
   timeline. The flip is an in-place mutation, not a new row.
 
-  Pass `duration_ms` measured around the corresponding
-  `Tools.Registry.execute/3` call so the FE can render a frozen
-  "(Ns)" suffix on the completed tool bubble. See architecture.md
-  §Long-running tool execution.
+  Pass `duration_ms` measured around the work the row represents so the
+  FE can render a frozen "(Ns)" suffix on the completed bubble.
   """
   @spec mark_tool_done(integer(), non_neg_integer() | nil) :: :ok
   def mark_tool_done(id, duration_ms \\ nil) when is_integer(id) do

@@ -9,13 +9,9 @@ defmodule DmhAi.Adapters.Http do
 
   Flow
   ----
-  1. The Plug handler looks up `session.mode` and branches:
-       mode == "assistant" → `dispatch_assistant/5`
-       mode == "confidant" → `dispatch_confidant/6`
-     The branch is deliberate: the two paths share no command type and no
-     dispatcher. See specs/architecture.md §Request Lifecycle.
-  2. `dispatch_*` builds the path-specific command and calls
-     `UserAgent.dispatch_assistant/2` or `UserAgent.dispatch_confidant/2`.
+  1. The Plug handler builds a `ConfidantCommand` and calls
+     `dispatch_confidant/6`. See specs/architecture.md §Request Lifecycle.
+  2. `dispatch_confidant` hands off to `UserAgent.dispatch_confidant/2`.
   3. The Plug handler then calls `receive_stream/1` which blocks in a receive
      loop, forwarding {:chunk, _} tokens to the caller as they arrive from the
      agent's inline task.

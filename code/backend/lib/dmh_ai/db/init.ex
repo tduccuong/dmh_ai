@@ -6,9 +6,8 @@
 defmodule DmhAi.DB.Init do
   @moduledoc """
   Boot-time DB initialiser. Issues the schema (`Tables.create_all/0`)
-  then the bootstrap and catalog seeders. Lives as a thin shell over
-  sibling modules under `__MODULE__.{Tables, PoolSeed,
-  OAuthCatalogSeed, BootstrapSeed}`.
+  then the bootstrap and pool seeders. Lives as a thin shell over
+  sibling modules under `__MODULE__.{Tables, PoolSeed, BootstrapSeed}`.
 
   This module describes the schema as a fresh install only. Schema
   changes between releases are applied as one-off operator-run DB
@@ -24,7 +23,6 @@ defmodule DmhAi.DB.Init do
     __MODULE__.Tables.create_all()
     __MODULE__.BootstrapSeed.seed_all()
     __MODULE__.PoolSeed.seed_all()
-    __MODULE__.OAuthCatalogSeed.seed_all()
     :ok
   end
 end

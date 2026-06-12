@@ -10,13 +10,11 @@ defmodule DmhAi.Adapters.Telegram do
   Dual role
   ---------
   1. INPUT: Receives messages from users via Telegram Bot API and routes them
-     to their UserAgent. The adapter looks up the session's mode and
-     dispatches via the matching path:
-       assistant → UserAgent.dispatch_assistant/2 with an AssistantCommand
-       confidant → UserAgent.dispatch_confidant/2 with a ConfidantCommand
+     to their UserAgent via `UserAgent.dispatch_confidant/2` with a
+     ConfidantCommand.
 
   2. NOTIFICATION: Called by MsgGateway.notify/2 to push a message to the
-     user's Telegram chat when an async Assistant Loop finishes.
+     user's Telegram chat.
 
   Current state
   -------------

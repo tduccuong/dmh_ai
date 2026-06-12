@@ -25,10 +25,9 @@ defmodule DmhAi.Util.Redact do
 
   ### Not redacted
 
-  Strings sent to the LLM (the assistant's tool_history, the
-  conversation messages, tool results returned via `Tools.Registry`)
-  are NOT redacted — the model needs the live token to actually use
-  the credential. Redaction is for log/display copies only.
+  Strings sent to the LLM (the conversation messages, web-search and
+  file context) are NOT redacted — the model needs the live content to
+  answer. Redaction is for log/display copies only.
 
   ### Patterns
 

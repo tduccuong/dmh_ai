@@ -1,5 +1,0 @@
-{
-  "flow_id": "F48",
-  "_note": "no LLM calls — direct POST /tools/execute exercises the dispatcher → Calendly path",
-  "turns": []
-}

@@ -1,5 +1,0 @@
-{
-  "flow_id": "F31",
-  "_note": "no LLM calls — /index is a slash command, not an LLM-driven chain",
-  "turns": []
-}

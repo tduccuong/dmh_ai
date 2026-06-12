@@ -160,30 +160,4 @@ defmodule DmhAi.Agent.UserAgentMessages do
         false
     end
   end
-
-  @doc """
-  Across all of `user_id`'s Assistant-mode sessions, return the session
-  ids whose last persisted message is role="user" — the orphan set the
-  UserAgent boot scan dispatches fresh turns for. See architecture.md
-  §Boot scan for orphan recovery.
-  """
-  @spec sessions_with_unanswered_user_msg(String.t()) :: [String.t()]
-  def sessions_with_unanswered_user_msg(user_id) do
-    try do
-      result = query!(Repo,
-        "SELECT id, messages FROM sessions WHERE user_id=? AND mode='assistant'",
-        [user_id])
-
-      Enum.flat_map(result.rows, fn [session_id, msgs_json] ->
-        case Jason.decode!(msgs_json || "[]") |> List.last() do
-          %{"role" => "user"} -> [session_id]
-          _                    -> []
-        end
-      end)
-    rescue
-      e ->
-        Logger.error("[UserAgentMessages] sessions_with_unanswered_user_msg failed: #{Exception.message(e)}")
-        []
-    end
-  end
 end

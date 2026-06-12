@@ -1,5 +1,0 @@
-{
-  "flow_id": "F49",
-  "_note": "no LLM calls — direct POST /tools/execute checks the write-refusal gate",
-  "turns": []
-}
