@@ -254,10 +254,20 @@ const UIManager = {
         });
 
         if (window.visualViewport) {
+            // Drive the mobile app-shell height from the VISUAL viewport so
+            // the chat box stays above the on-screen keyboard. The CSS
+            // fallback (`100dvh`) never shrinks for the OSK, so without this
+            // the fixed `.main` keeps its full height and the input area
+            // slides behind the keyboard.
+            var applyAppHeight = function() {
+                document.documentElement.style.setProperty(
+                    '--app-height', window.visualViewport.height + 'px');
+            };
+            applyAppHeight();
             var lastVvH = window.visualViewport.height;
             window.visualViewport.addEventListener('resize', function() {
                 var newH = window.visualViewport.height;
-                document.documentElement.style.height = newH + 'px';
+                applyAppHeight();
                 // Only auto-pin to bottom on a SHRINK (soft keyboard
                 // appears) AND when the user was already at the bottom.
                 // Earlier this fired on every viewport change while
