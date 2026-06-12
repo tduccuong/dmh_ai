@@ -351,6 +351,32 @@ var CHECK_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" st
 // code and stays verbatim + monospace.
 var CODE_PROSE_LANGS = { '': 1, text: 1, txt: 1, plain: 1, plaintext: 1, markdown: 1, md: 1, deliverable: 1 };
 
+// Header title per fence language. Unknown languages fall back to
+// "<Capitalised> code"; bare/text/md fences are prose.
+var BLOCK_TITLES = {
+    '': 'Plain text', text: 'Plain text', txt: 'Plain text', plain: 'Plain text',
+    plaintext: 'Plain text', deliverable: 'Plain text', markdown: 'Markdown', md: 'Markdown',
+    elixir: 'Elixir code', ex: 'Elixir code', exs: 'Elixir code',
+    python: 'Python code', py: 'Python code',
+    javascript: 'JavaScript code', js: 'JavaScript code', jsx: 'JavaScript code',
+    typescript: 'TypeScript code', ts: 'TypeScript code', tsx: 'TypeScript code',
+    bash: 'Shell script', sh: 'Shell script', shell: 'Shell script', shellscript: 'Shell script', zsh: 'Shell script',
+    ruby: 'Ruby code', rb: 'Ruby code', go: 'Go code', golang: 'Go code',
+    rust: 'Rust code', rs: 'Rust code', java: 'Java code', c: 'C code',
+    cpp: 'C++ code', 'c++': 'C++ code', cs: 'C# code', csharp: 'C# code',
+    php: 'PHP code', swift: 'Swift code', kotlin: 'Kotlin code', kt: 'Kotlin code',
+    r: 'R code', lua: 'Lua code', perl: 'Perl code', scala: 'Scala code',
+    sql: 'SQL', json: 'JSON', yaml: 'YAML', yml: 'YAML', toml: 'TOML', ini: 'INI',
+    html: 'HTML', css: 'CSS', scss: 'SCSS', xml: 'XML', csv: 'CSV',
+    dockerfile: 'Dockerfile', diff: 'Diff', makefile: 'Makefile', graphql: 'GraphQL'
+};
+
+function blockTitle(lang) {
+    if (BLOCK_TITLES[lang]) return BLOCK_TITLES[lang];
+    if (!lang) return 'Plain text';
+    return lang.charAt(0).toUpperCase() + lang.slice(1) + ' code';
+}
+
 function addCopyButtons(el) {
     el.querySelectorAll('pre').forEach(function(pre) {
         if (pre.parentElement && pre.parentElement.classList.contains('code-block')) return;
@@ -374,8 +400,13 @@ function addCopyButtons(el) {
             });
         });
 
+        var title = document.createElement('span');
+        title.className = 'code-block-title';
+        title.textContent = blockTitle(lang);
+
         var header = document.createElement('div');
         header.className = 'code-block-header';
+        header.appendChild(title);
         header.appendChild(btn);
 
         var wrap = document.createElement('div');

@@ -456,7 +456,8 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
 /* Fenced / deliverable block: high-contrast frame + header bar with a
    "Copy <icon>" button; body renders at normal message text size. */
 .code-block { border: 1.5px solid var(--border-strong); border-radius: 8px; margin: 12px 0; overflow: hidden; background: var(--input-bg); }
-.code-block-header { display: flex; align-items: center; justify-content: flex-end; padding: 3px 5px; background: var(--surface-2); border-bottom: 1.5px solid var(--border-strong); }
+.code-block-header { display: flex; align-items: center; justify-content: space-between; padding: 3px 5px 3px 12px; background: var(--surface-2); border-bottom: 1.5px solid var(--border-strong); }
+.code-block-title { font-size: 12px; font-weight: 500; color: var(--text-3); }
 .code-copy-btn { display: inline-flex; align-items: center; gap: 6px; background: transparent; border: none; color: var(--text-2); cursor: pointer; font-size: 13px; font-family: inherit; line-height: 1; padding: 5px 10px; border-radius: 6px; transition: color 0.15s, background 0.15s; }
 .code-copy-btn:hover { color: var(--text-on-bright); background: var(--surface-3); }
 .code-copy-btn svg { display: block; width: 16px; height: 16px; }

@@ -154,7 +154,7 @@ defmodule DmhAi.Agent.ContextEngine do
 
     deliverable_directive =
       if deliverable do
-        "\nThis turn is a DELIVERABLE request: reply with ONLY the finished text the user asked for, wrapped in a fenced code block — the opening ``` on its own line, the text on the lines below, the closing ``` on its own line — and nothing else. No preamble, no commentary, no closing suggestions.\n"
+        "\nThis turn is a DELIVERABLE request: reply with ONLY the finished artifact the user asked for, wrapped in a fenced block — the opening ``` on its own line, the artifact on the lines below, the closing ``` on its own line — and nothing else. No preamble, no commentary, no closing suggestions. If the artifact is code or a script, tag the opening fence with its language (```elixir, ```python, ```bash, ```sql, …); for prose (a translation, draft, story) use a plain ```.\n"
       else
         ""
       end
