@@ -79,7 +79,7 @@ defmodule DmhAi.Commands.Pipelines.Duolang do
 
             # Text → one clean+segment+translate call. Image OCR sentences
             # are already clean, so they only need translating.
-            text_items = if text == "", do: [], else: segment_and_translate(text, lang, meta)
+            text_items = if text == "", do: [], else: segment_and_translate(text, lang, meta, source)
             image_items = translate_items(image_sentences, lang, meta)
             items = image_items ++ text_items
 
@@ -111,12 +111,15 @@ defmodule DmhAi.Commands.Pipelines.Duolang do
   # The whole point of the combined prompt: /duolang spends a SINGLE model
   # call on text (typed or the prior reply) — cleaning, segmenting, and
   # translating together — instead of a segment call followed by a
-  # translate call. A valid empty result is trusted (all scaffolding). On
-  # failure it degrades to segment-then-translate (two calls, rare path).
-  defp segment_and_translate(text, lang, meta) do
+  # translate call. An empty result is trusted for derived sources (all
+  # scaffolding); for typed text it degrades to segment-then-translate so
+  # the user's own words are never silently dropped. An LLM failure also
+  # degrades to that two-call path (rare).
+  defp segment_and_translate(text, lang, meta, source) do
     case combined_call(text, lang, meta) do
+      {:ok, []} when source == :typed -> translate_items(Sentences.segment(text, source), lang, meta)
       {:ok, items} -> items
-      :error -> translate_items(Sentences.segment(text), lang, meta)
+      :error -> translate_items(Sentences.segment(text, source), lang, meta)
     end
   end
 

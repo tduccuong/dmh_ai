@@ -21,7 +21,7 @@ defmodule DmhAi.Commands.Pipelines.Sentences do
       }
 
   Text is returned RAW. Callers segment it themselves so `/duolang` needs
-  only one model call: `/tts` calls `segment/1` (clean → sentences);
+  only one model call: `/tts` calls `segment/2` (clean → sentences);
   `/duolang` runs a single clean+segment+translate call (embedding the
   shared `clean_rules/0`). Both strip markdown scaffolding (rules like
   `***`, headings, bullet / emphasis markers) and drop trailing "go
@@ -130,7 +130,7 @@ defmodule DmhAi.Commands.Pipelines.Sentences do
   Resolve the speakable content for a Read-out-loud command: pick the
   source (typed text, OCR'd images, or the prior reply) and OCR any
   images. Text is returned RAW — the caller turns it into sentences
-  (`segment/1` for /tts, a combined clean+segment+translate call for
+  (`segment/2` for /tts, a combined clean+segment+translate call for
   /duolang) so /duolang needs only one model call.
 
   `arg` is the text after the command (and, for `/duolang`, after the
@@ -236,23 +236,31 @@ defmodule DmhAi.Commands.Pipelines.Sentences do
   # One Swift-tier call turns raw text into speakable prose sentences,
   # stripping markdown scaffolding and dropping "go deeper / suggestion"
   # meta sections (so `***` and the model's follow-up prompts never get
-  # read aloud). A valid empty result is trusted (the content was all
-  # scaffolding → nothing to read). Only an LLM failure / unparseable
-  # reply degrades to the regex splitter, so a flaky model never strands
-  # the user with no output.
+  # read aloud). An empty result is trusted only for derived sources
+  # (prior reply / OCR) where the content may be all scaffolding; for
+  # user-typed text it degrades to the regex splitter instead, so a short
+  # word list the model doesn't see as a "sentence" is still read. An LLM
+  # failure always degrades to the splitter, so a flaky model never
+  # strands the user with no output.
 
   @doc """
   Clean and segment raw text into speakable prose sentences (markdown
   scaffolding stripped, "go deeper / suggestion" sections dropped). Used
-  by `/tts`. Falls back to the regex splitter only when the model call
-  fails — a valid empty result is trusted (all scaffolding → nothing to
-  read).
-  """
-  @spec segment(String.t()) :: [String.t()]
-  def segment(""), do: []
+  by `/tts`.
 
-  def segment(text) when is_binary(text) do
+  `source` decides what an empty LLM result means. For derived sources
+  (`:prior_reply`, `:image_only`) a valid empty list is trusted — the
+  content was all scaffolding, so there is genuinely nothing to read. For
+  `:typed` the user handed over exactly what they want spoken, so an empty
+  result degrades to the regex splitter rather than silently dropping
+  their text. An LLM failure always degrades to the splitter.
+  """
+  @spec segment(String.t(), atom()) :: [String.t()]
+  def segment("", _source), do: []
+
+  def segment(text, source) when is_binary(text) do
     case llm_segment(text) do
+      {:ok, []} -> if source == :typed, do: split_text(text), else: []
       {:ok, sentences} -> sentences
       :error -> split_text(text)
     end

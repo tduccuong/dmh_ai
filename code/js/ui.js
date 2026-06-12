@@ -346,9 +346,10 @@ var CHECK_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" st
 // re-render during streaming rebuilds the <pre>, so it re-wraps cleanly).
 //
 // A plain / `text` / `md` fence is a prose DELIVERABLE (a translation, draft,
-// story…): its content is rendered as markdown so formatting shows, while Copy
-// still yields the raw source. A language-tagged fence (```python, …) is real
-// code and stays verbatim + monospace.
+// story…): its content is rendered as markdown so formatting shows, and Copy
+// yields the RENDERED plain text — no markdown markers, layout line breaks
+// kept. A language-tagged fence (```python, …) is real code: it stays verbatim
+// + monospace and Copy yields the source exactly.
 var CODE_PROSE_LANGS = { '': 1, text: 1, txt: 1, plain: 1, plaintext: 1, markdown: 1, md: 1, deliverable: 1 };
 
 // Header title per fence language. Unknown languages fall back to
@@ -387,13 +388,20 @@ function addCopyButtons(el) {
         if (code) { var m = (code.className || '').match(/language-([\w-]+)/); if (m) lang = m[1].toLowerCase(); }
         var isProse = !!CODE_PROSE_LANGS[lang];
 
+        // Code fences copy the verbatim source; prose deliverables copy the
+        // RENDERED plain text (markdown markers stripped, layout line breaks
+        // kept via innerText) so a pasted story carries no `**`/`#`/backtick
+        // syntax. `bodyDiv` is assigned below for prose blocks.
+        var bodyDiv = null;
+
         var btn = document.createElement('button');
         btn.className = 'code-copy-btn';
         btn.type = 'button';
         btn.title = 'Copy';
         btn.innerHTML = COPY_ICON;
         btn.addEventListener('click', function() {
-            navigator.clipboard.writeText(raw).then(function() {
+            var text = (isProse && bodyDiv) ? bodyDiv.innerText : raw;
+            navigator.clipboard.writeText(text).then(function() {
                 btn.innerHTML = CHECK_ICON;
                 btn.title = 'Copied';
                 setTimeout(function() { btn.innerHTML = COPY_ICON; btn.title = 'Copy'; }, 3000);
@@ -415,7 +423,7 @@ function addCopyButtons(el) {
         wrap.appendChild(header);
 
         if (isProse && typeof renderWithMath === 'function') {
-            var bodyDiv = document.createElement('div');
+            bodyDiv = document.createElement('div');
             bodyDiv.className = 'deliverable-body';
             try { bodyDiv.innerHTML = renderWithMath(raw); }
             catch (e) { bodyDiv.textContent = raw; }

@@ -53,7 +53,7 @@ defmodule DmhAi.Commands.Pipelines.Tts do
           "Attach an image, type some text after `/tts`, or send `/tts` alone after I've replied — I'll render it as a sentence-per-row Read-out-loud panel.")
 
       _ ->
-        sentences = image_sentences ++ Sentences.segment(text)
+        sentences = image_sentences ++ Sentences.segment(text, source)
 
         tts_payload = %{
           sentences: sentences,
