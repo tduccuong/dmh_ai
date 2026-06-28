@@ -290,11 +290,34 @@ const UIManager = {
         document.getElementById('new-session-btn').addEventListener('click', function() { self.createNewSession(); });
         document.getElementById('send-btn').addEventListener('click', function() { self.sendMessage(); });
         document.getElementById('stop-btn').addEventListener('click', function() { self.stopCurrentTurn(); });
+        // Enter sends; Shift-Enter / Ctrl-Enter inserts a newline. A textarea
+        // inserts a newline natively only for plain / Shift-Enter, so the
+        // Ctrl/Cmd-Enter case is done by hand, then an input event keeps the
+        // autosize + send-button state in sync.
+        function insertNewlineAtCursor(el) {
+            var s = el.selectionStart, end = el.selectionEnd, v = el.value;
+            el.value = v.slice(0, s) + '\n' + v.slice(end);
+            el.selectionStart = el.selectionEnd = s + 1;
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+
+        // True while an @-mention / &-workflow / duolang picker dropdown is
+        // open and owns Enter for item selection — the send handler defers.
+        function pickerOwnsEnter() {
+            return (typeof MentionPicker !== 'undefined' && MentionPicker._open) ||
+                   (typeof WorkflowPicker !== 'undefined' && WorkflowPicker._open) ||
+                   (typeof DuolangPicker !== 'undefined' && DuolangPicker._open);
+        }
+
         document.getElementById('message-input').addEventListener('keydown', function(e) {
-            // Phase 2: mid-chain sends are allowed (no `isStreaming` check).
-            // Uploads / description-generation still gate because those
-            // are FE-local prep, not an assistant chain.
-            if (e.key === 'Enter' && e.ctrlKey) { e.preventDefault(); if (!self._pendingVideo && !self._pendingDesc) self.sendMessage(); }
+            if (e.key !== 'Enter') return;
+            if (e.shiftKey) return;                                   // native newline
+            if (e.ctrlKey || e.metaKey) { e.preventDefault(); insertNewlineAtCursor(e.target); return; }
+            if (pickerOwnsEnter()) return;                            // open picker selects on Enter
+            // Mid-chain sends are allowed (no isStreaming check); uploads /
+            // description-generation still gate because those are FE-local prep.
+            e.preventDefault();
+            if (!self._pendingVideo && !self._pendingDesc) self.sendMessage();
         });
 
         // Layer W — @-mention + &-workflow pickers. Both listen for
