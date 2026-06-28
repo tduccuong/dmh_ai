@@ -10,10 +10,11 @@ defmodule DmhAi.Web.Search do
   Exposes:
     plan_turn/3                — one swift LLM call per user message: web-search decision +
                                  category + keyword queries, a distilled memory-lookup query
-                                 for facts/memos retrieval, and a copy-ready-deliverable flag.
-                                 Returns `%{search:, memory_query:, deliverable:}`. The trailing
-                                 `meta` map (session_id + user_id) threads through to the LLM
-                                 trace so the swift-tier call lands on the right token-stats row.
+                                 for facts/memos retrieval, a copy-ready-deliverable flag, and a
+                                 duolang flag (natural-language bilingual-read-aloud intent).
+                                 Returns `%{search:, memory_query:, deliverable:, duolang:}`. The
+                                 trailing `meta` map (session_id + user_id) threads through to the
+                                 LLM trace so the swift-tier call lands on the right token-stats row.
     call_search_engine/3       — SearXNG search + page fetching via Web.Fetcher.
     search/3                   — plan_turn |> call_search_engine.
   """
@@ -89,11 +90,15 @@ defmodule DmhAi.Web.Search do
   Step 6 — Deliverable (ALWAYS).
   YES if the new message asks you to PRODUCE a finished piece of text for the user to copy and use elsewhere — translate something, rewrite / refine / rephrase given text, draft a message or email, or compose a story / poem / post. NO for questions, discussion, advice, explanations, or anything that is not a take-away text artifact.
 
-  Output — no other text. ALWAYS end with the MEMORY and DELIVER lines:
+  Step 7 — Duolang (ALWAYS).
+  YES if the user wants a bilingual read-aloud panel — the same text shown in two languages, one line above the other, each line speakable. They invoke it by name ("duolang …"), or ask to have something rendered or read aloud in two languages together; this includes asking you to first write something and then present it in two languages. NO for an ordinary translation the user just wants as text to copy (that is a deliverable), and NO for normal questions or chat. When DUOLANG is YES, set DELIVER to NO.
+
+  Output — no other text. ALWAYS end with the MEMORY, DELIVER, and DUOLANG lines:
 
   SEARCH: NO
   MEMORY: keywords here
   DELIVER: <YES|NO>
+  DUOLANG: <YES|NO>
 
   or, when searching:
 
@@ -103,6 +108,7 @@ defmodule DmhAi.Web.Search do
   LANG:xx more keywords
   MEMORY: keywords here
   DELIVER: <YES|NO>
+  DUOLANG: <YES|NO>
   """
 
   @max_raw_results 10
@@ -119,13 +125,15 @@ defmodule DmhAi.Web.Search do
   flags whether the turn is a copy-ready deliverable.
 
   Returns `%{search: {:no_search} | {:search, category, queries},
-             memory_query: String.t(), deliverable: boolean()}`. On LLM
-  error it degrades to no-search / no memory query / not-deliverable.
+             memory_query: String.t(), deliverable: boolean(),
+             duolang: boolean()}`. On LLM error it degrades to no-search /
+  no memory query / not-deliverable / not-duolang.
   """
   @spec plan_turn(String.t(), [String.t()], map()) :: %{
           search: {:no_search} | {:search, String.t(), [%{text: String.t(), lang: String.t()}]},
           memory_query: String.t(),
-          deliverable: boolean()
+          deliverable: boolean(),
+          duolang: boolean()
         }
   def plan_turn(content, recent_msgs \\ [], meta \\ %{}) do
     model  = AgentSettings.swift_model()
@@ -144,7 +152,7 @@ defmodule DmhAi.Web.Search do
 
       {:error, reason} ->
         Logger.warning("[Web.Search] plan_turn error: #{inspect(reason)}")
-        %{search: {:no_search}, memory_query: "", deliverable: false}
+        %{search: {:no_search}, memory_query: "", deliverable: false, duolang: false}
     end
   end
 
@@ -349,10 +357,15 @@ defmodule DmhAi.Web.Search do
         {:no_search}
       end
 
+    duolang? = String.upcase(line_value(lines, "DUOLANG:")) == "YES"
+
     %{
       search: search,
       memory_query: line_value(lines, "MEMORY:"),
-      deliverable: String.upcase(line_value(lines, "DELIVER:")) == "YES"
+      # A duolang turn renders a bilingual panel, not a copyable artifact —
+      # never both, even if the model set DELIVER too.
+      deliverable: not duolang? and String.upcase(line_value(lines, "DELIVER:")) == "YES",
+      duolang: duolang?
     }
   end
 

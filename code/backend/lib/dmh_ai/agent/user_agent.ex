@@ -259,20 +259,45 @@ defmodule DmhAi.Agent.UserAgent do
   # ─── Confidant pipeline ─────────────────────────────────────────────────
 
   defp run_confidant(%ConfidantCommand{session_id: session_id} = command, state, session_data) do
+    user_id   = state.user_id
+    user_msgs = SessionIO.extract_user_messages(session_data)
+
+    # One swift call understands the turn: web-search decision, a
+    # context-resolved memory-lookup query, whether the reply is a copy-ready
+    # deliverable, and whether it's a natural-language duolang request.
+    plan =
+      if command.content != "" do
+        WebSearchEngine.plan_turn(command.content, user_msgs,
+          %{session_id: session_id, user_id: user_id})
+      else
+        %{search: {:no_search}, memory_query: "", deliverable: false, duolang: false}
+      end
+
+    # A duolang turn renders a bilingual panel via one master call — no
+    # stream, no web/memory pre-step. If it can't (call failed / no pairs),
+    # fall through to a normal reply so a misclassification never strands the
+    # user.
+    duolang_result =
+      if plan.duolang do
+        DmhAi.Commands.Pipelines.Duolang.run_natural(command.content, user_msgs, session_id, user_id)
+      else
+        :skip
+      end
+
+    case duolang_result do
+      :ok    -> :ok
+      _other -> run_confidant_reply(command, state, session_data, plan)
+    end
+  end
+
+  defp run_confidant_reply(%ConfidantCommand{session_id: session_id} = command, state, session_data, plan) do
     user_id = state.user_id
     model   = AgentSettings.confidant_model()
 
-    {web_context, facts_block, memos_block, deliverable?} =
+    {web_context, facts_block, memos_block} =
       if command.content != "" do
-        user_msgs = SessionIO.extract_user_messages(session_data)
-
-        # One swift call understands the turn: web-search decision, a
-        # context-resolved memory-lookup query, and whether the reply is a
-        # copy-ready deliverable. Memory retrieval + web search then run in
-        # parallel off that plan; the raw message is the fallback query.
-        plan = WebSearchEngine.plan_turn(command.content, user_msgs,
-                 %{session_id: session_id, user_id: user_id})
-
+        # Memory retrieval + web search run in parallel off the plan; the raw
+        # message is the fallback memory query.
         mem_q = if plan.memory_query != "", do: plan.memory_query, else: command.content
 
         kb_task  = Task.async(fn -> DmhAi.Kb.Query.blocks(user_id, mem_q) end)
@@ -282,9 +307,9 @@ defmodule DmhAi.Agent.UserAgent do
         {facts_block, memos_block} = Task.await(kb_task, pre_timeout)
         web_context = Task.await(web_task, pre_timeout)
 
-        {web_context, facts_block, memos_block, plan.deliverable}
+        {web_context, facts_block, memos_block}
       else
-        {nil, "", "", false}
+        {nil, "", ""}
       end
 
     image_descriptions = ContextBuilders.load_image_descriptions(session_id)
@@ -302,7 +327,7 @@ defmodule DmhAi.Agent.UserAgent do
         web_context:        web_context,
         user_facts:         facts_block,
         user_memos:         memos_block,
-        deliverable:        deliverable?,
+        deliverable:        plan.deliverable,
         timezone:           command.timezone,
         local_date:         command.local_date
       )

@@ -42,6 +42,23 @@ defmodule DmhAi.Commands.Languages do
   def names_hint, do: @languages |> Enum.map(& &1.english) |> Enum.join(", ")
 
   @doc """
+  Resolve a language NAME (English or native, case-insensitive, whitespace
+  tolerant) to its table entry. Used by the natural-language `/duolang`
+  route to map the model's chosen `source_lang` / `target_lang` strings to
+  the entry carrying the code + BCP-47 voice. Returns `nil` for any name
+  outside the supported set.
+  """
+  @spec by_name(String.t()) :: lang() | nil
+  def by_name(name) when is_binary(name) do
+    down = name |> String.trim() |> String.downcase()
+    Enum.find(@languages, fn l ->
+      String.downcase(l.english) == down or String.downcase(l.native) == down
+    end)
+  end
+
+  def by_name(_), do: nil
+
+  @doc """
   Split a leading language name off `text`. Matches the longest
   English-or-native name (case-insensitive) that sits at the start of
   the string and is followed by whitespace or end-of-string, so

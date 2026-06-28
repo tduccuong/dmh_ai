@@ -644,10 +644,11 @@ function renderTtsPayload(tts) {
 }
 
 // Render the `/duolang` payload — like the /tts panel, but each item
-// stacks the original sentence (the user's configured voice) above its
-// translation (spoken in the target language). Both rows carry the same
-// 🔊 / ⚙ controls. A row whose translation came back empty (translator
-// failure) shows the original alone.
+// stacks the original sentence above its translation (spoken in the target
+// language). The original speaks in `source_bcp47` when the payload carries
+// it (the natural-language route), else in the user's configured voice. Both
+// rows carry the same 🔊 / ⚙ controls. A row whose translation came back
+// empty (translator failure) shows the original alone.
 function renderDuolangPayload(duo) {
     var wrap = document.createElement('div');
     wrap.className = 'tts-block duolang-block';
@@ -672,6 +673,7 @@ function renderDuolangPayload(duo) {
     }
 
     var bcp47 = duo.target_bcp47 || '';
+    var srcBcp47 = duo.source_bcp47 || '';   // present on the natural-language route
 
     items.forEach(function(pair) {
         var item = document.createElement('div');
@@ -683,7 +685,8 @@ function renderDuolangPayload(duo) {
         item.appendChild(buildTtsTextRow(original, 'tts-text'));
         item.appendChild(buildTtsControls(function() {
             if (typeof ReadOutLoud === 'undefined') return;
-            ReadOutLoud.speak(original);
+            if (srcBcp47) ReadOutLoud.speakInLang(original, srcBcp47);
+            else ReadOutLoud.speak(original);
         }));
 
         if (translation !== '') {
