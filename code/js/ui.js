@@ -378,6 +378,72 @@ function blockTitle(lang) {
     return lang.charAt(0).toUpperCase() + lang.slice(1) + ' code';
 }
 
+// `Element.innerText` drops list semantics entirely: bullet glyphs and
+// ordinal numbers are CSS `::marker` generated content (not DOM text), and
+// nested `<ul>/<ol>` produce no extra indentation — verified empirically,
+// a rendered "- a\n  - b" list serializes via innerText as bare "a\nb".
+// This walker reproduces innerText's paragraph/heading spacing but renders
+// list items explicitly as "- " / "1. " with 2-space indent per nesting
+// depth, so Copy on a prose deliverable yields clean, unstyled plain text
+// with list structure intact instead of losing it.
+function deliverablePlainText(root) {
+    var BLOCK_TAGS = { P: 1, H1: 1, H2: 1, H3: 1, H4: 1, H5: 1, H6: 1, BLOCKQUOTE: 1, DIV: 1, TABLE: 1, TR: 1 };
+    var LIST_INDENT = '  ';
+
+    function textOf(node, depth) {
+        if (node.nodeType === 3) {
+            var v = node.nodeValue;
+            // Whitespace-only text nodes that include a newline are HTML
+            // source formatting between block tags (marked pretty-prints
+            // its output), not meaningful content — drop them. A bare-space
+            // text node between inline elements (e.g. "foo <b>bar</b>") is
+            // real inter-word spacing and must be kept.
+            return (/^\s*$/.test(v) && /\n/.test(v)) ? '' : v;
+        }
+        if (node.nodeType !== 1) return '';
+        var tag = node.tagName;
+
+        if (tag === 'BR') return '\n';
+        if (tag === 'HR') return '\n---\n';
+        if (tag === 'PRE') return '\n' + node.textContent.replace(/\n+$/, '') + '\n';
+        if (tag === 'TD' || tag === 'TH') return childText(node, depth) + '\t';
+
+        if (tag === 'UL' || tag === 'OL') {
+            var ordered = tag === 'OL';
+            var n = parseInt(node.getAttribute('start') || '1', 10);
+            var indent = LIST_INDENT.repeat(depth);
+            var lines = [];
+            Array.prototype.forEach.call(node.children, function(li) {
+                if (li.tagName !== 'LI') return;
+                var marker = ordered ? (n++ + '. ') : '- ';
+                var nestedLists = [];
+                var ownText = '';
+                Array.prototype.forEach.call(li.childNodes, function(child) {
+                    if (child.nodeType === 1 && (child.tagName === 'UL' || child.tagName === 'OL')) {
+                        nestedLists.push(child);
+                    } else {
+                        ownText += textOf(child, depth + 1);
+                    }
+                });
+                lines.push(indent + marker + ownText.trim());
+                nestedLists.forEach(function(nested) { lines.push(textOf(nested, depth + 1)); });
+            });
+            return '\n' + lines.join('\n') + '\n';
+        }
+
+        var inner = childText(node, depth);
+        return BLOCK_TAGS[tag] ? '\n' + inner.trim() + '\n' : inner;
+    }
+
+    function childText(node, depth) {
+        var inner = '';
+        Array.prototype.forEach.call(node.childNodes, function(child) { inner += textOf(child, depth); });
+        return inner;
+    }
+
+    return textOf(root, 0).replace(/\n{3,}/g, '\n\n').trim();
+}
+
 function addCopyButtons(el) {
     el.querySelectorAll('pre').forEach(function(pre) {
         if (pre.parentElement && pre.parentElement.classList.contains('code-block')) return;
@@ -389,9 +455,11 @@ function addCopyButtons(el) {
         var isProse = !!CODE_PROSE_LANGS[lang];
 
         // Code fences copy the verbatim source; prose deliverables copy the
-        // RENDERED plain text (markdown markers stripped, layout line breaks
-        // kept via innerText) so a pasted story carries no `**`/`#`/backtick
-        // syntax. `bodyDiv` is assigned below for prose blocks.
+        // RENDERED plain text via deliverablePlainText() (markdown markers
+        // and list styling stripped, list items rendered as "- "/"1. " with
+        // indentation, everything else's line breaks kept) so a pasted
+        // translation/story carries no `**`/`#`/backtick syntax and no lost
+        // list structure. `bodyDiv` is assigned below for prose blocks.
         var bodyDiv = null;
 
         var btn = document.createElement('button');
@@ -400,7 +468,7 @@ function addCopyButtons(el) {
         btn.title = 'Copy';
         btn.innerHTML = COPY_ICON;
         btn.addEventListener('click', function() {
-            var text = (isProse && bodyDiv) ? bodyDiv.innerText : raw;
+            var text = (isProse && bodyDiv) ? deliverablePlainText(bodyDiv) : raw;
             navigator.clipboard.writeText(text).then(function() {
                 btn.innerHTML = CHECK_ICON;
                 btn.title = 'Copied';
