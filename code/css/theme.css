@@ -66,6 +66,7 @@
     --msg-user-bg-to: #100630;
     --msg-user-border: rgba(140, 95, 200, 0.6);
     --msg-user-fg: #7df8ff;
+    --duolang-tutor: #e08a4a;
 
     /* input */
     --input-bg: #0a0612;
@@ -165,6 +166,7 @@
     --msg-user-bg-to: #eeedf7;
     --msg-user-border: rgba(14, 116, 144, 0.20);
     --msg-user-fg: #0e7490;
+    --duolang-tutor: #b5651d;
 
     /* input */
     --input-bg: #ffffff;

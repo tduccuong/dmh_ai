@@ -28,6 +28,7 @@ UIManager.sendMessage = async function() {
     // session and leave the UI wedged in a "streaming" state.
     if (!this.currentSession) return;
 
+
     // Phase 2 mid-chain send: if a chain is already streaming, take the
     // fast path — POST the message, let the BE queue it (the already-
     // running `pollTurnToCompletion` will pick up both the user message
@@ -154,13 +155,20 @@ UIManager.sendMessage = async function() {
     // Turn-status phrase under the header, visible immediately on send.
     this._renderTurnStatusInto(assistantDiv, turnWaitingPhrase());
 
-    // Anchor the just-sent user message at the top of the viewport.
-    // The scroll policy keeps it pinned while the answer streams below;
-    // once content overflows past viewport-tall, it auto-switches to
-    // follow-bottom (stick to tail).
-    var userMsgs = container.querySelectorAll('.message.user');
-    var anchorEl = userMsgs.length > 0 ? userMsgs[userMsgs.length - 1] : null;
-    self._anchorAtMsg(anchorEl);
+    if (sessionAtSend.mode === 'duolang') {
+        // Duolang is a natural chat: the tutor's reply lands right below the
+        // learner's message, so just append and follow the tail — no pinning
+        // the sent message to the viewport top.
+        self._pinChatToBottom();
+    } else {
+        // Anchor the just-sent user message at the top of the viewport.
+        // The scroll policy keeps it pinned while the answer streams below;
+        // once content overflows past viewport-tall, it auto-switches to
+        // follow-bottom (stick to tail).
+        var userMsgs = container.querySelectorAll('.message.user');
+        var anchorEl = userMsgs.length > 0 ? userMsgs[userMsgs.length - 1] : null;
+        self._anchorAtMsg(anchorEl);
+    }
 
     // Do NOT PUT session.messages here. The BE persists the user message
     // itself (with a BE-stamped ts) inside /agent/chat before dispatching
@@ -828,10 +836,15 @@ UIManager.pollTurnToCompletion = function(sessionAtSend, onComplete, onError, ab
 //      `<details>` block (built by `buildMessageEntryNode`) takes
 //      over with the same content.
 // ── Turn-status phrase (under the DMH-AI header, in the streaming bubble) ──
-// The model is named "DMH-AI" to the user. Phrases reuse the existing
-// `waitingFor` / `thinking` i18n fragments around that name.
-function turnWaitingPhrase() { return t('waitingFor') + 'DMH-AI...'; }
-function turnThinkingPhrase() { return 'DMH-AI' + t('thinking'); }
+// The model is named "DMH-AI" to the user — except in Duolang mode, where the
+// tutor is the "Duolang Assistant". Phrases reuse the `waitingFor` / `thinking`
+// i18n fragments around whichever name is current.
+function turnRoleName() {
+    return (typeof DuolangMode !== 'undefined' && DuolangMode.current && DuolangMode.current() === 'duolang')
+        ? t('duolangAssistantName') : 'DMH-AI';
+}
+function turnWaitingPhrase() { return t('waitingFor') + turnRoleName() + '...'; }
+function turnThinkingPhrase() { return turnRoleName() + t('thinking'); }
 
 // Ensure a `.msg-status` line (spinner + phrase) exists in `msgEl` reflecting
 // `phrase`, or remove it when `phrase` is falsy. The line sits just ABOVE the

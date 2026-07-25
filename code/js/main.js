@@ -83,6 +83,13 @@ function applyLanguage() {
     // localized text. The dropdown is built once at init from the
     // boot-time language; without this rebuild a runtime language
     // switch leaves stale strings until full reload.
+    // The Duolang panel is built from i18n strings at render time, so a
+    // runtime language switch has to repaint it — including the mode
+    // dropdown, whose items are built once at init.
+    if (typeof DuolangMode !== 'undefined') {
+        DuolangMode.initTopbar();
+    }
+
     if (typeof UIManager !== 'undefined') {
         if (typeof UIManager.initModeSelector === 'function') {
             UIManager.initModeSelector();
@@ -331,6 +338,7 @@ const UIManager = {
         if (typeof WorkflowPicker !== 'undefined') WorkflowPicker.attach(msgInput);
         if (typeof DuolangPicker !== 'undefined')  DuolangPicker.attach(msgInput);
         if (typeof SessionSwitcher !== 'undefined') SessionSwitcher.init();
+        if (typeof DuolangMode !== 'undefined')    DuolangMode.initTopbar();
         wireThemeToggle();
         msgInput.addEventListener('input', function() {
             this.style.height = 'auto';

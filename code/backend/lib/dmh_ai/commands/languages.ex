@@ -59,6 +59,20 @@ defmodule DmhAi.Commands.Languages do
   def by_name(_), do: nil
 
   @doc """
+  Resolve a language CODE to its table entry. Duolang persists the
+  learner's language pair as codes, so every read path back to a display
+  name or BCP-47 voice goes through here. Returns `nil` for any code
+  outside the supported set.
+  """
+  @spec by_code(String.t()) :: lang() | nil
+  def by_code(code) when is_binary(code) do
+    down = code |> String.trim() |> String.downcase()
+    Enum.find(@languages, &(&1.code == down))
+  end
+
+  def by_code(_), do: nil
+
+  @doc """
   Split a leading language name off `text`. Matches the longest
   English-or-native name (case-insensitive) that sits at the start of
   the string and is followed by whitespace or end-of-string, so

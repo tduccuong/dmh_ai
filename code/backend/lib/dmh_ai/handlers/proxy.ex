@@ -253,7 +253,9 @@ defmodule DmhAi.Handlers.Proxy do
       # (see specs/api_pools.md). Edits flow through /admin/pools/*.
       # `ollamaEndpoint` removed — local Ollama URL is derived from
       # the `miner` pool's base_url (also via /admin/pools/*).
-      allowed_keys = ~w(cloudModels compactTurns keepRecent modelLabels confidantModel swiftModel oracleModel visionModel kbEmbeddingModel maxToolResultChars logTrace estimatedContextTokens masterCompactTurnThreshold masterCompactFraction minExtractedTextChars ocrPagesPerChunk ocrPageCap)
+      allowed_keys =
+        ~w(cloudModels compactTurns keepRecent modelLabels confidantModel swiftModel oracleModel visionModel kbEmbeddingModel maxToolResultChars logTrace estimatedContextTokens masterCompactTurnThreshold masterCompactFraction minExtractedTextChars ocrPagesPerChunk ocrPageCap) ++
+          ~w(duolangSessionRecallItems duolangSessionNewItems duolangTextSentenceCount duolangRetellPrompts duolangMaxCheckQuestions duolangLiveCorrectionCap duolangCoverageTarget duolangMaxTokenMissRate duolangVocabularyFloor duolangColdStartNewWords duolangMaxSentenceWords duolangGenerateAttempts duolangIntervalLadderDays duolangReentryGapDays duolangReentryScalePercent duolangModelSpeechRate duolangAsrWatchdogMs)
       allowed = Map.take(d, allowed_keys)
 
       query!(Repo, "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",

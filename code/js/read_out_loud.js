@@ -165,7 +165,10 @@ const ReadOutLoud = (function() {
         // saved voice: a translation must sound in its own language, not
         // the user's configured (often English) voice. No saved-voice
         // gate — the translation can speak before the user picks a voice.
-        speakInLang: function(text, bcp47) {
+        // `rateScale` (optional) multiplies the saved rate — Duolang's
+        // speak beat models a line slower than conversational pace so the
+        // learner can follow it word by word.
+        speakInLang: function(text, bcp47, rateScale) {
             if (!text || !('speechSynthesis' in window)) return;
             this.stop();
             var rate = _readSettings().rate;
@@ -177,7 +180,8 @@ const ReadOutLoud = (function() {
             } else if (bcp47) {
                 utter.lang = bcp47;
             }
-            utter.rate = typeof rate === 'number' ? rate : DEFAULT_RATE;
+            var base = typeof rate === 'number' ? rate : DEFAULT_RATE;
+            utter.rate = (typeof rateScale === 'number' && rateScale > 0) ? base * rateScale : base;
             _state.currentUtterance = utter;
             try { window.speechSynthesis.speak(utter); } catch (e) {}
         },

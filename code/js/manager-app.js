@@ -95,6 +95,17 @@ UIManager.initializeApp = async function() {
             this._modeSessionIds[this._currentMode] = this.currentSession.id;
         }
         this._updateModeLabel();
+
+        // Duolang owns the chat area in its own mode. initializeApp always
+        // restores a CONFIDANT session (the list it reads is confidant-only),
+        // so without this the workspace is clobbered on every page load and
+        // the learner lands on the wrong mode's transcript.
+        if (typeof DuolangMode !== 'undefined' && DuolangMode.current() === 'duolang') {
+            DuolangMode.applyMode();
+            this.startProgressPolling();
+            return;
+        }
+
         await this.refreshSessionProgress();
         await this.renderSessions();
         this.renderChat();
@@ -204,13 +215,15 @@ UIManager._updateModeLabel = function() {
             el.classList.toggle('selected', el.dataset.value === UIManager._currentMode);
         });
     }
-    // Topbar action buttons. Clear-session is always available — a fresh
-    // start is useful in both modes. Workflow picker is assistant-only (the
-    // surface where workflows live).
+    // Topbar action buttons. Clear-session is a Confidant control: Duolang
+    // has one workspace that a new lesson replaces, so there is nothing
+    // there to clear. Workflow picker is assistant-only (the surface where
+    // workflows live).
+    var duolang = (typeof DuolangMode !== 'undefined') && DuolangMode.current() === 'duolang';
     var wfBtn = document.getElementById('workflow-modal-btn');
     var clearBtn = document.getElementById('clear-session-btn');
     if (wfBtn) wfBtn.style.display = isAssistant ? '' : 'none';
-    if (clearBtn) clearBtn.style.display = '';
+    if (clearBtn) clearBtn.style.display = duolang ? 'none' : '';
 };
 
 UIManager.renderSessions = async function() {

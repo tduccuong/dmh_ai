@@ -29,8 +29,8 @@ defmodule DmhAi.Handlers.Data.Sessions do
   def get_sessions(conn, user) do
     result =
       query!(Repo, """
-      SELECT id, name, messages, context, created_at, updated_at
-      FROM sessions WHERE user_id=?
+      SELECT id, name, messages, context, created_at, updated_at, mode
+      FROM sessions WHERE user_id=? AND mode='confidant'
       ORDER BY COALESCE(updated_at, created_at) DESC
       """, [user.id])
 
@@ -50,7 +50,7 @@ defmodule DmhAi.Handlers.Data.Sessions do
   def get_session(conn, user, session_id) do
     result =
       query!(Repo, """
-      SELECT id, name, messages, context, created_at, updated_at
+      SELECT id, name, messages, context, created_at, updated_at, mode
       FROM sessions WHERE id=? AND user_id=?
       """, [session_id, user.id])
 
@@ -90,11 +90,12 @@ defmodule DmhAi.Handlers.Data.Sessions do
 
       true ->
         query!(Repo, """
-        INSERT INTO sessions (id, name, messages, created_at, updated_at, user_id)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO sessions (id, name, mode, messages, created_at, updated_at, user_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """, [
           d["id"],
           d["name"],
+          session_mode(d["mode"]),
           Jason.encode!(d["messages"] || []),
           d["createdAt"],
           now,
@@ -326,10 +327,17 @@ defmodule DmhAi.Handlers.Data.Sessions do
     |> String.trim_trailing("'")
   end
 
-  defp parse_session_row([id, name, messages, context, created_at, updated_at]) do
+  # A session's mode is fixed at creation and drives turn dispatch. Any
+  # value outside the known set falls back to the conversational mode
+  # rather than creating a session no pipeline will answer.
+  defp session_mode("duolang"), do: "duolang"
+  defp session_mode(_), do: "confidant"
+
+  defp parse_session_row([id, name, messages, context, created_at, updated_at, mode]) do
     %{
       "id" => id,
       "name" => name,
+      "mode" => mode,
       "messages" => Jason.decode!(messages || "[]"),
       "context" => Jason.decode!(context || "null"),
       "createdAt" => created_at,

@@ -7,16 +7,15 @@
 
 const SessionStore = {
     BASE: '/sessions',
-    // Mode was removed from the product — this is a Confidant-only build.
-    // The session UI still tracks a single "confidant" surface, so the
-    // store tags every session with that constant; the BE neither stores
-    // nor returns a mode.
+    // `mode` is BE-owned: 'confidant' | 'duolang', fixed at creation. The
+    // sidebar shows only the active mode's sessions; Duolang replaces the
+    // list with its own home surface.
     getSessions: async function() {
         const res = await apiFetch(this.BASE);
         if (!res.ok) return [];
         const list = await res.json();
         return Array.isArray(list)
-            ? list.map(function(s) { s.mode = 'confidant'; return s; })
+            ? list.map(function(s) { s.mode = s.mode || 'confidant'; return s; })
             : list;
     },
     createSession: async function(name) {

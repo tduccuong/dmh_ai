@@ -27,6 +27,7 @@ defmodule DmhAi.Handlers.AgentChat do
   """
 
   import Plug.Conn
+  require Logger
   alias DmhAi.Repo
   alias DmhAi.Adapters.Http
   import Ecto.Adapters.SQL, only: [query!: 3]
@@ -74,13 +75,52 @@ defmodule DmhAi.Handlers.AgentChat do
     if not has_payload do
       json(conn, 400, %{error: "Missing content"})
     else
-      # Slash-command intercept. Two outcomes:
-      #   * `{:handled, _}` — runtime took it.
-      #   * `:not_a_command` — plain user message, continue.
-      command_result =
-        DmhAi.Commands.dispatch(content, session_id, user.id, request_lang(d), image_paths)
+      dispatch_by_mode(conn, user, session_id, content, session_mode(session_id, user.id),
+        images: images,
+        image_names: image_names,
+        files: files,
+        has_video: has_video,
+        image_paths: image_paths,
+        lang: request_lang(d)
+      )
+    end
+  end
 
-      case command_result do
+  # A session's mode decides which pipeline answers the turn. Duolang runs
+  # the lesson runtime and owns the whole turn — slash commands belong to
+  # the conversational mode only.
+  defp dispatch_by_mode(conn, user, session_id, content, "duolang", _opts) do
+    case DmhAi.Agent.UserAgentMessages.append(session_id, user.id, %{
+           role: "user",
+           content: content
+         }) do
+      {:ok, user_ts} ->
+        fire_and_forget(conn, user_ts, fn ->
+          case DmhAi.Duolang.Session.advance(user.id, session_id, content) do
+            {:ok, _beat} -> :ok
+            {:error, reason} -> Logger.warning("[Duolang] advance failed: #{inspect(reason)}")
+          end
+        end)
+
+      {:error, reason} ->
+        json(conn, 500, %{error: inspect(reason)})
+    end
+  end
+
+  defp dispatch_by_mode(conn, user, session_id, content, _confidant, opts) do
+    images = Keyword.fetch!(opts, :images)
+    image_names = Keyword.fetch!(opts, :image_names)
+    files = Keyword.fetch!(opts, :files)
+    has_video = Keyword.fetch!(opts, :has_video)
+    image_paths = Keyword.fetch!(opts, :image_paths)
+
+    # Slash-command intercept. Two outcomes:
+    #   * `{:handled, _}` — runtime took it.
+    #   * `:not_a_command` — plain user message, continue.
+    command_result =
+      DmhAi.Commands.dispatch(content, session_id, user.id, Keyword.fetch!(opts, :lang), image_paths)
+
+    case command_result do
         {:handled, user_ts} ->
           json(conn, 200, %{user_ts: user_ts, handled: true})
 
@@ -107,7 +147,13 @@ defmodule DmhAi.Handlers.AgentChat do
             {:error, reason} ->
               json(conn, 500, %{error: "Failed to persist message: #{inspect(reason)}"})
           end
-      end
+    end
+  end
+
+  defp session_mode(session_id, user_id) do
+    case query!(Repo, "SELECT mode FROM sessions WHERE id=? AND user_id=?", [session_id, user_id]) do
+      %{rows: [[mode]]} when is_binary(mode) -> mode
+      _ -> "confidant"
     end
   end
 
