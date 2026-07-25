@@ -1851,6 +1851,12 @@ body.view-external-connectors #external-connectors-view {
 .stage-btn.primary:hover { background: var(--accent-hover); }
 .stage-btn.ghost { background: var(--control-bg); color: var(--text-1); border: 1px solid var(--border-strong); }
 .stage-btn.ghost:hover { background: var(--control-bg-hover); }
+/* Slim, elegant advance button (the speak drill's "Next sentence") — a small
+   pill, not the full-height primary block. */
+.stage-btn.slim { height: auto; padding: 7px 16px; background: transparent; color: var(--text-warm);
+    border: 1px solid var(--border-strong); border-radius: 999px; font-size: var(--font-size-sm);
+    font-weight: var(--font-weight-medium); }
+.stage-btn.slim:hover { color: var(--text-1); border-color: var(--accent); background: var(--accent-tint); }
 .stage-btn:disabled { opacity: .5; cursor: default; }
 
 .stage-hero { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
@@ -1880,7 +1886,14 @@ body.view-external-connectors #external-connectors-view {
 }
 
 /* Single-focus stage content: one item, one question, one line. */
-.focus-row { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
+/* One speak line: the text with its own speaker (and, on the target line, the
+   mic) sitting right after it. */
+.focus-line { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.focus-line .tts-text, .focus-line .card-line, .focus-line .card-sub { min-width: 0; }
+/* Which sentence, and the soft-gate hint. */
+.focus-count { font-size: var(--font-size-sm); color: var(--text-3); font-weight: var(--font-weight-bold);
+    letter-spacing: .03em; margin-bottom: 12px; }
+.focus-hint { font-size: var(--font-size-sm); color: var(--text-warm); margin-top: 8px; }
 
 /* ── Duolang: two panes, a draggable divider, and one type scale ──────── */
 /* Not floating cards — two clear regions that fill the chat area, split by a
@@ -1888,6 +1901,12 @@ body.view-external-connectors #external-connectors-view {
    drag rewrites it. */
 
 .chat-area { --duolang-split: 50%; }
+
+/* The lesson header and phase tabs sit ABOVE both panes (a beat spans both);
+   the panes fill the rest and carry the draggable split. */
+#duolang-panes { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
+body:not(.duolang-mode) #duolang-top-header,
+body:not(.duolang-mode) #duolang-tabs-wrap { display: none !important; }
 
 .pane { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 .pane-top { flex: 0 0 var(--duolang-split); background: var(--surface-1); }
@@ -1994,21 +2013,34 @@ body.duolang-mode .pane-bottom .input-area { border-top: 1px solid var(--border-
 /* Duolang bottom pane: the conversation needs no title, and the composer
    should sit close to the pane edge, not indented like the app composer. */
 body.duolang-mode #duolang-bottom-header { display: none !important; }
-body.duolang-mode .pane-bottom .input-row { padding: 10px 12px; }
+body.duolang-mode .pane-bottom .input-row { padding: 10px var(--duolang-pad); }
 /* Per-phase tab strip at the top of the bottom pane. Underline-style tabs;
    the active one in accent. Scrolls horizontally if the phases outgrow the
    width. */
-.duolang-tabs { display: flex; gap: 2px; padding: 6px 10px 0; flex-shrink: 0;
-    border-bottom: 1px solid var(--border-1); overflow-x: auto; scrollbar-width: none; }
+/* Tab strip, with optional ‹ › scroll arrows for when the phases overflow the
+   width (narrow / mobile). The wrap carries the inset + underline; the strip
+   scrolls between the arrows, which only appear when there's overflow. */
+.duolang-tabs-wrap { display: flex; align-items: stretch; flex-shrink: 0;
+    border-bottom: 1px solid var(--border-1); padding: 0 var(--duolang-pad); }
+.duolang-tabs { display: flex; gap: 2px; padding: 6px 0 0; flex: 1 1 auto; min-width: 0;
+    overflow-x: auto; scrollbar-width: none; }
 .duolang-tabs::-webkit-scrollbar { display: none; }
+.duolang-tab-scroll { flex: 0 0 auto; display: none; align-items: center; justify-content: center;
+    width: 26px; background: transparent; border: none; color: var(--text-2); cursor: pointer;
+    font-size: 20px; line-height: 1; padding: 0; }
+.duolang-tab-scroll:hover:not(:disabled) { color: var(--text-1); }
+.duolang-tab-scroll:disabled { opacity: .25; cursor: default; }
+.duolang-tabs-wrap.scrollable .duolang-tab-scroll { display: flex; }
 .duolang-tab { flex: 0 0 auto; background: transparent; border: none; cursor: pointer;
-    padding: 6px 12px; font-family: inherit; font-size: var(--font-size-sm);
+    padding: 7px 14px; font-family: inherit; font-size: var(--font-size-sm);
     font-weight: var(--font-weight-medium); color: var(--text-3);
-    border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap;
-    transition: color 0.15s, border-color 0.15s; }
-.duolang-tab:hover { color: var(--text-1); }
-.duolang-tab.active { color: var(--text-accent); border-bottom-color: var(--text-accent);
-    font-weight: var(--font-weight-bold); }
+    border-bottom: 3px solid transparent; margin-bottom: -1px; white-space: nowrap;
+    border-radius: 6px 6px 0 0; transition: color 0.15s, background 0.15s, border-color 0.15s; }
+.duolang-tab:hover { color: var(--text-1); background: var(--surface-1); }
+/* Clearly-marked active tab: bright bold label on an accent-tinted fill with a
+   solid accent underline — legible in dark mode where a thin line vanishes. */
+.duolang-tab.active { color: var(--text-1); background: var(--accent-tint);
+    border-bottom-color: var(--accent); font-weight: var(--font-weight-bold); }
 
 /* Viewing a completed tab: read and scroll only — the composer is hidden, so
    the transcript takes the full height. Return via the highlighted live tab. */
@@ -2016,7 +2048,7 @@ body.duolang-mode .pane-bottom .input-row { padding: 10px 12px; }
 #duolang-bottom.reading-past .attachments-bar,
 #duolang-bottom.reading-past .voice-bar { display: none !important; }
 
-body.duolang-mode .pane-bottom .chat-container { padding: 12px 12px 4px; }
+body.duolang-mode .pane-bottom .chat-container { padding: 12px var(--duolang-pad) 4px; }
 
 /* ── Duolang chat: BoxedFlows-style, no bubbles ──────────────────────── */
 /* The tutor conversation reads as plain text differentiated by colour, not
@@ -2041,7 +2073,10 @@ body.duolang-mode .pane-header .pane-sub { margin-top: 3px; font-size: var(--fon
 /* Numbered passage lines so the learner (and the tutor) can refer to them. */
 
 /* ── Duolang: one type size, tight spacing, compact header ───────────── */
-body.duolang-mode { --duolang-text: 15px; }
+/* One horizontal inset for every duolang widget (header, stage, tabs, chat,
+   composer) so their left/right edges line up with the topbar buttons. */
+body.duolang-mode { --duolang-text: 15px; --duolang-pad: 20px; }
+@media (max-width: 768px) { body.duolang-mode { --duolang-pad: 10px; } }
 
 /* Same font size across BOTH panes — reading, translations, chat. */
 body.duolang-mode .pane-body .tts-text,
@@ -2052,7 +2087,8 @@ body.duolang-mode .pane-bottom .message.user,
 body.duolang-mode .pane-bottom .message.assistant { font-size: var(--duolang-text); line-height: 1.4; }
 
 /* Compact two-line header: beat + step, then the reading. */
-body.duolang-mode .pane-header { padding: 8px 14px; }
+body.duolang-mode .pane-header { padding: 8px var(--duolang-pad); }
+body.duolang-mode .pane-body { padding: 16px var(--duolang-pad); }
 body.duolang-mode .pane-header .beat-header { display: flex; align-items: center; gap: 11px; }
 body.duolang-mode .pane-header .beat-header-icon { flex: 0 0 auto; font-size: 27px; line-height: 1; }
 body.duolang-mode .pane-header .beat-header-text { display: flex; flex-direction: column; min-width: 0; gap: 2px; }

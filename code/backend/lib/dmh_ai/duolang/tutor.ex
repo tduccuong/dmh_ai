@@ -39,9 +39,11 @@ defmodule DmhAi.Duolang.Tutor do
       {"Read & Understand",
        "read the short passage shown above them, then answer a few questions so you can check they followed it"},
     speak:
-      {"Speak",
-       "practise saying each line out loud — make it clear this phase is driven by the buttons on the material above them (they tap the speaker to hear a line, the microphone to say it back, then Continue to move on), and that the chat below is open only if they want to ask you something"},
-    talk: {"Talk", "have a short back-and-forth conversation with you using what they've learned"},
+      {"Pronounce",
+       "practise saying each line out loud — make it clear this phase is driven by the buttons on the material above them (they tap the speaker to hear a line, the microphone to say it back, then the Next-sentence button to move on), and that the chat below is open only if they want to ask you something"},
+    talk:
+      {"Roleplay",
+       "step into a role-play with you, entirely in the target language, based on today's scenario: they play one side of the conversation and TYPE their replies in the target language, and it keeps going turn by turn until they can genuinely hold the exchange — make clear this is hands-on conversation practice, not a quiz, and that they should just reply in character to your opening line"},
     recap: {"Recap", "look back at the one thing to fix, then move to the next lesson"}
   }
 
@@ -51,6 +53,15 @@ defmodule DmhAi.Duolang.Tutor do
     {label, goal} = phase(beat)
     target = language_name(course.target_lang)
     source = language_name(course.source_lang)
+
+    # `speak` has no readiness gate — its drill starts immediately and is driven
+    # by the buttons, so the briefing must NOT ask them to say they're ready.
+    closing =
+      if @phase_of[beat] == :speak do
+        "The first line is already on the stage above. Tell them to start practising it now with the buttons, and make clear you are here in the chat only if they have a question — do NOT ask them to say they are ready."
+      else
+        "Finish by inviting them to type that they are ready to begin, or to ask a question first."
+      end
 
     system = """
     You are a warm, encouraging language tutor writing to a learner of #{target}.
@@ -63,8 +74,7 @@ defmodule DmhAi.Duolang.Tutor do
     - In this phase they will #{goal}.
 
     Say warmly what this phase is and what they will do, referring to the material shown above them
-    where it helps. Finish by inviting them to type that they are ready to begin, or to ask a
-    question first. You may put the topic, the level, and the lesson title in **bold**.
+    where it helps. #{closing} You may put the topic, the level, and the lesson title in **bold**.
 
     Write ENTIRELY in #{source}. Plain text, no preamble, no headings.
     """
@@ -98,26 +108,96 @@ defmodule DmhAi.Duolang.Tutor do
   end
 
   @doc """
-  Answer a clarifying question the learner asks at a gate, in the source
-  language, using the passage when one is on the stage.
+  Answer a clarifying question the learner asks, in the source language, using
+  the passage when one is on the stage. `context` says HOW they continue from
+  here, so the closing reminder never contradicts what they're actually doing:
+
+    * `:brief`    — a briefing gate; they say they're ready to begin.
+    * `:complete` — a completion gate; they say they're ready to move on.
+    * `:speak`    — the button-driven speak drill; there is NO "ready" step, so
+      the answer must not mention it — it points back to the buttons instead.
   """
-  @spec answer(map(), String.t() | nil, String.t()) :: String.t()
-  def answer(course, passage, input) do
+  @spec answer(map(), :brief | :complete | :speak, String.t() | nil, String.t()) :: String.t()
+  def answer(course, context, passage, input) do
     target = language_name(course.target_lang)
     source = language_name(course.source_lang)
 
+    continue =
+      case context do
+        :brief ->
+          "After answering, let them know they can say they're ready whenever they'd like to begin."
+
+        :complete ->
+          "After answering, let them know they can say they're ready to move on to the next phase whenever they like."
+
+        :speak ->
+          "Reply with only the answer to their question, in one or two warm sentences. They are mid-way through a hands-on speaking drill and carry on with the buttons on their own, so end the moment the question is answered."
+      end
+
     system = """
-    You are a warm tutor helping someone learn #{target}. They asked a question during the lesson.
-    Answer briefly and helpfully in #{source}, then remind them they can say they are ready when they
-    want to continue. Plain text, no preamble.
+    You are a warm tutor helping someone learn #{target}. They asked a question while working through
+    the lesson. Answer their question briefly and helpfully in #{source}. #{continue}
+    Plain text, no preamble.
     """
 
     user =
       "Their question: #{input}" <>
         if passage in [nil, ""], do: "", else: "\n\nPassage (numbered lines):\n#{passage}"
 
-    call(course, "answer", system, user, fallback: "")
+    reply = call(course, "answer", system, user, fallback: "")
+    # The model reflexively ends answers with a "ready to move on" sign-off; in
+    # the button-driven speak drill that's wrong (nothing is moving on), so drop
+    # a trailing sign-off there. The two gates keep theirs — they invite it.
+    if context == :speak, do: strip_signoff(reply), else: reply
   end
+
+  # Words that mark a generic "let me know when you're ready / move on" sign-off,
+  # across the source languages the app supports.
+  @signoff_markers [
+    "ready",
+    "let me know",
+    "move on",
+    "next phase",
+    "whenever you",
+    "sẵn sàng",
+    "cho tôi biết",
+    "chuyển sang",
+    "giai đoạn",
+    "bereit",
+    "sag mir",
+    "wissen lässt",
+    "nächste phase",
+    "listo",
+    "avísame",
+    "siguiente fase",
+    "cuando quieras",
+    "prêt",
+    "prête",
+    "dis-moi",
+    "phase suivante",
+    "quand tu veux"
+  ]
+
+  # Drop a trailing sign-off — the model puts it after a blank line, so peel the
+  # last paragraph when it reads like one; fall back to peeling the last sentence
+  # when the whole reply is one block.
+  defp strip_signoff(text) do
+    case String.split(text, ~r/\n{2,}/) do
+      [_ | _] = parts when length(parts) > 1 ->
+        if signoff?(List.last(parts)),
+          do: parts |> Enum.drop(-1) |> Enum.join("\n\n") |> String.trim(),
+          else: text
+
+      _ ->
+        sentences = String.split(text, ~r/(?<=[.!?])\s+/)
+
+        if length(sentences) > 1 and signoff?(List.last(sentences)),
+          do: sentences |> Enum.drop(-1) |> Enum.join(" ") |> String.trim(),
+          else: text
+    end
+  end
+
+  defp signoff?(para), do: String.contains?(String.downcase(para), @signoff_markers)
 
   # ── internals ──────────────────────────────────────────────────────────
 

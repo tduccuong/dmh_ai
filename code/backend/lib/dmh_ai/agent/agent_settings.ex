@@ -261,6 +261,10 @@ defmodule DmhAi.Agent.AgentSettings do
   # until the learner shows they understand; this only caps the loop so it
   # always terminates.
   @duolang_max_check_questions_default 5
+  # Turn cap for the Roleplay (use) beat — deliberately large so the learner
+  # must put in real effort before the model lets the exchange end. The model
+  # can end sooner once they have genuinely earned it; this is the ceiling.
+  @duolang_max_use_turns_default 8
   # Corrections surfaced live during the use beat. Everything past the cap
   # goes to the error ledger for a later session — one correction practised
   # well beats an exhaustive dump the learner cannot act on.
@@ -643,6 +647,11 @@ defmodule DmhAi.Agent.AgentSettings do
   @spec duolang_max_check_questions() :: pos_integer()
   def duolang_max_check_questions,
     do: int_setting("duolangMaxCheckQuestions", @duolang_max_check_questions_default)
+
+  @doc "Upper bound on turns in the Roleplay (use) beat — the model may end sooner."
+  @spec duolang_max_use_turns() :: pos_integer()
+  def duolang_max_use_turns,
+    do: int_setting("duolangMaxUseTurns", @duolang_max_use_turns_default)
 
   @doc "Maximum corrections surfaced live during the use beat."
   @spec duolang_live_correction_cap() :: pos_integer()

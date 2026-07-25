@@ -115,16 +115,14 @@ defmodule DmhAi.Duolang.Session do
     if String.trim(to_string(input)) == "" do
       step_speak(user_id, session_id, course, state)
     else
-      reply = Tutor.answer(course, numbered_passage(state), input)
+      reply = Tutor.answer(course, :speak, numbered_passage(state), input)
       if reply != "", do: append_tutor(user_id, session_id, reply)
       {:ok, "speak"}
     end
   end
 
-  defp dispatch("use", user_id, session_id, course, state, input) do
-    respond_and_correct(user_id, session_id, course, state, input)
-    complete(user_id, session_id, course, state, "use", "takeaway")
-  end
+  defp dispatch("use", user_id, session_id, course, state, input),
+    do: step_use(user_id, session_id, course, state, input)
 
   defp dispatch("takeaway", _user_id, _session_id, _learner, _state, _input),
     do: {:error, :lesson_complete}
@@ -169,7 +167,7 @@ defmodule DmhAi.Duolang.Session do
       append_tutor(user_id, session_id, I18n.t("brief_go", course.source_lang))
       start_activity(user_id, session_id, course, Map.drop(state, ["brief_for"]), beat)
     else
-      reply = Tutor.answer(course, numbered_passage(state), input)
+      reply = Tutor.answer(course, :brief, numbered_passage(state), input)
       if reply != "", do: append_tutor(user_id, session_id, reply)
       {:ok, "brief"}
     end
@@ -224,7 +222,7 @@ defmodule DmhAi.Duolang.Session do
     if ready?(input) do
       start_next(user_id, session_id, course, Map.drop(state, ["next_beat"]), state["next_beat"])
     else
-      reply = Tutor.answer(course, numbered_passage(state), input)
+      reply = Tutor.answer(course, :complete, numbered_passage(state), input)
       if reply != "", do: append_tutor(user_id, session_id, reply)
       {:ok, "complete"}
     end
@@ -236,8 +234,15 @@ defmodule DmhAi.Duolang.Session do
   defp start_next(user_id, session_id, course, state, "read"),
     do: run_read(user_id, session_id, course, state)
 
-  defp start_next(user_id, session_id, course, state, "takeaway"),
-    do: run_takeaway(user_id, session_id, course, state)
+  # Speak has no briefing gate — its drill is driven by the top-pane buttons,
+  # so an "I'm ready" step would contradict them. It opens straight into the
+  # drill (line 1) with the briefing in the chat. The drill panel is emitted
+  # first so it anchors the Speak tab and the briefing lands under it.
+  defp start_next(user_id, session_id, course, state, "speak") do
+    result = run_speak(user_id, session_id, course, state)
+    append_tutor(user_id, session_id, Tutor.briefing(course, "speak", state["title"] || course.name))
+    result
+  end
 
   defp start_next(user_id, session_id, course, state, beat),
     do: brief(user_id, session_id, course, state, beat)
@@ -640,29 +645,38 @@ defmodule DmhAi.Duolang.Session do
 
   defp run_use(user_id, session_id, course, state) do
     items = state["items"] || []
-    put_state(session_id, Map.put(state, "beat", "use"))
+    opening = opener(course, state)
+
+    put_state(
+      session_id,
+      Map.merge(state, %{"beat" => "use", "use_count" => 1, "use_history" => [%{"role" => "tutor", "text" => opening}]})
+    )
 
     emit(user_id, session_id, "use", %{
-      "opener" => opener(course, state),
       "title" => state["title"],
       "rows" => state["rows"] || [],
       "target_items" => Enum.map(items, &Map.get(&1, "text")),
-      "bcp47" => bcp47(Course.target_language(course))
+      "bcp47" => bcp47(Course.target_language(course)),
+      # The role-play plays out in the chat; the panel only holds the dialogue
+      # for reference, so it carries no chat line of its own.
+      "say" => ""
     }, course.source_lang)
+
+    append_tutor(user_id, session_id, opening)
+    {:ok, "use"}
   end
 
   defp opener(course, state) do
     target = language_name(course.target_lang)
 
     prompt = """
-    You are talking with someone learning #{target}. They have just read this
-    short passage (numbered lines):
+    You are a tutor opening a role-play so someone can practise using #{target}, based on this dialogue:
 
     #{numbered_passage(state)}
 
-    Open a short exchange in #{target} about it. Ask one question they can answer
-    with what they have just read. Keep it to one or two sentences, in #{target}
-    only.
+    Play your FIRST line to open the role-play — in character as one side of this scenario, in #{target}
+    only, one or two sentences — inviting them to respond as the other side. Do not explain or translate;
+    just speak your opening line.
     """
 
     case LLM.call(AgentSettings.confidant_model(), [%{role: "user", content: prompt}],
@@ -674,66 +688,76 @@ defmodule DmhAi.Duolang.Session do
     end
   end
 
-  # Correction lands AFTER the turn, never inside it, and only a few reach
-  # the learner live. The rest go to the ledger for a later session — an
-  # exhaustive dump is not something anyone acts on.
-  defp respond_and_correct(user_id, session_id, course, state, input) do
-    cap = AgentSettings.duolang_live_correction_cap()
+  # One turn of the model-directed role-play. The model plays its role, judges
+  # whether the learner can now carry the scenario (`done`), and notes what they
+  # got wrong. Corrections go to the ledger for the closing takeaway — none
+  # interrupt the exchange. The beat holds until the model says `done` OR the
+  # (deliberately high) turn cap is hit, so the learner has to put in real work.
+  defp step_use(user_id, session_id, course, state, input) do
+    count = state["use_count"] || 1
+    max = AgentSettings.duolang_max_use_turns()
+    history = (state["use_history"] || []) ++ [%{"role" => "learner", "text" => input}]
 
-    case use_turn(course, state, input, cap) do
-      {:ok, %{"reply" => reply} = d} ->
-        corrections = decode_corrections(d["corrections"])
+    turn = use_turn(course, state, history, count, max)
+    reply = String.trim(turn["reply"] || "")
+    done = turn["done"] == true or count >= max
 
-        Enum.each(corrections, fn c ->
-          Errors.record(user_id, course.target_lang, %{kind: c.kind, detail: c.detail, fix: c.fix})
-        end)
+    Enum.each(decode_corrections(turn["corrections"]), fn c ->
+      Errors.record(user_id, course.target_lang, %{kind: c.kind, detail: c.detail, fix: c.fix})
+    end)
 
-        emit(user_id, session_id, "use_result", %{
-          "reply" => to_string(reply),
-          "corrections" => Enum.take(Enum.map(corrections, &stringify_correction/1), cap)
-        }, course.source_lang)
+    if reply != "", do: append_tutor(user_id, session_id, reply)
 
-      _ ->
-        :ok
+    if done do
+      run_takeaway(user_id, session_id, course, Map.drop(state, ["use_count", "use_history"]))
+    else
+      put_state(
+        session_id,
+        Map.merge(state, %{
+          "beat" => "use",
+          "use_count" => count + 1,
+          "use_history" => history ++ [%{"role" => "tutor", "text" => reply}]
+        })
+      )
+
+      {:ok, "use"}
     end
   end
 
-  defp use_turn(course, state, input, cap) do
+  defp use_turn(course, state, history, count, max) do
     target = language_name(course.target_lang)
 
     system = """
-    You are talking with someone learning #{target}, about a passage they have
-    just read.
+    You are a language tutor DIRECTING a role-play so someone can practise USING #{target}, grounded in
+    today's dialogue.
 
-    Reply naturally in #{target}, in one or two sentences. Keep the conversation
-    going.
+    Today's dialogue (numbered lines):
+    #{numbered_passage(state)}
 
-    Separately, note what they got wrong — at most #{cap} things, the ones that
-    most affect being understood. For each give the mistake and the corrected
-    form. When they made no meaningful mistakes, return an empty list.
+    Run it as a role-play entirely in #{target}: you play one side of this scenario, they play the
+    other. Stay in character, keep it natural, and steer them into producing the words and structures
+    from the dialogue — vary the situation so they must use the language, not just echo a line back.
 
-    Output STRICT JSON:
+    They have taken #{count} of up to #{max} turns. Keep the exchange going until they have genuinely
+    shown they can hold this scenario in #{target}; do not end early.
 
-      {"reply": "<your reply in #{target}>",
-       "corrections": [{"kind": "grammar|vocabulary|word_order|form",
-                        "detail": "what was wrong",
-                        "fix": "the corrected form"}]}
-
-    The passage lines are numbered; if they refer to a line by number, take it
-    to mean that exact line. The first character must be `{`. No commentary, no
-    markdown fences.
+    Output STRICT JSON, first character `{`, no fences:
+      {"reply": "<your next line, in character, in #{target}, one or two sentences>",
+       "done": <true ONLY once they can clearly carry this scenario in #{target}; otherwise false>,
+       "corrections": [{"kind": "grammar|vocabulary|word_order|form", "detail": "what was wrong", "fix": "the corrected form"}]}
     """
 
-    user = "Passage (numbered lines):\n#{numbered_passage(state)}\n\nThey said:\n#{input}"
+    user = "Conversation so far:\n" <> Enum.map_join(history, "\n", fn t -> "#{t["role"]}: #{t["text"]}" end)
 
-    case LLM.call(
-           AgentSettings.confidant_model(),
-           [%{role: "system", content: system}, %{role: "user", content: user}],
-           options: %{temperature: 0.7},
-           trace: trace(%{user_id: course.user_id}, "use_turn")
-         ) do
-      {:ok, raw} when is_binary(raw) -> DmhAi.Commands.Pipelines.Sentences.decode_llm_json(raw)
-      _ -> {:error, :llm_failed}
+    with {:ok, raw} when is_binary(raw) <-
+           LLM.call(AgentSettings.confidant_model(),
+             [%{role: "system", content: system}, %{role: "user", content: user}],
+             options: %{temperature: 0.7},
+             trace: trace(%{user_id: course.user_id}, "use_turn")),
+         {:ok, %{} = turn} <- DmhAi.Commands.Pipelines.Sentences.decode_llm_json(raw) do
+      turn
+    else
+      _ -> %{"reply" => "", "done" => false, "corrections" => []}
     end
   end
 
@@ -847,8 +871,6 @@ defmodule DmhAi.Duolang.Session do
   end
 
   defp decode_corrections(_), do: []
-
-  defp stringify_correction(c), do: %{"kind" => c.kind, "detail" => c.detail, "fix" => c.fix}
 
   defp bcp47(%{bcp47: tag}), do: tag
   defp bcp47(_), do: nil

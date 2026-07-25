@@ -27,10 +27,10 @@ var DuolangMode = {
     // Phases = tabs in the bottom pane. Every beat maps to one phase; read and
     // check share Understand. A whole phase's conversation (briefing, activity,
     // completion) lives in its tab. Labels come from i18n (duolangTab_*).
-    PHASE_ORDER: ['review', 'understand', 'speak', 'talk', 'recap'],
+    // Four phases; no standalone Recap — the takeaway rides in the Roleplay tab.
+    PHASE_ORDER: ['review', 'understand', 'speak', 'talk'],
     TAB_OF_BEAT: { recall: 'review', read: 'understand', check: 'understand',
-                   speak: 'speak', use: 'talk', takeaway: 'recap' },
-    ICONS_PHASE: { review: '🔁', understand: '💡', speak: '🗣️', talk: '💬', recap: '⭐' },
+                   speak: 'speak', use: 'talk', takeaway: 'talk' },
     _activeTab: null,      // which tab the learner is viewing
     _followedTab: null,    // the current phase, so we can snap when it advances
 
@@ -73,7 +73,9 @@ var DuolangMode = {
         // Duolang surfaces.
         show('duolang-course-wrap', duo);
         show('duolang-top', duo);
+        show('duolang-top-header', duo);
         show('duolang-divider', duo);
+        if (!duo) this.hideTabs();
         var list = document.getElementById('sessions-list');
         if (list) list.style.display = duo ? 'none' : '';
 
@@ -124,6 +126,7 @@ var DuolangMode = {
         if (trigger) trigger.onclick = function () { self.openCourseModal(); };
         this.initCourseModal();
         this.initDivider();
+        this.initTabScroll();
         this.applyMode();
     },
 
@@ -132,7 +135,7 @@ var DuolangMode = {
     initDivider: function () {
         var self = this;
         var divider = document.getElementById('duolang-divider');
-        var area = document.querySelector('.chat-area');
+        var area = document.getElementById('duolang-panes');
         if (!divider || !area) return;
 
         try {
@@ -208,8 +211,25 @@ var DuolangMode = {
         return null;
     },
 
+    // The last real panel of a tab drives its top pane. For the live tab this
+    // is the current beat; for a completed tab, that phase's last state.
+    activePanel: function (tab) {
+        var msgs = (typeof UIManager !== 'undefined' && UIManager.currentSession && UIManager.currentSession.messages) || [];
+        for (var i = msgs.length - 1; i >= 0; i--) {
+            var l = msgs[i].lesson;
+            if (l && l.beat && l.beat !== 'check_result' && l.beat !== 'use_result'
+                && this.tabForMessage(msgs[i]) === tab) return l;
+        }
+        return null;
+    },
+
     renderCurrentBeat: function (d) {
-        var beat = this.currentBeat();
+        var msgs = (typeof UIManager !== 'undefined' && UIManager.currentSession && UIManager.currentSession.messages) || [];
+        var info = this.messageTabs(msgs);
+        if (!info.present.length) { this.renderHero(d); return; }
+        var active = this.resolveActiveTab(info);
+        var isLive = (active === info.current);
+        var beat = this.activePanel(active);
         if (!beat) { this.renderHero(d); return; }
 
         var host = document.getElementById('duolang-stage');
@@ -218,15 +238,23 @@ var DuolangMode = {
         host.innerHTML = '';
         if (foot) { foot.innerHTML = ''; foot.style.display = 'none'; }
 
-        var effBeat = beat.brief_for || beat.done_for || beat.beat;
-        this.setCourseLabel(d.course, effBeat);
+        // Topbar reflects the live phase; the header (lesson + langs) is constant.
+        var cur = this.currentBeat();
+        this.setCourseLabel(d.course, cur && (cur.brief_for || cur.done_for || cur.beat));
         this.beatHeader(beat, d);
-        var fn = this['beat_' + beat.beat];
-        if (fn) fn.call(this, host, beat, d);
+        this.renderTabs();
+
+        if (isLive) {
+            // The live phase: its interactive top-pane renderer.
+            var fn = this['beat_' + beat.beat];
+            if (fn) fn.call(this, host, beat, d);
+        } else {
+            // A completed phase: its material, read-only (speakers, no controls).
+            this.passage(host, beat.rows || []);
+        }
 
         this.layoutPanes(beat.beat);
         this.bottomHeader(beat);
-        this.renderTabs();
         this.syncComposer(beat);
     },
 
@@ -261,15 +289,6 @@ var DuolangMode = {
         return { assigned: assigned, present: present, current: current };
     },
 
-    // The phases THIS lesson runs, in order. Review is present only when the
-    // lesson opened with a recall warm-up; the other four always run. Drives
-    // the "step N of M" count in the header.
-    lessonPhases: function (msgs) {
-        var self = this;
-        var hasReview = (msgs || []).some(function (m) { return self.tabForMessage(m) === 'review'; });
-        return this.PHASE_ORDER.filter(function (p) { return hasReview || p !== 'review'; });
-    },
-
     // Snap to the current phase when it advances; otherwise honor a tab click.
     resolveActiveTab: function (info) {
         if (info.current && info.current !== this._followedTab) {
@@ -282,35 +301,73 @@ var DuolangMode = {
         return this._activeTab;
     },
 
-    // Only the active tab's messages reach the transcript renderer.
+    // Only the active tab's messages reach the transcript renderer. Tabs are
+    // assigned from the FULL message list (not the content-filtered one the
+    // renderer passes), so silent panels — e.g. the empty speak-drill lines —
+    // still anchor their tab for the plain messages that follow.
     filterActiveTab: function (msgs) {
-        var info = this.messageTabs(msgs);
+        var full = (typeof UIManager !== 'undefined' && UIManager.currentSession && UIManager.currentSession.messages) || msgs;
+        var info = this.messageTabs(full);
         var active = this.resolveActiveTab(info);
         if (!active) return msgs;
-        var assigned = info.assigned;
-        return msgs.filter(function (m, i) { return assigned[i] === active; });
+        var tabByMsg = new Map();
+        full.forEach(function (m, i) { tabByMsg.set(m, info.assigned[i]); });
+        return msgs.filter(function (m) { return tabByMsg.get(m) === active; });
     },
 
     renderTabs: function () {
         var bar = document.getElementById('duolang-beat-tabs');
-        if (!bar) return;
+        var wrap = document.getElementById('duolang-tabs-wrap');
+        if (!bar || !wrap) return;
         var msgs = (typeof UIManager !== 'undefined' && UIManager.currentSession && UIManager.currentSession.messages) || [];
         var info = this.messageTabs(msgs);
-        if (!info.present.length) { bar.style.display = 'none'; bar.innerHTML = ''; return; }
+        if (!info.present.length) { wrap.style.display = 'none'; bar.innerHTML = ''; return; }
         var active = this.resolveActiveTab(info);
         var self = this;
-        bar.style.display = 'flex';
+        wrap.style.display = 'flex';
         bar.innerHTML = '';
         info.present.forEach(function (tab) {
             var b = el('button', 'duolang-tab' + (tab === active ? ' active' : ''), I18n.t('duolangTab_' + tab));
             b.onclick = function () { self._activeTab = tab; if (typeof UIManager !== 'undefined') UIManager.renderChat(); };
             bar.appendChild(b);
         });
+        this.updateTabScroll();
+        // Keep the active tab in view (e.g. when a new phase opens off-screen).
+        var activeBtn = bar.querySelector('.duolang-tab.active');
+        if (activeBtn) { try { activeBtn.scrollIntoView({ inline: 'nearest', block: 'nearest' }); } catch (e) {} }
+    },
+
+    // Show the ‹ › arrows only when the strip overflows, and disable each at
+    // its scroll end.
+    updateTabScroll: function () {
+        var bar = document.getElementById('duolang-beat-tabs');
+        var wrap = document.getElementById('duolang-tabs-wrap');
+        var l = document.getElementById('duolang-tab-scroll-l');
+        var r = document.getElementById('duolang-tab-scroll-r');
+        if (!bar || !wrap) return;
+        wrap.classList.toggle('scrollable', bar.scrollWidth - bar.clientWidth > 1);
+        if (l) l.disabled = bar.scrollLeft <= 0;
+        if (r) r.disabled = bar.scrollLeft >= bar.scrollWidth - bar.clientWidth - 1;
+    },
+
+    initTabScroll: function () {
+        var self = this;
+        var bar = document.getElementById('duolang-beat-tabs');
+        var l = document.getElementById('duolang-tab-scroll-l');
+        var r = document.getElementById('duolang-tab-scroll-r');
+        if (!bar) return;
+        var by = function (dir) { bar.scrollBy({ left: dir * Math.max(120, bar.clientWidth * 0.6), behavior: 'smooth' }); };
+        if (l) l.addEventListener('click', function () { by(-1); });
+        if (r) r.addEventListener('click', function () { by(1); });
+        bar.addEventListener('scroll', function () { self.updateTabScroll(); });
+        window.addEventListener('resize', function () { self.updateTabScroll(); });
     },
 
     hideTabs: function () {
+        var wrap = document.getElementById('duolang-tabs-wrap');
+        if (wrap) wrap.style.display = 'none';
         var bar = document.getElementById('duolang-beat-tabs');
-        if (bar) { bar.style.display = 'none'; bar.innerHTML = ''; }
+        if (bar) bar.innerHTML = '';
         var bottom = document.getElementById('duolang-bottom');
         if (bottom) bottom.classList.remove('reading-past');
         this._activeTab = null;
@@ -356,33 +413,23 @@ var DuolangMode = {
         if (sub) h.appendChild(el('div', 'beat-line', sub));
     },
 
-    // Phase icon + name + where it sits among the lesson's phases, then one
-    // line naming today's reading. Counts PHASES (the tabs the learner sees),
-    // not raw beats — read+check are one Understand phase.
+    // A minimal header: the language pair on top, today's lesson below. The
+    // phase is shown by the tabs, so it isn't named here — the learner just
+    // needs to know what they're learning, from which language, and today's
+    // lesson.
     beatHeader: function (beat, d) {
         var h = document.getElementById('duolang-top-header');
         if (!h) return;
         h.innerHTML = '';
-        var b = beat.brief_for || beat.done_for || beat.beat;
-        var phase = this.TAB_OF_BEAT[b] || b;
-        var msgs = (typeof UIManager !== 'undefined' && UIManager.currentSession && UIManager.currentSession.messages) || [];
-        var phases = this.lessonPhases(msgs);
-        var step = phases.indexOf(phase) + 1;
-
         var wrap = el('div', 'beat-header');
-        wrap.appendChild(el('span', 'beat-header-icon', this.ICONS_PHASE[phase] || ''));
+        wrap.appendChild(el('span', 'beat-header-icon', this.ICONS.duolang));
         var col = el('div', 'beat-header-text');
-        var phaseName = (I18n.t('duolangTab_' + phase) || '').toUpperCase();
-        // Lesson title on top (the prominent line), the language pair + phase
-        // below it.
+        col.appendChild(el('div', 'beat-line',
+            I18n.t('duolangLangPair')
+                .replace('{src}', this.langName(d, 'source'))
+                .replace('{tgt}', this.langName(d, 'target'))));
         var title = beat.title || (d && d.course && d.course.name) || '';
         col.appendChild(el('div', 'lesson-line', I18n.t('duolangTodayLesson').replace('{title}', title)));
-        col.appendChild(el('div', 'beat-line',
-            I18n.t('duolangCurrentStep')
-                .replace('{src}', this.langName(d, 'source'))
-                .replace('{tgt}', this.langName(d, 'target'))
-                .replace('{beat}', phaseName)
-                .replace('{i}', step).replace('{n}', phases.length)));
         wrap.appendChild(col);
         h.appendChild(wrap);
     },
@@ -452,13 +499,53 @@ var DuolangMode = {
     beat_speak: function (host, l) {
         var self = this;
         var row = l.row || {};
-        host.appendChild(el('div', 'card-line', row.original));
-        if (row.translation) host.appendChild(el('div', 'card-sub', row.translation));
-        var controls = el('div', 'focus-row');
-        controls.appendChild(DuolangLesson.speakBtn(row.original, row.bcp47, (l.model_rate || 85) / 100));
-        controls.appendChild(DuolangLesson.micBtn(row, { watchdog: l.watchdog_ms || 8000 }));
-        host.appendChild(controls);
-        this.action('duolangContinue', function () { self.advance(); });
+        var rate = (l.model_rate || 85) / 100;
+        var recAvailable = !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+        var next, skip, hint, misses = 0;   // forward refs for the mic callbacks
+
+        // Which sentence, of how many.
+        host.appendChild(el('div', 'focus-count',
+            I18n.t('duolangSentenceOf').replace('{i}', l.index).replace('{n}', l.total)));
+
+        // Target line: text, its speaker, and the mic. The mic hearing anything
+        // unlocks Next sentence (soft gate); two silent tries reveal Skip.
+        var t = el('div', 'focus-line');
+        t.appendChild(el('div', 'card-line', row.original));
+        t.appendChild(DuolangLesson.speakBtn(row.original, row.bcp47, rate));
+        t.appendChild(DuolangLesson.micBtn(row, {
+            watchdog: l.watchdog_ms || 8000,
+            onHeard: function () {
+                if (next) { next.disabled = false; next.classList.remove('locked'); }
+                if (hint) hint.style.display = 'none';
+            },
+            onSilent: function () { if (++misses >= 2 && skip) skip.style.display = ''; }
+        }));
+        host.appendChild(t);
+
+        // Source line: text and its own speaker — hear how the source sounds too.
+        if (row.translation) {
+            var s = el('div', 'focus-line');
+            s.appendChild(el('div', 'card-sub', row.translation));
+            s.appendChild(DuolangLesson.speakBtn(row.translation, row.source_bcp47 || null, rate));
+            host.appendChild(s);
+        }
+
+        // Soft gate: Next sentence stays locked until the mic hears an attempt.
+        // Two silent tries reveal Skip so a broken mic can't trap the learner.
+        // With no speech recognition the gate is off — we can't enforce it.
+        // On the last line the button completes the phase — there is no next.
+        var isLast = (l.index || 1) >= (l.total || 1);
+        next = this.action(isLast ? 'duolangSpeakDone' : 'duolangNextSentence', function () { self.advance(); }, 'slim');
+        if (recAvailable && next) {
+            next.disabled = true; next.classList.add('locked');
+            hint = el('div', 'focus-hint', I18n.t('duolangSpeakHint'));
+            host.appendChild(hint);
+            skip = el('button', 'stage-btn slim ghost', I18n.t('duolangSkip'));
+            skip.style.display = 'none';
+            skip.onclick = function () { skip.disabled = true; skip.classList.add('busy'); self.advance(); };
+            var foot = document.getElementById('duolang-top-actions');
+            if (foot) foot.appendChild(skip);
+        }
     },
 
     beat_use: function (host, l) {
@@ -507,9 +594,13 @@ var DuolangMode = {
         var attach = document.getElementById('attach-btn');
         if (!input) return;
 
+        // Duolang has no attachments; hide the whole attach wrapper (not just
+        // the button) so its flex slot + gap don't push the input off the
+        // pane's left edge.
+        var attachWrap = attach && attach.parentElement;
         if (this.current() !== 'duolang') {
             input.disabled = false; if (send) send.disabled = false;
-            if (attach) attach.style.display = '';
+            if (attachWrap) attachWrap.style.display = 'flex';
             input.placeholder = I18n.t(window.innerWidth <= 768 ? 'typePlaceholderShort' : 'typePlaceholder');
             return;
         }
@@ -528,7 +619,7 @@ var DuolangMode = {
         if (beat && beat.beat === 'recall' && beat.reintroduce) which = null;
         input.disabled = !which;
         if (send) send.disabled = !which;
-        if (attach) attach.style.display = 'none';
+        if (attachWrap) attachWrap.style.display = 'none';
         input.placeholder = (beat && beat.beat === 'brief')
             ? I18n.t('duolangReadyPlaceholder')
             : (beat && beat.beat === 'complete')
@@ -1021,27 +1112,31 @@ var DuolangLesson = {
             // only way to notice.
             var watchdog = setTimeout(function () {
                 if (settled) return;
-                settled = true;
                 try { rec.abort(); } catch (e) {}
-                DuolangLesson._micState(b, 'unavailable');
+                done('unavailable', false);
             }, opts.watchdog || 8000);
 
-            var done = function (state) {
+            // `heard` gates the drill: any words at all (regardless of match)
+            // unlock Next sentence; silence counts toward the Skip fallback.
+            var done = function (state, heard) {
                 if (settled) return;
                 settled = true;
                 clearTimeout(watchdog);
                 DuolangLesson._micState(b, state);
+                if (heard) { if (opts.onHeard) opts.onHeard(); }
+                else if (opts.onSilent) opts.onSilent();
             };
 
             rec.onresult = function (e) {
                 var heard = '';
                 for (var i = 0; i < e.results.length; i++) heard += e.results[i][0].transcript + ' ';
-                done(DuolangLesson._onScript(heard, row.original) ? 'ok' : 'retry');
+                if (heard.trim()) done(DuolangLesson._onScript(heard, row.original) ? 'ok' : 'retry', true);
+                else done('retry', false);
             };
             rec.onerror = function (e) {
-                done(e && e.error === 'not-allowed' ? 'blocked' : 'retry');
+                done(e && e.error === 'not-allowed' ? 'blocked' : 'retry', false);
             };
-            rec.onend = function () { done('retry'); };
+            rec.onend = function () { done('retry', false); };
 
             DuolangLesson._micState(b, 'listening');
             try { rec.start(); } catch (e) { done('retry'); }
