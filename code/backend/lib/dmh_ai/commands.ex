@@ -17,14 +17,11 @@ defmodule DmhAi.Commands do
     * `/tts [text]` — render text / OCR'd images / the previous reply as
       a sentence-per-row Read-out-loud panel (`kind="tts"`).
 
-    * `/duolang <full-lang-name> [text]` — the `/tts` panel plus a
-      translation of each sentence into the target language, rendered
-      beneath the original (`kind="duolang"`).
   """
 
   alias DmhAi.Agent.UserAgentMessages
   alias DmhAi.Commands.{Parser, Memo}
-  alias DmhAi.Commands.Pipelines.{Tts, Duolang}
+  alias DmhAi.Commands.Pipelines.Tts
 
   @doc """
   Parse + dispatch. Returns:
@@ -42,7 +39,6 @@ defmodule DmhAi.Commands do
     case Parser.parse(content) do
       {:memo, arg}    -> Memo.run(arg, content, session_id, user_id, lang)
       {:tts, arg}     -> Tts.run(content, arg, session_id, user_id, lang, image_paths)
-      {:duolang, arg} -> Duolang.run(content, arg, session_id, user_id, lang, image_paths)
       _               -> :not_a_command
     end
   end

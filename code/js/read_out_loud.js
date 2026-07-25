@@ -8,7 +8,6 @@
 // Public surface:
 //   ReadOutLoud.init()                — populate voices, restore saved selection
 //   ReadOutLoud.speak(text)           — speak `text`; opens settings modal first if no voice saved
-//   ReadOutLoud.speakInLang(text,bcp) — speak `text` in a target language (translation rows)
 //   ReadOutLoud.stop()                — cancel any utterance in progress
 //   ReadOutLoud.availableVoices()     — current voice list (live)
 //   ReadOutLoud.hasSavedVoice()       — true once the user has saved a voice
@@ -82,23 +81,6 @@ const ReadOutLoud = (function() {
         return null;
     }
 
-    // Best device voice for a BCP-47 tag: exact lang match first, then a
-    // language-prefix match (e.g. "de-AT" voice for a wanted "de-DE").
-    // Returns null when the device has no voice for that language.
-    function _pickVoiceByLang(bcp47) {
-        if (!bcp47) return null;
-        _loadVoices();
-        var want = String(bcp47).toLowerCase();
-        var prefix = want.split('-')[0];
-        var exact = null, prefixMatch = null;
-        for (var i = 0; i < _state.voices.length; i++) {
-            var vlang = String(_state.voices[i].lang || '').toLowerCase();
-            if (!exact && vlang === want) exact = _state.voices[i];
-            if (!prefixMatch && vlang.split('-')[0] === prefix) prefixMatch = _state.voices[i];
-        }
-        return exact || prefixMatch;
-    }
-
     function _testSampleFor(lang) {
         if (!lang) return TEST_SAMPLE_BY_LANG.en;
         var prefix = String(lang).toLowerCase().split('-')[0];
@@ -156,34 +138,6 @@ const ReadOutLoud = (function() {
                 return;
             }
             this._speakWith(text, s.voiceURI, s.rate);
-        },
-
-        // Speak `text` in a specific language — the /duolang translation
-        // row. Picks a device voice matching `bcp47` (exact, then
-        // language-prefix); when none exists, sets the utterance language
-        // so the platform can fall back. Uses the saved rate but NOT the
-        // saved voice: a translation must sound in its own language, not
-        // the user's configured (often English) voice. No saved-voice
-        // gate — the translation can speak before the user picks a voice.
-        // `rateScale` (optional) multiplies the saved rate — Duolang's
-        // speak beat models a line slower than conversational pace so the
-        // learner can follow it word by word.
-        speakInLang: function(text, bcp47, rateScale) {
-            if (!text || !('speechSynthesis' in window)) return;
-            this.stop();
-            var rate = _readSettings().rate;
-            var voice = _pickVoiceByLang(bcp47);
-            var utter = new SpeechSynthesisUtterance(text);
-            if (voice) {
-                utter.voice = voice;
-                utter.lang = voice.lang;
-            } else if (bcp47) {
-                utter.lang = bcp47;
-            }
-            var base = typeof rate === 'number' ? rate : DEFAULT_RATE;
-            utter.rate = (typeof rateScale === 'number' && rateScale > 0) ? base * rateScale : base;
-            _state.currentUtterance = utter;
-            try { window.speechSynthesis.speak(utter); } catch (e) {}
         },
 
         stop: function() {

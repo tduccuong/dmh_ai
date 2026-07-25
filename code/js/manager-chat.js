@@ -36,24 +36,8 @@ function buildSessionTimeline(session) {
         // authorises an external service. Hide from the timeline; the
         // assistant's follow-up text confirms the connection.
         if (m.role === 'user' && m.kind === 'service_connected') return false;
-        // Duolang beats render in the stage above the transcript, where
-        // they carry their own controls. Only the conversational ones are
-        // transcript material; the rest would be empty bubbles down here.
-        // Every beat SAYS something — the tutor's line is the chat content,
-        // and the stage above holds what it refers to.
-        if (m.lesson && m.lesson.beat) return !!(m.content && m.content.trim());
         return true;
     });
-    // Duolang: the chat is split into per-phase tabs (Review / Understand /
-    // Speak / Talk / Recap). Only the active tab's messages render here; the
-    // tab strip switches between them and the active tab follows the current
-    // phase, snapping forward as each new phase opens. Nothing is ever lost —
-    // a completed phase's whole conversation stays reachable under its tab.
-    if (typeof DuolangMode !== 'undefined' && DuolangMode.current &&
-        DuolangMode.current() === 'duolang' && typeof DuolangMode.filterActiveTab === 'function') {
-        msgs = DuolangMode.filterActiveTab(msgs);
-    }
-
     var progress = (session.progress || []).filter(function(p) {
         // final rows surface as real assistant messages already; skip to avoid duplication.
         if (p.kind === 'final') return false;
@@ -659,66 +643,6 @@ function renderTtsPayload(tts) {
     return wrap;
 }
 
-// Render the `/duolang` payload — like the /tts panel, but each item
-// stacks the original sentence above its translation (spoken in the target
-// language). The original speaks in `source_bcp47` when the payload carries
-// it (the natural-language route), else in the user's configured voice. Both
-// rows carry the same 🔊 / ⚙ controls. A row whose translation came back
-// empty (translator failure) shows the original alone.
-function renderDuolangPayload(duo) {
-    var wrap = document.createElement('div');
-    wrap.className = 'tts-block duolang-block';
-
-    if (duo.error === 'unknown_language') {
-        wrap.appendChild(buildTtsTextRow(t('duolangPickLanguage'), 'tts-hint'));
-        return wrap;
-    }
-
-    if (duo.error === 'no_input') {
-        wrap.appendChild(buildTtsTextRow(t('duolangNoInput'), 'tts-hint'));
-        return wrap;
-    }
-
-    var items = Array.isArray(duo.items) ? duo.items : [];
-    var images = Array.isArray(duo.images) ? duo.images : [];
-
-    if (items.length === 0) {
-        var hadErrors = images.some(function(i) { return i.status === 'error'; });
-        wrap.appendChild(buildTtsTextRow(hadErrors ? t('ttsNoText') : t('ttsNothing'), 'tts-hint'));
-        return wrap;
-    }
-
-    var bcp47 = duo.target_bcp47 || '';
-    var srcBcp47 = duo.source_bcp47 || '';   // present on the natural-language route
-
-    items.forEach(function(pair) {
-        var item = document.createElement('div');
-        item.className = 'tts-item duolang-item';
-
-        var original = pair.original || '';
-        var translation = pair.translation || '';
-
-        item.appendChild(buildTtsTextRow(original, 'tts-text'));
-        item.appendChild(buildTtsControls(function() {
-            if (typeof ReadOutLoud === 'undefined') return;
-            if (srcBcp47) ReadOutLoud.speakInLang(original, srcBcp47);
-            else ReadOutLoud.speak(original);
-        }));
-
-        if (translation !== '') {
-            item.appendChild(buildTtsTextRow(translation, 'tts-text duolang-translation'));
-            item.appendChild(buildTtsControls(function() {
-                if (typeof ReadOutLoud === 'undefined') return;
-                ReadOutLoud.speakInLang(translation, bcp47);
-            }));
-        }
-
-        wrap.appendChild(item);
-    });
-
-    return wrap;
-}
-
 function renderFormResponseSummary(formResponse) {
     var wrap = document.createElement('div');
     wrap.className = 'form-response-summary';
@@ -800,31 +724,6 @@ function buildMessageEntryNode(msg, sessionId, renderSession, progressRows) {
                 body.appendChild(renderTtsPayload(msg.tts));
             }
 
-            // `/duolang` payload — one item per sentence, the original
-            // above its target-language translation, each row with its
-            // own 🔊 speaker + ⚙ settings controls (the translation
-            // speaks in the target language).
-            if (msg.duolang && Array.isArray(msg.duolang.items)) {
-                body.appendChild(renderDuolangPayload(msg.duolang));
-            }
-
-            // Duolang lesson beat — recall / read / check / speak / use /
-            // takeaway. `content` on these messages is a plain-text stand-in
-            // for clients that cannot render the panel; this one can, so the
-            // panel REPLACES it rather than appearing beneath a duplicate.
-            // Duolang beats render in the STAGE above the transcript, where
-            // they carry their own controls. Down here they are history, so
-            // only the conversational beats (which are prose) show at all.
-            // The tutor's spoken line already rendered from `content`. Only
-            // the two verdict beats add anything visual down here.
-            if (msg.lesson && msg.lesson.beat === 'check_result' && typeof DuolangLesson !== 'undefined') {
-                var lessonEl = DuolangLesson.render(msg.lesson);
-                if (lessonEl) { body.innerHTML = ''; body.appendChild(lessonEl); }
-            }
-            if (msg.lesson && msg.lesson.beat === 'use_result' && typeof DuolangLesson !== 'undefined') {
-                var corr = DuolangLesson.render(msg.lesson);
-                if (corr) { body.innerHTML = ''; body.appendChild(corr); }
-            }
         } else {
             // `form_response` user messages are the runtime's
             // synthesised answer to a `request_input` form. The
@@ -1042,10 +941,6 @@ function entryKeyHash(entry) {
 UIManager.renderChat = function() {
     const container = document.getElementById('chat-container');
     if (!container) return;  // DOM torn down / not ready — nothing to render into.
-
-    // Duolang gates the composer on a lesson being in progress; the
-    // transcript is what says whether one is.
-    if (typeof DuolangMode !== 'undefined') DuolangMode.onChatRender();
 
     // Detach the streaming placeholder (created at turn start in
     // manager-search.js, id='streaming-body') from the diff scope so
@@ -1821,10 +1716,7 @@ UIManager.renderAttachments = function() {
 // jumps to (or creates) an empty session in the target mode, leaving
 // any existing in-progress sessions of either mode alone.
 UIManager._buildSplashEl = function(mode) {
-    // Each mode gets its own splash. The Confidant one lists slash
-    // commands, which a Duolang session does not accept at all — the
-    // lesson runtime owns the whole turn there.
-    var data = t(mode === 'duolang' ? 'splashDuolang' : 'splashConfidant');
+    var data = t('splashConfidant');
     if (!data || typeof data !== 'object') return null;
 
     var wrap = document.createElement('div');

@@ -62,13 +62,6 @@
                 <button class="workflow-modal-btn" id="mode-toggle-btn" title="Switch mode"><span id="mode-toggle-icon" aria-hidden="true">💬</span></button>
                 <div class="mode-dropdown" id="mode-dropdown"></div>
             </div>
-            <div class="duolang-course-wrap" id="duolang-course-wrap" style="display:none">
-                <button class="duolang-course-trigger" id="duolang-course-trigger" title="Courses">
-                    <span class="duolang-course-name" id="duolang-course-name"></span>
-                    <span class="duolang-course-status" id="duolang-course-status"></span>
-                    <svg class="mode-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
-                </button>
-            </div>
             <div class="session-dropdown-wrap" id="session-dropdown-wrap">
                 <button class="session-dropdown-trigger" id="session-dropdown-trigger" title="Switch chat session">
                     <span class="session-dropdown-label" id="session-dropdown-label"></span>
@@ -117,20 +110,6 @@
         </div>
         <div class="mode-hint" id="mode-hint"></div>
         <div class="chat-area">
-            <div class="duolang-map" id="duolang-map" style="display:none"></div>
-            <div class="pane-header duolang-lesson-header" id="duolang-top-header" style="display:none"></div>
-            <div class="duolang-tabs-wrap" id="duolang-tabs-wrap" style="display:none">
-                <button class="duolang-tab-scroll" id="duolang-tab-scroll-l" aria-label="Scroll tabs left" tabindex="-1">‹</button>
-                <div class="duolang-tabs" id="duolang-beat-tabs"></div>
-                <button class="duolang-tab-scroll" id="duolang-tab-scroll-r" aria-label="Scroll tabs right" tabindex="-1">›</button>
-            </div>
-            <div class="duolang-panes" id="duolang-panes">
-            <div class="pane pane-top" id="duolang-top" style="display:none">
-                <div class="pane-body" id="duolang-stage"></div>
-                <div class="pane-footer" id="duolang-top-actions"></div>
-            </div>
-            <div class="pane-divider" id="duolang-divider" style="display:none" title="Drag to resize"><span class="pane-divider-grip"></span></div>
-            <div class="pane pane-bottom" id="duolang-bottom">
                 <div class="chat-container" id="chat-container"></div>
                 <button class="scroll-to-bottom-btn" id="scroll-to-bottom-btn" hidden aria-label="Scroll to bottom">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
@@ -169,8 +148,6 @@
                         <button class="stop-btn hidden" id="stop-btn" title="Stop"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="5" y="5" width="14" height="14" rx="2"/></svg><span class="stop-label">Stop</span></button>
                     </div>
                 </div>
-            </div>
-            </div>
         </div>
     </div>
 <div class="login-screen hidden" id="login-screen">
@@ -270,19 +247,6 @@
     </div>
 </div>
 <!-- Chat-session switcher modal — opened by the topbar session dropdown. -->
-<div class="duolang-course-overlay" id="duolang-course-overlay">
-    <div class="session-switch-modal">
-        <div class="session-switch-header">
-            <h3 class="session-switch-title" id="duolang-course-title">My courses</h3>
-            <button class="session-switch-new" id="duolang-course-new" title="New course">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-            </button>
-            <button class="session-switch-close" id="duolang-course-close" title="Close" aria-label="Close">✕</button>
-        </div>
-        <input type="text" class="session-switch-filter" id="duolang-course-filter" placeholder="Filter courses…">
-        <div class="session-switch-list" id="duolang-course-list"></div>
-    </div>
-</div>
 <div class="session-switch-overlay" id="session-switch-overlay">
     <div class="session-switch-modal">
         <div class="session-switch-header">
@@ -310,8 +274,6 @@
 <script src="/js/manager-search.js" defer></script>
 <script src="/js/import-dialog.js" defer></script>
 <script src="/js/mention-picker.js" defer></script>
-<script src="/js/duolang-picker.js" defer></script>
-<script src="/js/duolang-mode.js" defer></script>
 <script src="/js/session-switcher.js" defer></script>
 <script src="/js/sw-register.js" defer></script>
     <div class="settings-overlay" id="settings-overlay">
@@ -364,7 +326,7 @@
                             Swift — short, fast actions
                         </div>
                         <div class="settings-subsection settings-subsection-help">
-                            Used for: background fact extraction, web-search query planning, session naming, /tts + /duolang segmentation. Cheapest model — latency dominates over quality.
+                            Used for: background fact extraction, web-search query planning, session naming, /tts segmentation. Cheapest model — latency dominates over quality.
                         </div>
                         <div class="settings-subsection">
                             <div class="role-picker-current" id="swift-model-current"></div>

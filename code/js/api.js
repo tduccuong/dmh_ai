@@ -7,9 +7,7 @@
 
 const SessionStore = {
     BASE: '/sessions',
-    // `mode` is BE-owned: 'confidant' | 'duolang', fixed at creation. The
-    // sidebar shows only the active mode's sessions; Duolang replaces the
-    // list with its own home surface.
+    // `mode` is BE-owned, fixed at creation.
     getSessions: async function() {
         const res = await apiFetch(this.BASE);
         if (!res.ok) return [];

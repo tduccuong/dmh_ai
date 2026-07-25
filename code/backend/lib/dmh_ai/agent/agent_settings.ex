@@ -22,7 +22,7 @@ defmodule DmhAi.Agent.AgentSettings do
   #   confidantModel — Confidant answer. Conversational, image-capable.
   #   swiftModel     — Swift tier. Short, single-shot decisions:
   #                    fact extraction, Web.Search query planner,
-  #                    session naming, /tts + /duolang segmentation.
+  #                    session naming, /tts segmentation.
   #                    Cheapest model — latency dominates over quality.
   #   oracleModel    — Oracle tier. Long, dense content processing:
   #                    web result synthesis. Strong general model.
@@ -245,63 +245,6 @@ defmodule DmhAi.Agent.AgentSettings do
   # Top-K facts / memos surfaced into the <user_facts> / <user_memos> blocks.
   @user_facts_top_k_default 5
   @user_memos_top_k_default 5
-
-  # Duolang tutor mode — see arch_wiki/dmh_ai/duolang_mode.md.
-  # Items drawn for the recall beat, and new items introduced per session.
-  # A session is a fixed size regardless of how far behind the learner is:
-  # a due count grown during an absence is the un-gamified equivalent of a
-  # broken streak, and is the likeliest way the learner abandons the tool.
-  @duolang_session_recall_items_default 8
-  @duolang_session_new_items_default 12
-  # Sentences in a generated text, and prompts in the check beat. Retell
-  # agreement with comprehension rises materially from one prompt to three.
-  @duolang_text_sentence_count_default 6
-  @duolang_retell_prompts_default 3
-  # Upper bound on the AI-driven comprehension check. The tutor keeps asking
-  # until the learner shows they understand; this only caps the loop so it
-  # always terminates.
-  @duolang_max_check_questions_default 5
-  # Turn cap for the Roleplay (use) beat — deliberately large so the learner
-  # must put in real effort before the model lets the exchange end. The model
-  # can end sooner once they have genuinely earned it; this is the ceiling.
-  @duolang_max_use_turns_default 8
-  # Corrections surfaced live during the use beat. Everything past the cap
-  # goes to the error ledger for a later session — one correction practised
-  # well beats an exhaustive dump the learner cannot act on.
-  @duolang_live_correction_cap_default 3
-  # Coverage target for TUTORED reading (text met with a translation beside
-  # it). The far higher figure quoted in the literature is for unassisted
-  # independent reading and does not apply here.
-  @duolang_coverage_target_default 85
-  # Profiler rejection thresholds. Sentence length is judged on the HARDEST
-  # sentence, not the mean — averaging hides the one sentence that stops
-  # the learner.
-  @duolang_max_token_miss_rate_default 15
-  @duolang_max_sentence_words_default 18
-  # Below this many known words, a miss RATE is arithmetically unreachable
-  # — there is not yet a vocabulary for text to be familiar against — so
-  # the generator governs by an absolute count of new words instead. The
-  # bound is cognitive load per sitting, not coverage of a corpus.
-  @duolang_vocabulary_floor_default 1000
-  @duolang_cold_start_new_words_default 10
-  # Generate → profile → repair attempts before falling back to the best
-  # candidate seen. A model hits a named proficiency level only a small
-  # fraction of the time, so the profiler is the authority, not the prompt.
-  @duolang_generate_attempts_default 3
-  # Fixed interval ladder in days. Fixed on purpose: expanding and equal
-  # schedules perform equivalently, so an adaptive per-item scheduler buys
-  # complexity and no measured gain.
-  @duolang_interval_ladder_days_default [1, 3, 7, 16, 35]
-  # Absence beyond which the next session shrinks and re-introduces rather
-  # than tests, recording no incorrect results.
-  @duolang_reentry_gap_days_default 10
-  @duolang_reentry_scale_percent_default 50
-  # Synthesis rate for modelling a row, as a percent of normal speed.
-  @duolang_model_speech_rate_default 85
-  # Recognition start timeout. An unavailable recognition language on
-  # Android terminates with no error event and no end event, so a watchdog
-  # is the only way to detect it.
-  @duolang_asr_watchdog_ms_default 8000
 
   @doc """
   Get the model string for a given agent role. Returns the default if
@@ -621,101 +564,6 @@ defmodule DmhAi.Agent.AgentSettings do
   @spec user_memos_top_k() :: pos_integer()
   def user_memos_top_k, do: int_setting("userMemosTopK", @user_memos_top_k_default)
 
-  # ── Duolang tutor mode ─────────────────────────────────────────────────
-
-  @doc "Due items drawn for the recall beat. Fixed regardless of backlog size."
-  @spec duolang_session_recall_items() :: pos_integer()
-  def duolang_session_recall_items,
-    do: int_setting("duolangSessionRecallItems", @duolang_session_recall_items_default)
-
-  @doc "New items introduced per session."
-  @spec duolang_session_new_items() :: pos_integer()
-  def duolang_session_new_items,
-    do: int_setting("duolangSessionNewItems", @duolang_session_new_items_default)
-
-  @doc "Sentences in a generated lesson text."
-  @spec duolang_text_sentence_count() :: pos_integer()
-  def duolang_text_sentence_count,
-    do: int_setting("duolangTextSentenceCount", @duolang_text_sentence_count_default)
-
-  @doc "Retell prompts in the check beat."
-  @spec duolang_retell_prompts() :: pos_integer()
-  def duolang_retell_prompts,
-    do: int_setting("duolangRetellPrompts", @duolang_retell_prompts_default)
-
-  @doc "Upper bound on AI-driven comprehension questions in the check beat."
-  @spec duolang_max_check_questions() :: pos_integer()
-  def duolang_max_check_questions,
-    do: int_setting("duolangMaxCheckQuestions", @duolang_max_check_questions_default)
-
-  @doc "Upper bound on turns in the Roleplay (use) beat — the model may end sooner."
-  @spec duolang_max_use_turns() :: pos_integer()
-  def duolang_max_use_turns,
-    do: int_setting("duolangMaxUseTurns", @duolang_max_use_turns_default)
-
-  @doc "Maximum corrections surfaced live during the use beat."
-  @spec duolang_live_correction_cap() :: pos_integer()
-  def duolang_live_correction_cap,
-    do: int_setting("duolangLiveCorrectionCap", @duolang_live_correction_cap_default)
-
-  @doc "Known-word coverage target for tutored reading, percent."
-  @spec duolang_coverage_target() :: pos_integer()
-  def duolang_coverage_target,
-    do: int_setting("duolangCoverageTarget", @duolang_coverage_target_default)
-
-  @doc "Established-stage rejection threshold for unknown content tokens, percent."
-  @spec duolang_max_token_miss_rate() :: pos_integer()
-  def duolang_max_token_miss_rate,
-    do: int_setting("duolangMaxTokenMissRate", @duolang_max_token_miss_rate_default)
-
-  @doc "Known-word count below which cold-start rules govern generation."
-  @spec duolang_vocabulary_floor() :: pos_integer()
-  def duolang_vocabulary_floor,
-    do: int_setting("duolangVocabularyFloor", @duolang_vocabulary_floor_default)
-
-  @doc "Distinct new words a cold-start passage may introduce."
-  @spec duolang_cold_start_new_words() :: pos_integer()
-  def duolang_cold_start_new_words,
-    do: int_setting("duolangColdStartNewWords", @duolang_cold_start_new_words_default)
-
-  @doc "Profiler ceiling on the hardest sentence's word count."
-  @spec duolang_max_sentence_words() :: pos_integer()
-  def duolang_max_sentence_words,
-    do: int_setting("duolangMaxSentenceWords", @duolang_max_sentence_words_default)
-
-  @doc "Generate → profile → repair attempts before falling back to the best candidate."
-  @spec duolang_generate_attempts() :: pos_integer()
-  def duolang_generate_attempts,
-    do: int_setting("duolangGenerateAttempts", @duolang_generate_attempts_default)
-
-  @doc """
-  Fixed interval ladder in days. A correct answer advances one step; an
-  incorrect answer resets to step 0.
-  """
-  @spec duolang_interval_ladder_days() :: [pos_integer()]
-  def duolang_interval_ladder_days,
-    do: int_list_setting("duolangIntervalLadderDays", @duolang_interval_ladder_days_default)
-
-  @doc "Absence in days beyond which the next session shrinks and re-introduces."
-  @spec duolang_reentry_gap_days() :: pos_integer()
-  def duolang_reentry_gap_days,
-    do: int_setting("duolangReentryGapDays", @duolang_reentry_gap_days_default)
-
-  @doc "Share of a normal session drawn on re-entry after an absence, percent."
-  @spec duolang_reentry_scale_percent() :: pos_integer()
-  def duolang_reentry_scale_percent,
-    do: int_setting("duolangReentryScalePercent", @duolang_reentry_scale_percent_default)
-
-  @doc "Synthesis rate for modelling a row, percent of normal speed."
-  @spec duolang_model_speech_rate() :: pos_integer()
-  def duolang_model_speech_rate,
-    do: int_setting("duolangModelSpeechRate", @duolang_model_speech_rate_default)
-
-  @doc "Recognition start timeout in ms; a missing language pack never fires an error."
-  @spec duolang_asr_watchdog_ms() :: pos_integer()
-  def duolang_asr_watchdog_ms,
-    do: int_setting("duolangAsrWatchdogMs", @duolang_asr_watchdog_ms_default)
-
   @doc "Embedding vector dimension. Must match the embedding model's output. Changing this requires reindex."
   @spec kb_embedding_dim() :: pos_integer()
   def kb_embedding_dim, do: int_setting("kbEmbeddingDim", @kb_embedding_dim_default)
@@ -782,40 +630,6 @@ defmodule DmhAi.Agent.AgentSettings do
         end
       _ -> default
     end
-  end
-
-  # Ordered list of positive integers. Accepts a JSON array (as the admin
-  # UI stores it) or a comma-separated string. Any malformed or non-positive
-  # entry rejects the whole list back to the default rather than silently
-  # yielding a partial ladder.
-  defp int_list_setting(key, default) do
-    parsed =
-      case load()[key] do
-        list when is_list(list) -> list
-        s when is_binary(s) -> s |> String.split(",", trim: true) |> Enum.map(&String.trim/1)
-        _ -> nil
-      end
-
-    case parsed do
-      nil -> default
-      [] -> default
-      list -> list |> Enum.map(&to_positive_int/1) |> validate_int_list(default)
-    end
-  end
-
-  defp to_positive_int(n) when is_integer(n) and n > 0, do: n
-
-  defp to_positive_int(s) when is_binary(s) do
-    case Integer.parse(s) do
-      {n, ""} when n > 0 -> n
-      _ -> :invalid
-    end
-  end
-
-  defp to_positive_int(_), do: :invalid
-
-  defp validate_int_list(list, default) do
-    if Enum.any?(list, &(&1 == :invalid)), do: default, else: list
   end
 
   defp load do

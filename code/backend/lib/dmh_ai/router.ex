@@ -273,55 +273,6 @@ defmodule DmhAi.Router do
     end
   end
 
-  # Duolang tutor mode. Lesson beats themselves flow through /agent/chat
-  # and the poll endpoint; these cover what sits outside a lesson.
-  get "/duolang/status" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      DmhAi.Handlers.Data.Duolang.get_status(conn, user)
-    end
-  end
-
-  get "/duolang/courses" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      DmhAi.Handlers.Data.Duolang.get_courses(conn, user)
-    end
-  end
-
-  get "/duolang/items" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      DmhAi.Handlers.Data.Duolang.get_items(conn, user)
-    end
-  end
-
-  post "/duolang/courses" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      DmhAi.Handlers.Data.Duolang.post_course(conn, user)
-    end
-  end
-
-  post "/duolang/courses/:course_id/activate" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      DmhAi.Handlers.Data.Duolang.post_activate(conn, user, course_id)
-    end
-  end
-
-  delete "/duolang/courses/:course_id" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      DmhAi.Handlers.Data.Duolang.delete_course(conn, user, course_id)
-    end
-  end
-
-  post "/duolang/advance" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      DmhAi.Handlers.Data.Duolang.post_advance(conn, user)
-    end
-  end
-
-  post "/duolang/start" do
-    with {:ok, conn, user} <- check_auth(conn) do
-      DmhAi.Handlers.Data.Duolang.post_start(conn, user)
-    end
-  end
 
   get "/sessions/:session_id" do
     with {:ok, conn, user} <- check_auth(conn) do

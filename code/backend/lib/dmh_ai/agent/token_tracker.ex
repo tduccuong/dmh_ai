@@ -11,7 +11,7 @@ defmodule DmhAi.Agent.TokenTracker do
 
       :master    — the user-facing assistant chain
       :swift     — short single-shot calls (Compactor, fact extraction,
-                   session-naming, query planner, /tts + /duolang segmentation)
+                   session-naming, query planner, /tts segmentation)
       :oracle    — long, dense content processing (web result synthesis)
       :vision    — image / video / OCR describers
       :embedding — embedding endpoint usage (kb_embedding_model)

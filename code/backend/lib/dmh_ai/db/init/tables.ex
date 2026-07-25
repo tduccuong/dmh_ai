@@ -34,7 +34,7 @@ defmodule DmhAi.DB.Init.Tables do
     CREATE TABLE IF NOT EXISTS sessions (
       id TEXT PRIMARY KEY NOT NULL,
       name TEXT,
-      mode TEXT NOT NULL DEFAULT 'confidant',  -- 'confidant' | 'duolang'; set at creation, never changes.
+      mode TEXT NOT NULL DEFAULT 'confidant',  -- 'confidant'; set at creation, never changes.
                                                -- Drives turn dispatch in Handlers.AgentChat.
       model TEXT,
       messages TEXT DEFAULT '[]',
@@ -264,107 +264,6 @@ defmodule DmhAi.DB.Init.Tables do
     )
     """)
     query!(Repo, "CREATE INDEX IF NOT EXISTS idx_pools_org ON pools (org_id)")
-
-    duolang_tables()
   end
 
-  # Duolang tutor mode. The facts / memo stores are append-only,
-  # content-deduped and retrieved by similarity, so they cannot express
-  # mutable per-item state or answer a due-date query — the tutor owns
-  # its own tables. See arch_wiki/dmh_ai/duolang_mode.md.
-  defp duolang_tables do
-    # A course is a topic vertical in one language, organised as a CEFR
-    # ladder. A learner holds several and switches between them; the model
-    # designs each from the learner's brief and names it.
-    query!(Repo, """
-    CREATE TABLE IF NOT EXISTS duolang_courses (
-      id            TEXT PRIMARY KEY NOT NULL,
-      user_id       TEXT NOT NULL,
-      name          TEXT NOT NULL,              -- model-written, evocative; shown in the topbar
-      topic         TEXT NOT NULL,              -- what the learner wants to learn about
-      target_lang   TEXT NOT NULL,              -- code from Commands.Languages
-      source_lang   TEXT NOT NULL,
-      brief         TEXT NOT NULL DEFAULT '{}', -- JSON: the onboarding form
-      syllabus      TEXT NOT NULL DEFAULT '{}', -- JSON: per-level plan {level -> {theme, can_do}}
-      current_level TEXT NOT NULL DEFAULT 'A1', -- A1 | A2 | B1 | B2 | C1 | C2
-      current_beat  TEXT,                        -- null between lessons
-      created_at    INTEGER NOT NULL,
-      updated_at    INTEGER NOT NULL
-    )
-    """)
-    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_duolang_courses_user ON duolang_courses (user_id)")
-
-    # Vocabulary is keyed by (user_id, lang), shared across every course in
-    # that language — words are words. Items are the durable unit; sessions
-    # are ephemeral.
-    query!(Repo, """
-    CREATE TABLE IF NOT EXISTS duolang_items (
-      id            INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id       TEXT NOT NULL,
-      lang          TEXT NOT NULL,
-      kind          TEXT NOT NULL,              -- 'word' | 'phrase' | 'clause'
-      text          TEXT NOT NULL,              -- target language
-      translation   TEXT NOT NULL,
-      context       TEXT,                       -- the sentence it was met in
-      due_at        INTEGER NOT NULL,
-      interval_step INTEGER NOT NULL DEFAULT 0, -- index into the fixed interval ladder
-      attempts      INTEGER NOT NULL DEFAULT 0,
-      lapses        INTEGER NOT NULL DEFAULT 0,
-      last_result   TEXT,                       -- 'correct' | 'incorrect'
-      created_at    INTEGER NOT NULL,
-      updated_at    INTEGER NOT NULL,
-      UNIQUE(user_id, lang, text)
-    )
-    """)
-    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_duolang_items_due ON duolang_items (user_id, lang, due_at)")
-
-    # Drives both the displayed coverage percentage and the profiler's
-    # token-miss budget — the one table two subsystems read.
-    query!(Repo, """
-    CREATE TABLE IF NOT EXISTS duolang_known_words (
-      user_id   TEXT NOT NULL,
-      lang      TEXT NOT NULL,
-      word      TEXT NOT NULL,                  -- normalised, lowercased
-      met_count INTEGER NOT NULL DEFAULT 1,
-      first_at  INTEGER NOT NULL,
-      last_at   INTEGER NOT NULL,
-      PRIMARY KEY (user_id, lang, word)
-    )
-    """)
-
-    # Errors beyond the per-session live-correction cap land here and
-    # wait for a later session rather than being dumped on the learner.
-    query!(Repo, """
-    CREATE TABLE IF NOT EXISTS duolang_errors (
-      id         INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id    TEXT NOT NULL,
-      lang       TEXT NOT NULL,
-      kind       TEXT NOT NULL,                 -- 'grammar' | 'vocabulary' | 'word_order' | 'form'
-      detail     TEXT NOT NULL,                 -- what went wrong, one line
-      fix        TEXT NOT NULL,
-      item_id    INTEGER,                       -- the item it attaches to, when there is one
-      status     TEXT NOT NULL DEFAULT 'open',  -- 'open' | 'retired'
-      seen_count INTEGER NOT NULL DEFAULT 1,
-      created_at INTEGER NOT NULL,
-      retired_at INTEGER
-    )
-    """)
-    query!(Repo, """
-    CREATE INDEX IF NOT EXISTS idx_duolang_errors_open
-      ON duolang_errors (user_id, lang, status, seen_count)
-    """)
-
-    query!(Repo, """
-    CREATE TABLE IF NOT EXISTS duolang_attempts (
-      id      INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id TEXT NOT NULL,
-      lang    TEXT NOT NULL,
-      item_id INTEGER NOT NULL,
-      beat    TEXT NOT NULL,                    -- 'recall' | 'check' | 'speak' | 'use'
-      result  TEXT NOT NULL,                    -- 'correct' | 'incorrect' | 'skipped'
-      ts      INTEGER NOT NULL
-    )
-    """)
-    query!(Repo, "CREATE INDEX IF NOT EXISTS idx_duolang_attempts_item ON duolang_attempts (item_id, ts)")
-  end
 end

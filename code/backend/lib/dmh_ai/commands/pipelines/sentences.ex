@@ -6,7 +6,7 @@
 defmodule DmhAi.Commands.Pipelines.Sentences do
   @moduledoc """
   Shared content-gathering for the Read-out-loud family of slash
-  commands (`/tts`, `/duolang`). Resolves WHAT to read — typed text,
+  command (`/tts`). Resolves WHAT to read — typed text,
   vision-OCR'd image text, or (for a bare command) the session's most
   recent natural assistant reply. The command pipelines layer their own
   segmentation, payload, and render on top of the result.
@@ -20,10 +20,9 @@ defmodule DmhAi.Commands.Pipelines.Sentences do
         source:          :typed | :image_only | :prior_reply | :no_input
       }
 
-  Text is returned RAW. Callers segment it themselves so `/duolang` needs
-  only one model call: `/tts` calls `segment/2` (clean → sentences);
-  `/duolang` runs a single clean+segment+translate call (embedding the
-  shared `clean_rules/0`). Both strip markdown scaffolding (rules like
+  Text is returned RAW. The caller segments it: `/tts` calls `segment/2`
+  (clean → sentences), embedding the shared `clean_rules/0`. It strips
+  markdown scaffolding (rules like
   `***`, headings, bullet / emphasis markers) and drop trailing "go
   deeper / suggestion" sections, so neither `***` nor the model's
   follow-up prompts get read aloud. Image OCR uses one vision call per
@@ -78,9 +77,8 @@ defmodule DmhAi.Commands.Pipelines.Sentences do
       {"sentences": []}.
   """
 
-  # Shared clean-and-segment rules — embedded both in @segment_prompt
-  # here (text → sentences for /tts) and in /duolang's single
-  # clean+segment+translate prompt, so the two paths filter identically.
+  # Clean-and-segment rules embedded in @segment_prompt (text →
+  # sentences for /tts), so scaffolding is stripped before read-aloud.
   @clean_rules """
   Each kept sentence is one a person would naturally read aloud:
     - substantive prose — the answer, story, or explanation itself
@@ -113,8 +111,8 @@ defmodule DmhAi.Commands.Pipelines.Sentences do
   """
 
   @doc """
-  The shared clean-and-segment rules, embedded in `/duolang`'s combined
-  clean+segment+translate prompt so both paths filter content identically.
+  The clean-and-segment rules embedded in the `/tts` segmentation prompt,
+  so scaffolding is filtered out before read-aloud.
   """
   @spec clean_rules() :: String.t()
   def clean_rules, do: @clean_rules
@@ -130,11 +128,10 @@ defmodule DmhAi.Commands.Pipelines.Sentences do
   Resolve the speakable content for a Read-out-loud command: pick the
   source (typed text, OCR'd images, or the prior reply) and OCR any
   images. Text is returned RAW — the caller turns it into sentences
-  (`segment/2` for /tts, a combined clean+segment+translate call for
-  /duolang) so /duolang needs only one model call.
+  (`segment/2` for /tts).
 
-  `arg` is the text after the command (and, for `/duolang`, after the
-  language token). `image_paths` are the absolute paths the chat handler
+  `arg` is the text after the command. `image_paths` are the absolute
+  paths the chat handler
   resolved from the FE's `attachmentNames`. `session_id` is needed for
   the bare-command prior-reply fallback.
   """
@@ -169,7 +166,7 @@ defmodule DmhAi.Commands.Pipelines.Sentences do
   @doc """
   Decode an LLM reply that should be one JSON object, tolerating
   ```` ```json ```` fences a chatty model may emit. Shared by the
-  vision-OCR parser here and the `/duolang` translation parser.
+  vision-OCR parser here.
   """
   @spec decode_llm_json(String.t()) :: {:ok, term()} | {:error, term()}
   def decode_llm_json(raw) when is_binary(raw) do
@@ -222,7 +219,7 @@ defmodule DmhAi.Commands.Pipelines.Sentences do
   end
 
   # A natural assistant reply is the model's prose — not a runtime
-  # marker (`command_ack`, `tts`, `duolang`, `form_response`, etc.).
+  # marker (`command_ack`, `tts`, `form_response`, etc.).
   # Speaking those out loud either loops on the user's own prior command
   # or reads back `Saved.` from /memo — never what they meant.
   defp natural_assistant_reply?(%{"role" => "assistant"} = m) do

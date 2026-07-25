@@ -65,7 +65,7 @@ defmodule DmhAi.Handlers.AgentChat do
     # Attachments live in `<session>/data/uploaded/<unix_ms>_<name>` — the
     # FE sends the `/assets`-returned id (`"uploaded/<unix_ms>_<name>"`) in
     # `attachmentNames`. We resolve each id to an absolute path; runtime
-    # slash commands (`/tts`, `/duolang`) read those paths directly. The
+    # slash commands (`/tts`) read those paths directly. The
     # persisted user message stays clean (no path markers).
     attachment_ids = d["attachmentNames"] |> parse_string_list() |> Enum.take(@max_attachments)
     image_paths = resolve_uploaded_paths(user.email, session_id, attachment_ids)
@@ -83,27 +83,6 @@ defmodule DmhAi.Handlers.AgentChat do
         image_paths: image_paths,
         lang: request_lang(d)
       )
-    end
-  end
-
-  # A session's mode decides which pipeline answers the turn. Duolang runs
-  # the lesson runtime and owns the whole turn — slash commands belong to
-  # the conversational mode only.
-  defp dispatch_by_mode(conn, user, session_id, content, "duolang", _opts) do
-    case DmhAi.Agent.UserAgentMessages.append(session_id, user.id, %{
-           role: "user",
-           content: content
-         }) do
-      {:ok, user_ts} ->
-        fire_and_forget(conn, user_ts, fn ->
-          case DmhAi.Duolang.Session.advance(user.id, session_id, content) do
-            {:ok, _beat} -> :ok
-            {:error, reason} -> Logger.warning("[Duolang] advance failed: #{inspect(reason)}")
-          end
-        end)
-
-      {:error, reason} ->
-        json(conn, 500, %{error: inspect(reason)})
     end
   end
 

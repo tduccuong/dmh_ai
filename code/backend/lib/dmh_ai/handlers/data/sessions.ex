@@ -330,7 +330,6 @@ defmodule DmhAi.Handlers.Data.Sessions do
   # A session's mode is fixed at creation and drives turn dispatch. Any
   # value outside the known set falls back to the conversational mode
   # rather than creating a session no pipeline will answer.
-  defp session_mode("duolang"), do: "duolang"
   defp session_mode(_), do: "confidant"
 
   defp parse_session_row([id, name, messages, context, created_at, updated_at, mode]) do

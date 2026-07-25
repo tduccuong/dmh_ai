@@ -528,33 +528,11 @@ function buildMsgHeader(msg, session) {
     return prefix + 'DMH-AI:';
 }
 
-var DUO_ICON_ASSISTANT = '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10.5" opacity="0.2"/><circle cx="12" cy="12" r="8.2"/><circle cx="9.7" cy="9.6" r="2" fill="#fff" opacity="0.55"/></svg>';
-var DUO_ICON_USER = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>';
-
 function buildMsgHeaderEl(msg, session) {
     var el = document.createElement('div');
     el.className = 'msg-header';
     var ts = formatTs(msg.ts);
     var prefix = ts ? '[' + ts + '] ' : '';
-    // Duolang tutor chat: "<icon> Duolang Assistant" / "<icon> You", with the
-    // timestamp pushed to the right edge of the same line.
-    if (typeof DuolangMode !== 'undefined' && DuolangMode.current && DuolangMode.current() === 'duolang') {
-        var isUser = msg.role === 'user';
-        el.classList.add('duolang-msg-header', isUser ? 'is-user' : 'is-assistant');
-        var icon = document.createElement('span');
-        icon.className = 'msg-hdr-icon';
-        icon.innerHTML = isUser ? DUO_ICON_USER : DUO_ICON_ASSISTANT;
-        var who = document.createElement('span');
-        who.className = 'msg-hdr-who';
-        who.textContent = I18n.t(isUser ? 'duolangYou' : 'duolangAssistantName');
-        var time = document.createElement('span');
-        time.className = 'msg-hdr-time';
-        time.textContent = ts || '';
-        el.appendChild(icon);
-        el.appendChild(who);
-        el.appendChild(time);
-        return el;
-    }
     if (msg.role === 'user') {
         var user = Auth._user;
         var displayName = user ? (user.name || user.email.split('@')[0]) : '';

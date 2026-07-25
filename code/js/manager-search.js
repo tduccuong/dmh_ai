@@ -155,20 +155,13 @@ UIManager.sendMessage = async function() {
     // Turn-status phrase under the header, visible immediately on send.
     this._renderTurnStatusInto(assistantDiv, turnWaitingPhrase());
 
-    if (sessionAtSend.mode === 'duolang') {
-        // Duolang is a natural chat: the tutor's reply lands right below the
-        // learner's message, so just append and follow the tail — no pinning
-        // the sent message to the viewport top.
-        self._pinChatToBottom();
-    } else {
-        // Anchor the just-sent user message at the top of the viewport.
-        // The scroll policy keeps it pinned while the answer streams below;
-        // once content overflows past viewport-tall, it auto-switches to
-        // follow-bottom (stick to tail).
-        var userMsgs = container.querySelectorAll('.message.user');
-        var anchorEl = userMsgs.length > 0 ? userMsgs[userMsgs.length - 1] : null;
-        self._anchorAtMsg(anchorEl);
-    }
+    // Anchor the just-sent user message at the top of the viewport.
+    // The scroll policy keeps it pinned while the answer streams below;
+    // once content overflows past viewport-tall, it auto-switches to
+    // follow-bottom (stick to tail).
+    var userMsgs = container.querySelectorAll('.message.user');
+    var anchorEl = userMsgs.length > 0 ? userMsgs[userMsgs.length - 1] : null;
+    self._anchorAtMsg(anchorEl);
 
     // Do NOT PUT session.messages here. The BE persists the user message
     // itself (with a BE-stamped ts) inside /agent/chat before dispatching
@@ -836,12 +829,10 @@ UIManager.pollTurnToCompletion = function(sessionAtSend, onComplete, onError, ab
 //      `<details>` block (built by `buildMessageEntryNode`) takes
 //      over with the same content.
 // ── Turn-status phrase (under the DMH-AI header, in the streaming bubble) ──
-// The model is named "DMH-AI" to the user — except in Duolang mode, where the
-// tutor is the "Duolang Assistant". Phrases reuse the `waitingFor` / `thinking`
-// i18n fragments around whichever name is current.
+// The model is named "DMH-AI" to the user. Phrases reuse the `waitingFor` /
+// `thinking` i18n fragments around the name.
 function turnRoleName() {
-    return (typeof DuolangMode !== 'undefined' && DuolangMode.current && DuolangMode.current() === 'duolang')
-        ? t('duolangAssistantName') : 'DMH-AI';
+    return 'DMH-AI';
 }
 function turnWaitingPhrase() { return t('waitingFor') + turnRoleName() + '...'; }
 function turnThinkingPhrase() { return turnRoleName() + t('thinking'); }

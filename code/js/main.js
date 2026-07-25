@@ -83,12 +83,9 @@ function applyLanguage() {
     // localized text. The dropdown is built once at init from the
     // boot-time language; without this rebuild a runtime language
     // switch leaves stale strings until full reload.
-    // The Duolang panel is built from i18n strings at render time, so a
-    // runtime language switch has to repaint it — including the mode
-    // dropdown, whose items are built once at init.
-    if (typeof DuolangMode !== 'undefined') {
-        DuolangMode.initTopbar();
-    }
+    // The mode dropdown's items are built once at init from i18n
+    // strings, so a runtime language switch has to repaint them.
+    if (UIManager.initModeSelector) UIManager.initModeSelector();
 
     if (typeof UIManager !== 'undefined') {
         if (typeof UIManager.initModeSelector === 'function') {
@@ -308,12 +305,11 @@ const UIManager = {
             el.dispatchEvent(new Event('input', { bubbles: true }));
         }
 
-        // True while an @-mention / &-workflow / duolang picker dropdown is
-        // open and owns Enter for item selection — the send handler defers.
+        // True while an @-mention / &-workflow picker dropdown is open
+        // and owns Enter for item selection — the send handler defers.
         function pickerOwnsEnter() {
             return (typeof MentionPicker !== 'undefined' && MentionPicker._open) ||
-                   (typeof WorkflowPicker !== 'undefined' && WorkflowPicker._open) ||
-                   (typeof DuolangPicker !== 'undefined' && DuolangPicker._open);
+                   (typeof WorkflowPicker !== 'undefined' && WorkflowPicker._open);
         }
 
         document.getElementById('message-input').addEventListener('keydown', function(e) {
@@ -336,9 +332,7 @@ const UIManager = {
         var msgInput = document.getElementById('message-input');
         if (typeof MentionPicker !== 'undefined')  MentionPicker.attach(msgInput);
         if (typeof WorkflowPicker !== 'undefined') WorkflowPicker.attach(msgInput);
-        if (typeof DuolangPicker !== 'undefined')  DuolangPicker.attach(msgInput);
         if (typeof SessionSwitcher !== 'undefined') SessionSwitcher.init();
-        if (typeof DuolangMode !== 'undefined')    DuolangMode.initTopbar();
         wireThemeToggle();
         msgInput.addEventListener('input', function() {
             this.style.height = 'auto';

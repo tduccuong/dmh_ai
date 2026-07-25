@@ -12,11 +12,6 @@ defmodule DmhAi.Commands.Parser do
     * `/tts [text]`    — render `text` (and/or OCR'd text from any attached
       images, or the previous reply) as a sentence-per-row Read-out-loud
       panel.
-    * `/duolang <full-lang-name> [text]` — same gathering as `/tts`, plus a
-      translation of every sentence into `<full-lang-name>` rendered beneath
-      its original. The leading language token is split out downstream by
-      `DmhAi.Commands.Languages`; the arg here is everything after
-      `/duolang `.
 
   Everything after the first whitespace is the verbatim argument
   (preserves text with spaces).
@@ -25,7 +20,6 @@ defmodule DmhAi.Commands.Parser do
   @type result ::
           {:memo, String.t()}
           | {:tts, String.t()}
-          | {:duolang, String.t()}
           | :not_a_command
 
   @spec parse(String.t()) :: result()
@@ -38,9 +32,6 @@ defmodule DmhAi.Commands.Parser do
 
       String.starts_with?(trimmed, "/tts ")   -> {:tts, after_prefix(trimmed, "/tts ")}
       trimmed == "/tts"                       -> {:tts, ""}
-
-      String.starts_with?(trimmed, "/duolang ") -> {:duolang, after_prefix(trimmed, "/duolang ")}
-      trimmed == "/duolang"                     -> {:duolang, ""}
 
       true                                     -> :not_a_command
     end

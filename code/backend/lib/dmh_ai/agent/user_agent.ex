@@ -263,31 +263,17 @@ defmodule DmhAi.Agent.UserAgent do
     user_msgs = SessionIO.extract_user_messages(session_data)
 
     # One swift call understands the turn: web-search decision, a
-    # context-resolved memory-lookup query, whether the reply is a copy-ready
-    # deliverable, and whether it's a natural-language duolang request.
+    # context-resolved memory-lookup query, and whether the reply is a
+    # copy-ready deliverable.
     plan =
       if command.content != "" do
         WebSearchEngine.plan_turn(command.content, user_msgs,
           %{session_id: session_id, user_id: user_id})
       else
-        %{search: {:no_search}, memory_query: "", deliverable: false, duolang: false}
+        %{search: {:no_search}, memory_query: "", deliverable: false}
       end
 
-    # A duolang turn renders a bilingual panel via one master call — no
-    # stream, no web/memory pre-step. If it can't (call failed / no pairs),
-    # fall through to a normal reply so a misclassification never strands the
-    # user.
-    duolang_result =
-      if plan.duolang do
-        DmhAi.Commands.Pipelines.Duolang.run_natural(command.content, user_msgs, session_id, user_id)
-      else
-        :skip
-      end
-
-    case duolang_result do
-      :ok    -> :ok
-      _other -> run_confidant_reply(command, state, session_data, plan)
-    end
+    run_confidant_reply(command, state, session_data, plan)
   end
 
   defp run_confidant_reply(%ConfidantCommand{session_id: session_id} = command, state, session_data, plan) do
