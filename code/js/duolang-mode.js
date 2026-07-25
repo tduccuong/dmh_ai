@@ -812,10 +812,10 @@ var DuolangMode = {
 
         var target = selectEl(langs, '', I18n.t('duolangChoose'));
         var source = selectEl(langs, (typeof I18n !== 'undefined' && I18n._lang) || 'en');
-        var topic = inputEl('textarea', I18n.t('duolangTopicPlaceholder'), 2);
-        var motivation = inputEl('textarea', I18n.t('duolangMotivationPlaceholder'), 2);
-        var style = inputEl('input', I18n.t('duolangStylePlaceholder'));
-        var focus = inputEl('input', I18n.t('duolangFocusPlaceholder'));
+        var topic = inputEl('textarea', I18n.t('duolangTopicPlaceholder'), 3);
+        var motivation = inputEl('textarea', I18n.t('duolangMotivationPlaceholder'), 3);
+        var style = inputEl('textarea', I18n.t('duolangStylePlaceholder'), 3);
+        var focus = inputEl('textarea', I18n.t('duolangFocusPlaceholder'), 3);
         var intensity = selectFrom([
             ['casual', I18n.t('duolangIntensityCasual')],
             ['steady', I18n.t('duolangIntensitySteady')],

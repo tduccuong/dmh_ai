@@ -1758,12 +1758,13 @@ body.view-external-connectors #external-connectors-view {
 
 .duolang-onboard { display: flex; flex-direction: column; gap: 12px; }
 .duolang-onboard-title { margin: 0; font-size: var(--font-size-md); color: var(--text-1); }
-.duolang-field { display: flex; flex-direction: column; gap: 5px; }
-.duolang-label { font-size: var(--font-size-xs); color: var(--text-2); }
-.duolang-input, .duolang-select { width: 100%; padding: 9px 10px; box-sizing: border-box;
+.duolang-field { display: flex; flex-direction: column; gap: 6px; }
+.duolang-label { font-size: var(--font-size-md); color: var(--text-2); }
+.duolang-input, .duolang-select { width: 100%; padding: 10px 12px; box-sizing: border-box;
     background: var(--input-bg, var(--surface-1)); color: var(--text-1);
     border: 1px solid var(--border-strong); border-radius: var(--border-radius-base);
-    font-size: var(--font-size-sm); font-family: inherit; resize: vertical; }
+    font-size: var(--duolang-text, 15px); line-height: 1.45; font-family: inherit; resize: vertical; }
+.duolang-input::placeholder { color: var(--text-3); }
 
 .duolang-item-list { display: flex; flex-direction: column; gap: 2px; max-height: 60vh; overflow-y: auto; }
 .duolang-item { padding: 10px 12px; border-bottom: 1px solid var(--border); }
@@ -1977,7 +1978,7 @@ body.duolang-mode .pane-bottom .input-area { border-top: 1px solid var(--border-
 
 /* Onboarding form — the DMH-Duolang Assistant. */
 .stage-onboard { display: flex; flex-direction: column; gap: 14px; max-width: 560px; margin: 0 auto; }
-.stage-onboard-intro { font-size: var(--font-size-sm); color: var(--text-2); line-height: 1.5; }
+.stage-onboard-intro { font-size: var(--font-size-md); color: var(--text-2); line-height: 1.5; }
 .stage-onboard-title { margin: 0; font-size: var(--font-size-xl); color: var(--text-1); }
 
 @media (max-width: 768px) {
