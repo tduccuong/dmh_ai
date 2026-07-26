@@ -62,9 +62,9 @@ const SessionStore = {
     // single Confidant surface.
     getCurrentState: async function() {
         const res = await apiFetch(this.BASE + '/current');
-        if (!res.ok) return { mode: 'confidant', sessions: { confidant: null, assistant: null } };
+        if (!res.ok) return { mode: 'confidant', sessions: { confidant: null } };
         const data = await res.json();
-        return { mode: 'confidant', sessions: { confidant: data.session || null, assistant: null } };
+        return { mode: 'confidant', sessions: { confidant: data.session || null } };
     },
     // Pin a session as the user's last-active session. (`mode` is vestigial
     // FE state; the BE ignores it.)

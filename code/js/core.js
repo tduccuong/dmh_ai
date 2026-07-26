@@ -15,18 +15,18 @@ marked.use({
     }
 });
 
-// Walk text nodes under `el` and wrap `&<slug>` / `@<handle>` tokens
+// Walk text nodes under `el` and wrap `@<handle>` tokens
 // in styled spans so the user (and the model, indirectly via the
 // readback) can see at a glance which substrings the runtime is
-// treating as workflow / mention references. Idempotent — already-
+// treating as mention references. Idempotent — already-
 // wrapped tokens live inside a non-text element and the walker
 // skips them. Safe against KaTeX / code-block content because the
 // walker excludes nodes inside `code`, `pre`, and the KaTeX root.
 function decorateTokens(el) {
     if (!el) return;
     var SKIP_TAGS = { CODE: 1, PRE: 1, A: 1, KBD: 1 };
-    var SKIP_CLASSES = { 'token-workflow': 1, 'token-mention': 1, 'katex': 1, 'katex-display': 1 };
-    var TOKEN_RE = /([@&])([a-z0-9_]+)\b/g;
+    var SKIP_CLASSES = { 'token-mention': 1, 'katex': 1, 'katex-display': 1 };
+    var TOKEN_RE = /(@)([a-z0-9_]+)\b/g;
 
     function shouldSkip(node) {
         var n = node.parentNode;
@@ -49,7 +49,7 @@ function decorateTokens(el) {
     var nodes = [];
     var t;
     while ((t = iter.nextNode())) {
-        if (!shouldSkip(t) && /[@&][a-z0-9_]+/.test(t.nodeValue)) nodes.push(t);
+        if (!shouldSkip(t) && /@[a-z0-9_]+/.test(t.nodeValue)) nodes.push(t);
     }
 
     nodes.forEach(function(node) {
@@ -61,7 +61,7 @@ function decorateTokens(el) {
         while ((m = TOKEN_RE.exec(s))) {
             if (m.index > cursor) frag.appendChild(document.createTextNode(s.slice(cursor, m.index)));
             var span = document.createElement('span');
-            span.className = (m[1] === '&') ? 'token-workflow' : 'token-mention';
+            span.className = 'token-mention';
             span.textContent = m[0];
             frag.appendChild(span);
             cursor = m.index + m[0].length;
@@ -165,10 +165,6 @@ const I18n = {
             sessionModalTitle: 'Chat sessions',
             sessionFilterPlaceholder: 'Filter sessions…',
             sessionNoMatch: 'No sessions match.',
-            modeConfidant: 'Confidant',
-            modeAssistant: 'Assistant',
-            hintConfidant: 'Note: For <strong>heavy tasks</strong>, talk to Assistant. Confidant is meant only for <strong>quick answers</strong>.',
-            hintAssistant: 'Note: For <strong>quick answers</strong>, talk to Confidant. Assistant is meant only for <strong>heavy tasks</strong>.',
             splashConfidant: {
                 title: "Hi, I'm DMH-AI.",
                 lead: 'Your confidant for quick, insightful chats and instant answers.',
@@ -178,19 +174,6 @@ const I18n = {
                     { strong: '/tts &lt;text&gt;', text: 'Read text out loud in the text\'s language — or a previous answer of mine if no text is given.' },
                 ],
                 outro: 'or ask me anything!',
-                switchPrompt: 'Need help with a complex project? Try the',
-                switchPromptShort: 'A complex project? Try the',
-            },
-            splashAssistant: {
-                title: "Hi, I'm DMH-AI Assistant.",
-                lead: 'Built for deep research, complex workflows, and heavy lifting.',
-                bullets: [
-                    { strong: 'Type: /memo &lt;text&gt;', text: 'Save a private note — recalled automatically when it is relevant.' },
-                    { strong: 'Type: /index &lt;source&gt;', text: 'Index a URL, file path, or text into your knowledge base.' },
-                    { strong: 'Workflows', text: 'Upload documents along with complex, multi-step instructions.' },
-                ],
-                switchPrompt: 'Just want a quick conversation? Switch to the',
-                switchPromptShort: 'A quick chat? Switch to the',
             },
         },
         vi: {
@@ -257,10 +240,6 @@ const I18n = {
             sessionModalTitle: 'Phiên trò chuyện',
             sessionFilterPlaceholder: 'Lọc phiên…',
             sessionNoMatch: 'Không có phiên phù hợp.',
-            modeConfidant: 'Bạn thân',
-            modeAssistant: 'Trợ lý',
-            hintConfidant: 'Lưu ý: Với <strong>tác vụ phức tạp</strong>, hãy chuyển sang Trợ lý. Bạn thân chỉ dành cho <strong>câu trả lời nhanh</strong>.',
-            hintAssistant: 'Lưu ý: Với <strong>câu trả lời nhanh</strong>, hãy chuyển sang Bạn thân. Trợ lý chỉ dành cho <strong>tác vụ phức tạp</strong>.',
             splashConfidant: {
                 title: 'Chào bạn, tôi là DMH-AI.',
                 lead: 'Người bạn tâm giao cho những cuộc trò chuyện sâu sắc và phản hồi nhanh.',
@@ -270,19 +249,6 @@ const I18n = {
                     { strong: '/tts &lt;nội dung&gt;', text: 'Đọc to văn bản bằng ngôn ngữ của chính nó — hoặc câu trả lời trước của tôi nếu không nhập nội dung.' },
                 ],
                 outro: 'hoặc hỏi tôi bất cứ điều gì!',
-                switchPrompt: 'Cần xử lý dự án phức tạp? Hãy thử',
-                switchPromptShort: 'Dự án/quy trình phức tạp? Gọi',
-            },
-            splashAssistant: {
-                title: 'Chào bạn, tôi là DMH-AI Trợ lý.',
-                lead: 'Chuyên gia xử lý quy trình phức tạp và tác vụ nặng.',
-                bullets: [
-                    { strong: 'Gõ: /memo &lt;nội dung&gt;', text: 'Lưu & mã hóa ghi chú riêng tư. Truy vấn trong tương lai theo từ khóa.' },
-                    { strong: 'Gõ: /index &lt;nguồn&gt;', text: 'Lưu danh mục URL, tệp tài liệu hoặc văn bản vào cơ sở tri thức.' },
-                    { strong: 'Quy trình', text: 'Tải tài liệu kèm hướng dẫn xử lý nhiều bước phức tạp.' },
-                ],
-                switchPrompt: 'Chỉ muốn trò chuyện nhanh? Hãy chuyển sang',
-                switchPromptShort: 'Trò chuyện nhanh? Gọi',
             },
         },
         de: {
@@ -349,10 +315,6 @@ const I18n = {
             sessionModalTitle: 'Chat-Sitzungen',
             sessionFilterPlaceholder: 'Sitzungen filtern…',
             sessionNoMatch: 'Keine passende Sitzung.',
-            modeConfidant: 'Vertrauter',
-            modeAssistant: 'Assistent',
-            hintConfidant: 'Hinweis: Für <strong>komplexe Aufgaben</strong> nutze den Assistenten. Vertrauter ist nur für <strong>schnelle Antworten</strong>.',
-            hintAssistant: 'Hinweis: Für <strong>schnelle Antworten</strong> nutze den Vertrauten. Assistent ist nur für <strong>komplexe Aufgaben</strong>.',
             splashConfidant: {
                 title: 'Hi, ich bin DMH-AI.',
                 lead: 'Dein Vertrauter für schnelle, tiefgründige Chats und sofortige Antworten.',
@@ -362,19 +324,6 @@ const I18n = {
                     { strong: '/tts &lt;Text&gt;', text: 'Text in seiner eigenen Sprache vorlesen — oder eine vorherige Antwort von mir, wenn kein Text angegeben ist.' },
                 ],
                 outro: 'oder frag mich einfach alles!',
-                switchPrompt: 'Brauchst du Hilfe bei einem komplexen Projekt? Probiere den',
-                switchPromptShort: 'Komplexes Projekt? Probiere den',
-            },
-            splashAssistant: {
-                title: 'Hi, ich bin DMH-AI Assistent.',
-                lead: 'Entwickelt für tiefe Recherche, komplexe Abläufe und große Aufgaben.',
-                bullets: [
-                    { strong: 'Tippe: /memo &lt;Text&gt;', text: 'Verschlüsseln & private Notizen speichern. Bereit für zukünftige Abfragen über Schlüsselwörter.' },
-                    { strong: 'Tippe: /index &lt;Quelle&gt;', text: 'URL, Datei oder Text in deine Wissensdatenbank aufnehmen.' },
-                    { strong: 'Workflows', text: 'Dokumente hochladen und komplexe Aufgaben lösen.' },
-                ],
-                switchPrompt: 'Möchtest du nur kurz plaudern? Wechsel zum',
-                switchPromptShort: 'Kurz plaudern? Wechsel zum',
             },
         },
         es: {
@@ -441,10 +390,6 @@ const I18n = {
             sessionModalTitle: 'Sesiones de chat',
             sessionFilterPlaceholder: 'Filtrar sesiones…',
             sessionNoMatch: 'Ninguna sesión coincide.',
-            modeConfidant: 'Confidant',
-            modeAssistant: 'Assistant',
-            hintConfidant: 'Nota: Para <strong>tareas complejas</strong>, cambia al Asistente. Confidente es solo para <strong>respuestas rápidas</strong>.',
-            hintAssistant: 'Nota: Para <strong>respuestas rápidas</strong>, cambia al Confidente. Asistente es solo para <strong>tareas complejas</strong>.',
             splashConfidant: {
                 title: 'Hola, soy DMH-AI.',
                 lead: 'Tu confidente para charlas rápidas, profundas y respuestas al instante.',
@@ -454,19 +399,6 @@ const I18n = {
                     { strong: '/tts &lt;texto&gt;', text: 'Lee el texto en voz alta en su propio idioma — o una respuesta mía anterior si no das texto.' },
                 ],
                 outro: '¡o pregúntame lo que quieras!',
-                switchPrompt: '¿Necesitas ayuda con un proyecto complejo? Prueba el',
-                switchPromptShort: '¿Proyecto complejo? Prueba el',
-            },
-            splashAssistant: {
-                title: 'Hola, soy DMH-AI Asistente.',
-                lead: 'Diseñado para investigación profunda y flujos de trabajo pesados.',
-                bullets: [
-                    { strong: 'Escribe: /memo &lt;texto&gt;', text: 'Cifra y guarda notas privadas. Listo para futuras búsquedas por palabras clave.' },
-                    { strong: 'Escribe: /index &lt;fuente&gt;', text: 'Indexa URL, archivos o texto en tu base de conocimientos.' },
-                    { strong: 'Flujos de trabajo', text: 'Sube documentos para tareas complejas de varios pasos.' },
-                ],
-                switchPrompt: '¿Solo quieres charlar un rato? Cambia al',
-                switchPromptShort: '¿Charla rápida? Cambia al',
             },
         },
         fr: {
@@ -533,10 +465,6 @@ const I18n = {
             sessionModalTitle: 'Sessions de chat',
             sessionFilterPlaceholder: 'Filtrer les sessions…',
             sessionNoMatch: 'Aucune session ne correspond.',
-            modeConfidant: 'Confidant',
-            modeAssistant: 'Assistant',
-            hintConfidant: 'Note : Pour des <strong>tâches complexes</strong>, passe à Assistant. Confident est réservé aux <strong>réponses rapides</strong>.',
-            hintAssistant: 'Note : Pour des <strong>réponses rapides</strong>, passe à Confident. Assistant est réservé aux <strong>tâches complexes</strong>.',
             splashConfidant: {
                 title: 'Salut, je suis DMH-AI.',
                 lead: 'Ton confident pour des échanges rapides et des réponses instantanées.',
@@ -546,19 +474,6 @@ const I18n = {
                     { strong: '/tts &lt;texte&gt;', text: 'Lis le texte à voix haute dans sa propre langue — ou une réponse précédente de moi si aucun texte n’est donné.' },
                 ],
                 outro: 'ou pose-moi n’importe quelle question !',
-                switchPrompt: 'Besoin d’aide pour un projet complexe ? Essaie l’',
-                switchPromptShort: 'Projet complexe ? Essaie l’',
-            },
-            splashAssistant: {
-                title: 'Salut, je suis DMH-AI Assistant.',
-                lead: 'Conçu pour la recherche approfondie et les flux de travail complexes.',
-                bullets: [
-                    { strong: 'Tapez: /memo &lt;texte&gt;', text: 'Chiffrez et enregistrez des notes privées. Prêt pour de futures recherches par mots-clés.' },
-                    { strong: 'Tapez: /index &lt;source&gt;', text: 'Indexe une URL, un fichier ou du texte dans ta base.' },
-                    { strong: 'Workflows', text: 'Importe des documents pour des tâches multi-étapes.' },
-                ],
-                switchPrompt: 'Juste envie de discuter ? Passe en mode',
-                switchPromptShort: 'Discuter ? Passe en mode',
             },
         }
     },

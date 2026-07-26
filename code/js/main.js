@@ -79,27 +79,13 @@ function applyLanguage() {
     document.getElementById('about-commercial-line').innerHTML = '<strong style="color:var(--text-2);">' + t('aboutCommercialLabel') + '</strong> ' + t('aboutCommercialBody');
     document.getElementById('about-close').textContent = t('aboutClose');
 
-    // Mode dropdown — items + the closed-trigger label both carry
-    // localized text. The dropdown is built once at init from the
-    // boot-time language; without this rebuild a runtime language
-    // switch leaves stale strings until full reload.
-    // The mode dropdown's items are built once at init from i18n
-    // strings, so a runtime language switch has to repaint them.
-    if (UIManager.initModeSelector) UIManager.initModeSelector();
-
-    if (typeof UIManager !== 'undefined') {
-        if (typeof UIManager.initModeSelector === 'function') {
-            UIManager.initModeSelector();
-        } else if (typeof UIManager._updateModeLabel === 'function') {
-            UIManager._updateModeLabel();
-        }
-        // Re-render the chat so the empty-session splash picks up the
-        // new locale's `splashConfidant` / `splashAssistant` strings.
-        // Non-empty sessions are unaffected (renderChat early-returns
-        // out of the splash branch when messages.length > 0).
-        if (typeof UIManager.renderChat === 'function' && UIManager.currentSession) {
-            UIManager.renderChat();
-        }
+    // A runtime language switch repaints the empty-session splash so it
+    // picks up the new locale's `splashConfidant` strings. Non-empty
+    // sessions are unaffected (renderChat early-returns out of the splash
+    // branch when messages.length > 0).
+    if (typeof UIManager !== 'undefined' &&
+        typeof UIManager.renderChat === 'function' && UIManager.currentSession) {
+        UIManager.renderChat();
     }
 }
 
@@ -305,11 +291,10 @@ const UIManager = {
             el.dispatchEvent(new Event('input', { bubbles: true }));
         }
 
-        // True while an @-mention / &-workflow picker dropdown is open
-        // and owns Enter for item selection — the send handler defers.
+        // True while an @-mention picker dropdown is open and owns Enter
+        // for item selection — the send handler defers.
         function pickerOwnsEnter() {
-            return (typeof MentionPicker !== 'undefined' && MentionPicker._open) ||
-                   (typeof WorkflowPicker !== 'undefined' && WorkflowPicker._open);
+            return (typeof MentionPicker !== 'undefined' && MentionPicker._open);
         }
 
         document.getElementById('message-input').addEventListener('keydown', function(e) {
@@ -323,15 +308,14 @@ const UIManager = {
             if (!self._pendingVideo && !self._pendingDesc) self.sendMessage();
         });
 
-        // Layer W — @-mention + &-workflow pickers. Both listen for
-        // their trigger char anywhere in the textarea (after
-        // whitespace or at start), substitute the resolved token on
-        // selection, and keep a sidecar the BE consumes to augment
-        // LLM context. The persisted user message stays at the
-        // literal text — sidecar data lives only in this turn's POST.
+        // Layer W — the @-mention picker listens for its trigger char
+        // anywhere in the textarea (after whitespace or at start),
+        // substitutes the resolved token on selection, and keeps a
+        // sidecar the BE consumes to augment LLM context. The persisted
+        // user message stays at the literal text — sidecar data lives
+        // only in this turn's POST.
         var msgInput = document.getElementById('message-input');
         if (typeof MentionPicker !== 'undefined')  MentionPicker.attach(msgInput);
-        if (typeof WorkflowPicker !== 'undefined') WorkflowPicker.attach(msgInput);
         if (typeof SessionSwitcher !== 'undefined') SessionSwitcher.init();
         wireThemeToggle();
         msgInput.addEventListener('input', function() {
@@ -355,39 +339,10 @@ const UIManager = {
             }
         });
         function closeAllDropdowns() {
-            var modeMenu = document.getElementById('mode-dropdown-menu');
-            if (modeMenu) modeMenu.classList.remove('open');
-            var modeTrigger = document.getElementById('mode-dropdown-trigger');
-            if (modeTrigger) modeTrigger.classList.remove('open');
             document.getElementById('user-dropdown').classList.remove('open');
             document.getElementById('lang-dropdown').classList.remove('open');
             document.getElementById('attach-menu').classList.remove('open');
         }
-
-        // Mode dropdown open/close
-        var modeTrigger = document.getElementById('mode-dropdown-trigger');
-        if (modeTrigger) {
-            modeTrigger.addEventListener('click', function(e) {
-                e.stopPropagation();
-                var menu = document.getElementById('mode-dropdown-menu');
-                var trigger = this;
-                var wasOpen = menu.classList.contains('open');
-                closeAllDropdowns();
-                if (!wasOpen) {
-                    menu.classList.add('open');
-                    trigger.classList.add('open');
-                }
-            });
-        }
-        document.addEventListener('click', function(e) {
-            var wrap = document.getElementById('mode-dropdown-wrap');
-            if (wrap && !wrap.contains(e.target)) {
-                var menu = document.getElementById('mode-dropdown-menu');
-                if (menu) menu.classList.remove('open');
-                var trigger = document.getElementById('mode-dropdown-trigger');
-                if (trigger) trigger.classList.remove('open');
-            }
-        });
 
         // User menu
         var userMenuBtn = document.getElementById('user-menu-btn');

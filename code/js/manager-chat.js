@@ -1705,16 +1705,10 @@ UIManager.renderAttachments = function() {
     this.updateSendBtn();
 };
 
-// Empty-session splash card — greeting + mode pitch + switch link.
+// Empty-session splash card — greeting + capability pitch.
 // Rendered by `renderChat` when `currentSession.messages.length === 0`.
-// Content is i18n'd: per-locale `splashConfidant` / `splashAssistant`
-// objects in `core.js` carry `{title, lead, bullets[], switchPrompt}`;
-// the link target's display name reuses the existing `modeConfidant`
-// / `modeAssistant` keys so dropdown and splash stay consistent.
-//
-// The switch link does NOT mutate the current session's mode. It
-// jumps to (or creates) an empty session in the target mode, leaving
-// any existing in-progress sessions of either mode alone.
+// Content is i18n'd: the `splashConfidant` object in `core.js` carries
+// `{title, lead, bullets[], outro}`.
 UIManager._buildSplashEl = function(mode) {
     var data = t('splashConfidant');
     if (!data || typeof data !== 'object') return null;

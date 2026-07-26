@@ -40,20 +40,14 @@ UIManager.initializeApp = async function() {
         OllamaAPI.setEndpoint('http://127.0.0.1:11434');
     }
 
-    // Initialize mode selector
-    this.initModeSelector();
-
     try {
-        // Hydrate top-level mode preference + per-mode last-active session
-        // ids from the BE BEFORE any empty-state branch decides what to
-        // render. Without this, `_currentMode` would still be its seed
-        // default ('assistant') and an empty-DB cold-load would auto-spawn
-        // a session in whichever mode happened to win the race — the bug
-        // that produced rogue confidant ghosts.
+        // Hydrate the last-active session id from the BE before the
+        // empty-state branch decides what to render, so a cold load lands
+        // on the prior session rather than auto-spawning a fresh one.
         var self = this;
         const state = await SessionStore.getCurrentState();
         this._currentMode = state.mode || this._currentMode;
-        this._modeSessionIds = (state.sessions || { confidant: null, assistant: null });
+        this._modeSessionIds = (state.sessions || { confidant: null });
 
         const sessions = await SessionStore.getSessions();
         const filtered = sessions.filter(function(s) {
@@ -94,7 +88,6 @@ UIManager.initializeApp = async function() {
             await SessionStore.setCurrentState(this._currentMode, this.currentSession.id);
             this._modeSessionIds[this._currentMode] = this.currentSession.id;
         }
-        this._updateModeLabel();
 
 
         await this.refreshSessionProgress();
@@ -129,90 +122,8 @@ UIManager.initializeApp = async function() {
 // not happen in practice) gets a sensible value rather than `undefined`.
 // Confidant-only build: mode is collapsed to a single surface.
 UIManager._currentMode = 'confidant';
-UIManager._modeSessionIds = { confidant: null, assistant: null };
+UIManager._modeSessionIds = { confidant: null };
 
-var MODE_ICONS = {
-    confidant: '<svg width="15" height="15" viewBox="0 0 24 24" fill="#e09040" stroke="none"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>',
-    assistant: '<svg width="16" height="16" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="16" cy="14" r="13" fill="#c6dff0"/><path d="M9 28 Q9 20 16 20 Q23 20 23 26 L21 24 L19 28 L16 25 L13 28 L11 24 Z" fill="#f03878"/><circle cx="16" cy="13" r="5" fill="#b06828"/><circle cx="16" cy="13" r="4" fill="#e8a070"/><circle cx="14.5" cy="12.5" r="0.6" fill="#d07858" opacity="0.7"/><circle cx="17.5" cy="12.5" r="0.6" fill="#d07858" opacity="0.7"/><path d="M11 13 Q11 7 16 7 Q21 7 21 13" stroke="#3a3450" stroke-width="2" fill="none" stroke-linecap="round"/><rect x="9.5" y="11.5" width="2.5" height="4" rx="1.2" fill="#3a3450"/><rect x="20" y="11.5" width="2.5" height="4" rx="1.2" fill="#3a3450"/><path d="M21 14 Q23.5 15 22.5 18" stroke="#3a3450" stroke-width="1.5" fill="none" stroke-linecap="round"/><rect x="21" y="17.5" width="3" height="2" rx="1" fill="#3a3450"/><path d="M9 21 Q9 18 16 18 Q23 18 23 21" fill="#f03878"/></svg>'
-};
-
-UIManager.initModeSelector = function() {
-    var self = this;
-    var menu = document.getElementById('mode-dropdown-menu');
-    if (!menu) return;
-    menu.innerHTML = '';
-
-    // Localized labels — show ONLY the current language's name. The
-    // pre-i18n version showed English + Vietnamese side by side in
-    // every locale, which read as a row of duplicate labels for
-    // anyone not bilingual.
-    var modes = [
-        { value: 'confidant', label: t('modeConfidant') },
-        { value: 'assistant', label: t('modeAssistant') }
-    ];
-
-    modes.forEach(function(m) {
-        var el = document.createElement('div');
-        el.className = 'model-dropdown-item mode-item' + (m.value === self._currentMode ? ' selected' : '');
-        el.dataset.value = m.value;
-        el.innerHTML = '<span class="mode-item-icon">' + MODE_ICONS[m.value] + '</span><span class="mode-item-label">' + m.label + '</span>';
-        el.addEventListener('click', function() {
-            self.switchMode(m.value);
-            menu.classList.remove('open');
-            var trigger = document.getElementById('mode-dropdown-trigger');
-            if (trigger) trigger.classList.remove('open');
-        });
-        menu.appendChild(el);
-    });
-
-    this._updateModeLabel();
-};
-
-UIManager.switchMode = async function(mode) {
-    this._currentMode = mode;
-    this._updateModeLabel();
-    await this.renderSessions();
-    // Prefer THIS mode's last-active session (so the user lands where they
-    // were last working in that mode), falling back to its first session,
-    // and finally creating an empty session if the mode has none.
-    var sessions = await SessionStore.getSessions();
-    var filtered = sessions.filter(function(s) { return s.mode === mode; });
-    var lastForMode = this._modeSessionIds[mode];
-    var target = (lastForMode && filtered.find(function(s) { return s.id === lastForMode; }))
-                 || filtered[0];
-    if (target) {
-        await this.switchSession(target.id);
-    } else {
-        var newSession = await SessionStore.createSession(t('newChat'), mode);
-        await SessionStore.setCurrentState(mode, newSession.id);
-        this._modeSessionIds[mode] = newSession.id;
-        this.currentSession = newSession;
-        await this.renderSessions();
-        this.renderChat();
-        this.startProgressPolling();
-    }
-};
-
-UIManager._updateModeLabel = function() {
-    var label = document.getElementById('mode-dropdown-label');
-    var iconEl = document.getElementById('mode-icon');
-    if (!label) return;
-    var isAssistant = this._currentMode === 'assistant';
-    if (iconEl) iconEl.innerHTML = MODE_ICONS[this._currentMode] || '';
-    label.textContent = isAssistant ? t('modeAssistant') : t('modeConfidant');
-    var menu = document.getElementById('mode-dropdown-menu');
-    if (menu) {
-        menu.querySelectorAll('.model-dropdown-item').forEach(function(el) {
-            el.classList.toggle('selected', el.dataset.value === UIManager._currentMode);
-        });
-    }
-    // Topbar action buttons. Workflow picker is assistant-only (the
-    // surface where workflows live).
-    var wfBtn = document.getElementById('workflow-modal-btn');
-    var clearBtn = document.getElementById('clear-session-btn');
-    if (wfBtn) wfBtn.style.display = isAssistant ? '' : 'none';
-    if (clearBtn) clearBtn.style.display = '';
-};
 
 UIManager.renderSessions = async function() {
     const self = this;

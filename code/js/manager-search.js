@@ -266,20 +266,10 @@ UIManager.sendMessage = async function() {
     //     /gettext reads via the vision OCR pipeline). The legacy inline-content
     //     fields (`images`, `files`) stay populated so ordinary (non-slash)
     //     confidant chats continue feeding inline base64 to the vision describer.
-    var attachmentNamesForAssistant = [];
+    var attachmentIds = [];
     (attachedAtSend || []).forEach(function(entry) {
-        if (sessionAtSend.mode === 'assistant') {
-            if (entry.attachmentName) attachmentNamesForAssistant.push(entry.attachmentName);
-        } else {
-            if (entry.id) attachmentNamesForAssistant.push(entry.id);
-        }
+        if (entry.id) attachmentIds.push(entry.id);
     });
-    if (sessionAtSend.mode === 'assistant') {
-        allImages = [];
-        imageNamesForAPI = [];
-        filesForAPI = [];
-        hasVideo = false;
-    }
 
     // --- POST /agent/chat fire-and-forget, then start the polling loop ---
     // The BE persists the user message, dispatches the turn asynchronously
@@ -287,16 +277,13 @@ UIManager.sendMessage = async function() {
     // rows, streaming-buffer text, final assistant message) lives in the DB
     // and reaches the FE via `/sessions/:id/poll` (see specs §Polling-based
     // delivery). No SSE / chunked response on /agent/chat anymore.
-    // Layer W — collect resolved @-mention + &-workflow sidecars
-    // from the pickers. The BE injects <mentions> +
-    // <workflow_references> blocks into the LLM-bound content; the
-    // persisted user message stays at the literal text the user
-    // typed. Both pickers reset after the POST is in flight so a
-    // re-typed reference rebuilds its entry from scratch.
-    var mentionsForAPI  = (typeof MentionPicker  !== 'undefined') ? MentionPicker.collect()  : [];
-    var workflowsForAPI = (typeof WorkflowPicker !== 'undefined') ? WorkflowPicker.collect() : [];
-    if (typeof MentionPicker  !== 'undefined') MentionPicker.reset();
-    if (typeof WorkflowPicker !== 'undefined') WorkflowPicker.reset();
+    // Layer W — collect resolved @-mention sidecars from the picker.
+    // The BE injects a <mentions> block into the LLM-bound content; the
+    // persisted user message stays at the literal text the user typed.
+    // The picker resets after the POST is in flight so a re-typed
+    // reference rebuilds its entry from scratch.
+    var mentionsForAPI = (typeof MentionPicker !== 'undefined') ? MentionPicker.collect() : [];
+    if (typeof MentionPicker !== 'undefined') MentionPicker.reset();
 
     apiFetch('/agent/chat', {
         method: 'POST',
@@ -308,9 +295,8 @@ UIManager.sendMessage = async function() {
             imageNames: imageNamesForAPI,
             files: filesForAPI,
             hasVideo: hasVideo,
-            attachmentNames: attachmentNamesForAssistant,
+            attachmentNames: attachmentIds,
             mentions: mentionsForAPI,
-            workflows: workflowsForAPI,
             // FE-supplied locale, used by the slash-command runtime
             // (e.g. /memo's static-i18n ack) to render in the user's
             // language without an LLM round-trip. The chat path itself
@@ -402,7 +388,7 @@ UIManager._sendMidChainMessage = async function() {
     var imagesForStorage = [];
     var videosForStorage = [];
     var filesForStorage  = [];
-    var attachmentNamesForAssistant = [];
+    var attachmentIds = [];
 
     // Wait for any in-flight upload promises. Mid-chain sends race the
     // same way the initial send does — see the comment above in
@@ -423,14 +409,9 @@ UIManager._sendMidChainMessage = async function() {
         } else if (f.type === 'text') {
             filesForStorage.push({ name: f.name, fileId: f.id, snippet: f.snippet });
         }
-        // Assistant uses workspace name; Confidant uses /assets id (path
-        // shaped `uploaded/<unix_ms>_<name>`). Both come back from their
-        // respective POSTs which we awaited above.
-        if (sessionAtSend.mode === 'assistant') {
-            if (f.attachmentName) attachmentNamesForAssistant.push(f.attachmentName);
-        } else {
-            if (f.id) attachmentNamesForAssistant.push(f.id);
-        }
+        // Confidant uses the /assets id (path-shaped
+        // `uploaded/<unix_ms>_<name>`), returned by the POST awaited above.
+        if (f.id) attachmentIds.push(f.id);
     });
 
     // Clear FE-side attachment state + re-render attachment tray so the
@@ -468,8 +449,8 @@ UIManager._sendMidChainMessage = async function() {
             body: JSON.stringify({
                 sessionId:       sessionAtSend.id,
                 content:         content,
-                mode:            sessionAtSend.mode || 'assistant',
-                attachmentNames: attachmentNamesForAssistant,
+                mode:            sessionAtSend.mode || 'confidant',
+                attachmentNames: attachmentIds,
                 client_msg_id:   clientMsgId,
                 lang:            I18n.lang
             })
