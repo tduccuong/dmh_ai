@@ -1454,7 +1454,6 @@ UIManager.handleFileSelect = async function(files) {
 
             if (isVideo) {
                 var videoFile = file;
-                var videoMode = (self.currentSession && self.currentSession.mode) || 'confidant';
                 var videoFormData = new FormData();
                 videoFormData.append('file', videoFile);
                 videoFormData.append('sessionId', sessionId);
@@ -1483,60 +1482,29 @@ UIManager.handleFileSelect = async function(files) {
                     })
                     .catch(function(e) { console.error('Video upload failed:', e); });
 
-                if (videoMode === 'assistant') {
-                    // Assistant path: scale video down to workspace resolution and upload
-                    // it to <session>/workspace/ immediately. By send-time the file is on
-                    // disk, no reservation dance needed. The file's name (with .webm) is
-                    // stored on the entry; send-time code collects these into attachmentNames.
-                    self.setStatus(t('processingImage'));
-                    var capturedEntry = entry;
-                    var capturedSid = sessionId;
-                    var scaledName = videoFile.name.replace(/\.[^.]+$/, '') + '.webm';
-                    UIManager.scaleVideo(videoFile)
-                        .then(function(scaledBlob) {
-                            capturedEntry._scaledBlob = scaledBlob;
-                            var fd = new FormData();
-                            fd.append('file', scaledBlob, scaledName);
-                            fd.append('sessionId', capturedSid);
-                            return apiFetch('/upload-session-attachment', { method: 'POST', body: fd });
-                        })
-                        .then(function(r) { return r && r.json(); })
-                        .then(function(d) {
-                            if (d && d.name) capturedEntry.attachmentName = d.name;
-                        })
-                        .catch(function(e) {
-                            console.error('Video workspace upload failed:', e);
-                            capturedEntry._scaledBlob = new Blob([videoFile], { type: videoFile.type });
-                        })
-                        .finally(function() {
-                            self._pendingVideo--;
-                            if (self._pendingVideo === 0 && self._pendingDesc === 0) self.setStatus('');
-                            self.updateSendBtn();
-                        });
-                } else {
-                    // Confidant path: extract frames for inline base64 sending + pre-describe.
-                    var capturedVideoFile = videoFile;
-                    var capturedSessionId = sessionId;
-                    var extractionPromise = apiFetch('/video-frame-count')
-                        .then(function(r) { return r.json(); })
-                        .then(function(d) { return UIManager.extractVideoFrames(capturedVideoFile, d.count || 8); })
-                        .then(function(frames) {
-                            entry.frames = frames;
-                            if (frames && frames.length > 0) {
-                                apiFetch('/describe-video', {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ sessionId: capturedSessionId, name: capturedVideoFile.name, frames: frames })
-                                }).catch(function(e) { console.error('Video description failed:', e); });
-                            }
-                        })
-                        .catch(function(e) { console.error('Frame extraction failed:', e); });
-                    extractionPromise.finally(function() {
-                        self._pendingVideo--;
-                        if (self._pendingVideo === 0 && self._pendingDesc === 0) self.setStatus('');
-                        self.updateSendBtn();
-                    });
-                }
+                // Confidant path: extract frames for inline base64 sending + pre-describe.
+                var capturedVideoFile = videoFile;
+                var capturedSessionId = sessionId;
+                var extractionPromise = apiFetch('/video-frame-count')
+                    .then(function(r) { return r.json(); })
+                    .then(function(d) { return UIManager.extractVideoFrames(capturedVideoFile, d.count || 8); })
+                    .then(function(frames) {
+                        entry.frames = frames;
+                        if (frames && frames.length > 0) {
+                            apiFetch('/describe-video', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ sessionId: capturedSessionId, name: capturedVideoFile.name, frames: frames })
+                            }).catch(function(e) { console.error('Video description failed:', e); });
+                        }
+                    })
+                    .catch(function(e) { console.error('Frame extraction failed:', e); });
+                extractionPromise.finally(function() {
+                    self._pendingVideo--;
+                    if (self._pendingVideo === 0 && self._pendingDesc === 0) self.setStatus('');
+                    self.updateSendBtn();
+                });
+            
                 continue;
             }
 
@@ -1572,22 +1540,9 @@ UIManager.handleFileSelect = async function(files) {
 
                 // Assistant mode: scaled copy goes to <session>/workspace/ so the
                 // model can read it via extract_content during the chain loop.
-                // Confidant mode does NOT use the workspace path — the same file
-                // is already going to /assets (session_data_dir/uploaded/) below
-                // for permanent download, and `/gettext` reads from there via
-                // imgEntry.id. The promise lands on the entry so the send-time
-                // code can await all in-flight uploads before POSTing.
-                var attachMode = (self.currentSession && self.currentSession.mode) || 'confidant';
-                if (attachMode === 'assistant') {
-                    var wsFormData = new FormData();
-                    wsFormData.append('file', resizedFile, capturedImgName);
-                    wsFormData.append('sessionId', capturedImgSessionId);
-                    imgEntry._workspaceUploadPromise =
-                        apiFetch('/upload-session-attachment', { method: 'POST', body: wsFormData })
-                            .then(function(r) { return r.json(); })
-                            .then(function(d) { if (d && d.name) imgEntry.attachmentName = d.name; })
-                            .catch(function(e) { console.error('Image workspace upload failed:', e); });
-                }
+                // The image goes to /assets (session_data_dir/uploaded/) below
+                // for permanent download; `/gettext` reads it from there via
+                // imgEntry.id at send time.
 
                 // Fire description in background — does not gate the send button
                 apiFetch('/describe-image', {
@@ -1608,64 +1563,34 @@ UIManager.handleFileSelect = async function(files) {
                 // mode: keep the legacy inline-content path since Confidant
                 // has no tool-call loop to pull file contents at turn time.
                 self.setStatus(t('attaching'));
-                var textMode = (self.currentSession && self.currentSession.mode) || 'confidant';
 
-                if (textMode === 'assistant') {
-                    // Permanent copy for human-accessible download.
-                    var assetForm = new FormData();
-                    assetForm.append('file', file);
-                    assetForm.append('sessionId', sessionId);
+                // Confidant: pre-extract text client-side, inline it at
+                // send time via /agent/chat's `files` body field (single
+                // shot, no tool loop).
+                var extractedText = null;
+                if (isPdf) extractedText = await self.extractPdfText(file);
+                else if (officeFormat === 'docx') extractedText = await self.extractDocxText(file);
+                else if (officeFormat === 'xlsx') extractedText = await self.extractXlsxText(file);
 
-                    var wsForm = new FormData();
-                    wsForm.append('file', file);
-                    wsForm.append('sessionId', sessionId);
-
-                    var textEntry = {
-                        id: null,
-                        name: file.name,
-                        type: 'text',
-                        attachmentName: null
-                    };
-                    self.attachedFiles.push(textEntry);
-                    self.renderAttachments();
-
-                    apiFetch('/assets', { method: 'POST', body: assetForm })
-                        .then(function(r) { return r.json(); })
-                        .then(function(d) { textEntry.id = d && d.id; })
-                        .catch(function(e) { console.error('Text asset upload failed:', e); });
-
-                    apiFetch('/upload-session-attachment', { method: 'POST', body: wsForm })
-                        .then(function(r) { return r.json(); })
-                        .then(function(d) { if (d && d.name) textEntry.attachmentName = d.name; })
-                        .catch(function(e) { console.error('Text workspace upload failed:', e); });
-                } else {
-                    // Confidant: pre-extract text client-side, inline it at
-                    // send time via /agent/chat's `files` body field (single
-                    // shot, no tool loop).
-                    var extractedText = null;
-                    if (isPdf) extractedText = await self.extractPdfText(file);
-                    else if (officeFormat === 'docx') extractedText = await self.extractDocxText(file);
-                    else if (officeFormat === 'xlsx') extractedText = await self.extractXlsxText(file);
-
-                    var uploadFile = file;
-                    if (extractedText !== null) {
-                        uploadFile = new File([extractedText], file.name + '.txt', { type: 'text/plain' });
-                    }
-                    var formData = new FormData();
-                    formData.append('file', uploadFile);
-                    formData.append('sessionId', sessionId);
-                    var res = await apiFetch('/assets', { method: 'POST', body: formData });
-                    var data = await res.json();
-
-                    var lines = (data.content || '').split('\n');
-                    var snippet = lines.slice(0, FILE_SNIPPET_MAX_LINES).join('\n') + (lines.length > FILE_SNIPPET_MAX_LINES ? '\n…' : '');
-                    self.attachedFiles.push({
-                        id: data.id, name: file.name, type: 'text',
-                        snippet: snippet,
-                        fullContent: data.content
-                    });
-                    self.renderAttachments();
+                var uploadFile = file;
+                if (extractedText !== null) {
+                    uploadFile = new File([extractedText], file.name + '.txt', { type: 'text/plain' });
                 }
+                var formData = new FormData();
+                formData.append('file', uploadFile);
+                formData.append('sessionId', sessionId);
+                var res = await apiFetch('/assets', { method: 'POST', body: formData });
+                var data = await res.json();
+
+                var lines = (data.content || '').split('\n');
+                var snippet = lines.slice(0, FILE_SNIPPET_MAX_LINES).join('\n') + (lines.length > FILE_SNIPPET_MAX_LINES ? '\n…' : '');
+                self.attachedFiles.push({
+                    id: data.id, name: file.name, type: 'text',
+                    snippet: snippet,
+                    fullContent: data.content
+                });
+                self.renderAttachments();
+            
             }
         } catch (e) {
             console.error('Upload failed:', e);
