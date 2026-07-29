@@ -12,7 +12,6 @@ defmodule DmhAi.Agent.ContextEngine do
   """
 
   alias DmhAi.Agent.SystemPrompt
-  require Logger
 
   # Keyword retrieval — top-K snippets injected before the current message.
   @top_k 4

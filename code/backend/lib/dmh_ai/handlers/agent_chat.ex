@@ -27,7 +27,6 @@ defmodule DmhAi.Handlers.AgentChat do
   """
 
   import Plug.Conn
-  require Logger
   alias DmhAi.Repo
   alias DmhAi.Adapters.Http
   import Ecto.Adapters.SQL, only: [query!: 3]

@@ -37,7 +37,6 @@ defmodule DmhAi.LLM.Pools do
   alias DmhAi.Repo
   alias DmhAi.LLM.AccountRotation
   import Ecto.Adapters.SQL, only: [query!: 3]
-  require Logger
 
   @valid_protocols ~w(openai ollama anthropic)
 
@@ -352,8 +351,6 @@ defmodule DmhAi.LLM.Pools do
 
   # Normalise the static-models field. Accepts a list of strings, a
   # newline/comma-separated string, or nil. Trims, drops blanks, dedups.
-  defp normalise_models(nil), do: []
-
   defp normalise_models(list) when is_list(list) do
     list
     |> Enum.map(fn v -> v |> to_string() |> String.trim() end)
@@ -445,7 +442,7 @@ defmodule DmhAi.LLM.Pools do
 
     case r.rows do
       [[v] | _] when is_binary(v) ->
-        decoded = Jason.decode!(v || "{}")
+        decoded = Jason.decode!(v)
         Enum.any?(decoded, fn {_k, val} ->
           is_binary(val) and String.starts_with?(val, pool_name <> "::")
         end)

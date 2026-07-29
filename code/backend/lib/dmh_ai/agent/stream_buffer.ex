@@ -27,7 +27,6 @@ defmodule DmhAi.Agent.StreamBuffer do
   """
 
   alias DmhAi.Agent.EphemeralCache
-  require Logger
 
   @flush_ms 250
   @kind :stream

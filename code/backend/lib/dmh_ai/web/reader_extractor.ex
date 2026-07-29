@@ -26,7 +26,6 @@ defmodule DmhAi.Web.ReaderExtractor do
   Returns `%{title, text, url}` or `nil`.
   """
 
-  require Logger
 
   # Candidate root selectors, in preference order.
   @semantic_selectors [

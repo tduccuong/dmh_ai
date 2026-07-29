@@ -22,7 +22,6 @@ defmodule DmhAi.LLM.Probe do
   list and letting the operator type the model id manually.
   """
 
-  require Logger
 
   @timeout_ms 8_000
 

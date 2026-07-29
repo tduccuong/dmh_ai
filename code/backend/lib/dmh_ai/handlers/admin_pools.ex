@@ -18,7 +18,6 @@ defmodule DmhAi.Handlers.AdminPools do
   import Plug.Conn
   alias DmhAi.LLM.{Pools, Probe}
   alias DmhAi.Handlers.Proxy
-  require Logger
 
   # ─── List ────────────────────────────────────────────────────────────────
 

@@ -517,30 +517,34 @@ function formatTs(ts) {
     return months[d.getMonth()] + ' ' + d.getDate() + (sameYear ? '' : ' ' + d.getFullYear()) + ',' + time;
 }
 
-function buildMsgHeader(msg, session) {
-    var ts = formatTs(msg.ts);
-    var prefix = ts ? '[' + ts + '] ' : '';
-    if (msg.role === 'user') {
-        var user = Auth._user;
-        var displayName = user ? (user.name || user.email.split('@')[0]) : '';
-        return prefix + displayName + ':';
-    }
-    return prefix + 'DMH-AI:';
-}
+// Chat message avatar icons — assistant: filled dot; user: person outline.
+var MSG_ICON_ASSISTANT = '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10.5" opacity="0.2"/><circle cx="12" cy="12" r="8.2"/><circle cx="9.7" cy="9.6" r="2" fill="#fff" opacity="0.55"/></svg>';
+var MSG_ICON_USER = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>';
 
+// Chat message header: avatar icon + name, with the timestamp pushed to the
+// right edge of the same line.
 function buildMsgHeaderEl(msg, session) {
     var el = document.createElement('div');
     el.className = 'msg-header';
-    var ts = formatTs(msg.ts);
-    var prefix = ts ? '[' + ts + '] ' : '';
-    if (msg.role === 'user') {
+    var isUser = msg.role === 'user';
+    el.classList.add(isUser ? 'is-user' : 'is-assistant');
+    var icon = document.createElement('span');
+    icon.className = 'msg-hdr-icon';
+    icon.innerHTML = isUser ? MSG_ICON_USER : MSG_ICON_ASSISTANT;
+    var who = document.createElement('span');
+    who.className = 'msg-hdr-who';
+    if (isUser) {
         var user = Auth._user;
-        var displayName = user ? (user.name || user.email.split('@')[0]) : '';
-        el.appendChild(document.createTextNode(prefix + displayName + ':'));
-        return el;
+        who.textContent = user ? (user.name || user.email.split('@')[0]) : '';
+    } else {
+        who.textContent = 'DMH-AI';
     }
-    // Assistant: [time] DMH-AI:
-    el.appendChild(document.createTextNode(prefix + 'DMH-AI:'));
+    var time = document.createElement('span');
+    time.className = 'msg-hdr-time';
+    time.textContent = formatTs(msg.ts) || '';
+    el.appendChild(icon);
+    el.appendChild(who);
+    el.appendChild(time);
     return el;
 }
 

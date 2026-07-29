@@ -79,8 +79,13 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
 #mode-dropdown-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 #mode-icon { display: flex; align-items: center; flex-shrink: 0; opacity: 1 !important; }
 .mode-chevron { flex-shrink: 0; opacity: 0.5; margin-left: auto; }
-.msg-header { display: flex; align-items: center; gap: 5px; }
+.msg-header { display: flex; align-items: center; gap: 6px; }
 .msg-header-icon { display: flex; align-items: center; flex-shrink: 0; }
+.msg-hdr-icon { display: inline-flex; align-items: center; flex-shrink: 0; }
+.msg-hdr-who { font-size: 14px; font-weight: 600; }
+.msg-hdr-time { margin-left: auto; font-size: 12px; font-weight: 400; color: var(--text-3); }
+.msg-header.is-assistant .msg-hdr-icon, .msg-header.is-assistant .msg-hdr-who { color: var(--text-accent); }
+.msg-header.is-user .msg-hdr-icon, .msg-header.is-user .msg-hdr-who { color: var(--text-1); }
 
 /* request_input inline form (rendered inside an assistant message bubble). */
 .request-input-form { margin-top: 10px; padding: 10px 12px; background: var(--surface-3); border: 1px solid var(--border-2); border-radius: 6px; display: flex; flex-direction: column; gap: 8px; }
@@ -525,14 +530,6 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
 .lang-wrap { position: relative; flex-shrink: 0; }
 .lang-flag { padding: 0 10px; font-size: 12px; font-weight: 700; letter-spacing: 0.5px; color: var(--text-accent); }
 .topbar-icon-btn { padding: 0 10px; }
-.wf-icon {
-    display: block;
-    width: 20px;
-    height: 20px;
-    background-color: currentColor;
-    -webkit-mask: url('/wf-icon.png') center / contain no-repeat;
-            mask: url('/wf-icon.png') center / contain no-repeat;
-}
 .lang-dropdown { display: none; position: absolute; top: 100%; left: 0; background: var(--surface-1); border: 1px solid var(--border-1); border-radius: 6px; margin-top: 4px; z-index: 200; min-width: 150px; box-shadow: 0 8px 24px var(--shadow-1); }
 .lang-dropdown.open { display: block; }
 .lang-option { display: block; width: 100%; padding: 8px 12px; background: none; border: none; color: var(--text-1); font-size: 13px; cursor: pointer; text-align: left; white-space: nowrap; }

@@ -28,7 +28,6 @@ defmodule DmhAi.Plugs.RateLimit do
   import Plug.Conn
   import Ecto.Adapters.SQL, only: [query!: 3]
   alias DmhAi.Repo
-  require Logger
 
   @scale_ms 60_000
 
